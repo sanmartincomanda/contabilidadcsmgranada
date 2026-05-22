@@ -761,7 +761,14 @@ function AppContent() {
     const { data: reportsData, loading: reportsLoading, error: reportsError } = useFirestoreCollections(reportCollections, !!user && isAdmin && currentPath === '/reportes', false);
     const { data: dashboardData, loading: dashboardLoading, error: dashboardError } = useFirestoreCollections(dashboardCollections, !!user && isAdmin && currentPath === '/', false);
 
-    const categoriesList = categoriesData.categorias || [];
+    const categoriesList = useMemo(() => (
+        [...(categoriesData.categorias || [])].sort((a, b) => {
+            const orderA = Number.isFinite(Number(a.order)) ? Number(a.order) : 9999;
+            const orderB = Number.isFinite(Number(b.order)) ? Number(b.order) : 9999;
+            if (orderA !== orderB) return orderA - orderB;
+            return String(a.name || '').localeCompare(String(b.name || ''), 'es');
+        })
+    ), [categoriesData.categorias]);
 
     if (!user) {
         return <main><Routes><Route path="/login" element={<Login />} /><Route path="*" element={<Navigate to="/login" replace />} /></Routes></main>;
