@@ -149,10 +149,237 @@ const normalizeFilterText = (value) => (
         .trim()
 );
 
+const PHOTO_EDIT_FOLDERS = {
+    ingresos: 'facturas/ventas',
+    facturas_membretadas_ventas: 'facturas/membretadas',
+    gastos: 'facturas/gastos',
+    compras: 'facturas/compras',
+};
+
+const cleanForFirestore = (value) => {
+    if (value === undefined) return null;
+    if (value === null) return null;
+    if (value instanceof Timestamp) return value;
+    if (Array.isArray(value)) return value.map(cleanForFirestore);
+    if (typeof value === 'object') {
+        return Object.entries(value).reduce((acc, [key, nestedValue]) => {
+            acc[key] = cleanForFirestore(nestedValue);
+            return acc;
+        }, {});
+    }
+    return value;
+};
+
+const buildEditablePayload = (collectionName, editData, fields) => {
+    const dataToSave = {};
+
+    Object.entries(fields).forEach(([key, field]) => {
+        if (key === 'id' || key === 'timestamp' || field?.readonly) return;
+        const value = editData[key];
+        if (field?.type === 'number' || field?.type === 'currency') {
+            dataToSave[key] = parseFloat(value) || 0;
+        } else {
+            dataToSave[key] = value ?? '';
+        }
+    });
+
+    if (dataToSave.date) dataToSave.month = String(dataToSave.date).substring(0, 7);
+    if (dataToSave.saleDate) dataToSave.month = String(dataToSave.saleDate).substring(0, 7);
+
+    if (['ingresos', 'facturas_membretadas_ventas', 'gastos', 'compras'].includes(collectionName)) {
+        const fiscal = buildFiscalPayload({
+            subtotal: dataToSave.subtotal ?? editData.subtotal,
+            iva: dataToSave.iva ?? editData.iva,
+            total: dataToSave.total ?? editData.total,
+            retentionIr2: dataToSave.retentionIr2 ?? editData.retentionIr2,
+            retentionMunicipal1: dataToSave.retentionMunicipal1 ?? editData.retentionMunicipal1,
+        });
+
+        dataToSave.amount = fiscal.amount;
+        dataToSave.subtotal = fiscal.subtotal;
+        dataToSave.iva = fiscal.iva;
+        dataToSave.total = fiscal.total;
+        dataToSave.retentionIr2 = fiscal.retentionIr2;
+        dataToSave.retentionMunicipal1 = fiscal.retentionMunicipal1;
+        dataToSave.retentionTotal = fiscal.retentionTotal;
+    }
+
+    return dataToSave;
+};
+
+const renderDisplayValue = (fields, key, value) => {
+    const field = fields[key];
+    if (value === null || value === undefined) return '---';
+    if (typeof value === 'object' && value instanceof Timestamp) {
+        try { return value.toDate().toLocaleString('es-ES'); } catch (e) { return '---'; }
+    }
+    if (field?.type === 'branch') return branchName(value);
+    if (field?.type === 'currency') return fmt(Number(value));
+    return String(value);
+};
+
+const EditRecordModal = ({ item, collectionName, fields, onClose, onSaved }) => {
+    const [editData, setEditData] = useState(item);
+    const [photoFile, setPhotoFile] = useState(null);
+    const [loading, setLoading] = useState(false);
+    const canAttachPhoto = Boolean(PHOTO_EDIT_FOLDERS[collectionName]);
+
+    useEffect(() => {
+        setEditData(item);
+        setPhotoFile(null);
+    }, [item]);
+
+    if (!item) return null;
+
+    const renderInput = (key) => {
+        const field = fields[key];
+        const value = editData[key];
+        if (key === 'timestamp' || field?.readonly) {
+            return (
+                <div className="rounded-lg border border-stone-200 bg-stone-100 px-3 py-2 text-sm font-semibold text-stone-500">
+                    {value === null || value === undefined ? 'No editable' : String(value)}
+                </div>
+            );
+        }
+
+        if (field?.type === 'branch') {
+            return (
+                <select
+                    value={value === null || value === undefined ? '' : String(value)}
+                    onChange={(e) => setEditData((prev) => ({ ...prev, [key]: e.target.value }))}
+                    className="w-full rounded-lg border border-stone-200 bg-stone-50 px-3 py-2 text-sm font-semibold text-stone-700 outline-none focus:border-[#a81d24] focus:ring-2 focus:ring-[#a81d24]/15"
+                    disabled={loading}
+                >
+                    <option value="">Seleccionar...</option>
+                    {(field.options || []).map((option) => (
+                        <option key={option.id} value={option.id}>{option.name}</option>
+                    ))}
+                </select>
+            );
+        }
+
+        const inputType = field?.type === 'currency' || field?.type === 'number'
+            ? 'number'
+            : field?.type === 'date'
+                ? 'date'
+                : field?.type === 'month'
+                    ? 'month'
+                    : 'text';
+
+        return (
+            <input
+                type={inputType}
+                step={inputType === 'number' ? '0.01' : undefined}
+                value={value === null || value === undefined ? '' : String(value)}
+                onChange={(e) => setEditData((prev) => ({ ...prev, [key]: e.target.value }))}
+                className="w-full rounded-lg border border-stone-200 bg-stone-50 px-3 py-2 text-sm font-semibold text-stone-700 outline-none focus:border-[#a81d24] focus:ring-2 focus:ring-[#a81d24]/15"
+                disabled={loading}
+            />
+        );
+    };
+
+    const handleSave = async () => {
+        setLoading(true);
+        try {
+            let dataToSave = buildEditablePayload(collectionName, editData, fields);
+
+            if (photoFile && canAttachPhoto) {
+                const photoPayload = await uploadInvoicePhoto(photoFile, PHOTO_EDIT_FOLDERS[collectionName], item.id);
+                dataToSave = { ...dataToSave, ...photoPayload };
+            }
+
+            dataToSave.updatedAt = Timestamp.now();
+
+            const batch = writeBatch(db);
+            batch.set(doc(collection(db, 'historial_ediciones')), {
+                action: 'update',
+                collectionName,
+                recordId: item.id,
+                previousData: cleanForFirestore(item),
+                newData: cleanForFirestore({ ...item, ...dataToSave }),
+                changedFields: Object.keys(dataToSave),
+                changedAt: Timestamp.now(),
+            });
+            batch.update(doc(db, collectionName, item.id), cleanForFirestore(dataToSave));
+            await batch.commit();
+
+            onSaved(item.id, dataToSave);
+            onClose();
+        } catch (error) {
+            console.error('Error al guardar cambios:', error);
+            alert('Error al guardar cambios: ' + error.message);
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    return (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <button className="absolute inset-0 bg-[#2b1113]/50 backdrop-blur-sm" onClick={onClose} aria-label="Cerrar" />
+            <div className="relative max-h-[90vh] w-full max-w-4xl overflow-hidden rounded-2xl border border-[#e6c9b8] bg-white shadow-2xl">
+                <div className="flex items-start justify-between gap-4 border-b border-[#ead5c5] bg-[#7f1218] px-5 py-4">
+                    <div>
+                        <div className="text-xs font-bold uppercase tracking-[0.3em] text-[#f2b635]">Edicion detallada</div>
+                        <h2 className="mt-1 text-lg font-black text-white">Actualizar registro y respaldo fiscal</h2>
+                        <p className="mt-1 text-xs font-semibold text-white/70">Cada guardado conserva copia anterior en historial de ediciones.</p>
+                    </div>
+                    <button onClick={onClose} className="rounded-lg bg-white/10 p-2 text-white transition hover:bg-white/20" disabled={loading}>
+                        <Icon path={Icons.x} className="h-4 w-4" />
+                    </button>
+                </div>
+
+                <div className="max-h-[calc(90vh-9rem)] overflow-y-auto p-5">
+                    <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                        {Object.entries(fields).map(([key, field]) => (
+                            <div key={key} className={['description', 'descripcion'].includes(key) ? 'md:col-span-2' : ''}>
+                                <label className="mb-1 block text-xs font-bold uppercase tracking-wider text-stone-500">{field.label}</label>
+                                {renderInput(key)}
+                            </div>
+                        ))}
+                    </div>
+
+                    {canAttachPhoto && (
+                        <div className="mt-5 rounded-xl border border-[#ead5c5] bg-[#fff8f5] p-4">
+                            <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                                <div>
+                                    <div className="text-xs font-black uppercase tracking-[0.2em] text-[#7f1218]">Soporte / foto</div>
+                                    <p className="text-xs font-semibold text-stone-500">Puedes adjuntar o reemplazar foto/PDF de factura o soporte.</p>
+                                </div>
+                                {item.fotoFacturaUrl && (
+                                    <a href={item.fotoFacturaUrl} target="_blank" rel="noreferrer" className="rounded-lg border border-[#a81d24] px-3 py-1.5 text-xs font-bold text-[#a81d24]">
+                                        Ver soporte actual
+                                    </a>
+                                )}
+                            </div>
+                            <input
+                                type="file"
+                                accept="image/*,.pdf"
+                                onChange={(e) => setPhotoFile(e.target.files?.[0] || null)}
+                                className="block w-full text-xs text-stone-500 file:mr-3 file:rounded-lg file:border-0 file:bg-[#fff0f0] file:px-3 file:py-2 file:text-xs file:font-semibold file:text-[#a81d24]"
+                                disabled={loading}
+                            />
+                            {photoFile && <p className="mt-2 text-xs font-bold text-emerald-700">Archivo seleccionado: {photoFile.name}</p>}
+                        </div>
+                    )}
+                </div>
+
+                <div className="flex flex-wrap items-center justify-end gap-2 border-t border-[#ead5c5] bg-stone-50 px-5 py-4">
+                    <Button type="button" variant="ghost" onClick={onClose} disabled={loading}>Cancelar</Button>
+                    <Button type="button" variant="success" onClick={handleSave} disabled={loading || !item.id} className="flex items-center gap-2">
+                        <Icon path={Icons.save} className="h-4 w-4" />
+                        {loading ? 'Guardando...' : 'Guardar cambios'}
+                    </Button>
+                </div>
+            </div>
+        </div>
+    );
+};
+
 // --- COMPONENTE: EDITABLE LIST ---
 
 const EditableRow = ({ item, collectionName, fields, onUpdate, onDelete }) => {
     const [isEditing, setIsEditing] = useState(false);
+    const [showEditModal, setShowEditModal] = useState(false);
     const [editData, setEditData] = useState(item);
     const [loading, setLoading] = useState(false);
 
@@ -197,8 +424,24 @@ const EditableRow = ({ item, collectionName, fields, onUpdate, onDelete }) => {
                     alert(buildBlockingMessage(result.blockingAbonos));
                     return;
                 }
+                await addDoc(collection(db, 'historial_ediciones'), {
+                    action: 'delete',
+                    collectionName,
+                    recordId: item.id,
+                    previousData: cleanForFirestore(item),
+                    changedAt: Timestamp.now(),
+                });
             } else {
-                await deleteDoc(doc(db, collectionName, item.id));
+                const batch = writeBatch(db);
+                batch.set(doc(collection(db, 'historial_ediciones')), {
+                    action: 'delete',
+                    collectionName,
+                    recordId: item.id,
+                    previousData: cleanForFirestore(item),
+                    changedAt: Timestamp.now(),
+                });
+                batch.delete(doc(db, collectionName, item.id));
+                await batch.commit();
             }
             onDelete(item.id);
         } catch (error) {
@@ -271,14 +514,25 @@ const EditableRow = ({ item, collectionName, fields, onUpdate, onDelete }) => {
                         <Button onClick={() => setIsEditing(false)} disabled={loading} variant="ghost" size="sm">Cancelar</Button>
                     </div>
                 ) : (
-                    <div className='flex gap-1'>
-                        <Button onClick={() => setIsEditing(true)} disabled={!item.id} variant="warning" size="sm" className="flex items-center gap-1">
-                            <Icon path={Icons.edit} className="w-3 h-3" /> Editar
-                        </Button>
-                        <Button onClick={handleDelete} disabled={loading || !item.id} variant="danger" size="sm" className="flex items-center gap-1">
-                            <Icon path={Icons.trash} className="w-3 h-3" /> Eliminar
-                        </Button>
-                    </div>
+                    <>
+                        <div className='flex gap-1'>
+                            <Button onClick={() => setShowEditModal(true)} disabled={!item.id} variant="warning" size="sm" className="flex items-center gap-1">
+                                <Icon path={Icons.edit} className="w-3 h-3" /> Editar
+                            </Button>
+                            <Button onClick={handleDelete} disabled={loading || !item.id} variant="danger" size="sm" className="flex items-center gap-1">
+                                <Icon path={Icons.trash} className="w-3 h-3" /> Eliminar
+                            </Button>
+                        </div>
+                        {showEditModal && (
+                            <EditRecordModal
+                                item={item}
+                                collectionName={collectionName}
+                                fields={fields}
+                                onClose={() => setShowEditModal(false)}
+                                onSaved={onUpdate}
+                            />
+                        )}
+                    </>
                 )}
             </td>
         </tr>
