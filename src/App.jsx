@@ -19,7 +19,10 @@ import { resolveReportIncomeEntries } from './services/incomeAggregation';
 const BRAND_LOGO = APP_BRAND_LOGO;
 
 const CATEGORY_COLLECTIONS = ['categorias'];
-const RECENT_HISTORY_MONTHS = 24;
+const DATA_ENTRY_HISTORY_MONTHS = 6;
+const REPORT_HISTORY_MONTHS = 24;
+const ACCOUNT_HISTORY_MONTHS = 12;
+const MAX_ROUTE_BLOCKING_MS = 900;
 
 const DEFAULT_REMINDERS = [
     { id: 'r1', texto: 'DGI CUOTA FIJA', diaDelMes: 7, activo: true },
@@ -660,11 +663,17 @@ const useFirestoreCollections = (collections = [], enabled = true, live = true) 
         const unsubscribes = [];
         let mounted = true;
         const loadedCollections = new Set();
+        const unblockTimer = window.setTimeout(() => {
+            if (mounted) setLoading(false);
+        }, MAX_ROUTE_BLOCKING_MS);
 
         const markLoaded = (name) => {
             if (loadedCollections.has(name)) return;
             loadedCollections.add(name);
-            if (mounted && loadedCollections.size === collections.length) setLoading(false);
+            if (mounted && loadedCollections.size === collections.length) {
+                window.clearTimeout(unblockTimer);
+                setLoading(false);
+            }
         };
 
         const loadOnce = async (name) => {
@@ -680,7 +689,11 @@ const useFirestoreCollections = (collections = [], enabled = true, live = true) 
             }
         };
 
-        if (!live && hasCachedData) { setLoading(false); return; }
+        if (!live && hasCachedData) {
+            window.clearTimeout(unblockTimer);
+            setLoading(false);
+            return;
+        }
 
         configs.forEach((config) => {
             const { name, constraints } = config;
@@ -699,7 +712,11 @@ const useFirestoreCollections = (collections = [], enabled = true, live = true) 
             );
         });
 
-        return () => { mounted = false; unsubscribes.forEach(u => u()); };
+        return () => {
+            mounted = false;
+            window.clearTimeout(unblockTimer);
+            unsubscribes.forEach(u => u());
+        };
     }, [collections, enabled, live]);
 
     return { data, loading, error };
@@ -716,7 +733,9 @@ function AppContent() {
     const currentPath = location.pathname;
     const needsCategories = currentPath === '/ingresar' || currentPath === '/gastos-diarios' || currentPath.startsWith('/maestros/categorias');
     const currentMonth = useMemo(() => getMonthOffset(0), []);
-    const historyStartMonth = useMemo(() => getMonthOffset(RECENT_HISTORY_MONTHS), []);
+    const dataEntryStartMonth = useMemo(() => getMonthOffset(DATA_ENTRY_HISTORY_MONTHS), []);
+    const reportStartMonth = useMemo(() => getMonthOffset(REPORT_HISTORY_MONTHS), []);
+    const accountStartMonth = useMemo(() => getMonthOffset(ACCOUNT_HISTORY_MONTHS), []);
     const currentMonthStart = `${currentMonth}-01`;
     const nextMonthStart = getNextMonthStart(currentMonth);
 
@@ -728,32 +747,31 @@ function AppContent() {
     ], [currentMonth, currentMonthStart, nextMonthStart]);
 
     const dataEntryCollections = useMemo(() => [
-        collectionConfig('ingresos', [where('month', '>=', historyStartMonth)]),
-        collectionConfig('facturas_membretadas_ventas', [where('saleDate', '>=', `${historyStartMonth}-01`)]),
-        collectionConfig('gastos', [where('date', '>=', `${historyStartMonth}-01`)]),
-        'categorias',
-        collectionConfig('inventarios', [where('month', '>=', historyStartMonth)]),
-        collectionConfig('compras', [where('month', '>=', historyStartMonth)]),
-        collectionConfig('presupuestos', [where('month', '>=', historyStartMonth)]),
-        collectionConfig('cuentasPorCobrar', [where('date', '>=', `${historyStartMonth}-01`)]),
-        collectionConfig('patrimonio', [where('date', '>=', `${historyStartMonth}-01`)]),
-    ], [historyStartMonth]);
+        collectionConfig('ingresos', [where('month', '>=', dataEntryStartMonth)]),
+        collectionConfig('facturas_membretadas_ventas', [where('saleDate', '>=', `${dataEntryStartMonth}-01`)]),
+        collectionConfig('gastos', [where('date', '>=', `${dataEntryStartMonth}-01`)]),
+        collectionConfig('inventarios', [where('month', '>=', dataEntryStartMonth)]),
+        collectionConfig('compras', [where('month', '>=', dataEntryStartMonth)]),
+        collectionConfig('presupuestos', [where('month', '>=', dataEntryStartMonth)]),
+        collectionConfig('cuentasPorCobrar', [where('date', '>=', `${dataEntryStartMonth}-01`)]),
+        collectionConfig('patrimonio', [where('date', '>=', `${dataEntryStartMonth}-01`)]),
+    ], [dataEntryStartMonth]);
 
     const reportCollections = useMemo(() => [
-        collectionConfig('ingresos', [where('month', '>=', historyStartMonth)]),
-        collectionConfig('facturas_membretadas_ventas', [where('saleDate', '>=', `${historyStartMonth}-01`)]),
-        collectionConfig('gastos', [where('date', '>=', `${historyStartMonth}-01`)]),
-        collectionConfig('inventarios', [where('month', '>=', historyStartMonth)]),
-        collectionConfig('compras', [where('month', '>=', historyStartMonth)]),
-        collectionConfig('presupuestos', [where('month', '>=', historyStartMonth)]),
-        collectionConfig('cuentas_por_pagar', [where('month', '>=', historyStartMonth)]),
-    ], [historyStartMonth]);
+        collectionConfig('ingresos', [where('month', '>=', reportStartMonth)]),
+        collectionConfig('facturas_membretadas_ventas', [where('saleDate', '>=', `${reportStartMonth}-01`)]),
+        collectionConfig('gastos', [where('date', '>=', `${reportStartMonth}-01`)]),
+        collectionConfig('inventarios', [where('month', '>=', reportStartMonth)]),
+        collectionConfig('compras', [where('month', '>=', reportStartMonth)]),
+        collectionConfig('presupuestos', [where('month', '>=', reportStartMonth)]),
+        collectionConfig('cuentas_por_pagar', [where('month', '>=', reportStartMonth)]),
+    ], [reportStartMonth]);
 
     const accountsPayableCollections = useMemo(() => [
         collectionConfig('cuentas_por_pagar', [where('estado', 'in', ['pendiente', 'parcial'])]),
-        collectionConfig('abonos_pagar', [where('fecha', '>=', `${historyStartMonth}-01`)]),
+        collectionConfig('abonos_pagar', [where('fecha', '>=', `${accountStartMonth}-01`)]),
         'proveedores',
-    ], [historyStartMonth]);
+    ], [accountStartMonth]);
 
     const { data: categoriesData } = useFirestoreCollections(CATEGORY_COLLECTIONS, !!user && needsCategories, true);
     const { data: dataEntryData, loading: dataEntryLoading, error: dataEntryError } = useFirestoreCollections(dataEntryCollections, !!user && isAdmin && currentPath === '/ingresar', true);
