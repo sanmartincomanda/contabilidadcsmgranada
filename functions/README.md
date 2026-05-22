@@ -258,17 +258,65 @@ Nota:
 
 Cuando una venta entra a `ventas_raw`, el trigger la convierte en:
 
-- `ingresos/sicar_venta_*`
+- `ingresos/sicar_venta_diaria_YYYY-MM-DD` para ventas diarias
+- `ingresos/sicar_venta_*` para ventas por ticket legacy
 
 Campos principales:
 
 - `date`
 - `month`
 - `amount`
+- `subtotal`
+- `subtotalExento`
+- `subtotalGravado`
+- `iva`
+- `total`
+- `dailySaleCode`
 - `description`
 - `reference`
 - `source = "sicar"`
 - `sourceSystem = "SICAR"`
+
+Para estado de resultados, `amount` y `subtotal` son la venta contable. El IVA se guarda aparte y no aumenta la venta contable.
+
+## Worker local de ventas diarias
+
+Como MySQL SICAR esta en `127.0.0.1:3307`, la sincronizacion diaria de ventas corre localmente en el servidor SICAR.
+
+Configura el entorno local en `.env.local` o variables de sistema:
+
+```text
+FIREBASE_PROJECT_ID=sistema-contable-csm-granada
+GOOGLE_APPLICATION_CREDENTIALS=C:\SICAR\keys\firebase-adminsdk.json
+MYSQL_HOST=127.0.0.1
+MYSQL_PORT=3307
+MYSQL_DATABASE=sicar
+MYSQL_USER=root
+MYSQL_PASSWORD=...
+```
+
+Prueba manual:
+
+```powershell
+cd functions
+.\scripts\runDailySicarSales.ps1 -Date 2026-05-22 -Preview
+.\scripts\runDailySicarSales.ps1 -Date 2026-05-22
+```
+
+Registrar la tarea diaria de las 8:00 PM:
+
+```powershell
+cd functions
+.\scripts\registerDailySicarSalesTask.ps1
+```
+
+El worker:
+
+- lee `venta`, `ventatipopago` y `tipopago`
+- excluye anuladas por `status < 0`, `can_caj_id` o `can_rcc_id`
+- guarda staging en `integraciones_privadas/sicar/ventas_raw/venta_diaria_YYYY-MM-DD`
+- actualiza `ingresos/sicar_venta_diaria_YYYY-MM-DD`
+- mantiene idempotencia si corre mas de una vez
 
 ## Ejemplo de push directo
 

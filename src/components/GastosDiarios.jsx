@@ -2,9 +2,10 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { db } from '../firebase';
 import {
-    collection, Timestamp, getDocs, doc, deleteDoc, writeBatch
+    collection, Timestamp, getDocs, doc, deleteDoc, writeBatch, query, where
 } from 'firebase/firestore';
 import { APP_BRAND_NAME, DEFAULT_BRANCH_ID, DEFAULT_BRANCH_NAME, DEFAULT_CASHBOX_NAME, fmt } from '../constants';
+import { buildFiscalPayload, PURCHASE_PAYMENT_METHODS, uploadInvoicePhoto } from '../services/fiscalUtils';
 
 // --- ICONOS SVG INLINE ---
 const Icons = {
@@ -125,6 +126,16 @@ export default function GastosDiarios({ categories = [] }) {
     const [monto, setMonto] = useState('');
     const [tipo, setTipo] = useState('Gasto');
     const [categoriaId, setCategoriaId] = useState('');
+    const [proveedor, setProveedor] = useState('');
+    const [numeroFactura, setNumeroFactura] = useState('');
+    const [paymentType, setPaymentType] = useState('Efectivo');
+    const [paymentReference, setPaymentReference] = useState('');
+    const [subtotal, setSubtotal] = useState('');
+    const [iva, setIva] = useState('');
+    const [total, setTotal] = useState('');
+    const [retentionIr2, setRetentionIr2] = useState('');
+    const [retentionMunicipal1, setRetentionMunicipal1] = useState('');
+    const [invoicePhoto, setInvoicePhoto] = useState(null);
 
     // Historial
     const [filtroFecha, setFiltroFecha] = useState(new Date().toISOString().substring(0, 10));
@@ -133,7 +144,10 @@ export default function GastosDiarios({ categories = [] }) {
     const cargarRegistros = useCallback(async () => {
         setLoading(true);
         try {
-            const snapshot = await getDocs(collection(db, 'gastosDiarios'));
+            const registrosQuery = filtroFecha
+                ? query(collection(db, 'gastosDiarios'), where('fecha', '==', filtroFecha))
+                : collection(db, 'gastosDiarios');
+            const snapshot = await getDocs(registrosQuery);
 
             let docs = snapshot.docs.map(d => ({
                 id: d.id,
@@ -146,10 +160,6 @@ export default function GastosDiarios({ categories = [] }) {
                 const timeB = b.timestamp?.toMillis?.() || 0;
                 return timeB - timeA;
             });
-
-            if (filtroFecha) {
-                docs = docs.filter(d => d.fecha === filtroFecha);
-            }
 
             setRegistros(docs);
         } catch (error) {
@@ -240,6 +250,112 @@ export default function GastosDiarios({ categories = [] }) {
             alert(`${tipo} registrado correctamente`);
             setRefreshKey(prev => prev + 1);
 
+        } catch (error) {
+            console.error('Error:', error);
+            alert('Error al guardar: ' + error.message);
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    const handleSubmitFiscal = async (e) => {
+        e.preventDefault();
+        const fiscal = buildFiscalPayload({ subtotal, iva, total, retentionIr2, retentionMunicipal1 });
+        if (fiscal.total <= 0) return alert('Monto invalido.');
+        if (!descripcion) return alert('Ingrese una descripcion.');
+        if (tipo === 'Gasto' && !categoriaId) return alert('Categoria requerida para gastos.');
+
+        setLoading(true);
+        try {
+            const timestamp = Timestamp.now();
+            const categoriaNombre = tipo === 'Gasto'
+                ? categories.find(c => c.id === categoriaId)?.name
+                : 'Compra';
+            const gastoDiarioRef = doc(collection(db, 'gastosDiarios'));
+            const gastoRef = tipo === 'Gasto' ? doc(collection(db, 'gastos')) : null;
+            const compraRef = tipo === 'Compra' ? doc(collection(db, 'compras')) : null;
+            const photoPayload = await uploadInvoicePhoto(invoicePhoto, 'facturas/gastos_diarios', gastoDiarioRef.id);
+            const commonFiscal = {
+                proveedor: proveedor.trim().toUpperCase(),
+                supplier: proveedor.trim().toUpperCase(),
+                factura: numeroFactura.trim(),
+                invoiceNumber: numeroFactura.trim(),
+                paymentType,
+                paymentReference: paymentReference.trim().toUpperCase(),
+                ...fiscal,
+                ...photoPayload,
+            };
+            const batch = writeBatch(db);
+
+            batch.set(gastoDiarioRef, {
+                fecha,
+                caja: CAJA,
+                descripcion,
+                monto: fiscal.total,
+                amount: fiscal.subtotal,
+                tipo,
+                categoria: categoriaNombre || null,
+                ...commonFiscal,
+                sucursal: DEFAULT_BRANCH_ID,
+                branch: DEFAULT_BRANCH_ID,
+                branchName: DEFAULT_BRANCH_NAME,
+                linkedExpenseId: gastoRef?.id || null,
+                linkedPurchaseId: compraRef?.id || null,
+                timestamp
+            });
+
+            if (gastoRef) {
+                batch.set(gastoRef, {
+                    date: fecha,
+                    month: fecha.substring(0, 7),
+                    description: descripcion,
+                    amount: fiscal.subtotal,
+                    category: categoriaNombre,
+                    ...commonFiscal,
+                    branch: DEFAULT_BRANCH_ID,
+                    branchName: DEFAULT_BRANCH_NAME,
+                    timestamp,
+                    is_conciled: false,
+                    origen: 'gastosDiarios',
+                    gastoDiarioId: gastoDiarioRef.id
+                });
+            }
+
+            if (compraRef) {
+                batch.set(compraRef, {
+                    date: fecha,
+                    month: fecha.substring(0, 7),
+                    supplier: proveedor.trim().toUpperCase() || descripcion.trim().toUpperCase(),
+                    invoiceNumber: numeroFactura.trim(),
+                    amount: fiscal.subtotal,
+                    branch: DEFAULT_BRANCH_ID,
+                    branchName: DEFAULT_BRANCH_NAME,
+                    isInventoryCost: true,
+                    description: descripcion,
+                    sourceCollection: 'gastosDiarios',
+                    sourceGastoDiarioId: gastoDiarioRef.id,
+                    ...commonFiscal,
+                    timestamp
+                });
+            }
+
+            await batch.commit();
+
+            setDescripcion('');
+            setMonto('');
+            setCategoriaId('');
+            setProveedor('');
+            setNumeroFactura('');
+            setPaymentType('Efectivo');
+            setPaymentReference('');
+            setSubtotal('');
+            setIva('');
+            setTotal('');
+            setRetentionIr2('');
+            setRetentionMunicipal1('');
+            setInvoicePhoto(null);
+            alert(`${tipo} registrado correctamente`);
+            setRefreshKey(prev => prev + 1);
         } catch (error) {
             console.error('Error:', error);
             alert('Error al guardar: ' + error.message);
@@ -351,7 +467,7 @@ export default function GastosDiarios({ categories = [] }) {
             {activeTab === 'registro' ? (
                 <div className="animate-fade-in max-w-lg">
                     <Card title="Nuevo Registro de Caja" icon="receipt" gradient={true}>
-                        <form onSubmit={handleSubmit} className="space-y-4">
+                        <form onSubmit={handleSubmitFiscal} className="space-y-4">
                             {/* Fecha + Tipo en la misma fila */}
                             <div className="grid grid-cols-2 gap-3">
                                 <Input
@@ -388,17 +504,71 @@ export default function GastosDiarios({ categories = [] }) {
                                 required
                             />
 
+                            <div className="grid grid-cols-2 gap-3">
+                                <Input
+                                    label="Proveedor"
+                                    icon="receipt"
+                                    placeholder="Proveedor"
+                                    value={proveedor}
+                                    onChange={e => setProveedor(e.target.value)}
+                                />
+                                <Input
+                                    label="Numero factura"
+                                    icon="fileText"
+                                    placeholder="Factura"
+                                    value={numeroFactura}
+                                    onChange={e => setNumeroFactura(e.target.value)}
+                                />
+                            </div>
+
+                            <div className="grid grid-cols-2 gap-3">
+                                <Select
+                                    label="Tipo de pago"
+                                    value={paymentType}
+                                    onChange={e => setPaymentType(e.target.value)}
+                                    options={
+                                        <>
+                                            {PURCHASE_PAYMENT_METHODS.filter(method => method !== 'Credito').map(method => (
+                                                <option key={method} value={method}>{method}</option>
+                                            ))}
+                                        </>
+                                    }
+                                />
+                                <Input
+                                    label="Referencia"
+                                    icon="fileText"
+                                    placeholder="Transferencia, POS..."
+                                    value={paymentReference}
+                                    onChange={e => setPaymentReference(e.target.value)}
+                                />
+                            </div>
+
                             <Input
-                                label="Monto"
+                                label="Subtotal"
                                 type="number"
                                 step="0.01"
                                 icon="dollar"
                                 placeholder="0.00"
                                 className={`text-lg font-bold ${tipo === 'Gasto' ? 'text-rose-600' : 'text-purple-600'}`}
-                                value={monto}
-                                onChange={e => setMonto(e.target.value)}
+                                value={subtotal}
+                                onChange={e => setSubtotal(e.target.value)}
                                 required
                             />
+
+                            <div className="grid grid-cols-2 gap-3">
+                                <Input label="IVA" type="number" step="0.01" icon="dollar" placeholder="0.00" value={iva} onChange={e => setIva(e.target.value)} />
+                                <Input label="Total" type="number" step="0.01" icon="dollar" placeholder="0.00" value={total} onChange={e => setTotal(e.target.value)} />
+                            </div>
+
+                            <div className="grid grid-cols-2 gap-3">
+                                <Input label="Retencion IR 2%" type="number" step="0.01" icon="dollar" placeholder="0.00" value={retentionIr2} onChange={e => setRetentionIr2(e.target.value)} />
+                                <Input label="Retencion Municipal 1%" type="number" step="0.01" icon="dollar" placeholder="0.00" value={retentionMunicipal1} onChange={e => setRetentionMunicipal1(e.target.value)} />
+                            </div>
+
+                            <div className="space-y-1">
+                                <label className="text-xs font-bold uppercase tracking-wider text-stone-500">Foto de factura</label>
+                                <input type="file" accept="image/*,.pdf" onChange={e => setInvoicePhoto(e.target.files?.[0] || null)} className="block w-full text-xs text-stone-500 file:mr-2 file:rounded-full file:border-0 file:bg-[#fff0f0] file:px-3 file:py-1 file:text-xs file:font-semibold file:text-[#a81d24]" />
+                            </div>
 
                             {tipo === 'Gasto' && (
                                 <Select

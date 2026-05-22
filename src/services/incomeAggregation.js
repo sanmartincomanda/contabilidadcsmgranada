@@ -10,7 +10,13 @@ const normalizeSource = (value) => value === 'sicar' ? 'sicar' : 'manual';
 const normalizeAmount = (value) => Number(value ?? 0) || 0;
 
 export const getIncomeDate = (income) => normalizeDate(income?.date || income?.fecha || income?.timestamp);
-export const getIncomeAmount = (income) => normalizeAmount(income?.amount ?? income?.monto ?? income?.total);
+export const getIncomeAmount = (income) => {
+    if (income?.source === 'sicar' && income?.subtotal !== undefined) {
+        return normalizeAmount(income.subtotal);
+    }
+
+    return normalizeAmount(income?.amount ?? income?.monto ?? income?.subtotal ?? income?.total);
+};
 
 const normalizeIncomeEntry = (income) => {
     const date = getIncomeDate(income);
@@ -23,6 +29,10 @@ const normalizeIncomeEntry = (income) => {
         date,
         month: income?.month || date.substring(0, 7),
         amount: getIncomeAmount(income),
+        subtotal: normalizeAmount(income?.subtotal ?? income?.amount ?? income?.monto ?? 0),
+        subtotalExento: normalizeAmount(income?.subtotalExento ?? income?.subtotal0 ?? 0),
+        iva: normalizeAmount(income?.iva ?? 0),
+        total: normalizeAmount(income?.total ?? income?.amount ?? income?.monto ?? 0),
         description: income?.description || income?.detalle || (source === 'sicar' ? 'Ingreso diario SICAR' : 'Ingreso manual'),
         reference: income?.reference || income?.referencia || '',
         source,

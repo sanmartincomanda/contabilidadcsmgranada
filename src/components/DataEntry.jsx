@@ -3,13 +3,21 @@ import React, { useState, useMemo, useCallback, useEffect } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { db } from '../firebase';
 import {
-    collection, addDoc, Timestamp, query, where, getDocs, orderBy, doc, deleteDoc, updateDoc
+    collection, addDoc, Timestamp, query, where, getDocs, orderBy, doc, deleteDoc, updateDoc, setDoc, writeBatch
 } from 'firebase/firestore';
 import Papa from 'papaparse';
 import { APP_BRAND_NAME, DEFAULT_BRANCH_ID, DEFAULT_BRANCH_NAME, fmt, branchName } from '../constants';
 import { resolveIncomeEntries } from '../services/incomeAggregation';
 import { syncSicarDailyIncome } from '../services/sicarIncomeSync';
 import { deletePurchaseTransaction } from '../services/linkedTransactions';
+import {
+    PAYMENT_METHODS,
+    PURCHASE_PAYMENT_METHODS,
+    buildFiscalPayload,
+    computeFiscalAmounts,
+    computeRetentions,
+    uploadInvoicePhoto,
+} from '../services/fiscalUtils';
 
 // --- ICONOS SVG INLINE ---
 const Icons = {
@@ -464,6 +472,10 @@ const IncomeForm = ({ loading, setLoading, onSuccess }) => {
                 description: description.trim().toUpperCase(),
                 reference: reference.trim().toUpperCase(),
                 amount: numAmount,
+                subtotal: numAmount,
+                subtotalExento: 0,
+                iva: 0,
+                total: numAmount,
                 branch: DEFAULT_BRANCH_ID,
                 branchName: DEFAULT_BRANCH_NAME,
                 source: 'manual',
@@ -488,9 +500,11 @@ const IncomeForm = ({ loading, setLoading, onSuccess }) => {
         try {
             const result = await syncSicarDailyIncome({ date: syncDate });
             const syncedTotal = Number(result?.totalAmount || 0);
+            const syncedIva = Number(result?.totalIva || 0);
+            const syncedGrandTotal = Number(result?.grandTotal || syncedTotal);
             const syncedCount = Number(result?.syncedCount || 0);
             const syncedDate = result?.startDate || syncDate;
-            alert(`SICAR sincronizado para ${syncedDate}: ${syncedCount} registro(s) por ${fmt(syncedTotal)}.`);
+            alert(`SICAR sincronizado para ${syncedDate}: ${syncedCount} registro(s). Subtotal ${fmt(syncedTotal)}, IVA ${fmt(syncedIva)}, total ${fmt(syncedGrandTotal)}.`);
             onSuccess?.();
         } catch (error) {
             console.error('Error sincronizando SICAR:', error);
@@ -626,6 +640,421 @@ const ExpenseForm = ({ categories, loading, setLoading, onSuccess }) => {
 const getCurrentMonth = () => {
     const date = new Date();
     return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+};
+
+const FiscalPreview = ({ subtotal, iva, total, retentionIr2, retentionMunicipal1 }) => {
+    const fiscal = computeFiscalAmounts({ subtotal, iva, total });
+    const retentions = computeRetentions({ subtotal: fiscal.subtotal, retentionIr2, retentionMunicipal1 });
+
+    return (
+        <div className="grid grid-cols-2 gap-2 rounded-xl border border-stone-200 bg-stone-50 p-3 text-xs font-bold text-stone-600 md:grid-cols-4">
+            <div>
+                <div className="uppercase tracking-wider text-stone-400">Subtotal</div>
+                <div className="text-sm text-stone-800">{fmt(fiscal.subtotal)}</div>
+            </div>
+            <div>
+                <div className="uppercase tracking-wider text-stone-400">IVA</div>
+                <div className="text-sm text-stone-800">{fmt(fiscal.iva)}</div>
+            </div>
+            <div>
+                <div className="uppercase tracking-wider text-stone-400">Total</div>
+                <div className="text-sm text-[#7f1218]">{fmt(fiscal.total)}</div>
+            </div>
+            <div>
+                <div className="uppercase tracking-wider text-stone-400">Retenciones</div>
+                <div className="text-sm text-amber-700">{fmt(retentions.retentionTotal)}</div>
+            </div>
+        </div>
+    );
+};
+
+const paymentOptions = (methods) => (
+    <>
+        <option value="">Seleccionar...</option>
+        {methods.map((method) => (
+            <option key={method} value={method}>{method}</option>
+        ))}
+    </>
+);
+
+const FiscalExpenseForm = ({ categories, loading, setLoading, onSuccess }) => {
+    const [date, setDate] = useState(new Date().toISOString().substring(0, 10));
+    const [supplier, setSupplier] = useState('');
+    const [invoiceNumber, setInvoiceNumber] = useState('');
+    const [description, setDescription] = useState('');
+    const [categoryId, setCategoryId] = useState('');
+    const [paymentType, setPaymentType] = useState('Efectivo');
+    const [paymentReference, setPaymentReference] = useState('');
+    const [subtotal, setSubtotal] = useState('');
+    const [iva, setIva] = useState('');
+    const [total, setTotal] = useState('');
+    const [retentionIr2, setRetentionIr2] = useState('');
+    const [retentionMunicipal1, setRetentionMunicipal1] = useState('');
+    const [invoicePhoto, setInvoicePhoto] = useState(null);
+
+    const resetForm = () => {
+        setSupplier('');
+        setInvoiceNumber('');
+        setDescription('');
+        setCategoryId('');
+        setPaymentType('Efectivo');
+        setPaymentReference('');
+        setSubtotal('');
+        setIva('');
+        setTotal('');
+        setRetentionIr2('');
+        setRetentionMunicipal1('');
+        setInvoicePhoto(null);
+    };
+
+    const handleSubmit = async (e) => {
+        e.preventDefault();
+        const selectedCategoryName = categories.find(c => c.id === categoryId)?.name;
+        const fiscal = buildFiscalPayload({ subtotal, iva, total, retentionIr2, retentionMunicipal1 });
+        if (!description.trim() || !supplier.trim() || !selectedCategoryName || fiscal.total <= 0) {
+            return alert('Complete proveedor, categoria, descripcion y montos fiscales.');
+        }
+
+        setLoading(true);
+        try {
+            const gastoRef = doc(collection(db, 'gastos'));
+            const photoPayload = await uploadInvoicePhoto(invoicePhoto, 'facturas/gastos', gastoRef.id);
+            await setDoc(gastoRef, {
+                date,
+                month: date.substring(0, 7),
+                supplier: supplier.trim().toUpperCase(),
+                invoiceNumber: invoiceNumber.trim(),
+                description: description.trim().toUpperCase(),
+                category: selectedCategoryName,
+                paymentType,
+                paymentReference: paymentReference.trim().toUpperCase(),
+                ...fiscal,
+                ...photoPayload,
+                branch: DEFAULT_BRANCH_ID,
+                branchName: DEFAULT_BRANCH_NAME,
+                timestamp: Timestamp.now(),
+                is_conciled: false,
+            });
+            resetForm();
+            onSuccess?.();
+        } catch (error) {
+            console.error('Error guardando gasto fiscal:', error);
+            alert('Error al guardar: ' + error.message);
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    return (
+        <form onSubmit={handleSubmit} className="space-y-3">
+            <div className="rounded-lg border border-[#f2c5c5] bg-[#fff8f8] px-4 py-2.5 text-xs font-semibold text-[#7f1218]">
+                Todo se registra en {DEFAULT_BRANCH_NAME}.
+            </div>
+            <Input label="Fecha" type="date" icon="calendar" value={date} onChange={e => setDate(e.target.value)} required />
+            <Input label="Numero de factura" icon="receipt" placeholder="Dejar vacio si no aplica" value={invoiceNumber} onChange={e => setInvoiceNumber(e.target.value)} />
+            <Input label="Proveedor" icon="users" placeholder="Nombre del proveedor" value={supplier} onChange={e => setSupplier(e.target.value)} required />
+            <Input label="Descripcion" icon="fileText" placeholder="Ej: Pago de servicios..." value={description} onChange={e => setDescription(e.target.value)} required />
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <Select label="Categoria" icon="tag" value={categoryId} onChange={e => setCategoryId(e.target.value)} required options={<><option value="">Seleccionar...</option>{categories.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</>} />
+                <Select label="Tipo de pago" icon="cash" value={paymentType} onChange={e => setPaymentType(e.target.value)} required options={paymentOptions(PURCHASE_PAYMENT_METHODS.filter(method => method !== 'Credito'))} />
+            </div>
+            <Input label="Referencia de pago" icon="fileText" placeholder="Cheque, transferencia, POS..." value={paymentReference} onChange={e => setPaymentReference(e.target.value)} />
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                <Input label="Subtotal" type="number" step="0.01" icon="dollar" placeholder="0.00" value={subtotal} onChange={e => setSubtotal(e.target.value)} required />
+                <Input label="IVA" type="number" step="0.01" icon="dollar" placeholder="0.00" value={iva} onChange={e => setIva(e.target.value)} />
+                <Input label="Total" type="number" step="0.01" icon="dollar" placeholder="0.00" value={total} onChange={e => setTotal(e.target.value)} />
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <Input label="Retencion anticipo IR 2%" type="number" step="0.01" icon="scale" placeholder="0.00" value={retentionIr2} onChange={e => setRetentionIr2(e.target.value)} />
+                <Input label="Retencion municipal 1%" type="number" step="0.01" icon="scale" placeholder="0.00" value={retentionMunicipal1} onChange={e => setRetentionMunicipal1(e.target.value)} />
+            </div>
+            <FiscalPreview subtotal={subtotal} iva={iva} total={total} retentionIr2={retentionIr2} retentionMunicipal1={retentionMunicipal1} />
+            <div className="space-y-1">
+                <label className="text-xs font-bold uppercase tracking-wider text-stone-500">Foto de factura</label>
+                <input type="file" accept="image/*,.pdf" onChange={e => setInvoicePhoto(e.target.files?.[0] || null)} className="block w-full text-xs text-stone-500 file:mr-2 file:py-1 file:px-3 file:rounded-full file:border-0 file:text-xs file:font-semibold file:bg-[#fff0f0] file:text-[#a81d24] hover:file:bg-[#ffe1e1] cursor-pointer" />
+            </div>
+            <Button type="submit" variant="danger" disabled={loading} className="w-full">{loading ? 'Guardando...' : 'Registrar Gasto'}</Button>
+        </form>
+    );
+};
+
+const FiscalPurchasesForm = ({ categories, loading, setLoading, onSuccess }) => {
+    const [date, setDate] = useState(new Date().toISOString().substring(0, 10));
+    const [dueDate, setDueDate] = useState(new Date().toISOString().substring(0, 10));
+    const [supplier, setSupplier] = useState('');
+    const [invoiceNumber, setInvoiceNumber] = useState('');
+    const [description, setDescription] = useState('');
+    const [categoryId, setCategoryId] = useState('');
+    const [paymentType, setPaymentType] = useState('Transferencia');
+    const [paymentReference, setPaymentReference] = useState('');
+    const [subtotal, setSubtotal] = useState('');
+    const [iva, setIva] = useState('');
+    const [total, setTotal] = useState('');
+    const [retentionIr2, setRetentionIr2] = useState('');
+    const [retentionMunicipal1, setRetentionMunicipal1] = useState('');
+    const [invoicePhoto, setInvoicePhoto] = useState(null);
+
+    const resetForm = () => {
+        setSupplier('');
+        setInvoiceNumber('');
+        setDescription('');
+        setCategoryId('');
+        setPaymentType('Transferencia');
+        setPaymentReference('');
+        setSubtotal('');
+        setIva('');
+        setTotal('');
+        setRetentionIr2('');
+        setRetentionMunicipal1('');
+        setInvoicePhoto(null);
+    };
+
+    const handleSubmit = async (e) => {
+        e.preventDefault();
+        const fiscal = buildFiscalPayload({ subtotal, iva, total, retentionIr2, retentionMunicipal1 });
+        const categoryName = categories.find(c => c.id === categoryId)?.name || 'Compra de mercancia';
+        const cleanSupplier = supplier.trim().toUpperCase();
+        if (!cleanSupplier || fiscal.total <= 0 || !paymentType) {
+            return alert('Complete proveedor, tipo de pago y montos fiscales.');
+        }
+
+        setLoading(true);
+        try {
+            const batch = writeBatch(db);
+            const purchaseRef = doc(collection(db, 'compras'));
+            const photoPayload = await uploadInvoicePhoto(invoicePhoto, 'facturas/compras', purchaseRef.id);
+            const purchasePayload = {
+                date,
+                month: date.substring(0, 7),
+                supplier: cleanSupplier,
+                invoiceNumber: invoiceNumber.trim(),
+                description: description.trim().toUpperCase(),
+                category: categoryName,
+                paymentType,
+                paymentReference: paymentReference.trim().toUpperCase(),
+                isInventoryCost: true,
+                source: 'manual',
+                ...fiscal,
+                ...photoPayload,
+                branch: DEFAULT_BRANCH_ID,
+                branchName: DEFAULT_BRANCH_NAME,
+                timestamp: Timestamp.now(),
+            };
+
+            if (paymentType === 'Credito') {
+                const payableRef = doc(collection(db, 'cuentas_por_pagar'));
+                batch.set(payableRef, {
+                    proveedor: cleanSupplier,
+                    factura: invoiceNumber.trim(),
+                    numero: invoiceNumber.trim(),
+                    fecha: date,
+                    vencimiento: dueDate || date,
+                    month: date.substring(0, 7),
+                    monto: fiscal.total,
+                    saldo: fiscal.total,
+                    amount: fiscal.subtotal,
+                    estado: 'pendiente',
+                    descripcion: description.trim().toUpperCase(),
+                    category: categoryName,
+                    paymentType,
+                    paymentReference: paymentReference.trim().toUpperCase(),
+                    linkedPurchaseId: purchaseRef.id,
+                    ...fiscal,
+                    ...photoPayload,
+                    branch: DEFAULT_BRANCH_ID,
+                    branchName: DEFAULT_BRANCH_NAME,
+                    createdAt: Timestamp.now(),
+                    updatedAt: Timestamp.now(),
+                });
+                batch.set(purchaseRef, { ...purchasePayload, linkedPayableId: payableRef.id, sourceFacturaId: payableRef.id });
+            } else if (paymentType === 'Efectivo') {
+                const cashRef = doc(collection(db, 'gastosDiarios'));
+                batch.set(cashRef, {
+                    fecha: date,
+                    date,
+                    tipo: 'Compra',
+                    descripcion: description.trim().toUpperCase() || `Compra ${cleanSupplier}`,
+                    proveedor: cleanSupplier,
+                    supplier: cleanSupplier,
+                    factura: invoiceNumber.trim(),
+                    invoiceNumber: invoiceNumber.trim(),
+                    monto: fiscal.total,
+                    amount: fiscal.subtotal,
+                    category: categoryName,
+                    paymentType,
+                    paymentReference: paymentReference.trim().toUpperCase(),
+                    ...fiscal,
+                    ...photoPayload,
+                    branch: DEFAULT_BRANCH_ID,
+                    branchName: DEFAULT_BRANCH_NAME,
+                    timestamp: Timestamp.now(),
+                    is_conciled: false,
+                });
+                batch.set(purchaseRef, { ...purchasePayload, linkedCashExpenseId: cashRef.id });
+            } else {
+                batch.set(purchaseRef, purchasePayload);
+            }
+
+            await batch.commit();
+            resetForm();
+            onSuccess?.();
+        } catch (error) {
+            console.error('Error guardando compra fiscal:', error);
+            alert('Error al guardar: ' + error.message);
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    return (
+        <form onSubmit={handleSubmit} className="space-y-3">
+            <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-2.5 text-xs font-semibold text-emerald-700">
+                Credito crea cuenta por pagar + compra. Efectivo crea gasto diario + compra. Transferencia/POS queda como compra de contado.
+            </div>
+            <div className="rounded-lg border border-[#f2c5c5] bg-[#fff8f8] px-4 py-2.5 text-xs font-semibold text-[#7f1218]">
+                Todo se registra en {DEFAULT_BRANCH_NAME}.
+            </div>
+            <Input label="Fecha" type="date" icon="calendar" value={date} onChange={e => setDate(e.target.value)} required />
+            {paymentType === 'Credito' && <Input label="Vencimiento" type="date" icon="calendar" value={dueDate} onChange={e => setDueDate(e.target.value)} required />}
+            <Input label="Numero de factura" icon="fileText" placeholder="Dejar vacio si SICAR/proveedor no manda folio" value={invoiceNumber} onChange={e => setInvoiceNumber(e.target.value)} />
+            <Input label="Proveedor" icon="users" placeholder="Nombre del proveedor" value={supplier} onChange={e => setSupplier(e.target.value)} required />
+            <Input label="Descripcion" icon="fileText" placeholder="Detalle de la compra" value={description} onChange={e => setDescription(e.target.value)} />
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <Select label="Categoria" icon="tag" value={categoryId} onChange={e => setCategoryId(e.target.value)} options={<><option value="">Compra de mercancia</option>{categories.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</>} />
+                <Select label="Tipo de pago" icon="cash" value={paymentType} onChange={e => setPaymentType(e.target.value)} required options={paymentOptions(PURCHASE_PAYMENT_METHODS)} />
+            </div>
+            <Input label="Referencia de pago" icon="fileText" placeholder="Transferencia, POS, cheque..." value={paymentReference} onChange={e => setPaymentReference(e.target.value)} />
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                <Input label="Subtotal" type="number" step="0.01" icon="shoppingCart" placeholder="0.00" value={subtotal} onChange={e => setSubtotal(e.target.value)} required />
+                <Input label="IVA" type="number" step="0.01" icon="dollar" placeholder="0.00" value={iva} onChange={e => setIva(e.target.value)} />
+                <Input label="Total" type="number" step="0.01" icon="dollar" placeholder="0.00" value={total} onChange={e => setTotal(e.target.value)} />
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <Input label="Retencion anticipo IR 2%" type="number" step="0.01" icon="scale" placeholder="0.00" value={retentionIr2} onChange={e => setRetentionIr2(e.target.value)} />
+                <Input label="Retencion municipal 1%" type="number" step="0.01" icon="scale" placeholder="0.00" value={retentionMunicipal1} onChange={e => setRetentionMunicipal1(e.target.value)} />
+            </div>
+            <FiscalPreview subtotal={subtotal} iva={iva} total={total} retentionIr2={retentionIr2} retentionMunicipal1={retentionMunicipal1} />
+            <div className="space-y-1">
+                <label className="text-xs font-bold uppercase tracking-wider text-stone-500">Foto de factura</label>
+                <input type="file" accept="image/*,.pdf" onChange={e => setInvoicePhoto(e.target.files?.[0] || null)} className="block w-full text-xs text-stone-500 file:mr-2 file:py-1 file:px-3 file:rounded-full file:border-0 file:text-xs file:font-semibold file:bg-purple-100 file:text-purple-700 hover:file:bg-purple-200 cursor-pointer" />
+            </div>
+            <Button type="submit" variant="purple" disabled={loading} className="w-full">{loading ? 'Guardando...' : 'Registrar Compra'}</Button>
+        </form>
+    );
+};
+
+const StampedSalesInvoiceForm = ({ data, loading, setLoading, onSuccess }) => {
+    const [saleDate, setSaleDate] = useState(new Date().toISOString().substring(0, 10));
+    const [invoiceNumber, setInvoiceNumber] = useState('');
+    const [subtotal, setSubtotal] = useState('');
+    const [iva, setIva] = useState('');
+    const [total, setTotal] = useState('');
+    const [retentionIr2, setRetentionIr2] = useState('');
+    const [retentionMunicipal1, setRetentionMunicipal1] = useState('');
+    const [paymentMethod, setPaymentMethod] = useState('BAC POS');
+
+    const dailySales = useMemo(() => (
+        resolveIncomeEntries(data.ingresos || [])
+            .filter((item) => item.source === 'sicar' || item.sourceType === 'daily_sale' || item.dailySaleCode)
+            .map((item) => ({
+                ...item,
+                date: item.date || item.fecha || '',
+                subtotal: Number(item.subtotal ?? item.amount ?? 0) || 0,
+                iva: Number(item.iva ?? 0) || 0,
+                total: Number(item.total ?? item.amount ?? 0) || 0,
+                dailySaleCode: item.dailySaleCode || item.reference || `VENTA-${String(item.date || item.fecha || '').replaceAll('-', '')}`,
+            }))
+            .sort((a, b) => String(b.date).localeCompare(String(a.date)))
+    ), [data.ingresos]);
+
+    const selectedSale = dailySales.find((item) => item.date === saleDate);
+    const linkedInvoices = (data.facturas_membretadas_ventas || []).filter((item) => (
+        item.saleDate === saleDate || item.linkedIngresoId === selectedSale?.id || item.dailySaleCode === selectedSale?.dailySaleCode
+    ));
+    const alreadyStamped = linkedInvoices.reduce((sum, item) => sum + Number(item.total ?? item.amount ?? 0), 0);
+
+    const handleSubmit = async (e) => {
+        e.preventDefault();
+        if (!selectedSale) return alert('Primero debe existir la venta diaria SICAR para ese dia.');
+        const fiscal = buildFiscalPayload({ subtotal, iva, total, retentionIr2, retentionMunicipal1 });
+        if (!invoiceNumber.trim() || fiscal.total <= 0 || !paymentMethod) {
+            return alert('Complete factura, metodo de pago y montos.');
+        }
+        if (alreadyStamped + fiscal.total > selectedSale.total + 0.01) {
+            const confirmed = window.confirm('Las facturas membretadas superan el total diario SICAR. Desea continuar?');
+            if (!confirmed) return;
+        }
+
+        setLoading(true);
+        try {
+            await addDoc(collection(db, 'facturas_membretadas_ventas'), {
+                saleDate,
+                linkedIngresoId: selectedSale.id,
+                dailySaleCode: selectedSale.dailySaleCode,
+                numeroFactura: invoiceNumber.trim(),
+                paymentMethod,
+                ...fiscal,
+                dailySaleSubtotal: selectedSale.subtotal,
+                dailySaleIva: selectedSale.iva,
+                dailySaleTotal: selectedSale.total,
+                source: 'manual',
+                sourceType: 'stamped_sale_invoice',
+                branch: DEFAULT_BRANCH_ID,
+                branchName: DEFAULT_BRANCH_NAME,
+                timestamp: Timestamp.now(),
+            });
+            setInvoiceNumber('');
+            setSubtotal('');
+            setIva('');
+            setTotal('');
+            setRetentionIr2('');
+            setRetentionMunicipal1('');
+            setPaymentMethod('BAC POS');
+            onSuccess?.();
+        } catch (error) {
+            console.error('Error guardando factura membretada:', error);
+            alert('Error al guardar: ' + error.message);
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    return (
+        <form onSubmit={handleSubmit} className="space-y-3">
+            <div className="rounded-lg border border-sky-200 bg-sky-50 px-4 py-2.5 text-xs font-semibold text-sky-800">
+                Seleccione el dia de venta SICAR y registre cada factura membretada emitida sobre esa venta diaria.
+            </div>
+            <Input label="Dia de la venta" type="date" icon="calendar" value={saleDate} onChange={e => setSaleDate(e.target.value)} required />
+            {selectedSale ? (
+                <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-xs font-bold text-emerald-800">
+                    <div>{selectedSale.dailySaleCode}</div>
+                    <div className="mt-1 grid grid-cols-2 gap-2 md:grid-cols-4">
+                        <span>Subtotal: {fmt(selectedSale.subtotal)}</span>
+                        <span>IVA: {fmt(selectedSale.iva)}</span>
+                        <span>Total: {fmt(selectedSale.total)}</span>
+                        <span>Membretado: {fmt(alreadyStamped)}</span>
+                    </div>
+                </div>
+            ) : (
+                <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs font-bold text-amber-800">
+                    No hay venta diaria SICAR cargada para este dia. Sincronice ventas primero.
+                </div>
+            )}
+            <Input label="Numero de factura" icon="receipt" placeholder="Numero membretado" value={invoiceNumber} onChange={e => setInvoiceNumber(e.target.value)} required />
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                <Input label="Subtotal" type="number" step="0.01" icon="dollar" placeholder="0.00" value={subtotal} onChange={e => setSubtotal(e.target.value)} required />
+                <Input label="IVA" type="number" step="0.01" icon="dollar" placeholder="0.00" value={iva} onChange={e => setIva(e.target.value)} />
+                <Input label="Total" type="number" step="0.01" icon="dollar" placeholder="0.00" value={total} onChange={e => setTotal(e.target.value)} />
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <Input label="Retencion anticipo IR 2%" type="number" step="0.01" icon="scale" placeholder="0.00" value={retentionIr2} onChange={e => setRetentionIr2(e.target.value)} />
+                <Input label="Retencion municipal 1%" type="number" step="0.01" icon="scale" placeholder="0.00" value={retentionMunicipal1} onChange={e => setRetentionMunicipal1(e.target.value)} />
+            </div>
+            <Select label="Metodo de pago" icon="cash" value={paymentMethod} onChange={e => setPaymentMethod(e.target.value)} required options={paymentOptions(PAYMENT_METHODS)} />
+            <FiscalPreview subtotal={subtotal} iva={iva} total={total} retentionIr2={retentionIr2} retentionMunicipal1={retentionMunicipal1} />
+            <Button type="submit" variant="sky" disabled={loading || !selectedSale} className="w-full">{loading ? 'Guardando...' : 'Registrar Factura Membretada'}</Button>
+        </form>
+    );
 };
 
 const InventoryForm = ({ loading, setLoading, onSuccess }) => {
@@ -798,7 +1227,7 @@ const EquityForm = ({ loading, setLoading, onSuccess }) => {
 
 // --- COMPONENTE PRINCIPAL ---
 
-const VALID_TABS = ['Ingresos', 'Gastos', 'Inventario', 'Compras', 'Presupuesto', 'Cuentas por Cobrar', 'Patrimonio'];
+const VALID_TABS = ['Ingresos', 'Facturas Membretadas', 'Gastos', 'Inventario', 'Compras', 'Presupuesto', 'Cuentas por Cobrar', 'Patrimonio'];
 
 export function DataEntry({ categories, data }) {
     const [searchParams] = useSearchParams();
@@ -818,6 +1247,7 @@ export function DataEntry({ categories, data }) {
 
     const [filterMonth, setFilterMonth] = useState({
         Ingresos: new Date().toISOString().substring(0, 10),
+        'Facturas Membretadas': getCurrentMonth(),
         Gastos: getCurrentMonth(),
         Inventario: getCurrentMonth(),
         Compras: getCurrentMonth(),
@@ -828,6 +1258,7 @@ export function DataEntry({ categories, data }) {
 
     const [advancedFilters, setAdvancedFilters] = useState({
         Ingresos: { dateFrom: '', dateTo: '', search: '' },
+        'Facturas Membretadas': { dateFrom: '', dateTo: '', invoiceNumber: '', dailySaleCode: '' },
         Gastos: { dateFrom: '', dateTo: '', search: '' },
         Inventario: {},
         Compras: { dateFrom: '', dateTo: '', supplier: '', invoiceNumber: '' },
@@ -838,6 +1269,7 @@ export function DataEntry({ categories, data }) {
 
     const tabsConfig = {
         'Ingresos': { icon: 'trendingUp', label: 'Ingresos' },
+        'Facturas Membretadas': { icon: 'receipt', label: 'Membretadas' },
         'Gastos': { icon: 'trendingDown', label: 'Gastos' },
         'Inventario': { icon: 'box', label: 'Inventario' },
         'Compras': { icon: 'shoppingCart', label: 'Compras' },
@@ -848,6 +1280,7 @@ export function DataEntry({ categories, data }) {
 
     const filterConfig = {
         Ingresos: { type: 'date', label: 'Filtrar por Dia' },
+        'Facturas Membretadas': { type: 'month', label: 'Filtrar por Mes' },
         Gastos: { type: 'month', label: 'Filtrar por Mes' },
         Inventario: { type: 'month', label: 'Filtrar por Mes' },
         Compras: { type: 'month', label: 'Filtrar por Mes' },
@@ -875,10 +1308,32 @@ export function DataEntry({ categories, data }) {
             description: { label: 'Detalle', type: 'text' },
             reference: { label: 'Referencia', type: 'text' },
             sourceLabel: { label: 'Origen', type: 'text', readonly: true },
-            amount: { label: 'Monto', type: 'currency' }
+            subtotal: { label: 'Subtotal', type: 'currency' },
+            iva: { label: 'IVA', type: 'currency' },
+            total: { label: 'Total', type: 'currency' },
+            amount: { label: 'Venta Contable', type: 'currency' }
+        },
+        'Facturas Membretadas': {
+            saleDate: { label: 'Fecha Venta', type: 'date' },
+            dailySaleCode: { label: 'Venta Diaria', type: 'text', readonly: true },
+            numeroFactura: { label: 'Factura', type: 'text' },
+            paymentMethod: { label: 'Metodo Pago', type: 'text' },
+            subtotal: { label: 'Subtotal', type: 'currency' },
+            iva: { label: 'IVA', type: 'currency' },
+            total: { label: 'Total', type: 'currency' },
+            retentionIr2: { label: 'Ret. IR 2%', type: 'currency' },
+            retentionMunicipal1: { label: 'Ret. Municipal 1%', type: 'currency' }
         },
         Gastos: {
             date: { label: 'Fecha', type: 'date' },
+            supplier: { label: 'Proveedor', type: 'text' },
+            invoiceNumber: { label: 'Factura', type: 'text' },
+            paymentType: { label: 'Tipo Pago', type: 'text' },
+            subtotal: { label: 'Subtotal', type: 'currency' },
+            iva: { label: 'IVA', type: 'currency' },
+            total: { label: 'Total', type: 'currency' },
+            retentionIr2: { label: 'Ret. IR 2%', type: 'currency' },
+            retentionMunicipal1: { label: 'Ret. Municipal 1%', type: 'currency' },
             description: { label: 'Descripción', type: 'text' },
             category: { label: 'Categoría', type: 'text' },
             amount: { label: 'Monto', type: 'currency' }
@@ -894,7 +1349,11 @@ export function DataEntry({ categories, data }) {
             supplier: { label: 'Proveedor', type: 'text' },
             invoiceNumber: { label: 'Factura', type: 'text' },
             paymentType: { label: 'Tipo', type: 'text' },
-            amount: { label: 'Monto', type: 'currency' }
+            subtotal: { label: 'Subtotal', type: 'currency' },
+            iva: { label: 'IVA', type: 'currency' },
+            total: { label: 'Total', type: 'currency' },
+            retentionIr2: { label: 'Ret. IR 2%', type: 'currency' },
+            retentionMunicipal1: { label: 'Ret. Municipal 1%', type: 'currency' }
         },
         Presupuesto: {
             month: { label: 'Mes', type: 'month' },
@@ -919,10 +1378,16 @@ export function DataEntry({ categories, data }) {
             { key: 'dateTo', label: 'Hasta', type: 'date' },
             { key: 'search', label: 'Detalle / Referencia', type: 'text', placeholder: 'Buscar ingreso...', keys: ['description', 'reference', 'sourceLabel'] },
         ],
+        'Facturas Membretadas': [
+            { key: 'dateFrom', label: 'Desde', type: 'date' },
+            { key: 'dateTo', label: 'Hasta', type: 'date' },
+            { key: 'invoiceNumber', label: 'No. Factura', type: 'text', placeholder: 'Buscar factura...', keys: ['numeroFactura'] },
+            { key: 'dailySaleCode', label: 'Venta Diaria', type: 'text', placeholder: 'VENTA-YYYYMMDD', keys: ['dailySaleCode'] },
+        ],
         Gastos: [
             { key: 'dateFrom', label: 'Desde', type: 'date' },
             { key: 'dateTo', label: 'Hasta', type: 'date' },
-            { key: 'search', label: 'Descripcion / Categoria', type: 'text', placeholder: 'Buscar gasto...', keys: ['description', 'category'] },
+            { key: 'search', label: 'Proveedor / Factura / Categoria', type: 'text', placeholder: 'Buscar gasto...', keys: ['description', 'category', 'supplier', 'invoiceNumber'] },
         ],
         Compras: [
             { key: 'dateFrom', label: 'Desde', type: 'date' },
@@ -935,6 +1400,7 @@ export function DataEntry({ categories, data }) {
     const getListData = () => {
         const collectionMap = {
             'Ingresos': 'ingresos',
+            'Facturas Membretadas': 'facturas_membretadas_ventas',
             'Gastos': 'gastos',
             'Inventario': 'inventarios',
             'Compras': 'compras',
@@ -950,7 +1416,24 @@ export function DataEntry({ categories, data }) {
                 description: item.description || item.detalle || 'INGRESO DEL DIA',
                 reference: item.reference || item.referencia || '',
                 amount: Number(item.amount ?? item.monto ?? 0) || 0,
+                subtotal: Number(item.subtotal ?? item.amount ?? item.monto ?? 0) || 0,
+                iva: Number(item.iva ?? 0) || 0,
+                total: Number(item.total ?? item.amount ?? item.monto ?? 0) || 0,
                 sourceLabel: item.source === 'sicar' ? 'SICAR' : 'MANUAL',
+            }));
+        }
+
+        if (activeTab === 'Facturas Membretadas') {
+            return (data.facturas_membretadas_ventas || []).map((item) => ({
+                ...item,
+                date: item.saleDate || item.date || '',
+                saleDate: item.saleDate || item.date || '',
+                numeroFactura: item.numeroFactura || item.invoiceNumber || '',
+                subtotal: Number(item.subtotal ?? item.amount ?? 0) || 0,
+                iva: Number(item.iva ?? 0) || 0,
+                total: Number(item.total ?? item.amount ?? 0) || 0,
+                retentionIr2: Number(item.retentionIr2 ?? 0) || 0,
+                retentionMunicipal1: Number(item.retentionMunicipal1 ?? 0) || 0,
             }));
         }
 
@@ -964,6 +1447,11 @@ export function DataEntry({ categories, data }) {
                 branch: item.branch || DEFAULT_BRANCH_ID,
                 branchName: item.branchName || DEFAULT_BRANCH_NAME,
                 paymentType: item.paymentType || (item.sourceFacturaId || item.linkedPayableId ? 'credito' : ((item.date || item.fecha) ? 'contado' : 'legacy')),
+                subtotal: Number(item.subtotal ?? item.amount ?? item.monto ?? 0) || 0,
+                iva: Number(item.iva ?? 0) || 0,
+                total: Number(item.total ?? item.amount ?? item.monto ?? 0) || 0,
+                retentionIr2: Number(item.retentionIr2 ?? 0) || 0,
+                retentionMunicipal1: Number(item.retentionMunicipal1 ?? 0) || 0,
             }));
         }
 
@@ -973,6 +1461,7 @@ export function DataEntry({ categories, data }) {
     const getCollectionName = () => {
         const map = {
             'Ingresos': 'ingresos',
+            'Facturas Membretadas': 'facturas_membretadas_ventas',
             'Gastos': 'gastos',
             'Inventario': 'inventarios',
             'Compras': 'compras',
@@ -1028,9 +1517,10 @@ export function DataEntry({ categories, data }) {
                 <div className="no-print animate-fade-in">
                     <Card title={`Nuevo — ${tabsConfig[activeTab].label}`} icon={tabsConfig[activeTab].icon} gradient={true}>
                         {activeTab === 'Ingresos' && <IncomeForm loading={loading} setLoading={setLoading} onSuccess={handleSuccess} />}
-                        {activeTab === 'Gastos' && <ExpenseForm categories={categories} loading={loading} setLoading={setLoading} onSuccess={handleSuccess} />}
+                        {activeTab === 'Facturas Membretadas' && <StampedSalesInvoiceForm data={data} loading={loading} setLoading={setLoading} onSuccess={handleSuccess} />}
+                        {activeTab === 'Gastos' && <FiscalExpenseForm categories={categories} loading={loading} setLoading={setLoading} onSuccess={handleSuccess} />}
                         {activeTab === 'Inventario' && <InventoryForm loading={loading} setLoading={setLoading} onSuccess={handleSuccess} />}
-                        {activeTab === 'Compras' && <PurchasesForm loading={loading} setLoading={setLoading} onSuccess={handleSuccess} />}
+                        {activeTab === 'Compras' && <FiscalPurchasesForm categories={categories} loading={loading} setLoading={setLoading} onSuccess={handleSuccess} />}
                         {activeTab === 'Presupuesto' && <BudgetForm categories={categories} loading={loading} setLoading={setLoading} onSuccess={handleSuccess} />}
                         {activeTab === 'Cuentas por Cobrar' && <ReceivableForm loading={loading} setLoading={setLoading} onSuccess={handleSuccess} />}
                         {activeTab === 'Patrimonio' && <EquityForm loading={loading} setLoading={setLoading} onSuccess={handleSuccess} />}

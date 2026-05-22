@@ -1,7 +1,7 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { db } from './firebase';
-import { collection, query, onSnapshot, getDocs, doc, setDoc, updateDoc } from 'firebase/firestore';
+import { collection, query, onSnapshot, getDocs, doc, setDoc, updateDoc, where } from 'firebase/firestore';
 
 import { AuthProvider, useAuth } from './context/AuthContext';
 import PrivateRoute from './components/PrivateRoute';
@@ -18,11 +18,8 @@ import { resolveReportIncomeEntries } from './services/incomeAggregation';
 
 const BRAND_LOGO = APP_BRAND_LOGO;
 
-const DATA_ENTRY_COLLECTIONS = ['ingresos', 'gastos', 'categorias', 'inventarios', 'compras', 'presupuestos', 'cuentasPorCobrar', 'patrimonio'];
-const ACCOUNTS_PAYABLE_COLLECTIONS = ['cuentas_por_pagar', 'abonos_pagar', 'proveedores'];
 const CATEGORY_COLLECTIONS = ['categorias'];
-const REPORT_COLLECTIONS = ['ingresos', 'gastos', 'inventarios', 'compras', 'presupuestos', 'cuentas_por_pagar'];
-const DASHBOARD_COLLECTIONS = ['ingresos', 'gastos', 'compras', 'cuentas_por_pagar'];
+const RECENT_HISTORY_MONTHS = 24;
 
 const DEFAULT_REMINDERS = [
     { id: 'r1', texto: 'DGI CUOTA FIJA', diaDelMes: 7, activo: true },
@@ -37,6 +34,29 @@ const DEFAULT_REMINDERS = [
 ];
 
 const CONFIG_DOC_PATH = 'configuracion/dashboard';
+
+const getMonthOffset = (monthsBack = 0) => {
+    const date = new Date();
+    date.setDate(1);
+    date.setMonth(date.getMonth() - monthsBack);
+    return date.toISOString().substring(0, 7);
+};
+
+const getNextMonthStart = (month) => {
+    const [year, monthIndex] = month.split('-').map(Number);
+    const date = new Date(year, monthIndex, 1);
+    return date.toISOString().substring(0, 10);
+};
+
+const collectionConfig = (name, constraints = []) => ({ name, constraints });
+
+const normalizeCollectionConfig = (config) => (
+    typeof config === 'string'
+        ? { name: config, constraints: [] }
+        : { name: config.name, constraints: config.constraints || [] }
+);
+
+const getCollectionName = (config) => normalizeCollectionConfig(config).name;
 
 const DASHBOARD_STYLES = `
 @keyframes dash-slide-up{from{opacity:0;transform:translateY(28px)}to{opacity:1;transform:translateY(0)}}
@@ -587,11 +607,26 @@ const AppLoadingState = () => (
     </div>
 );
 
-const AppErrorState = () => (
+const getFirestoreErrorMessage = (error) => {
+    const code = error?.code || '';
+
+    if (code.includes('permission-denied')) {
+        return 'Firebase rechazo la lectura. Revisa que hayas iniciado sesion y que las reglas de Firestore esten desplegadas.';
+    }
+
+    if (code.includes('unavailable') || code.includes('failed-precondition')) {
+        return 'Firestore no esta disponible o todavia no esta listo en este proyecto. Revisa que Firestore Database este creado y activo.';
+    }
+
+    return error?.message || `No logramos cargar la informacion de ${APP_BRAND_NAME}. Revisa la conexion e intenta nuevamente.`;
+};
+
+const AppErrorState = ({ error }) => (
     <div className="flex min-h-screen flex-col items-center justify-center bg-[#fff4f1] p-6 text-center">
         <img src={APP_BRAND_LOGO} alt={APP_BRAND_NAME} className="mb-6 h-32 w-32 rounded-[2rem] border border-[#f0d3c8] bg-white p-2 shadow-xl shadow-[#7f1218]/10" />
         <h1 className="text-3xl font-black text-[#8a141b]">Error de conexion</h1>
-        <p className="mt-3 max-w-md text-sm font-medium text-[#6f4d48]">No logramos cargar la informacion de {APP_BRAND_NAME}. Revisa la conexion e intenta nuevamente.</p>
+        <p className="mt-3 max-w-md text-sm font-medium text-[#6f4d48]">{getFirestoreErrorMessage(error)}</p>
+        {error?.code && <p className="mt-2 font-mono text-xs font-bold text-[#a81d24]">{error.code}</p>}
         <button onClick={() => window.location.reload()} className="mt-6 rounded-full bg-[#a81d24] px-6 py-3 text-sm font-bold text-white shadow-lg shadow-[#a81d24]/25 transition hover:bg-[#8c171d]">Reintentar</button>
     </div>
 );
@@ -599,7 +634,7 @@ const AppErrorState = () => (
 // --- FIRESTORE HOOK ---
 
 const hasCollectionData = (currentData, collections = []) => (
-    collections.every((c) => Array.isArray(currentData?.[c]))
+    collections.every((config) => Array.isArray(currentData?.[getCollectionName(config)]))
 );
 
 const useFirestoreCollections = (collections = [], enabled = true, live = true) => {
@@ -617,7 +652,8 @@ const useFirestoreCollections = (collections = [], enabled = true, live = true) 
             return;
         }
 
-        const hasCachedData = hasCollectionData(dataRef.current, collections);
+        const configs = collections.map(normalizeCollectionConfig);
+        const hasCachedData = hasCollectionData(dataRef.current, configs);
         setLoading(!hasCachedData);
         setError(null);
 
@@ -633,7 +669,8 @@ const useFirestoreCollections = (collections = [], enabled = true, live = true) 
 
         const loadOnce = async (name) => {
             try {
-                const snapshot = await getDocs(query(collection(db, name)));
+                const config = configs.find((item) => item.name === name) || { constraints: [] };
+                const snapshot = await getDocs(query(collection(db, name), ...config.constraints));
                 if (!mounted) return;
                 setData(prev => ({ ...prev, [name]: snapshot.docs.map(d => ({ id: d.id, ...d.data() })) }));
             } catch (e) {
@@ -645,10 +682,11 @@ const useFirestoreCollections = (collections = [], enabled = true, live = true) 
 
         if (!live && hasCachedData) { setLoading(false); return; }
 
-        collections.forEach((name) => {
+        configs.forEach((config) => {
+            const { name, constraints } = config;
             if (!live) { loadOnce(name); return; }
 
-            const q = query(collection(db, name));
+            const q = query(collection(db, name), ...constraints);
             unsubscribes.push(
                 onSnapshot(q,
                     (snap) => {
@@ -677,12 +715,51 @@ function AppContent() {
     const isAdmin = !isLimitedUser;
     const currentPath = location.pathname;
     const needsCategories = currentPath === '/ingresar' || currentPath === '/gastos-diarios' || currentPath.startsWith('/maestros/categorias');
+    const currentMonth = useMemo(() => getMonthOffset(0), []);
+    const historyStartMonth = useMemo(() => getMonthOffset(RECENT_HISTORY_MONTHS), []);
+    const currentMonthStart = `${currentMonth}-01`;
+    const nextMonthStart = getNextMonthStart(currentMonth);
+
+    const dashboardCollections = useMemo(() => [
+        collectionConfig('ingresos', [where('month', '==', currentMonth)]),
+        collectionConfig('gastos', [where('date', '>=', currentMonthStart), where('date', '<', nextMonthStart)]),
+        collectionConfig('compras', [where('month', '==', currentMonth)]),
+        collectionConfig('cuentas_por_pagar', [where('estado', 'in', ['pendiente', 'parcial'])]),
+    ], [currentMonth, currentMonthStart, nextMonthStart]);
+
+    const dataEntryCollections = useMemo(() => [
+        collectionConfig('ingresos', [where('month', '>=', historyStartMonth)]),
+        collectionConfig('facturas_membretadas_ventas', [where('saleDate', '>=', `${historyStartMonth}-01`)]),
+        collectionConfig('gastos', [where('date', '>=', `${historyStartMonth}-01`)]),
+        'categorias',
+        collectionConfig('inventarios', [where('month', '>=', historyStartMonth)]),
+        collectionConfig('compras', [where('month', '>=', historyStartMonth)]),
+        collectionConfig('presupuestos', [where('month', '>=', historyStartMonth)]),
+        collectionConfig('cuentasPorCobrar', [where('date', '>=', `${historyStartMonth}-01`)]),
+        collectionConfig('patrimonio', [where('date', '>=', `${historyStartMonth}-01`)]),
+    ], [historyStartMonth]);
+
+    const reportCollections = useMemo(() => [
+        collectionConfig('ingresos', [where('month', '>=', historyStartMonth)]),
+        collectionConfig('facturas_membretadas_ventas', [where('saleDate', '>=', `${historyStartMonth}-01`)]),
+        collectionConfig('gastos', [where('date', '>=', `${historyStartMonth}-01`)]),
+        collectionConfig('inventarios', [where('month', '>=', historyStartMonth)]),
+        collectionConfig('compras', [where('month', '>=', historyStartMonth)]),
+        collectionConfig('presupuestos', [where('month', '>=', historyStartMonth)]),
+        collectionConfig('cuentas_por_pagar', [where('month', '>=', historyStartMonth)]),
+    ], [historyStartMonth]);
+
+    const accountsPayableCollections = useMemo(() => [
+        collectionConfig('cuentas_por_pagar', [where('estado', 'in', ['pendiente', 'parcial'])]),
+        collectionConfig('abonos_pagar', [where('fecha', '>=', `${historyStartMonth}-01`)]),
+        'proveedores',
+    ], [historyStartMonth]);
 
     const { data: categoriesData } = useFirestoreCollections(CATEGORY_COLLECTIONS, !!user && needsCategories, true);
-    const { data: dataEntryData, loading: dataEntryLoading, error: dataEntryError } = useFirestoreCollections(DATA_ENTRY_COLLECTIONS, !!user && isAdmin && currentPath === '/ingresar', true);
-    const { data: accountsPayableData, loading: accountsPayableLoading, error: accountsPayableError } = useFirestoreCollections(ACCOUNTS_PAYABLE_COLLECTIONS, !!user && currentPath === '/cuentas-pagar', true);
-    const { data: reportsData, loading: reportsLoading, error: reportsError } = useFirestoreCollections(REPORT_COLLECTIONS, !!user && isAdmin && currentPath === '/reportes', false);
-    const { data: dashboardData, loading: dashboardLoading } = useFirestoreCollections(DASHBOARD_COLLECTIONS, !!user && isAdmin && currentPath === '/', false);
+    const { data: dataEntryData, loading: dataEntryLoading, error: dataEntryError } = useFirestoreCollections(dataEntryCollections, !!user && isAdmin && currentPath === '/ingresar', true);
+    const { data: accountsPayableData, loading: accountsPayableLoading, error: accountsPayableError } = useFirestoreCollections(accountsPayableCollections, !!user && currentPath === '/cuentas-pagar', true);
+    const { data: reportsData, loading: reportsLoading, error: reportsError } = useFirestoreCollections(reportCollections, !!user && isAdmin && currentPath === '/reportes', false);
+    const { data: dashboardData, loading: dashboardLoading, error: dashboardError } = useFirestoreCollections(dashboardCollections, !!user && isAdmin && currentPath === '/', false);
 
     const categoriesList = categoriesData.categorias || [];
 
@@ -696,12 +773,12 @@ function AppContent() {
             <main className="p-4 md:p-6">
                 <Routes>
                     <Route path="/login" element={<Navigate to="/" replace />} />
-                    <Route path="/" element={<PrivateRoute element={isAdmin ? (dashboardLoading ? <AppLoadingState /> : <Dashboard data={dashboardData} />) : <Navigate to="/cuentas-pagar" />} />} />
-                    <Route path="/ingresar" element={<PrivateRoute element={isAdmin ? (dataEntryLoading ? <AppLoadingState /> : dataEntryError ? <AppErrorState /> : <DataEntry data={dataEntryData} categories={categoriesList} />) : <Navigate to="/cuentas-pagar" />} />} />
+                    <Route path="/" element={<PrivateRoute element={isAdmin ? (dashboardLoading ? <AppLoadingState /> : dashboardError ? <AppErrorState error={dashboardError} /> : <Dashboard data={dashboardData} />) : <Navigate to="/cuentas-pagar" />} />} />
+                    <Route path="/ingresar" element={<PrivateRoute element={isAdmin ? (dataEntryLoading ? <AppLoadingState /> : dataEntryError ? <AppErrorState error={dataEntryError} /> : <DataEntry data={dataEntryData} categories={categoriesList} />) : <Navigate to="/cuentas-pagar" />} />} />
                     <Route path="/gastos-diarios" element={<PrivateRoute element={<GastosDiarios categories={categoriesList} />} />} />
                     <Route path="/conciliacion" element={<PrivateRoute element={isAdmin ? <BankReconciliation /> : <Navigate to="/cuentas-pagar" />} />} />
-                    <Route path="/cuentas-pagar" element={<PrivateRoute element={accountsPayableLoading ? <AppLoadingState /> : accountsPayableError ? <AppErrorState /> : <AccountsPayable data={accountsPayableData} />} />} />
-                    <Route path="/reportes" element={<PrivateRoute element={isAdmin ? (reportsLoading ? <AppLoadingState /> : reportsError ? <AppErrorState /> : <Reports data={reportsData} />) : <Navigate to="/cuentas-pagar" />} />} />
+                    <Route path="/cuentas-pagar" element={<PrivateRoute element={accountsPayableLoading ? <AppLoadingState /> : accountsPayableError ? <AppErrorState error={accountsPayableError} /> : <AccountsPayable data={accountsPayableData} />} />} />
+                    <Route path="/reportes" element={<PrivateRoute element={isAdmin ? (reportsLoading ? <AppLoadingState /> : reportsError ? <AppErrorState error={reportsError} /> : <Reports data={reportsData} />) : <Navigate to="/cuentas-pagar" />} />} />
                     <Route path="/maestros/categorias" element={<PrivateRoute element={isAdmin ? <CategoryManager categories={categoriesList} /> : <Navigate to="/cuentas-pagar" />} />} />
                     <Route path="*" element={<Navigate to="/" />} />
                 </Routes>

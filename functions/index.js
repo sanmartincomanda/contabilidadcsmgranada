@@ -156,6 +156,137 @@ function normalizeAmount(value) {
   return Math.round(parsed * 100) / 100;
 }
 
+function normalizeAmountFrom(source, keys, fallback = 0) {
+  return normalizeAmount(pickFirstValue(source, keys) ?? fallback);
+}
+
+function resolveSaleFinancials(row) {
+  const total = normalizeAmountFrom(row, [
+    'total',
+    'grandTotal',
+    'grand_total',
+    'sale_total',
+    'saleTotal',
+    'monto_total',
+    'montoTotal',
+  ]);
+
+  const explicitSubtotal = pickFirstValue(row, [
+    'subtotal',
+    'subTotal',
+    'sub_total',
+    'sale_subtotal',
+    'saleSubtotal',
+    'monto_subtotal',
+    'montoSubtotal',
+    'amount',
+    'monto',
+    'ingreso',
+    'importe',
+  ]);
+
+  const explicitIva = pickFirstValue(row, [
+    'iva',
+    'tax',
+    'impuesto',
+    'impuestos',
+    'vat',
+    'sale_iva',
+    'saleIva',
+  ]);
+
+  const subtotal = normalizeAmount(explicitSubtotal ?? total);
+  const iva = explicitIva === null || explicitIva === undefined || explicitIva === ''
+    ? normalizeAmount(total - subtotal)
+    : normalizeAmount(explicitIva);
+  const subtotalExento = normalizeAmountFrom(row, [
+    'subtotalExento',
+    'subtotal_exento',
+    'subtotal0',
+    'subTotal0',
+    'subtotal_0',
+    'exento',
+  ]);
+  const subtotalGravado = normalizeAmountFrom(row, [
+    'subtotalGravado',
+    'subtotal_gravado',
+    'gravado',
+  ], Math.max(subtotal - subtotalExento, 0));
+  const resolvedTotal = total || normalizeAmount(subtotal + iva);
+
+  return {
+    amount: subtotal,
+    subtotal,
+    subtotalExento,
+    subtotalGravado,
+    iva,
+    total: resolvedTotal,
+  };
+}
+
+function resolvePurchaseFinancials(row) {
+  const total = normalizeAmountFrom(row, [
+    'total',
+    'grandTotal',
+    'grand_total',
+    'purchase_total',
+    'purchaseTotal',
+    'monto_total',
+    'montoTotal',
+    'monto',
+    'importe',
+  ]);
+
+  const explicitSubtotal = pickFirstValue(row, [
+    'subtotal',
+    'subTotal',
+    'sub_total',
+    'purchase_subtotal',
+    'purchaseSubtotal',
+    'monto_subtotal',
+    'montoSubtotal',
+    'amount',
+  ]);
+
+  const explicitIva = pickFirstValue(row, [
+    'iva',
+    'tax',
+    'impuesto',
+    'impuestos',
+    'vat',
+    'purchase_iva',
+    'purchaseIva',
+  ]);
+
+  const subtotal = normalizeAmount(explicitSubtotal ?? total);
+  const iva = explicitIva === null || explicitIva === undefined || explicitIva === ''
+    ? normalizeAmount(total - subtotal)
+    : normalizeAmount(explicitIva);
+  const subtotalExento = normalizeAmountFrom(row, [
+    'subtotalExento',
+    'subtotal_exento',
+    'subtotal0',
+    'subTotal0',
+    'subtotal_0',
+    'exento',
+  ]);
+  const subtotalGravado = normalizeAmountFrom(row, [
+    'subtotalGravado',
+    'subtotal_gravado',
+    'gravado',
+  ], Math.max(subtotal - subtotalExento, 0));
+  const resolvedTotal = total || normalizeAmount(subtotal + iva);
+
+  return {
+    amount: subtotal,
+    subtotal,
+    subtotalExento,
+    subtotalGravado,
+    iva,
+    total: resolvedTotal,
+  };
+}
+
 function isTruthyFlag(value) {
   return value === true || value === 'true' || value === 1 || value === '1' || value === 'si' || value === 'yes';
 }
@@ -333,11 +464,11 @@ function isOnOrAfterCutover(date) {
 }
 
 function getIncomeSyncDocumentId(date) {
-  return `sicar_${getBranchId()}_${date}`;
+  return `sicar_venta_diaria_${date}`;
 }
 
 function getIncomeSyncKey(date) {
-  return `sicar:${getBranchId()}:${date}`;
+  return `sicar:venta-diaria:${getBranchId()}:${date}`;
 }
 
 function getSicarPrivateRoot() {
@@ -385,34 +516,46 @@ async function runMysqlTemplateQuery(template, params) {
 function aggregateRowsByDate(rows) {
   const aggregated = new Map();
 
-  for (const row of rows || []) {
-    const date = normalizeDate(
-      row.date ||
-      row.fecha ||
-      row.sale_date ||
-      row.saleDate ||
-      row.dia ||
-      row.day
-    );
+  for (const [index, row] of (rows || []).entries()) {
+    const entry = normalizeSaleRow(row, index);
 
-    const amount = normalizeAmount(
-      row.amount ??
-      row.monto ??
-      row.total ??
-      row.ingreso ??
-      row.importe
-    );
-
-    if (!date) {
+    if (!entry?.date) {
       continue;
     }
 
-    aggregated.set(date, normalizeAmount((aggregated.get(date) || 0) + amount));
+    const existing = aggregated.get(entry.date) || {
+      date: entry.date,
+      month: entry.month,
+      amount: 0,
+      subtotal: 0,
+      subtotalExento: 0,
+      subtotalGravado: 0,
+      iva: 0,
+      total: 0,
+      sourceRecordIds: [],
+      paymentBreakdown: [],
+    };
+
+    existing.amount = normalizeAmount(existing.amount + entry.amount);
+    existing.subtotal = normalizeAmount(existing.subtotal + entry.subtotal);
+    existing.subtotalExento = normalizeAmount(existing.subtotalExento + entry.subtotalExento);
+    existing.subtotalGravado = normalizeAmount(existing.subtotalGravado + entry.subtotalGravado);
+    existing.iva = normalizeAmount(existing.iva + entry.iva);
+    existing.total = normalizeAmount(existing.total + entry.total);
+    if (entry.sourceRecordId) existing.sourceRecordIds.push(entry.sourceRecordId);
+
+    aggregated.set(entry.date, existing);
   }
 
-  return Array.from(aggregated.entries())
-    .sort(([left], [right]) => left.localeCompare(right))
-    .map(([date, amount]) => ({ date, amount }));
+  return Array.from(aggregated.values())
+    .sort((left, right) => left.date.localeCompare(right.date))
+    .map((entry) => ({
+      ...entry,
+      dailySaleCode: `VENTA-${entry.date.replace(/-/g, '')}`,
+      reference: `VENTA-${entry.date.replace(/-/g, '')}`,
+      description: `VENTA DIARIA SICAR ${entry.date}`,
+      sourceRecordId: entry.sourceRecordIds.join(','),
+    }));
 }
 
 async function fetchDailyIncomeRows({ startDate, endDate, branchName }) {
@@ -435,21 +578,36 @@ async function writeSyncLog(summary) {
 async function upsertDailyIncomes(entries, actorEmail) {
   const batch = firestore.batch();
 
-  entries.forEach(({ date, amount }) => {
+  entries.forEach((entry) => {
+    const { date } = entry;
     const ref = firestore.collection('ingresos').doc(getIncomeSyncDocumentId(date));
+    const dailySaleCode = entry.dailySaleCode || `VENTA-${date.replace(/-/g, '')}`;
+
     batch.set(ref, {
       date,
       month: date.substring(0, 7),
-      amount,
+      description: entry.description || `VENTA DIARIA SICAR ${date}`,
+      reference: entry.reference || dailySaleCode,
+      dailySaleCode,
+      amount: normalizeAmount(entry.subtotal ?? entry.amount),
+      subtotal: normalizeAmount(entry.subtotal ?? entry.amount),
+      subtotalExento: normalizeAmount(entry.subtotalExento),
+      subtotalGravado: normalizeAmount(entry.subtotalGravado),
+      iva: normalizeAmount(entry.iva),
+      total: normalizeAmount(entry.total ?? entry.amount),
       branch: getBranchId(),
       branchName: getBranchName(),
       source: 'sicar',
+      sourceType: 'daily_sale',
       sourceLabel: 'SICAR',
       sourceSystem: 'SICAR',
       sourceBranch: getBranchName(),
+      sourceRecordIds: entry.sourceRecordIds || [],
+      paymentBreakdown: entry.paymentBreakdown || [],
       syncKey: getIncomeSyncKey(date),
       syncedBy: getActorLabel(actorEmail),
       syncedAt: FieldValue.serverTimestamp(),
+      lastSyncedAt: FieldValue.serverTimestamp(),
       is_conciled: false,
       timezone: getTimezone(),
     }, { merge: true });
@@ -460,6 +618,8 @@ async function upsertDailyIncomes(entries, actorEmail) {
 
 function buildIncomeSyncResponse({ startDate, endDate, preview, actorEmail, entries }) {
   const totalAmount = entries.reduce((total, item) => total + item.amount, 0);
+  const totalIva = entries.reduce((total, item) => total + normalizeAmount(item.iva), 0);
+  const grandTotal = entries.reduce((total, item) => total + normalizeAmount(item.total), 0);
 
   return {
     ok: true,
@@ -471,6 +631,8 @@ function buildIncomeSyncResponse({ startDate, endDate, preview, actorEmail, entr
     branchName: getBranchName(),
     syncedCount: entries.length,
     totalAmount: normalizeAmount(totalAmount),
+    totalIva: normalizeAmount(totalIva),
+    grandTotal: normalizeAmount(grandTotal),
     actor: getActorLabel(actorEmail),
     entries,
   };
@@ -512,6 +674,8 @@ async function executeIncomeSync({ startDate, endDate, preview, actorEmail }) {
     branchName: response.branchName,
     syncedCount: response.syncedCount,
     totalAmount: response.totalAmount,
+    totalIva: response.totalIva,
+    grandTotal: response.grandTotal,
     status: 'ok',
   });
 
@@ -655,6 +819,8 @@ function buildRawPurchaseId(entry) {
       entry.supplier,
       entry.invoiceNumber,
       entry.amount,
+      entry.iva,
+      entry.total,
       entry.paymentMethod,
     ]))
     .digest('hex')
@@ -671,6 +837,9 @@ function buildPurchasePreview(entry, rawId = buildRawPurchaseId(entry)) {
     supplier: entry.supplier,
     invoiceNumber: entry.invoiceNumber,
     amount: entry.amount,
+    subtotal: entry.subtotal,
+    iva: entry.iva,
+    total: entry.total,
     paymentMethod: entry.paymentMethod,
     paymentRoute: entry.paymentRoute,
     dueDate: entry.dueDate || '',
@@ -679,6 +848,10 @@ function buildPurchasePreview(entry, rawId = buildRawPurchaseId(entry)) {
 }
 
 function buildRawSaleId(entry) {
+  if (entry.type === 'daily_sale' || entry.sourceType === 'daily_sale') {
+    return `venta_diaria_${entry.date}`;
+  }
+
   const fingerprint = createHash('sha1')
     .update(JSON.stringify([
       entry.sourceRecordId || '',
@@ -700,12 +873,17 @@ function buildSalePreview(entry, rawId = buildRawSaleId(entry)) {
     description: entry.description,
     reference: entry.reference,
     amount: entry.amount,
+    subtotal: entry.subtotal,
+    iva: entry.iva,
+    total: entry.total,
+    dailySaleCode: entry.dailySaleCode,
     sourceRecordId: entry.sourceRecordId || '',
   };
 }
 
 function normalizePurchaseRow(row, index = 0) {
   const cancellation = resolveBusinessCancellationMetadata(row);
+  const financials = resolvePurchaseFinancials(row);
   const date = normalizeDate(
     pickFirstValue(row, [
       'date',
@@ -719,16 +897,7 @@ function normalizePurchaseRow(row, index = 0) {
     ])
   );
 
-  const amount = normalizeAmount(
-    pickFirstValue(row, [
-      'amount',
-      'monto',
-      'total',
-      'importe',
-      'purchase_total',
-      'purchaseTotal',
-    ])
-  );
+  const amount = financials.amount;
 
   if (!date || amount <= 0) {
     return null;
@@ -785,6 +954,11 @@ function normalizePurchaseRow(row, index = 0) {
     purchaseFolio: invoiceMetadata.purchaseFolio,
     purchaseSeries: invoiceMetadata.purchaseSeries,
     amount,
+    subtotal: financials.subtotal,
+    subtotalExento: financials.subtotalExento,
+    subtotalGravado: financials.subtotalGravado,
+    iva: financials.iva,
+    total: financials.total,
     paymentMethod,
     paymentRoute: resolvePurchaseRoute(paymentMethod),
     dueDate: normalizeDate(
@@ -833,6 +1007,7 @@ function normalizePurchaseRow(row, index = 0) {
 
 function normalizeSaleRow(row, index = 0) {
   const cancellation = resolveBusinessCancellationMetadata(row);
+  const financials = resolveSaleFinancials(row);
   const date = normalizeDate(
     pickFirstValue(row, [
       'date',
@@ -846,19 +1021,11 @@ function normalizeSaleRow(row, index = 0) {
     ])
   );
 
-  const amount = normalizeAmount(
-    pickFirstValue(row, [
-      'amount',
-      'monto',
-      'total',
-      'ingreso',
-      'importe',
-      'sale_total',
-      'saleTotal',
-    ])
-  );
+  const amount = financials.amount;
+  const rawType = normalizeText(pickFirstValue(row, ['type', 'sourceType', 'tipo'])) || 'sale_ticket';
+  const isDailySale = rawType === 'daily_sale';
 
-  if (!date || amount <= 0) {
+  if (!date || (!isDailySale && amount <= 0)) {
     return null;
   }
 
@@ -884,6 +1051,21 @@ function normalizeSaleRow(row, index = 0) {
     date,
     month: date.substring(0, 7),
     amount,
+    subtotal: financials.subtotal,
+    subtotalExento: financials.subtotalExento,
+    subtotalGravado: financials.subtotalGravado,
+    iva: financials.iva,
+    total: financials.total,
+    type: rawType,
+    dailySaleCode: normalizeUpperText(
+      pickFirstValue(row, [
+        'dailySaleCode',
+        'daily_sale_code',
+        'codigoVentaDiaria',
+        'codigo_venta_diaria',
+      ]),
+      `VENTA-${date.replace(/-/g, '')}`
+    ),
     businessStatus: cancellation.businessStatus,
     cancelReason: cancellation.cancelReason,
     isCancelled: cancellation.isCancelled,
@@ -898,7 +1080,7 @@ function normalizeSaleRow(row, index = 0) {
         'ticket',
         'comprobante',
       ])
-    ),
+    ) || `VENTA-${date.replace(/-/g, '')}`,
     description: normalizeUpperText(
       pickFirstValue(row, [
         'description',
@@ -906,8 +1088,9 @@ function normalizeSaleRow(row, index = 0) {
         'concepto',
         'detalle',
       ]),
-      'VENTA SICAR'
+      `VENTA DIARIA SICAR ${date}`
     ),
+    paymentBreakdown: Array.isArray(row.paymentBreakdown) ? row.paymentBreakdown : [],
     rawPayload: toPlainObject(row),
   };
 }
@@ -1002,7 +1185,7 @@ function buildRawSaleDocument(entry, actorEmail, sourceMode) {
 
   return {
     sourceSystem: 'SICAR',
-    sourceType: 'venta',
+    sourceType: normalized.sourceType || normalized.type || 'venta',
     sourceMode,
     branch: getBranchId(),
     branchName: getBranchName(),
@@ -1218,7 +1401,18 @@ function getPurchaseTargetIds(rawId) {
   };
 }
 
-function getSaleTargetIds(rawId) {
+function getSaleTargetIds(rawId, normalized = null) {
+  const date = normalized?.date || rawId.match(/\d{4}-\d{2}-\d{2}/)?.[0] || '';
+  const isDailySale = normalized?.type === 'daily_sale' ||
+    normalized?.sourceType === 'daily_sale' ||
+    rawId.startsWith('venta_diaria_');
+
+  if (isDailySale && date) {
+    return {
+      ingresoId: getIncomeSyncDocumentId(date),
+    };
+  }
+
   return {
     ingresoId: `sicar_venta_${rawId}`,
   };
@@ -1239,8 +1433,8 @@ function getResolvedPurchaseTargetIds(rawId, rawData) {
   };
 }
 
-function getResolvedSaleTargetIds(rawId, rawData) {
-  const defaults = getSaleTargetIds(rawId);
+function getResolvedSaleTargetIds(rawId, rawData, normalized = null) {
+  const defaults = getSaleTargetIds(rawId, normalized || rawData?.normalized);
   return {
     ...defaults,
     ...(rawData?.targetDocIds || {}),
@@ -1306,7 +1500,8 @@ async function cancelPurchaseTargets(rawId, rawData, normalized) {
 }
 
 async function cancelSaleTargets(rawId, rawData) {
-  const { ingresoId } = getResolvedSaleTargetIds(rawId, rawData);
+  const normalized = extractNormalizedSale(rawData);
+  const { ingresoId } = getResolvedSaleTargetIds(rawId, rawData, normalized);
   await firestore.collection('ingresos').doc(ingresoId).delete();
 
   return {
@@ -1324,7 +1519,13 @@ async function createCashPurchase(rawId, normalized, rawData) {
     fecha: normalized.date,
     caja: normalized.cashboxName || getCashboxName(),
     descripcion: description,
-    monto: normalized.amount,
+    monto: normalizeAmount(normalized.total ?? normalized.amount),
+    amount: normalized.amount,
+    subtotal: normalized.subtotal,
+    subtotalExento: normalized.subtotalExento,
+    subtotalGravado: normalized.subtotalGravado,
+    iva: normalized.iva,
+    total: normalized.total,
     tipo: 'Compra',
     categoria: 'Compra',
     sucursal: getBranchId(),
@@ -1348,6 +1549,11 @@ async function createCashPurchase(rawId, normalized, rawData) {
     purchaseFolio: normalized.purchaseFolio || '',
     purchaseSeries: normalized.purchaseSeries || '',
     amount: normalized.amount,
+    subtotal: normalized.subtotal,
+    subtotalExento: normalized.subtotalExento,
+    subtotalGravado: normalized.subtotalGravado,
+    iva: normalized.iva,
+    total: normalized.total,
     branch: getBranchId(),
     branchName: getBranchName(),
     paymentType: 'contado',
@@ -1389,8 +1595,14 @@ async function createCreditPurchase(rawId, normalized, rawData) {
     purchaseFolio: normalized.purchaseFolio || '',
     purchaseSeries: normalized.purchaseSeries || '',
     vencimiento: normalized.dueDate || '',
-    monto: normalized.amount,
-    saldo: normalized.amount,
+    monto: normalizeAmount(normalized.total ?? normalized.amount),
+    saldo: normalizeAmount(normalized.total ?? normalized.amount),
+    amount: normalized.amount,
+    subtotal: normalized.subtotal,
+    subtotalExento: normalized.subtotalExento,
+    subtotalGravado: normalized.subtotalGravado,
+    iva: normalized.iva,
+    total: normalized.total,
     estado: 'pendiente',
     paymentType: 'credito',
     paymentMethodOriginal: 'credito',
@@ -1413,6 +1625,11 @@ async function createCreditPurchase(rawId, normalized, rawData) {
     purchaseFolio: normalized.purchaseFolio || '',
     purchaseSeries: normalized.purchaseSeries || '',
     amount: normalized.amount,
+    subtotal: normalized.subtotal,
+    subtotalExento: normalized.subtotalExento,
+    subtotalGravado: normalized.subtotalGravado,
+    iva: normalized.iva,
+    total: normalized.total,
     branch: getBranchId(),
     branchName: getBranchName(),
     paymentType: 'credito',
@@ -1450,6 +1667,11 @@ async function createOtherPurchase(rawId, normalized, rawData) {
     purchaseFolio: normalized.purchaseFolio || '',
     purchaseSeries: normalized.purchaseSeries || '',
     amount: normalized.amount,
+    subtotal: normalized.subtotal,
+    subtotalExento: normalized.subtotalExento,
+    subtotalGravado: normalized.subtotalGravado,
+    iva: normalized.iva,
+    total: normalized.total,
     branch: getBranchId(),
     branchName: getBranchName(),
     paymentType: 'contado',
@@ -1473,17 +1695,25 @@ async function createOtherPurchase(rawId, normalized, rawData) {
 }
 
 async function createSaleIncome(rawId, normalized, rawData) {
-  const { ingresoId } = getSaleTargetIds(rawId);
+  const { ingresoId } = getResolvedSaleTargetIds(rawId, rawData, normalized);
+  const dailySaleCode = normalized.dailySaleCode || `VENTA-${normalized.date.replace(/-/g, '')}`;
 
   await firestore.collection('ingresos').doc(ingresoId).set({
     date: normalized.date,
     month: normalized.month,
-    amount: normalized.amount,
-    description: normalized.description || 'VENTA SICAR',
-    reference: normalized.reference || '',
+    amount: normalizeAmount(normalized.subtotal ?? normalized.amount),
+    subtotal: normalizeAmount(normalized.subtotal ?? normalized.amount),
+    subtotalExento: normalizeAmount(normalized.subtotalExento),
+    subtotalGravado: normalizeAmount(normalized.subtotalGravado),
+    iva: normalizeAmount(normalized.iva),
+    total: normalizeAmount(normalized.total ?? normalized.amount),
+    description: normalized.description || `VENTA DIARIA SICAR ${normalized.date}`,
+    reference: normalized.reference || dailySaleCode,
+    dailySaleCode,
     branch: getBranchId(),
     branchName: getBranchName(),
     source: 'sicar',
+    sourceType: normalized.type || rawData.sourceType || 'venta',
     sourceLabel: 'SICAR',
     sourceSystem: 'SICAR',
     sourceBranch: getBranchName(),
@@ -1491,9 +1721,12 @@ async function createSaleIncome(rawId, normalized, rawData) {
     sourceCollection: SALES_TRIGGER_DOCUMENT.replace('{rawId}', rawId),
     sourceRawId: rawId,
     sourceRecordId: normalized.sourceRecordId,
-    syncKey: `sicar:venta:${rawId}`,
+    sourceRecordIds: normalized.sourceRecordIds || [],
+    paymentBreakdown: normalized.paymentBreakdown || [],
+    syncKey: normalized.type === 'daily_sale' ? getIncomeSyncKey(normalized.date) : `sicar:venta:${rawId}`,
     syncedBy: 'cloud-function',
     syncedAt: FieldValue.serverTimestamp(),
+    lastSyncedAt: FieldValue.serverTimestamp(),
     timestamp: FieldValue.serverTimestamp(),
     is_conciled: false,
     timezone: getTimezone(),
@@ -1680,7 +1913,9 @@ async function processRawSale(rawId, options = {}) {
   const rawData = lock.data || {};
   const normalized = extractNormalizedSale(rawData);
 
-  if (!normalized?.date || !normalized.amount) {
+  const allowsZeroAmount = normalized?.type === 'daily_sale' || normalized?.sourceType === 'daily_sale';
+
+  if (!normalized?.date || (!allowsZeroAmount && !normalized.amount)) {
     const message = 'El documento privado de venta no tiene fecha o monto valido.';
     await lock.ref.set({
       status: 'error',

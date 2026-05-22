@@ -159,6 +159,7 @@ const aggregateData = (data) => {
     const results = {};
     const { ingresos = [], gastos = [], inventarios = [], compras = [], presupuestos = [], cuentas_por_pagar: facturasCredito = [] } = data;
     const normalizedIngresos = resolveReportIncomeEntries(ingresos);
+    const accountingAmount = (item) => peso(item.subtotal ?? item.amount ?? item.monto);
 
     const getDateString = (firestoreDate, fallback = '') => {
         if (typeof firestoreDate === 'string') return firestoreDate;
@@ -210,11 +211,12 @@ const aggregateData = (data) => {
         if (!branchData) return;
 
         if (item.category) {
-            branchData.totalExpense += peso(item.amount ?? item.monto);
-            branchData.expenseDetails[item.category] = (branchData.expenseDetails[item.category] || 0) + peso(item.amount ?? item.monto);
-            branchData.rawExpenses.push({ ...item, dateStr: dateString, amount: peso(item.amount ?? item.monto) });
+            const amount = accountingAmount(item);
+            branchData.totalExpense += amount;
+            branchData.expenseDetails[item.category] = (branchData.expenseDetails[item.category] || 0) + amount;
+            branchData.rawExpenses.push({ ...item, dateStr: dateString, amount });
         } else {
-            branchData.totalIncome += peso(item.amount ?? item.monto);
+            branchData.totalIncome += accountingAmount(item);
         }
     });
 
@@ -231,7 +233,7 @@ const aggregateData = (data) => {
     compras.forEach(item => {
         const month = getMonthString(item, ['date', 'fecha']);
         const branchId = resolveBranchId(item.branch || item.branchId || item.sucursal || item.branchName);
-        const amount = peso(item.amount ?? item.monto);
+        const amount = accountingAmount(item);
 
         if (!amount || !month) return;
         results[month] = results[month] || {};
@@ -251,7 +253,7 @@ const aggregateData = (data) => {
 
         const month = getMonthString(item, ['fecha', 'date']);
         const branchId = resolveBranchId(item.branch || item.branchId || item.sucursal || item.branchName);
-        const amount = peso(item.monto ?? item.amount);
+        const amount = accountingAmount(item);
 
         if (!amount || !month) return;
         results[month] = results[month] || {};
@@ -328,12 +330,293 @@ const aggregateData = (data) => {
     }).flat().sort((a, b) => b.month.localeCompare(a.month));
 };
 
+const getDocDate = (item) => {
+    const dateValue = item.date || item.fecha || item.saleDate || item.month || item.mes || '';
+    if (typeof dateValue === 'string') return dateValue;
+    if (dateValue?.toDate) return dateValue.toDate().toISOString().substring(0, 10);
+    return '';
+};
+
+const getDocMonth = (item) => {
+    const date = getDocDate(item);
+    return String(date || item.month || item.mes || '').substring(0, 7);
+};
+
+const buildTaxReport = (data, selectedMonth) => {
+    const inMonth = (item) => !selectedMonth || getDocMonth(item) === selectedMonth;
+    const accountingAmount = (item) => peso(item.subtotal ?? item.amount ?? item.monto);
+    const fiscalTotal = (item) => peso(item.total ?? item.monto ?? item.amount);
+    const fiscalIva = (item) => peso(item.iva);
+    const invoiceLabel = (item) => item.invoiceNumber || item.numeroFactura || item.factura || item.numero || item.reference || item.dailySaleCode || '';
+
+    const incomeRows = resolveReportIncomeEntries(data.ingresos || [])
+        .filter(inMonth)
+        .map((item) => ({
+            type: 'IVA vendido',
+            date: getDocDate(item),
+            source: item.source === 'sicar' ? 'SICAR venta diaria' : 'Ingreso manual',
+            document: item.dailySaleCode || item.reference || item.id || '',
+            description: item.description || item.detalle || '',
+            subtotal: accountingAmount(item),
+            iva: fiscalIva(item),
+            total: fiscalTotal(item),
+        }));
+
+    const purchaseRows = [...(data.compras || []), ...(data.gastos || [])]
+        .filter(inMonth)
+        .map((item) => ({
+            type: item.supplier || item.proveedor ? 'IVA comprado' : 'IVA gasto',
+            date: getDocDate(item),
+            source: item.supplier || item.proveedor || item.category || 'Registro',
+            document: invoiceLabel(item),
+            description: item.description || item.descripcion || item.category || '',
+            subtotal: accountingAmount(item),
+            iva: fiscalIva(item),
+            total: fiscalTotal(item),
+        }));
+
+    const salesRetentionRows = (data.facturas_membretadas_ventas || [])
+        .filter(inMonth)
+        .map((item) => ({
+            type: 'Retencion venta',
+            date: getDocDate(item),
+            source: item.dailySaleCode || 'Factura membretada',
+            document: item.numeroFactura || '',
+            subtotal: accountingAmount(item),
+            retentionIr2: peso(item.retentionIr2),
+            retentionMunicipal1: peso(item.retentionMunicipal1),
+            retentionTotal: peso(item.retentionTotal ?? (peso(item.retentionIr2) + peso(item.retentionMunicipal1))),
+            paymentMethod: item.paymentMethod || '',
+        }));
+
+    const purchaseRetentionRows = [...(data.compras || []), ...(data.gastos || [])]
+        .filter(inMonth)
+        .map((item) => ({
+            type: 'Retencion compra/gasto',
+            date: getDocDate(item),
+            source: item.supplier || item.proveedor || item.category || '',
+            document: invoiceLabel(item),
+            subtotal: accountingAmount(item),
+            retentionIr2: peso(item.retentionIr2),
+            retentionMunicipal1: peso(item.retentionMunicipal1),
+            retentionTotal: peso(item.retentionTotal ?? (peso(item.retentionIr2) + peso(item.retentionMunicipal1))),
+            paymentMethod: item.paymentType || '',
+        }))
+        .filter((item) => item.retentionTotal > 0);
+
+    const sumBy = (rows, key) => rows.reduce((sum, row) => sum + peso(row[key]), 0);
+    const ivaSold = sumBy(incomeRows, 'iva');
+    const ivaBought = sumBy(purchaseRows, 'iva');
+    const salesSubtotal = sumBy(incomeRows, 'subtotal');
+    const purchaseSubtotal = (data.compras || []).filter(inMonth).reduce((sum, item) => sum + accountingAmount(item), 0);
+    const municipalTax = salesSubtotal * 0.01;
+    const profitBeforeTax = salesSubtotal - purchaseSubtotal;
+    const profitAfterMunicipal = profitBeforeTax - municipalTax;
+    const incomeTax30 = profitAfterMunicipal > 0 ? profitAfterMunicipal * 0.30 : 0;
+
+    return {
+        ivaRows: [...incomeRows, ...purchaseRows],
+        retentionRows: [...salesRetentionRows, ...purchaseRetentionRows],
+        totals: {
+            ivaSold,
+            ivaBought,
+            ivaNet: ivaSold - ivaBought,
+            retentionSales: sumBy(salesRetentionRows, 'retentionTotal'),
+            retentionPurchases: sumBy(purchaseRetentionRows, 'retentionTotal'),
+            salesSubtotal,
+            purchaseSubtotal,
+            profitBeforeTax,
+            municipalTax,
+            profitAfterMunicipal,
+            incomeTax30,
+            netProfitAfterTax: profitAfterMunicipal - incomeTax30,
+        }
+    };
+};
+
+const downloadCsv = (filename, rows) => {
+    if (!rows.length) return;
+    const headers = Object.keys(rows[0]);
+    const escape = (value) => `"${String(value ?? '').replaceAll('"', '""')}"`;
+    const csv = [headers.join(','), ...rows.map((row) => headers.map((header) => escape(row[header])).join(','))].join('\n');
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    link.click();
+    URL.revokeObjectURL(url);
+};
+
+const TaxReportsPanel = ({ taxReport, taxTab, setTaxTab, selectedMonth, setSelectedMonth, availableMonths }) => {
+    const subTabs = ['IVA', 'Retenciones', 'Resultado despues de impuestos'];
+    const tableClass = "w-full text-sm";
+    const thClass = "pb-3 text-left text-xs font-bold uppercase tracking-wider text-stone-500";
+    const tdClass = "py-2.5 border-t border-stone-100 text-stone-700";
+
+    return (
+        <div className="animate-fade-in space-y-5">
+            <div className="max-w-sm">
+                <Select
+                    label="Periodo Tributario"
+                    icon="calendar"
+                    value={selectedMonth || ''}
+                    onChange={(e) => setSelectedMonth(e.target.value)}
+                    options={availableMonths.map(month => (
+                        <option key={month} value={month}>{month}</option>
+                    ))}
+                />
+            </div>
+
+            <div className="flex flex-wrap gap-2">
+                {subTabs.map((tab) => (
+                    <button
+                        key={tab}
+                        onClick={() => setTaxTab(tab)}
+                        className={`rounded-lg px-4 py-2 text-xs font-bold uppercase tracking-wide transition ${
+                            taxTab === tab ? 'bg-[#a81d24] text-white' : 'bg-white border border-stone-200 text-stone-600 hover:bg-stone-50'
+                        }`}
+                    >
+                        {tab}
+                    </button>
+                ))}
+            </div>
+
+            {taxTab === 'IVA' && (
+                <div className="space-y-5">
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                        <StatCard title="IVA Vendido" value={fmt(taxReport.totals.ivaSold)} icon="trendingUp" variant="success" />
+                        <StatCard title="IVA Comprado" value={fmt(taxReport.totals.ivaBought)} icon="shoppingCart" variant="warning" />
+                        <StatCard title="IVA Neto" value={fmt(taxReport.totals.ivaNet)} icon="receipt" variant={taxReport.totals.ivaNet >= 0 ? 'wine' : 'danger'} />
+                    </div>
+                    <Card
+                        title="Detalle de IVA"
+                        subtitle="Ventas, compras y gastos del periodo"
+                        icon="receipt"
+                        right={<button onClick={() => downloadCsv(`reporte-iva-${selectedMonth}.csv`, taxReport.ivaRows)} className="rounded-lg bg-[#a81d24] px-3 py-1.5 text-xs font-bold text-white">Exportar CSV</button>}
+                    >
+                        <div className="overflow-x-auto">
+                            <table className={tableClass}>
+                                <thead>
+                                    <tr>
+                                        <th className={thClass}>Tipo</th>
+                                        <th className={thClass}>Fecha</th>
+                                        <th className={thClass}>Documento</th>
+                                        <th className={thClass}>Fuente</th>
+                                        <th className={`${thClass} text-right`}>Subtotal</th>
+                                        <th className={`${thClass} text-right`}>IVA</th>
+                                        <th className={`${thClass} text-right`}>Total</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {taxReport.ivaRows.map((row, idx) => (
+                                        <tr key={`${row.type}-${row.document}-${idx}`}>
+                                            <td className={tdClass}>{row.type}</td>
+                                            <td className={tdClass}>{row.date}</td>
+                                            <td className={tdClass}>{row.document || '-'}</td>
+                                            <td className={tdClass}>{row.source}</td>
+                                            <td className={`${tdClass} text-right font-semibold`}>{fmt(row.subtotal)}</td>
+                                            <td className={`${tdClass} text-right font-semibold`}>{fmt(row.iva)}</td>
+                                            <td className={`${tdClass} text-right font-semibold`}>{fmt(row.total)}</td>
+                                        </tr>
+                                    ))}
+                                </tbody>
+                            </table>
+                        </div>
+                    </Card>
+                </div>
+            )}
+
+            {taxTab === 'Retenciones' && (
+                <div className="space-y-5">
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                        <StatCard title="Retenciones Ventas" value={fmt(taxReport.totals.retentionSales)} icon="trendingUp" variant="success" />
+                        <StatCard title="Retenciones Compras" value={fmt(taxReport.totals.retentionPurchases)} icon="shoppingCart" variant="warning" />
+                        <StatCard title="Total Retenciones" value={fmt(taxReport.totals.retentionSales + taxReport.totals.retentionPurchases)} icon="receipt" variant="wine" />
+                    </div>
+                    <Card
+                        title="Reporte Membretado de Retenciones"
+                        subtitle="Detalle fiscal para soporte ante DGI"
+                        icon="receipt"
+                        right={<button onClick={() => downloadCsv(`reporte-retenciones-${selectedMonth}.csv`, taxReport.retentionRows)} className="rounded-lg bg-[#a81d24] px-3 py-1.5 text-xs font-bold text-white">Exportar CSV</button>}
+                    >
+                        <div className="mb-4 rounded-xl border border-[#ead5c5] bg-[#fff8f5] p-4">
+                            <div className="text-xs font-bold uppercase tracking-[0.3em] text-[#a81d24]">{APP_BRAND_NAME}</div>
+                            <div className="text-lg font-black text-[#2b1113]">Reporte de retenciones fiscales</div>
+                            <div className="text-xs font-semibold text-stone-500">Periodo: {selectedMonth || 'Todos'}</div>
+                        </div>
+                        <div className="overflow-x-auto">
+                            <table className={tableClass}>
+                                <thead>
+                                    <tr>
+                                        <th className={thClass}>Tipo</th>
+                                        <th className={thClass}>Fecha</th>
+                                        <th className={thClass}>Documento</th>
+                                        <th className={thClass}>Fuente</th>
+                                        <th className={`${thClass} text-right`}>IR 2%</th>
+                                        <th className={`${thClass} text-right`}>Municipal 1%</th>
+                                        <th className={`${thClass} text-right`}>Total</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {taxReport.retentionRows.map((row, idx) => (
+                                        <tr key={`${row.type}-${row.document}-${idx}`}>
+                                            <td className={tdClass}>{row.type}</td>
+                                            <td className={tdClass}>{row.date}</td>
+                                            <td className={tdClass}>{row.document || '-'}</td>
+                                            <td className={tdClass}>{row.source}</td>
+                                            <td className={`${tdClass} text-right font-semibold`}>{fmt(row.retentionIr2)}</td>
+                                            <td className={`${tdClass} text-right font-semibold`}>{fmt(row.retentionMunicipal1)}</td>
+                                            <td className={`${tdClass} text-right font-black text-[#7f1218]`}>{fmt(row.retentionTotal)}</td>
+                                        </tr>
+                                    ))}
+                                </tbody>
+                            </table>
+                        </div>
+                    </Card>
+                </div>
+            )}
+
+            {taxTab === 'Resultado despues de impuestos' && (
+                <div className="space-y-5">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                        <StatCard title="Ventas Subtotal" value={fmt(taxReport.totals.salesSubtotal)} icon="trendingUp" variant="success" />
+                        <StatCard title="Costo Subtotal" value={fmt(taxReport.totals.purchaseSubtotal)} icon="shoppingCart" variant="warning" />
+                        <StatCard title="Utilidad Antes Imp." value={fmt(taxReport.totals.profitBeforeTax)} icon="dollar" variant={taxReport.totals.profitBeforeTax >= 0 ? 'wine' : 'danger'} />
+                        <StatCard title="Utilidad Neta" value={fmt(taxReport.totals.netProfitAfterTax)} icon="wallet" variant={taxReport.totals.netProfitAfterTax >= 0 ? 'dark' : 'danger'} />
+                    </div>
+                    <Card title="Estado de resultado despues de impuesto" subtitle="Formula fiscal solicitada: ventas - costo, IMI 1%, IR 30%" icon="chart" gradient={true}>
+                        <div className="space-y-3 text-sm">
+                            {[
+                                ['Ventas contables (subtotal)', taxReport.totals.salesSubtotal],
+                                ['Costo de ventas (subtotal compras)', taxReport.totals.purchaseSubtotal],
+                                ['Utilidad antes de impuesto', taxReport.totals.profitBeforeTax],
+                                ['Impuesto municipal 1% sobre ventas', -taxReport.totals.municipalTax],
+                                ['Utilidad despues de IMI', taxReport.totals.profitAfterMunicipal],
+                                ['IR 30% sobre utilidad despues de IMI', -taxReport.totals.incomeTax30],
+                                ['Utilidad neta despues de impuestos', taxReport.totals.netProfitAfterTax],
+                            ].map(([label, value]) => (
+                                <div key={label} className="flex items-center justify-between rounded-xl border border-stone-200 bg-white px-4 py-3">
+                                    <span className="font-bold text-stone-600">{label}</span>
+                                    <span className={`font-black ${value < 0 ? 'text-rose-700' : 'text-[#7f1218]'}`}>{fmt(value)}</span>
+                                </div>
+                            ))}
+                        </div>
+                    </Card>
+                </div>
+            )}
+        </div>
+    );
+};
+
 export default function Reports({ data }) {
     const [activeTab, setActiveTab] = useState('Resultados');
+    const [taxTab, setTaxTab] = useState('IVA');
     const [selectedMonth, setSelectedMonth] = useState(new Date().toISOString().substring(0, 7));
     const [modalCategory, setModalCategory] = useState(null);
 
     const aggregatedData = useMemo(() => aggregateData(data), [data]);
+    const taxReport = useMemo(() => buildTaxReport(data, selectedMonth), [data, selectedMonth]);
 
     const availableMonths = useMemo(() => {
         const months = [...new Set(aggregatedData.map(d => d.month))];
@@ -394,6 +677,7 @@ export default function Reports({ data }) {
 
     const tabsConfig = {
         'Resultados': { icon: 'chart', label: 'Estado de Resultados' },
+        'Tributarios': { icon: 'receipt', label: 'Reportes Tributarios' },
         'Balance': { icon: 'scale', label: 'Balance General' },
         'Dashboard': { icon: 'dashboard', label: 'Dashboard' }
     };
@@ -462,6 +746,17 @@ export default function Reports({ data }) {
                 <div className="animate-fade-in">
                     <DashboardGeneral />
                 </div>
+            )}
+
+            {activeTab === 'Tributarios' && (
+                <TaxReportsPanel
+                    taxReport={taxReport}
+                    taxTab={taxTab}
+                    setTaxTab={setTaxTab}
+                    selectedMonth={selectedMonth}
+                    setSelectedMonth={setSelectedMonth}
+                    availableMonths={availableMonths}
+                />
             )}
 
             {activeTab === 'Resultados' && (

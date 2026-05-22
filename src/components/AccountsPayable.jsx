@@ -7,6 +7,7 @@ import {
 } from 'firebase/firestore';
 import { APP_BRAND_NAME, DEFAULT_BRANCH_ID, DEFAULT_BRANCH_NAME, DEFAULT_CASHBOX_NAME, fmt } from '../constants';
 import { deletePayableTransaction } from '../services/linkedTransactions';
+import { buildFiscalPayload, uploadInvoicePhoto } from '../services/fiscalUtils';
 
 // --- ICONOS SVG INLINE ---
 const Icon = ({ path, className = "w-5 h-5" }) => (
@@ -162,8 +163,15 @@ export function AccountsPayable({ data }) {
         proveedor: '',
         numero: '',
         vencimiento: '',
-        monto: ''
+        descripcion: '',
+        subtotal: '',
+        iva: '',
+        total: '',
+        retentionIr2: '',
+        retentionMunicipal1: '',
+        paymentReference: ''
     });
+    const [facturaPhoto, setFacturaPhoto] = useState(null);
 
     // --- CÁLCULOS MEMOIZADOS ---
     const { facturasPorProveedor, saldoTotalGeneral, stats } = useMemo(() => {
@@ -203,9 +211,15 @@ export function AccountsPayable({ data }) {
     // --- HANDLERS ---
     const handleSaveFactura = useCallback(async (e) => {
         e.preventDefault();
-        const montoNum = parseFloat(facturaForm.monto);
-        if (!facturaForm.proveedor || isNaN(montoNum) || montoNum <= 0) {
-            return alert("Por favor complete Proveedor y Monto.");
+        const fiscal = buildFiscalPayload({
+            subtotal: facturaForm.subtotal,
+            iva: facturaForm.iva,
+            total: facturaForm.total,
+            retentionIr2: facturaForm.retentionIr2,
+            retentionMunicipal1: facturaForm.retentionMunicipal1,
+        });
+        if (!facturaForm.proveedor || fiscal.total <= 0) {
+            return alert("Por favor complete proveedor y montos fiscales.");
         }
 
         setLoading(true);
@@ -213,6 +227,7 @@ export function AccountsPayable({ data }) {
             const facturaRef = doc(collection(db, 'cuentas_por_pagar'));
             const compraRef = doc(collection(db, 'compras'), `credito_${facturaRef.id}`);
             const batch = writeBatch(db);
+            const photoPayload = await uploadInvoicePhoto(facturaPhoto, 'facturas/cuentas_por_pagar', facturaRef.id);
 
             batch.set(facturaRef, {
                 fecha: facturaForm.fecha,
@@ -221,15 +236,21 @@ export function AccountsPayable({ data }) {
                 sucursal: DEFAULT_BRANCH_NAME,
                 branch: DEFAULT_BRANCH_ID,
                 branchName: DEFAULT_BRANCH_NAME,
-                numero: facturaForm.numero?.trim() || "S/N",
+                numero: facturaForm.numero?.trim() || "",
+                factura: facturaForm.numero?.trim() || "",
                 vencimiento: facturaForm.vencimiento || "",
-                monto: montoNum,
-                saldo: montoNum,
+                descripcion: facturaForm.descripcion?.trim().toUpperCase() || "",
+                monto: fiscal.total,
+                saldo: fiscal.total,
+                amount: fiscal.subtotal,
                 estado: 'pendiente',
                 paymentType: 'credito',
+                paymentReference: facturaForm.paymentReference?.trim().toUpperCase() || "",
                 isInventoryCost: true,
                 mirroredToCompras: true,
                 mirroredPurchaseId: compraRef.id,
+                ...fiscal,
+                ...photoPayload,
                 timestamp: Timestamp.now()
             });
 
@@ -237,27 +258,43 @@ export function AccountsPayable({ data }) {
                 date: facturaForm.fecha,
                 month: facturaForm.fecha.substring(0, 7),
                 supplier: facturaForm.proveedor,
-                invoiceNumber: facturaForm.numero?.trim() || "S/N",
-                amount: montoNum,
+                invoiceNumber: facturaForm.numero?.trim() || "",
+                description: facturaForm.descripcion?.trim().toUpperCase() || "",
+                amount: fiscal.subtotal,
                 branch: DEFAULT_BRANCH_ID,
                 branchName: DEFAULT_BRANCH_NAME,
                 paymentType: 'credito',
+                paymentReference: facturaForm.paymentReference?.trim().toUpperCase() || "",
                 isInventoryCost: true,
                 sourceCollection: 'cuentas_por_pagar',
                 sourceFacturaId: facturaRef.id,
                 linkedPayableId: facturaRef.id,
+                ...fiscal,
+                ...photoPayload,
                 timestamp: Timestamp.now()
             });
 
             await batch.commit();
-            setFacturaForm(prev => ({ ...prev, numero: '', monto: '', vencimiento: '' }));
+            setFacturaForm(prev => ({
+                ...prev,
+                numero: '',
+                vencimiento: '',
+                descripcion: '',
+                subtotal: '',
+                iva: '',
+                total: '',
+                retentionIr2: '',
+                retentionMunicipal1: '',
+                paymentReference: ''
+            }));
+            setFacturaPhoto(null);
         } catch (error) {
             console.error(error);
-            alert("Error al guardar");
+            alert("Error al guardar: " + error.message);
         } finally {
             setLoading(false);
         }
-    }, [facturaForm]);
+    }, [facturaForm, facturaPhoto]);
 
     // --- MODAL ABONOS ---
     const [showModalAbono, setShowModalAbono] = useState(false);
@@ -626,15 +663,78 @@ export function AccountsPayable({ data }) {
                                             onChange={e => setFacturaForm({ ...facturaForm, numero: e.target.value })}
                                         />
                                         <Input
-                                            label="Monto Total (C$)"
+                                            label="Subtotal (C$)"
                                             type="number"
                                             step="0.01"
                                             icon="creditCard"
                                             placeholder="0.00"
-                                            value={facturaForm.monto}
-                                            onChange={e => setFacturaForm({ ...facturaForm, monto: e.target.value })}
+                                            value={facturaForm.subtotal}
+                                            onChange={e => setFacturaForm({ ...facturaForm, subtotal: e.target.value })}
                                             required
                                         />
+                                    </div>
+
+                                    <Input
+                                        label="Descripcion"
+                                        icon="fileText"
+                                        placeholder="Detalle de la compra"
+                                        value={facturaForm.descripcion}
+                                        onChange={e => setFacturaForm({ ...facturaForm, descripcion: e.target.value })}
+                                    />
+
+                                    <div className="grid grid-cols-2 gap-4">
+                                        <Input
+                                            label="IVA (C$)"
+                                            type="number"
+                                            step="0.01"
+                                            icon="calculator"
+                                            placeholder="0.00"
+                                            value={facturaForm.iva}
+                                            onChange={e => setFacturaForm({ ...facturaForm, iva: e.target.value })}
+                                        />
+                                        <Input
+                                            label="Total (C$)"
+                                            type="number"
+                                            step="0.01"
+                                            icon="creditCard"
+                                            placeholder="0.00"
+                                            value={facturaForm.total}
+                                            onChange={e => setFacturaForm({ ...facturaForm, total: e.target.value })}
+                                        />
+                                    </div>
+
+                                    <div className="grid grid-cols-2 gap-4">
+                                        <Input
+                                            label="Retencion IR 2%"
+                                            type="number"
+                                            step="0.01"
+                                            icon="calculator"
+                                            placeholder="0.00"
+                                            value={facturaForm.retentionIr2}
+                                            onChange={e => setFacturaForm({ ...facturaForm, retentionIr2: e.target.value })}
+                                        />
+                                        <Input
+                                            label="Retencion Municipal 1%"
+                                            type="number"
+                                            step="0.01"
+                                            icon="calculator"
+                                            placeholder="0.00"
+                                            value={facturaForm.retentionMunicipal1}
+                                            onChange={e => setFacturaForm({ ...facturaForm, retentionMunicipal1: e.target.value })}
+                                        />
+                                    </div>
+
+                                    <Input
+                                        label="Referencia de pago"
+                                        icon="receipt"
+                                        placeholder="Transferencia, nota, orden..."
+                                        value={facturaForm.paymentReference}
+                                        onChange={e => setFacturaForm({ ...facturaForm, paymentReference: e.target.value })}
+                                    />
+
+                                    <div className="space-y-1.5">
+                                        <label className="text-xs font-semibold uppercase tracking-wider text-slate-500">Foto de factura</label>
+                                        <input type="file" accept="image/*,.pdf" onChange={e => setFacturaPhoto(e.target.files?.[0] || null)} className="block w-full text-xs text-slate-500 file:mr-3 file:rounded-lg file:border-0 file:bg-[#fff0f0] file:px-3 file:py-2 file:text-xs file:font-semibold file:text-[#a81d24]" />
                                     </div>
 
                                     <Button type="submit" disabled={loading} className="w-full py-3">
