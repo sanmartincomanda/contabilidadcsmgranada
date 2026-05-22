@@ -348,6 +348,7 @@ const buildTaxReport = (data, selectedMonth) => {
     const fiscalTotal = (item) => peso(item.total ?? item.monto ?? item.amount);
     const fiscalIva = (item) => peso(item.iva);
     const invoiceLabel = (item) => item.invoiceNumber || item.numeroFactura || item.factura || item.numero || item.reference || item.dailySaleCode || '';
+    const dailySaleKey = (item) => item.dailySaleCode || item.reference || (getDocDate(item) ? `VENTA-${getDocDate(item).replaceAll('-', '')}` : '');
 
     const incomeRows = resolveReportIncomeEntries(data.ingresos || [])
         .filter(inMonth)
@@ -362,6 +363,21 @@ const buildTaxReport = (data, selectedMonth) => {
             total: fiscalTotal(item),
         }));
 
+    const dailySales = resolveReportIncomeEntries(data.ingresos || [])
+        .filter(inMonth)
+        .filter((item) => item.source === 'sicar' || item.sourceType === 'daily_sale' || item.dailySaleCode)
+        .map((item) => ({
+            id: item.id || '',
+            date: getDocDate(item),
+            dailySaleCode: dailySaleKey(item),
+            subtotal: accountingAmount(item),
+            iva: fiscalIva(item),
+            total: fiscalTotal(item),
+        }));
+
+    const dailySalesByCode = new Map(dailySales.map((item) => [item.dailySaleCode, item]));
+    const dailySalesByDate = new Map(dailySales.map((item) => [item.date, item]));
+
     const purchaseRows = [...(data.compras || []), ...(data.gastos || [])]
         .filter(inMonth)
         .map((item) => ({
@@ -374,6 +390,83 @@ const buildTaxReport = (data, selectedMonth) => {
             iva: fiscalIva(item),
             total: fiscalTotal(item),
         }));
+
+    const stampedInvoiceRows = (data.facturas_membretadas_ventas || [])
+        .filter(inMonth)
+        .map((item) => {
+            const date = getDocDate(item);
+            const saleDate = item.saleDate || date;
+            const linkedDailySale = dailySalesByCode.get(item.dailySaleCode) || dailySalesByDate.get(saleDate) || {};
+            const subtotal = accountingAmount(item);
+            const iva = fiscalIva(item);
+            const total = fiscalTotal(item);
+            const retentionIr2 = peso(item.retentionIr2);
+            const retentionMunicipal1 = peso(item.retentionMunicipal1);
+            const retentionTotal = peso(item.retentionTotal ?? (retentionIr2 + retentionMunicipal1));
+
+            return {
+                date: saleDate || date,
+                dailySaleCode: item.dailySaleCode || linkedDailySale.dailySaleCode || (saleDate ? `VENTA-${saleDate.replaceAll('-', '')}` : ''),
+                document: item.numeroFactura || item.invoiceNumber || '',
+                paymentMethod: item.paymentMethod || '',
+                subtotal,
+                iva,
+                total,
+                retentionIr2,
+                retentionMunicipal1,
+                retentionTotal,
+                netTotal: peso(total - retentionTotal),
+                dailySaleTotal: peso(item.dailySaleTotal ?? linkedDailySale.total),
+                dailySaleSubtotal: peso(item.dailySaleSubtotal ?? linkedDailySale.subtotal),
+                linkedIngresoId: item.linkedIngresoId || linkedDailySale.id || '',
+            };
+        })
+        .sort((a, b) => `${a.date}-${a.document}`.localeCompare(`${b.date}-${b.document}`));
+
+    const stampedInvoicesByDay = stampedInvoiceRows.reduce((acc, row) => {
+        const key = row.dailySaleCode || row.date || 'SIN VENTA';
+        if (!acc[key]) {
+            const linkedDailySale = dailySalesByCode.get(row.dailySaleCode) || dailySalesByDate.get(row.date) || {};
+            acc[key] = {
+                date: row.date,
+                dailySaleCode: key,
+                invoiceCount: 0,
+                dailySaleTotal: peso(row.dailySaleTotal || linkedDailySale.total),
+                dailySaleSubtotal: peso(row.dailySaleSubtotal || linkedDailySale.subtotal),
+                subtotal: 0,
+                iva: 0,
+                total: 0,
+                retentionIr2: 0,
+                retentionMunicipal1: 0,
+                retentionTotal: 0,
+                netTotal: 0,
+            };
+        }
+
+        acc[key].invoiceCount += 1;
+        acc[key].subtotal += row.subtotal;
+        acc[key].iva += row.iva;
+        acc[key].total += row.total;
+        acc[key].retentionIr2 += row.retentionIr2;
+        acc[key].retentionMunicipal1 += row.retentionMunicipal1;
+        acc[key].retentionTotal += row.retentionTotal;
+        acc[key].netTotal += row.netTotal;
+        return acc;
+    }, {});
+
+    const stampedInvoiceDailyRows = Object.values(stampedInvoicesByDay)
+        .map((row) => ({
+            ...row,
+            subtotal: peso(row.subtotal),
+            iva: peso(row.iva),
+            total: peso(row.total),
+            retentionIr2: peso(row.retentionIr2),
+            retentionMunicipal1: peso(row.retentionMunicipal1),
+            retentionTotal: peso(row.retentionTotal),
+            netTotal: peso(row.netTotal),
+            remainingDailySale: row.dailySaleTotal > 0 ? peso(row.dailySaleTotal - row.total) : 0,
+        }))
+        .sort((a, b) => a.date.localeCompare(b.date));
 
     const salesRetentionRows = (data.facturas_membretadas_ventas || [])
         .filter(inMonth)
@@ -409,6 +502,7 @@ const buildTaxReport = (data, selectedMonth) => {
     const ivaBought = sumBy(purchaseRows, 'iva');
     const salesSubtotal = sumBy(incomeRows, 'subtotal');
     const purchaseSubtotal = (data.compras || []).filter(inMonth).reduce((sum, item) => sum + accountingAmount(item), 0);
+    const stampedInvoiceTotal = sumBy(stampedInvoiceRows, 'total');
     const municipalTax = salesSubtotal * 0.01;
     const profitBeforeTax = salesSubtotal - purchaseSubtotal;
     const profitAfterMunicipal = profitBeforeTax - municipalTax;
@@ -417,12 +511,21 @@ const buildTaxReport = (data, selectedMonth) => {
     return {
         ivaRows: [...incomeRows, ...purchaseRows],
         retentionRows: [...salesRetentionRows, ...purchaseRetentionRows],
+        stampedInvoiceRows,
+        stampedInvoiceDailyRows,
         totals: {
             ivaSold,
             ivaBought,
             ivaNet: ivaSold - ivaBought,
             retentionSales: sumBy(salesRetentionRows, 'retentionTotal'),
             retentionPurchases: sumBy(purchaseRetentionRows, 'retentionTotal'),
+            stampedInvoiceCount: stampedInvoiceRows.length,
+            stampedInvoiceSubtotal: sumBy(stampedInvoiceRows, 'subtotal'),
+            stampedInvoiceIva: sumBy(stampedInvoiceRows, 'iva'),
+            stampedInvoiceTotal,
+            stampedInvoiceRetentions: sumBy(stampedInvoiceRows, 'retentionTotal'),
+            stampedInvoiceNet: sumBy(stampedInvoiceRows, 'netTotal'),
+            stampedInvoiceRemainingDailySale: sumBy(stampedInvoiceDailyRows, 'remainingDailySale'),
             salesSubtotal,
             purchaseSubtotal,
             profitBeforeTax,
@@ -449,7 +552,7 @@ const downloadCsv = (filename, rows) => {
 };
 
 const TaxReportsPanel = ({ taxReport, taxTab, setTaxTab, selectedMonth, setSelectedMonth, availableMonths }) => {
-    const subTabs = ['IVA', 'Retenciones', 'Resultado despues de impuestos'];
+    const subTabs = ['IVA', 'Retenciones', 'Facturas membretadas', 'Resultado despues de impuestos'];
     const tableClass = "w-full text-sm";
     const thClass = "pb-3 text-left text-xs font-bold uppercase tracking-wider text-stone-500";
     const tdClass = "py-2.5 border-t border-stone-100 text-stone-700";
@@ -577,6 +680,120 @@ const TaxReportsPanel = ({ taxReport, taxTab, setTaxTab, selectedMonth, setSelec
                 </div>
             )}
 
+            {taxTab === 'Facturas membretadas' && (
+                <div className="space-y-5">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                        <StatCard title="Facturas Emitidas" value={taxReport.totals.stampedInvoiceCount} icon="receipt" variant="wine" />
+                        <StatCard title="Subtotal Facturado" value={fmt(taxReport.totals.stampedInvoiceSubtotal)} icon="trendingUp" variant="success" />
+                        <StatCard title="IVA Facturado" value={fmt(taxReport.totals.stampedInvoiceIva)} icon="receipt" variant="warning" />
+                        <StatCard title="Total Facturado" value={fmt(taxReport.totals.stampedInvoiceTotal)} icon="wallet" variant="dark" />
+                    </div>
+
+                    <Card
+                        title="Reporte de Facturas Membretadas"
+                        subtitle="Detalle de facturas emitidas contra ventas diarias SICAR"
+                        icon="receipt"
+                        right={
+                            <div className="flex flex-wrap gap-2">
+                                <button onClick={() => downloadCsv(`resumen-facturas-membretadas-${selectedMonth}.csv`, taxReport.stampedInvoiceDailyRows)} className="rounded-lg border border-[#a81d24] px-3 py-1.5 text-xs font-bold text-[#a81d24]">Exportar resumen</button>
+                                <button onClick={() => downloadCsv(`facturas-membretadas-${selectedMonth}.csv`, taxReport.stampedInvoiceRows)} className="rounded-lg bg-[#a81d24] px-3 py-1.5 text-xs font-bold text-white">Exportar detalle</button>
+                            </div>
+                        }
+                    >
+                        <div className="mb-4 rounded-xl border border-[#ead5c5] bg-[#fff8f5] p-4">
+                            <div className="text-xs font-bold uppercase tracking-[0.3em] text-[#a81d24]">{APP_BRAND_NAME}</div>
+                            <div className="text-lg font-black text-[#2b1113]">Control fiscal de facturas membretadas</div>
+                            <div className="text-xs font-semibold text-stone-500">Periodo: {selectedMonth || 'Todos'} · Total neto despues de retenciones: {fmt(taxReport.totals.stampedInvoiceNet)}</div>
+                        </div>
+
+                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-5">
+                            <div className="rounded-xl border border-stone-200 bg-white px-4 py-3">
+                                <div className="text-xs font-bold uppercase tracking-wider text-stone-500">Retenciones en facturas</div>
+                                <div className="mt-1 text-lg font-black text-[#7f1218]">{fmt(taxReport.totals.stampedInvoiceRetentions)}</div>
+                            </div>
+                            <div className="rounded-xl border border-stone-200 bg-white px-4 py-3">
+                                <div className="text-xs font-bold uppercase tracking-wider text-stone-500">Neto a recibir</div>
+                                <div className="mt-1 text-lg font-black text-[#7f1218]">{fmt(taxReport.totals.stampedInvoiceNet)}</div>
+                            </div>
+                            <div className="rounded-xl border border-stone-200 bg-white px-4 py-3">
+                                <div className="text-xs font-bold uppercase tracking-wider text-stone-500">Venta diaria no membretada</div>
+                                <div className="mt-1 text-lg font-black text-[#7f1218]">{fmt(taxReport.totals.stampedInvoiceRemainingDailySale)}</div>
+                            </div>
+                        </div>
+
+                        <div className="mb-5 overflow-x-auto">
+                            <div className="mb-2 text-xs font-black uppercase tracking-[0.2em] text-[#7f1218]">Resumen por venta diaria</div>
+                            <table className={tableClass}>
+                                <thead>
+                                    <tr>
+                                        <th className={thClass}>Fecha</th>
+                                        <th className={thClass}>Venta diaria</th>
+                                        <th className={`${thClass} text-right`}>Facturas</th>
+                                        <th className={`${thClass} text-right`}>Total SICAR</th>
+                                        <th className={`${thClass} text-right`}>Total membretado</th>
+                                        <th className={`${thClass} text-right`}>Pendiente</th>
+                                        <th className={`${thClass} text-right`}>Retenciones</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {taxReport.stampedInvoiceDailyRows.length === 0 ? (
+                                        <tr><td colSpan="7" className="py-6 text-center text-sm font-semibold text-stone-400">No hay facturas membretadas en este periodo.</td></tr>
+                                    ) : taxReport.stampedInvoiceDailyRows.map((row) => (
+                                        <tr key={row.dailySaleCode}>
+                                            <td className={tdClass}>{row.date}</td>
+                                            <td className={tdClass}>{row.dailySaleCode}</td>
+                                            <td className={`${tdClass} text-right font-semibold`}>{row.invoiceCount}</td>
+                                            <td className={`${tdClass} text-right font-semibold`}>{fmt(row.dailySaleTotal)}</td>
+                                            <td className={`${tdClass} text-right font-semibold`}>{fmt(row.total)}</td>
+                                            <td className={`${tdClass} text-right font-semibold ${row.remainingDailySale < -0.01 ? 'text-rose-700' : ''}`}>{fmt(row.remainingDailySale)}</td>
+                                            <td className={`${tdClass} text-right font-semibold`}>{fmt(row.retentionTotal)}</td>
+                                        </tr>
+                                    ))}
+                                </tbody>
+                            </table>
+                        </div>
+
+                        <div className="overflow-x-auto">
+                            <div className="mb-2 text-xs font-black uppercase tracking-[0.2em] text-[#7f1218]">Detalle factura por factura</div>
+                            <table className={tableClass}>
+                                <thead>
+                                    <tr>
+                                        <th className={thClass}>Fecha</th>
+                                        <th className={thClass}>Venta diaria</th>
+                                        <th className={thClass}>Factura</th>
+                                        <th className={thClass}>Metodo</th>
+                                        <th className={`${thClass} text-right`}>Subtotal</th>
+                                        <th className={`${thClass} text-right`}>IVA</th>
+                                        <th className={`${thClass} text-right`}>Total</th>
+                                        <th className={`${thClass} text-right`}>Ret. IR 2%</th>
+                                        <th className={`${thClass} text-right`}>Ret. Mun. 1%</th>
+                                        <th className={`${thClass} text-right`}>Neto</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {taxReport.stampedInvoiceRows.length === 0 ? (
+                                        <tr><td colSpan="10" className="py-6 text-center text-sm font-semibold text-stone-400">Sin detalle para mostrar.</td></tr>
+                                    ) : taxReport.stampedInvoiceRows.map((row, idx) => (
+                                        <tr key={`${row.dailySaleCode}-${row.document}-${idx}`}>
+                                            <td className={tdClass}>{row.date}</td>
+                                            <td className={tdClass}>{row.dailySaleCode}</td>
+                                            <td className={tdClass}>{row.document || '-'}</td>
+                                            <td className={tdClass}>{row.paymentMethod || '-'}</td>
+                                            <td className={`${tdClass} text-right font-semibold`}>{fmt(row.subtotal)}</td>
+                                            <td className={`${tdClass} text-right font-semibold`}>{fmt(row.iva)}</td>
+                                            <td className={`${tdClass} text-right font-semibold`}>{fmt(row.total)}</td>
+                                            <td className={`${tdClass} text-right font-semibold`}>{fmt(row.retentionIr2)}</td>
+                                            <td className={`${tdClass} text-right font-semibold`}>{fmt(row.retentionMunicipal1)}</td>
+                                            <td className={`${tdClass} text-right font-black text-[#7f1218]`}>{fmt(row.netTotal)}</td>
+                                        </tr>
+                                    ))}
+                                </tbody>
+                            </table>
+                        </div>
+                    </Card>
+                </div>
+            )}
+
             {taxTab === 'Resultado despues de impuestos' && (
                 <div className="space-y-5">
                     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
@@ -619,9 +836,15 @@ export default function Reports({ data }) {
     const taxReport = useMemo(() => buildTaxReport(data, selectedMonth), [data, selectedMonth]);
 
     const availableMonths = useMemo(() => {
-        const months = [...new Set(aggregatedData.map(d => d.month))];
+        const fiscalMonths = [
+            ...(data.ingresos || []),
+            ...(data.compras || []),
+            ...(data.gastos || []),
+            ...(data.facturas_membretadas_ventas || []),
+        ].map(getDocMonth).filter(Boolean);
+        const months = [...new Set([...aggregatedData.map(d => d.month), ...fiscalMonths])];
         return months.sort((a, b) => b.localeCompare(a));
-    }, [aggregatedData]);
+    }, [aggregatedData, data]);
 
     const filteredReport = useMemo(() => {
         return aggregatedData.filter(d => selectedMonth ? d.month === selectedMonth : true);
