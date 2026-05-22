@@ -47,7 +47,8 @@ const Icons = {
     scale: "M3 6l3 1m0 0l-3 9a5.002 5.002 0 006.001 0M6 7l3 9M6 7l6-2m6 2l3-1m-3 1l-3 9a5.002 5.002 0 006.001 0M18 7l3 9m-3-9l-6-2m0-2v2m0 16V5m0 16H9m3 0h3",
     dollar: "M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z",
     tag: "M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A1.994 1.994 0 013 12V7a4 4 0 014-4z",
-    refresh: "M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
+    refresh: "M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15",
+    eye: "M15 12a3 3 0 11-6 0 3 3 0 016 0z M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"
 };
 
 const Icon = ({ path, className = "w-5 h-5" }) => (
@@ -218,6 +219,137 @@ const renderDisplayValue = (fields, key, value) => {
     return String(value);
 };
 
+const getRecordDate = (item) => item?.date || item?.saleDate || item?.fecha || item?.month || item?.mes || '';
+
+const getRecordTitle = (item, fields) => {
+    const titleKey = ['description', 'descripcion', 'supplier', 'proveedor', 'numeroFactura', 'invoiceNumber', 'reference']
+        .find((key) => item?.[key]);
+    if (titleKey) return renderDisplayValue(fields, titleKey, item[titleKey]);
+    return item?.id ? `Registro ${item.id}` : 'Registro contable';
+};
+
+const isPdfSupport = (item) => String(item?.fotoFacturaPath || item?.fotoFacturaUrl || '').toLowerCase().includes('.pdf');
+
+const RecordDetailModal = ({ item, collectionName, fields, onClose, onEdit }) => {
+    if (!item) return null;
+
+    const supportUrl = item.fotoFacturaUrl || '';
+    const detailRows = Object.entries(fields).map(([key, field]) => ({
+        key,
+        label: field.label,
+        value: renderDisplayValue(fields, key, item[key]),
+    }));
+    const extraRows = [
+        ['ID', item.id],
+        ['Origen', item.sourceLabel || item.source || item.sourceSystem],
+        ['Referencia SICAR', item.sourceRecordId || item.sourceRawId || item.dailySaleCode],
+        ['Ruta soporte', item.fotoFacturaPath],
+    ].filter(([, value]) => value);
+
+    return (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <button className="absolute inset-0 bg-[#2b1113]/55 backdrop-blur-sm" onClick={onClose} aria-label="Cerrar" />
+            <div className="relative grid max-h-[92vh] w-full max-w-6xl overflow-hidden rounded-3xl border border-[#e6c9b8] bg-white shadow-2xl lg:grid-cols-[1.15fr_0.85fr]">
+                <div className="flex max-h-[92vh] flex-col overflow-hidden">
+                    <div className="border-b border-[#ead5c5] bg-gradient-to-br from-[#7f1218] to-[#2b1113] px-6 py-5 text-white">
+                        <div className="flex items-start justify-between gap-4">
+                            <div>
+                                <div className="text-xs font-bold uppercase tracking-[0.35em] text-[#f2b635]">Vista documental</div>
+                                <h2 className="mt-2 text-2xl font-black">{getRecordTitle(item, fields)}</h2>
+                                <div className="mt-2 flex flex-wrap gap-2 text-xs font-bold uppercase tracking-wider text-white/70">
+                                    <span>{collectionName}</span>
+                                    <span>Fecha: {getRecordDate(item) || 'Sin fecha'}</span>
+                                    {supportUrl && <span>Con soporte</span>}
+                                </div>
+                            </div>
+                            <button onClick={onClose} className="rounded-xl bg-white/10 p-2 text-white transition hover:bg-white/20">
+                                <Icon path={Icons.x} className="h-5 w-5" />
+                            </button>
+                        </div>
+                    </div>
+
+                    <div className="overflow-y-auto p-6">
+                        <div className="mb-5 grid grid-cols-1 gap-3 sm:grid-cols-3">
+                            <div className="rounded-2xl border border-stone-200 bg-stone-50 p-4">
+                                <div className="text-xs font-bold uppercase tracking-wider text-stone-500">Subtotal</div>
+                                <div className="mt-1 text-xl font-black text-[#7f1218]">{fmt(Number(item.subtotal ?? item.amount ?? 0))}</div>
+                            </div>
+                            <div className="rounded-2xl border border-stone-200 bg-stone-50 p-4">
+                                <div className="text-xs font-bold uppercase tracking-wider text-stone-500">IVA</div>
+                                <div className="mt-1 text-xl font-black text-[#7f1218]">{fmt(Number(item.iva ?? 0))}</div>
+                            </div>
+                            <div className="rounded-2xl border border-stone-200 bg-stone-50 p-4">
+                                <div className="text-xs font-bold uppercase tracking-wider text-stone-500">Total</div>
+                                <div className="mt-1 text-xl font-black text-[#7f1218]">{fmt(Number(item.total ?? item.amount ?? 0))}</div>
+                            </div>
+                        </div>
+
+                        <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                            {detailRows.map((row) => (
+                                <div key={row.key} className="rounded-xl border border-stone-200 bg-white px-4 py-3 shadow-sm">
+                                    <div className="text-[11px] font-black uppercase tracking-[0.18em] text-stone-400">{row.label}</div>
+                                    <div className="mt-1 break-words text-sm font-bold text-stone-800">{row.value || '---'}</div>
+                                </div>
+                            ))}
+                        </div>
+
+                        {extraRows.length > 0 && (
+                            <div className="mt-5 rounded-2xl border border-[#ead5c5] bg-[#fff8f5] p-4">
+                                <div className="mb-3 text-xs font-black uppercase tracking-[0.25em] text-[#7f1218]">Metadatos</div>
+                                <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
+                                    {extraRows.map(([label, value]) => (
+                                        <div key={label} className="text-xs">
+                                            <span className="font-black uppercase tracking-wider text-stone-500">{label}: </span>
+                                            <span className="font-semibold text-stone-700">{String(value)}</span>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                        )}
+                    </div>
+
+                    <div className="flex flex-wrap justify-end gap-2 border-t border-[#ead5c5] bg-stone-50 px-6 py-4">
+                        <Button type="button" variant="ghost" onClick={onClose}>Cerrar</Button>
+                        <Button type="button" variant="warning" onClick={onEdit} className="flex items-center gap-2">
+                            <Icon path={Icons.edit} className="h-4 w-4" /> Editar
+                        </Button>
+                    </div>
+                </div>
+
+                <div className="max-h-[92vh] overflow-y-auto border-l border-[#ead5c5] bg-[#fbf6f1] p-5">
+                    <div className="mb-3 flex items-center justify-between gap-3">
+                        <div>
+                            <div className="text-xs font-black uppercase tracking-[0.25em] text-[#7f1218]">Soporte fiscal</div>
+                            <p className="text-xs font-semibold text-stone-500">Factura, recibo o respaldo adjunto</p>
+                        </div>
+                        {supportUrl && (
+                            <a href={supportUrl} target="_blank" rel="noreferrer" className="rounded-lg bg-[#a81d24] px-3 py-1.5 text-xs font-bold text-white">
+                                Abrir
+                            </a>
+                        )}
+                    </div>
+
+                    {supportUrl ? (
+                        isPdfSupport(item) ? (
+                            <iframe title="Soporte fiscal" src={supportUrl} className="h-[70vh] w-full rounded-2xl border border-stone-200 bg-white" />
+                        ) : (
+                            <div className="overflow-hidden rounded-2xl border border-stone-200 bg-white p-2 shadow-sm">
+                                <img src={supportUrl} alt="Soporte fiscal" className="max-h-[72vh] w-full rounded-xl object-contain" />
+                            </div>
+                        )
+                    ) : (
+                        <div className="flex min-h-[420px] flex-col items-center justify-center rounded-2xl border-2 border-dashed border-stone-300 bg-white text-center">
+                            <Icon path={Icons.receipt} className="mb-3 h-12 w-12 text-stone-300" />
+                            <div className="text-sm font-black text-stone-500">Sin soporte adjunto</div>
+                            <p className="mt-1 max-w-xs text-xs font-semibold text-stone-400">Usa Editar para agregar foto o PDF a este registro.</p>
+                        </div>
+                    )}
+                </div>
+            </div>
+        </div>
+    );
+};
+
 const EditRecordModal = ({ item, collectionName, fields, onClose, onSaved }) => {
     const [editData, setEditData] = useState(item);
     const [photoFile, setPhotoFile] = useState(null);
@@ -379,6 +511,7 @@ const EditRecordModal = ({ item, collectionName, fields, onClose, onSaved }) => 
 
 const EditableRow = ({ item, collectionName, fields, onUpdate, onDelete }) => {
     const [isEditing, setIsEditing] = useState(false);
+    const [showViewModal, setShowViewModal] = useState(false);
     const [showEditModal, setShowEditModal] = useState(false);
     const [editData, setEditData] = useState(item);
     const [loading, setLoading] = useState(false);
@@ -505,6 +638,13 @@ const EditableRow = ({ item, collectionName, fields, onUpdate, onDelete }) => {
                     {isEditing ? renderInput(key, editData[key]) : renderValue(key, item[key])}
                 </td>
             ))}
+            <td className="py-2.5 px-3">
+                {item.fotoFacturaUrl ? (
+                    <Badge variant="success">Con soporte</Badge>
+                ) : (
+                    <Badge>Sin soporte</Badge>
+                )}
+            </td>
             <td className="py-2.5 px-3 whitespace-nowrap">
                 {isEditing ? (
                     <div className='flex gap-1'>
@@ -516,6 +656,9 @@ const EditableRow = ({ item, collectionName, fields, onUpdate, onDelete }) => {
                 ) : (
                     <>
                         <div className='flex gap-1'>
+                            <Button onClick={() => setShowViewModal(true)} disabled={!item.id} variant="ghost" size="sm" className="flex items-center gap-1">
+                                <Icon path={Icons.eye} className="w-3 h-3" /> Ver
+                            </Button>
                             <Button onClick={() => setShowEditModal(true)} disabled={!item.id} variant="warning" size="sm" className="flex items-center gap-1">
                                 <Icon path={Icons.edit} className="w-3 h-3" /> Editar
                             </Button>
@@ -530,6 +673,18 @@ const EditableRow = ({ item, collectionName, fields, onUpdate, onDelete }) => {
                                 fields={fields}
                                 onClose={() => setShowEditModal(false)}
                                 onSaved={onUpdate}
+                            />
+                        )}
+                        {showViewModal && (
+                            <RecordDetailModal
+                                item={item}
+                                collectionName={collectionName}
+                                fields={fields}
+                                onClose={() => setShowViewModal(false)}
+                                onEdit={() => {
+                                    setShowViewModal(false);
+                                    setShowEditModal(true);
+                                }}
                             />
                         )}
                     </>
@@ -624,24 +779,42 @@ const EditableList = ({
     }, [advancedFilterConfig, advancedFilters, filterType, filterValue, localData]);
 
     const hasData = filteredData && filteredData.length > 0;
+    const filteredTotal = filteredData.reduce((sum, item) => sum + (Number(item.total ?? item.amount ?? item.monto ?? item.subtotal) || 0), 0);
+    const supportCount = filteredData.filter((item) => item.fotoFacturaUrl).length;
+    const activeAdvancedCount = Object.entries(advancedFilters || {})
+        .filter(([key, value]) => !['dateFrom', 'dateTo'].includes(key) && value)
+        .length;
 
     return (
-        <div className="mt-4">
+        <div className="mt-4 space-y-4">
             {onFilterChange && (
-                <div className="mb-4 space-y-3 rounded-xl border border-stone-200 bg-stone-50 p-4">
-                    <div className="flex flex-wrap items-center gap-3">
-                        <label className="text-xs font-bold text-stone-500 uppercase tracking-wider">{filterLabel}:</label>
-                        <input
-                            type={filterType}
-                            value={filterValue}
-                            onChange={(e) => onFilterChange(e.target.value)}
-                            className="bg-white border border-stone-200 rounded-lg px-3 py-1.5 text-sm font-semibold text-stone-700 focus:border-[#a81d24] focus:ring-2 focus:ring-[#a81d24]/15 outline-none"
-                        />
-                        {filterValue && (
-                            <Button type="button" variant="ghost" size="sm" onClick={() => onFilterChange('')}>
-                                Limpiar
-                            </Button>
-                        )}
+                <div className="rounded-2xl border border-[#e6c9b8] bg-gradient-to-br from-white to-[#fff8f5] p-4 shadow-sm">
+                    <div className="mb-4 flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+                        <div>
+                            <div className="text-xs font-black uppercase tracking-[0.28em] text-[#7f1218]">Centro de revision</div>
+                            <div className="mt-1 text-sm font-semibold text-stone-500">
+                                {filteredData.length} registros filtrados · {supportCount} con soporte · Total {fmt(filteredTotal)}
+                            </div>
+                        </div>
+                        <div className="flex flex-wrap items-end gap-3">
+                            <div className="space-y-1">
+                                <label className="text-xs font-bold text-stone-500 uppercase tracking-wider">{filterLabel}</label>
+                                <input
+                                    type={filterType}
+                                    value={filterValue}
+                                    onChange={(e) => onFilterChange(e.target.value)}
+                                    className="min-w-[170px] bg-white border border-stone-200 rounded-xl px-3 py-2 text-sm font-semibold text-stone-700 focus:border-[#a81d24] focus:ring-2 focus:ring-[#a81d24]/15 outline-none"
+                                />
+                            </div>
+                            {(filterValue || activeAdvancedCount > 0 || advancedFilters.dateFrom || advancedFilters.dateTo) && (
+                                <Button type="button" variant="ghost" size="md" onClick={() => {
+                                    onFilterChange('');
+                                    advancedFilterConfig.forEach((filterField) => onAdvancedFiltersChange?.(filterField.key, ''));
+                                }}>
+                                    Limpiar filtros
+                                </Button>
+                            )}
+                        </div>
                     </div>
 
                     {advancedFilterConfig.length > 0 && onAdvancedFiltersChange && (
@@ -656,7 +829,7 @@ const EditableList = ({
                                         value={advancedFilters[filterField.key] || ''}
                                         placeholder={filterField.placeholder || ''}
                                         onChange={(e) => onAdvancedFiltersChange(filterField.key, e.target.value)}
-                                        className="w-full bg-white border border-stone-200 rounded-lg px-3 py-1.5 text-sm font-semibold text-stone-700 focus:border-[#a81d24] focus:ring-2 focus:ring-[#a81d24]/15 outline-none"
+                                        className="w-full bg-white border border-stone-200 rounded-xl px-3 py-2 text-sm font-semibold text-stone-700 focus:border-[#a81d24] focus:ring-2 focus:ring-[#a81d24]/15 outline-none"
                                     />
                                 </div>
                             ))}
@@ -673,17 +846,19 @@ const EditableList = ({
                     </p>
                 </div>
             ) : (
-                <div className="overflow-x-auto border border-stone-200 rounded-xl shadow-sm">
+                <div className="overflow-hidden rounded-2xl border border-stone-200 bg-white shadow-sm">
+                    <div className="overflow-x-auto">
                     <table className="w-full text-sm">
-                        <thead>
-                            <tr className="text-left bg-stone-100 border-b border-stone-200">
+                        <thead className="sticky top-0 z-10">
+                            <tr className="text-left bg-[#f8efe8] border-b border-[#ead5c5]">
                                 {Object.values(fields).map(field => (
-                                    <th key={field.label} className="py-2.5 px-3 font-bold text-stone-600 text-xs uppercase tracking-wider">{field.label}</th>
+                                    <th key={field.label} className="py-3 px-3 font-black text-[#5f1a1f] text-xs uppercase tracking-wider">{field.label}</th>
                                 ))}
-                                <th className="py-2.5 px-3 font-bold text-stone-600 text-xs uppercase tracking-wider">Acciones</th>
+                                <th className="py-3 px-3 font-black text-[#5f1a1f] text-xs uppercase tracking-wider">Soporte</th>
+                                <th className="py-3 px-3 font-black text-[#5f1a1f] text-xs uppercase tracking-wider">Acciones</th>
                             </tr>
                         </thead>
-                        <tbody>
+                        <tbody className="divide-y divide-stone-100">
                             {filteredData.map(item => (
                                 <EditableRow
                                     key={item.id}
@@ -696,6 +871,7 @@ const EditableList = ({
                             ))}
                         </tbody>
                     </table>
+                    </div>
                 </div>
             )}
         </div>
