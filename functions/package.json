@@ -1,0 +1,19 @@
+{
+  "name": "estado-resultados-functions",
+  "private": true,
+  "main": "index.js",
+  "engines": {
+    "node": "20"
+  },
+  "scripts": {
+    "serve": "firebase emulators:start --only functions",
+    "deploy": "firebase deploy --only functions",
+    "lint": "node --check index.js",
+    "replay-pending-purchases": "node scripts/processPendingSicarPurchases.js"
+  },
+  "dependencies": {
+    "firebase-admin": "^12.7.0",
+    "firebase-functions": "^6.0.1",
+    "mysql2": "^3.11.3"
+  }
+}

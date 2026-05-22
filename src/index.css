@@ -1,0 +1,38 @@
+@import url('https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=Manrope:wght@400;500;600;700;800&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --brand-wine: #a81d24;
+  --brand-wine-dark: #7f1218;
+  --brand-gold: #f2b635;
+  --brand-cream: #fbf2e8;
+  --brand-cream-deep: #f3e2d1;
+  --brand-ink: #211617;
+  color-scheme: light;
+}
+
+html {
+  background: linear-gradient(180deg, #fffaf5 0%, #f7ebdd 100%);
+}
+
+body {
+  min-height: 100vh;
+  @apply text-slate-900 antialiased;
+  background:
+    radial-gradient(circle at top left, rgba(242, 182, 53, 0.18), transparent 22rem),
+    radial-gradient(circle at top right, rgba(168, 29, 36, 0.12), transparent 26rem),
+    linear-gradient(180deg, #fffaf5 0%, #f7ebdd 100%);
+  font-family: "Manrope", "Segoe UI", sans-serif;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+::selection {
+  background: rgba(168, 29, 36, 0.18);
+  color: var(--brand-ink);
+}
