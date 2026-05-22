@@ -10,7 +10,8 @@
     "deploy": "firebase deploy --only functions",
     "lint": "node --check index.js",
     "replay-pending-purchases": "node scripts/processPendingSicarPurchases.js",
-    "sync-daily-sales": "node scripts/syncDailySicarSales.js"
+    "sync-daily-sales": "node scripts/syncDailySicarSales.js",
+    "sync-purchases": "node scripts/syncSicarPurchases.js"
   },
   "dependencies": {
     "firebase-admin": "^12.7.0",
