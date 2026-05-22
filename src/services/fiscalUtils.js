@@ -1,5 +1,8 @@
-import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
+import { ref, uploadBytesResumable, getDownloadURL } from 'firebase/storage';
 import { storage } from '../firebase';
+
+const MAX_INVOICE_FILE_SIZE_BYTES = 10 * 1024 * 1024;
+const INVOICE_UPLOAD_TIMEOUT_MS = 60000;
 
 export const PAYMENT_METHODS = [
     'BAC POS',
@@ -77,6 +80,30 @@ export const buildFiscalPayload = (values = {}) => {
     };
 };
 
+const getStorageErrorMessage = (error) => {
+    const code = error?.code || '';
+    if (code === 'storage/unauthorized') {
+        return 'Firebase Storage rechazo la subida. Revisa que Storage este activo y que las reglas permitan subir archivos a usuarios autenticados.';
+    }
+    if (code === 'storage/canceled') {
+        return 'La subida de la foto fue cancelada porque tardo demasiado. Intenta con una imagen mas liviana o vuelve a intentarlo.';
+    }
+    if (code === 'storage/retry-limit-exceeded') {
+        return 'La conexion con Firebase Storage esta lenta o inestable. Intenta nuevamente.';
+    }
+    return error?.message || 'No se pudo subir la foto a Firebase Storage.';
+};
+
+const sanitizeFileName = (fileName = 'soporte') => (
+    String(fileName)
+        .replace(/\.[^/.]+$/, '')
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .replace(/[^a-zA-Z0-9_-]+/g, '_')
+        .replace(/^_+|_+$/g, '')
+        .slice(0, 80) || 'soporte'
+);
+
 export async function uploadInvoicePhoto(file, folder, docId) {
     if (!file) {
         return {
@@ -85,17 +112,52 @@ export async function uploadInvoicePhoto(file, folder, docId) {
         };
     }
 
+    if (file.size > MAX_INVOICE_FILE_SIZE_BYTES) {
+        throw new Error('La foto o PDF supera 10 MB. Comprimilo o envia una imagen mas liviana.');
+    }
+
     const extension = file.name?.includes('.') ? file.name.split('.').pop() : 'jpg';
     const safeDocId = String(docId || Date.now()).replace(/[^a-zA-Z0-9_-]/g, '_');
-    const storagePath = `${folder}/${safeDocId}.${extension}`;
+    const safeName = sanitizeFileName(file.name);
+    const storagePath = `${folder}/${safeDocId}/${Date.now()}_${safeName}.${extension}`;
     const storageRef = ref(storage, storagePath);
 
-    await uploadBytes(storageRef, file, {
-        contentType: file.type || 'application/octet-stream',
-    });
+    try {
+        const snapshot = await new Promise((resolve, reject) => {
+            let settled = false;
+            const uploadTask = uploadBytesResumable(storageRef, file, {
+                contentType: file.type || 'application/octet-stream',
+            });
+            const timer = window.setTimeout(() => {
+                if (settled) return;
+                settled = true;
+                uploadTask.cancel();
+                reject(new Error('La subida de la foto tardo mas de 60 segundos.'));
+            }, INVOICE_UPLOAD_TIMEOUT_MS);
 
-    return {
-        fotoFacturaUrl: await getDownloadURL(storageRef),
-        fotoFacturaPath: storagePath,
-    };
+            uploadTask.on(
+                'state_changed',
+                null,
+                (error) => {
+                    if (settled) return;
+                    settled = true;
+                    window.clearTimeout(timer);
+                    reject(error);
+                },
+                () => {
+                    if (settled) return;
+                    settled = true;
+                    window.clearTimeout(timer);
+                    resolve(uploadTask.snapshot);
+                }
+            );
+        });
+
+        return {
+            fotoFacturaUrl: await getDownloadURL(snapshot.ref),
+            fotoFacturaPath: storagePath,
+        };
+    } catch (error) {
+        throw new Error(getStorageErrorMessage(error));
+    }
 }
