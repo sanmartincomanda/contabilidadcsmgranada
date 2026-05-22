@@ -1,6 +1,6 @@
 // src/components/Reports.jsx
 import React, { useMemo, useState, useCallback } from 'react';
-import { APP_BRAND_NAME, fmt, peso, branchName, resolveBranchId } from '../constants';
+import { APP_BRAND_LOGO, APP_BRAND_NAME, fmt, peso, branchName, resolveBranchId } from '../constants';
 import BalanceSheet from './BalanceSheet';
 import DashboardGeneral from './DashboardGeneral';
 import { resolveReportIncomeEntries } from '../services/incomeAggregation';
@@ -416,9 +416,6 @@ const buildTaxReport = (data, selectedMonth) => {
                 retentionMunicipal1,
                 retentionTotal,
                 netTotal: peso(total - retentionTotal),
-                dailySaleTotal: peso(item.dailySaleTotal ?? linkedDailySale.total),
-                dailySaleSubtotal: peso(item.dailySaleSubtotal ?? linkedDailySale.subtotal),
-                linkedIngresoId: item.linkedIngresoId || linkedDailySale.id || '',
             };
         })
         .sort((a, b) => `${a.date}-${a.document}`.localeCompare(`${b.date}-${b.document}`));
@@ -426,13 +423,10 @@ const buildTaxReport = (data, selectedMonth) => {
     const stampedInvoicesByDay = stampedInvoiceRows.reduce((acc, row) => {
         const key = row.dailySaleCode || row.date || 'SIN VENTA';
         if (!acc[key]) {
-            const linkedDailySale = dailySalesByCode.get(row.dailySaleCode) || dailySalesByDate.get(row.date) || {};
             acc[key] = {
                 date: row.date,
                 dailySaleCode: key,
                 invoiceCount: 0,
-                dailySaleTotal: peso(row.dailySaleTotal || linkedDailySale.total),
-                dailySaleSubtotal: peso(row.dailySaleSubtotal || linkedDailySale.subtotal),
                 subtotal: 0,
                 iva: 0,
                 total: 0,
@@ -464,7 +458,6 @@ const buildTaxReport = (data, selectedMonth) => {
             retentionMunicipal1: peso(row.retentionMunicipal1),
             retentionTotal: peso(row.retentionTotal),
             netTotal: peso(row.netTotal),
-            remainingDailySale: row.dailySaleTotal > 0 ? peso(row.dailySaleTotal - row.total) : 0,
         }))
         .sort((a, b) => a.date.localeCompare(b.date));
 
@@ -525,7 +518,6 @@ const buildTaxReport = (data, selectedMonth) => {
             stampedInvoiceTotal,
             stampedInvoiceRetentions: sumBy(stampedInvoiceRows, 'retentionTotal'),
             stampedInvoiceNet: sumBy(stampedInvoiceRows, 'netTotal'),
-            stampedInvoiceRemainingDailySale: sumBy(stampedInvoiceDailyRows, 'remainingDailySale'),
             salesSubtotal,
             purchaseSubtotal,
             profitBeforeTax,
@@ -556,6 +548,13 @@ const TaxReportsPanel = ({ taxReport, taxTab, setTaxTab, selectedMonth, setSelec
     const tableClass = "w-full text-sm";
     const thClass = "pb-3 text-left text-xs font-bold uppercase tracking-wider text-stone-500";
     const tdClass = "py-2.5 border-t border-stone-100 text-stone-700";
+    const handlePrintStampedInvoices = () => {
+        document.body.classList.add('print-stamped-tax-report');
+        const cleanup = () => document.body.classList.remove('print-stamped-tax-report');
+        window.addEventListener('afterprint', cleanup, { once: true });
+        window.print();
+        window.setTimeout(cleanup, 1000);
+    };
 
     return (
         <div className="animate-fade-in space-y-5">
@@ -686,38 +685,63 @@ const TaxReportsPanel = ({ taxReport, taxTab, setTaxTab, selectedMonth, setSelec
                         <StatCard title="Facturas Emitidas" value={taxReport.totals.stampedInvoiceCount} icon="receipt" variant="wine" />
                         <StatCard title="Subtotal Facturado" value={fmt(taxReport.totals.stampedInvoiceSubtotal)} icon="trendingUp" variant="success" />
                         <StatCard title="IVA Facturado" value={fmt(taxReport.totals.stampedInvoiceIva)} icon="receipt" variant="warning" />
-                        <StatCard title="Total Facturado" value={fmt(taxReport.totals.stampedInvoiceTotal)} icon="wallet" variant="dark" />
+                        <StatCard title="Total Fiscal Membretado" value={fmt(taxReport.totals.stampedInvoiceTotal)} icon="wallet" variant="dark" />
                     </div>
 
                     <Card
-                        title="Reporte de Facturas Membretadas"
-                        subtitle="Detalle de facturas emitidas contra ventas diarias SICAR"
+                        title="Reporte Fiscal Membretado"
+                        subtitle="El total de este reporte suma solo facturas membretadas registradas"
                         icon="receipt"
+                        className="stamped-tax-report"
                         right={
-                            <div className="flex flex-wrap gap-2">
+                            <div className="no-print flex flex-wrap gap-2">
                                 <button onClick={() => downloadCsv(`resumen-facturas-membretadas-${selectedMonth}.csv`, taxReport.stampedInvoiceDailyRows)} className="rounded-lg border border-[#a81d24] px-3 py-1.5 text-xs font-bold text-[#a81d24]">Exportar resumen</button>
-                                <button onClick={() => downloadCsv(`facturas-membretadas-${selectedMonth}.csv`, taxReport.stampedInvoiceRows)} className="rounded-lg bg-[#a81d24] px-3 py-1.5 text-xs font-bold text-white">Exportar detalle</button>
+                                <button onClick={() => downloadCsv(`facturas-membretadas-${selectedMonth}.csv`, taxReport.stampedInvoiceRows)} className="rounded-lg border border-[#a81d24] px-3 py-1.5 text-xs font-bold text-[#a81d24]">Exportar detalle</button>
+                                <button onClick={handlePrintStampedInvoices} className="rounded-lg bg-[#a81d24] px-3 py-1.5 text-xs font-bold text-white">Imprimir membretado</button>
                             </div>
                         }
                     >
-                        <div className="mb-4 rounded-xl border border-[#ead5c5] bg-[#fff8f5] p-4">
-                            <div className="text-xs font-bold uppercase tracking-[0.3em] text-[#a81d24]">{APP_BRAND_NAME}</div>
-                            <div className="text-lg font-black text-[#2b1113]">Control fiscal de facturas membretadas</div>
-                            <div className="text-xs font-semibold text-stone-500">Periodo: {selectedMonth || 'Todos'} · Total neto despues de retenciones: {fmt(taxReport.totals.stampedInvoiceNet)}</div>
+                        <div className="mb-5 rounded-2xl border border-[#d6b8a7] bg-gradient-to-br from-white via-[#fff8f5] to-[#f7e8dc] p-5">
+                            <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+                                <div className="flex items-center gap-4">
+                                    <img src={APP_BRAND_LOGO} alt={APP_BRAND_NAME} className="h-20 w-20 rounded-2xl border border-[#ead5c5] bg-white object-contain p-2 shadow-sm" />
+                                    <div>
+                                        <div className="text-xs font-black uppercase tracking-[0.35em] text-[#a81d24]">{APP_BRAND_NAME}</div>
+                                        <div className="mt-1 text-2xl font-black uppercase text-[#2b1113]">Reporte de facturas membretadas</div>
+                                        <div className="text-xs font-semibold uppercase tracking-[0.2em] text-stone-500">Documento de soporte fiscal para agentes fiscales</div>
+                                    </div>
+                                </div>
+                                <div className="rounded-xl border border-[#ead5c5] bg-white/80 px-4 py-3 text-left md:text-right">
+                                    <div className="text-xs font-bold uppercase tracking-wider text-stone-500">Periodo fiscal</div>
+                                    <div className="text-xl font-black text-[#7f1218]">{selectedMonth || 'Todos'}</div>
+                                    <div className="mt-1 text-xs font-semibold text-stone-500">Base: facturas membretadas emitidas</div>
+                                </div>
+                            </div>
+                            <div className="mt-4 rounded-xl border border-[#a81d24]/20 bg-white px-4 py-3 text-sm font-semibold text-[#5f1a1f]">
+                                Este reporte formaliza unicamente las facturas membretadas registradas. No toma como total la venta diaria SICAR; la venta diaria se muestra solo como referencia de origen.
+                            </div>
                         </div>
 
-                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-5">
+                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3 mb-5">
                             <div className="rounded-xl border border-stone-200 bg-white px-4 py-3">
-                                <div className="text-xs font-bold uppercase tracking-wider text-stone-500">Retenciones en facturas</div>
+                                <div className="text-xs font-bold uppercase tracking-wider text-stone-500">Subtotal membretado</div>
+                                <div className="mt-1 text-lg font-black text-[#7f1218]">{fmt(taxReport.totals.stampedInvoiceSubtotal)}</div>
+                            </div>
+                            <div className="rounded-xl border border-stone-200 bg-white px-4 py-3">
+                                <div className="text-xs font-bold uppercase tracking-wider text-stone-500">IVA membretado</div>
+                                <div className="mt-1 text-lg font-black text-[#7f1218]">{fmt(taxReport.totals.stampedInvoiceIva)}</div>
+                            </div>
+                            <div className="rounded-xl border border-stone-200 bg-white px-4 py-3">
+                                <div className="text-xs font-bold uppercase tracking-wider text-stone-500">Total membretado</div>
+                                <div className="mt-1 text-lg font-black text-[#7f1218]">{fmt(taxReport.totals.stampedInvoiceTotal)}</div>
+                            </div>
+                            <div className="rounded-xl border border-stone-200 bg-white px-4 py-3">
+                                <div className="text-xs font-bold uppercase tracking-wider text-stone-500">Retenciones</div>
                                 <div className="mt-1 text-lg font-black text-[#7f1218]">{fmt(taxReport.totals.stampedInvoiceRetentions)}</div>
                             </div>
                             <div className="rounded-xl border border-stone-200 bg-white px-4 py-3">
-                                <div className="text-xs font-bold uppercase tracking-wider text-stone-500">Neto a recibir</div>
+                                <div className="text-xs font-bold uppercase tracking-wider text-stone-500">Neto despues de retenciones</div>
                                 <div className="mt-1 text-lg font-black text-[#7f1218]">{fmt(taxReport.totals.stampedInvoiceNet)}</div>
-                            </div>
-                            <div className="rounded-xl border border-stone-200 bg-white px-4 py-3">
-                                <div className="text-xs font-bold uppercase tracking-wider text-stone-500">Venta diaria no membretada</div>
-                                <div className="mt-1 text-lg font-black text-[#7f1218]">{fmt(taxReport.totals.stampedInvoiceRemainingDailySale)}</div>
                             </div>
                         </div>
 
@@ -727,26 +751,28 @@ const TaxReportsPanel = ({ taxReport, taxTab, setTaxTab, selectedMonth, setSelec
                                 <thead>
                                     <tr>
                                         <th className={thClass}>Fecha</th>
-                                        <th className={thClass}>Venta diaria</th>
+                                        <th className={thClass}>Referencia venta diaria</th>
                                         <th className={`${thClass} text-right`}>Facturas</th>
-                                        <th className={`${thClass} text-right`}>Total SICAR</th>
+                                        <th className={`${thClass} text-right`}>Subtotal</th>
+                                        <th className={`${thClass} text-right`}>IVA</th>
                                         <th className={`${thClass} text-right`}>Total membretado</th>
-                                        <th className={`${thClass} text-right`}>Pendiente</th>
                                         <th className={`${thClass} text-right`}>Retenciones</th>
+                                        <th className={`${thClass} text-right`}>Neto</th>
                                     </tr>
                                 </thead>
                                 <tbody>
                                     {taxReport.stampedInvoiceDailyRows.length === 0 ? (
-                                        <tr><td colSpan="7" className="py-6 text-center text-sm font-semibold text-stone-400">No hay facturas membretadas en este periodo.</td></tr>
+                                        <tr><td colSpan="8" className="py-6 text-center text-sm font-semibold text-stone-400">No hay facturas membretadas en este periodo.</td></tr>
                                     ) : taxReport.stampedInvoiceDailyRows.map((row) => (
                                         <tr key={row.dailySaleCode}>
                                             <td className={tdClass}>{row.date}</td>
                                             <td className={tdClass}>{row.dailySaleCode}</td>
                                             <td className={`${tdClass} text-right font-semibold`}>{row.invoiceCount}</td>
-                                            <td className={`${tdClass} text-right font-semibold`}>{fmt(row.dailySaleTotal)}</td>
+                                            <td className={`${tdClass} text-right font-semibold`}>{fmt(row.subtotal)}</td>
+                                            <td className={`${tdClass} text-right font-semibold`}>{fmt(row.iva)}</td>
                                             <td className={`${tdClass} text-right font-semibold`}>{fmt(row.total)}</td>
-                                            <td className={`${tdClass} text-right font-semibold ${row.remainingDailySale < -0.01 ? 'text-rose-700' : ''}`}>{fmt(row.remainingDailySale)}</td>
                                             <td className={`${tdClass} text-right font-semibold`}>{fmt(row.retentionTotal)}</td>
+                                            <td className={`${tdClass} text-right font-semibold`}>{fmt(row.netTotal)}</td>
                                         </tr>
                                     ))}
                                 </tbody>
@@ -759,7 +785,7 @@ const TaxReportsPanel = ({ taxReport, taxTab, setTaxTab, selectedMonth, setSelec
                                 <thead>
                                     <tr>
                                         <th className={thClass}>Fecha</th>
-                                        <th className={thClass}>Venta diaria</th>
+                                        <th className={thClass}>Referencia venta diaria</th>
                                         <th className={thClass}>Factura</th>
                                         <th className={thClass}>Metodo</th>
                                         <th className={`${thClass} text-right`}>Subtotal</th>
@@ -917,6 +943,21 @@ export default function Reports({ data }) {
                 .custom-scrollbar::-webkit-scrollbar { width: 5px; }
                 .custom-scrollbar::-webkit-scrollbar-track { background: #f5f0ec; border-radius: 3px; }
                 .custom-scrollbar::-webkit-scrollbar-thumb { background: #c8a898; border-radius: 3px; }
+                @media print {
+                    body.print-stamped-tax-report * { visibility: hidden !important; }
+                    body.print-stamped-tax-report .stamped-tax-report,
+                    body.print-stamped-tax-report .stamped-tax-report * { visibility: visible !important; }
+                    body.print-stamped-tax-report .stamped-tax-report {
+                        position: absolute !important;
+                        inset: 0 auto auto 0 !important;
+                        width: 100% !important;
+                        border: 0 !important;
+                        box-shadow: none !important;
+                    }
+                    body.print-stamped-tax-report .no-print { display: none !important; }
+                    body.print-stamped-tax-report table { page-break-inside: auto; }
+                    body.print-stamped-tax-report tr { page-break-inside: avoid; page-break-after: auto; }
+                }
             `}</style>
 
             {/* Expense detail modal */}
