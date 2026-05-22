@@ -303,6 +303,11 @@ cd functions
 .\scripts\runDailySicarSales.ps1 -Date 2026-05-22
 ```
 
+Si corres el worker sin fecha explicita:
+
+- antes de las 8:00 PM `America/Managua`, toma el dia anterior
+- desde las 8:00 PM en adelante, toma el dia actual
+
 Registrar la tarea diaria de las 8:00 PM:
 
 ```powershell
@@ -317,6 +322,39 @@ El worker:
 - guarda staging en `integraciones_privadas/sicar/ventas_raw/venta_diaria_YYYY-MM-DD`
 - actualiza `ingresos/sicar_venta_diaria_YYYY-MM-DD`
 - mantiene idempotencia si corre mas de una vez
+
+## Worker local de compras de contado
+
+Las compras de SICAR tambien corren localmente porque la base MySQL vive en el servidor. Para esta sucursal, el worker de compras queda configurado como contado por transferencia:
+
+- lee `compra` y `proveedor`
+- excluye anuladas por `status < 0`, `can_caj_id` o `can_rcc_id`
+- guarda staging en `integraciones_privadas/sicar/compras_raw/compra_ID`
+- actualiza `compras/sicar_compra_compra_ID`
+- fuerza `paymentType = "Transferencia"`
+- no crea `cuentas_por_pagar`
+- no crea `gastosDiarios`
+- si existia algun espejo anterior de CxP o gasto diario para la misma compra SICAR, lo elimina
+
+Prueba manual:
+
+```powershell
+cd functions
+.\scripts\runDailySicarPurchases.ps1 -Date 2026-05-22 -Preview
+.\scripts\runDailySicarPurchases.ps1 -Date 2026-05-22
+```
+
+Sin fecha explicita usa la misma regla de cierre:
+
+- antes de las 8:00 PM `America/Managua`, toma el dia anterior
+- desde las 8:00 PM en adelante, toma el dia actual
+
+Registrar la tarea diaria de las 8:10 PM:
+
+```powershell
+cd functions
+.\scripts\registerDailySicarPurchasesTask.ps1
+```
 
 ## Ejemplo de push directo
 
@@ -393,7 +431,7 @@ Content-Type: application/json
 La sincronizacion hace `upsert` por dia en `ingresos` con ids tipo:
 
 ```text
-sicar_amparito_2026-05-04
+sicar_venta_diaria_2026-05-04
 ```
 
 Las ventas privadas generan:
@@ -405,13 +443,13 @@ Las ventas privadas generan:
 La sincronizacion privada genera documentos tipo:
 
 ```text
-integraciones_privadas/sicar/compras_raw/compra_2026-05-14_xxxxxxxxxxxxxxxxxxxxxxxx
+integraciones_privadas/sicar/compras_raw/compra_12345
 ```
 
-Y luego crea automaticamente, segun aplique:
+El worker local de esta sucursal crea:
 
-- `gastosDiarios/sicar_gd_*`
 - `compras/sicar_compra_*`
-- `cuentas_por_pagar/sicar_cxp_*`
+
+No crea CxP ni gasto diario porque las compras se estan integrando como transferencia de contado.
 
 Tambien guarda bitacora en `sicar_sync_logs`.

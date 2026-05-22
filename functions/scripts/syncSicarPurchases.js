@@ -6,6 +6,7 @@ const mysql = require('mysql2/promise');
 const PROJECT_ID = 'sistema-contable-csm-granada';
 const BRANCH_ID = 'granada';
 const BRANCH_NAME = 'CARNES SAN MARTIN GRANADA';
+const TIMEZONE = 'America/Managua';
 const DEFAULT_KEY_PATH = 'C:\\SICAR\\keys\\firebase-adminsdk.json';
 
 function loadEnvFile(filePath) {
@@ -34,6 +35,30 @@ function parseArgs(argv) {
     else if (arg.startsWith('--endDate=')) acc.endDate = arg.slice('--endDate='.length);
     return acc;
   }, { preview: false, stageOnly: false });
+}
+
+function getManaguaNowParts() {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: TIMEZONE,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    hourCycle: 'h23',
+  }).formatToParts(new Date());
+
+  const lookup = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  const hour = Number(lookup.hour || 0);
+
+  return {
+    date: `${lookup.year}-${lookup.month}-${lookup.day}`,
+    hour: Number.isFinite(hour) ? hour : 0,
+  };
+}
+
+function getDefaultClosingDate() {
+  const now = getManaguaNowParts();
+  return now.hour >= 20 ? now.date : addDays(now.date, -1);
 }
 
 function assertDate(value, label) {
@@ -266,7 +291,7 @@ async function main() {
   loadEnvFile(path.join(functionsDir, '.env.local'));
 
   const args = parseArgs(process.argv.slice(2));
-  const startDate = args.startDate || args.date;
+  const startDate = args.startDate || args.date || getDefaultClosingDate();
   const endDate = args.endDate || args.date || startDate;
   assertDate(startDate, 'startDate');
   assertDate(endDate, 'endDate');

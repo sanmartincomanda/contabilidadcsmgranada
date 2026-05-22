@@ -39,16 +39,28 @@ function parseArgs(argv) {
   }, { preview: false, stageOnly: false });
 }
 
-function getManaguaDate() {
+function getManaguaNowParts() {
   const parts = new Intl.DateTimeFormat('en-US', {
     timeZone: TIMEZONE,
     year: 'numeric',
     month: '2-digit',
     day: '2-digit',
+    hour: '2-digit',
+    hourCycle: 'h23',
   }).formatToParts(new Date());
 
   const lookup = Object.fromEntries(parts.map((part) => [part.type, part.value]));
-  return `${lookup.year}-${lookup.month}-${lookup.day}`;
+  const hour = Number(lookup.hour || 0);
+
+  return {
+    date: `${lookup.year}-${lookup.month}-${lookup.day}`,
+    hour: Number.isFinite(hour) ? hour : 0,
+  };
+}
+
+function getDefaultClosingDate() {
+  const now = getManaguaNowParts();
+  return now.hour >= 20 ? now.date : addDays(now.date, -1);
 }
 
 function assertDate(value, label) {
@@ -118,6 +130,8 @@ function initFirebase() {
 }
 
 async function fetchDailySales(connection, startDate, endExclusive) {
+  await connection.query('SET SESSION group_concat_max_len = 1000000');
+
   const activeWhere = `
     v.fecha >= ?
     AND v.fecha < ?
@@ -340,7 +354,7 @@ async function main() {
   loadEnvFile(path.join(functionsDir, '.env.local'));
 
   const args = parseArgs(process.argv.slice(2));
-  const startDate = args.startDate || args.date || getManaguaDate();
+  const startDate = args.startDate || args.date || getDefaultClosingDate();
   const endDate = args.endDate || args.date || startDate;
   assertDate(startDate, 'startDate');
   assertDate(endDate, 'endDate');
