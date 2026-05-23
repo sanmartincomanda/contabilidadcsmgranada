@@ -235,7 +235,7 @@ export default function Header() {
                                             Conciliacion
                                         </NavLink>
                                         <NavLink to="/agente-ia" icon="bot" active={isActive('/agente-ia')}>
-                                            Agente IA
+                                            MARTIN IA
                                         </NavLink>
                                         <NavLink to="/reportes" icon="chart" active={isActive('/reportes')}>
                                             Reportes
@@ -380,7 +380,7 @@ export default function Header() {
                                         active={isActive('/agente-ia')}
                                         onClick={() => setIsMobileMenuOpen(false)}
                                     >
-                                        Agente IA
+                                        MARTIN IA
                                     </NavLink>
                                     <NavLink
                                         to="/reportes"

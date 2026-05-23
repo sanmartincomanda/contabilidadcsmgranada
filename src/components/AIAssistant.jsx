@@ -16,6 +16,8 @@ const Icons = {
     alert: 'M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z',
 };
 
+const AGENT_NAME = 'MARTIN IA';
+
 const Icon = ({ path, className = 'h-5 w-5' }) => (
     <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth="2">
         <path strokeLinecap="round" strokeLinejoin="round" d={path} />
@@ -156,12 +158,13 @@ const MessageBubble = ({ message }) => {
     );
 };
 
-export default function AIAssistant() {
+export default function AIAssistant({ floating = false }) {
+    const [isOpen, setIsOpen] = useState(false);
     const [messages, setMessages] = useState([
         {
             id: 'welcome',
             role: 'assistant',
-            text: 'Soy tu Agente IA Fiscal. Puedes preguntarme por ventas, IVA, cuentas por pagar o subir una factura/recibo para que prepare un borrador.',
+            text: `Soy ${AGENT_NAME}, tu agente contable. Puedes preguntarme por ventas, IVA, cuentas por pagar o subir una factura/recibo para que prepare un borrador.`,
         },
     ]);
     const [input, setInput] = useState('');
@@ -174,6 +177,8 @@ export default function AIAssistant() {
     const endRef = useRef(null);
 
     useEffect(() => {
+        if (floating && !isOpen) return undefined;
+
         const q = query(collection(db, 'ai_fiscal_inbox'), orderBy('createdAt', 'desc'), limit(12));
         return onSnapshot(q, (snapshot) => {
             setDrafts(snapshot.docs.map((entry) => ({ id: entry.id, ...entry.data() })));
@@ -181,7 +186,7 @@ export default function AIAssistant() {
             console.error(err);
             setError('No pude cargar la bandeja IA. Revisa permisos de Firestore.');
         });
-    }, []);
+    }, [floating, isOpen]);
 
     useEffect(() => {
         endRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -298,6 +303,156 @@ export default function AIAssistant() {
         }
     };
 
+    const ChatComposer = ({ compact = false }) => (
+        <div className="border-t border-[#ead5c5] bg-white p-4">
+            {error && (
+                <div className="mb-3 flex items-start gap-2 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs font-bold text-amber-800">
+                    <Icon path={Icons.alert} className="mt-0.5 h-4 w-4" />
+                    <span>{error}</span>
+                </div>
+            )}
+            {actionMessage && (
+                <div className="mb-3 flex items-start gap-2 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-xs font-bold text-emerald-800">
+                    <Icon path={Icons.check} className="mt-0.5 h-4 w-4" />
+                    <span>{actionMessage}</span>
+                </div>
+            )}
+            {!compact && (
+                <div className="mb-3 flex flex-wrap gap-2">
+                    {quickPrompts.map((prompt) => (
+                        <button
+                            key={prompt}
+                            type="button"
+                            onClick={() => handleSend(prompt)}
+                            disabled={loading}
+                            className="rounded-full border border-[#ead5c5] bg-[#fff8f2] px-3 py-1.5 text-xs font-bold text-[#7f1218] transition hover:border-[#f2b635] hover:bg-[#fff0c8] disabled:opacity-50"
+                        >
+                            {prompt}
+                        </button>
+                    ))}
+                </div>
+            )}
+            <div className={`flex flex-col gap-3 ${compact ? '' : 'md:flex-row'}`}>
+                <label className="flex cursor-pointer items-center justify-center gap-2 rounded-2xl border border-dashed border-[#d9b99f] bg-[#fff8f2] px-4 py-3 text-sm font-black text-[#7f1218] transition hover:bg-[#fff0c8]">
+                    <Icon path={Icons.upload} className="h-5 w-5" />
+                    {selectedFileLabel || 'Adjuntar foto/PDF'}
+                    <input
+                        type="file"
+                        accept="image/*,.pdf"
+                        className="hidden"
+                        onChange={(event) => setFile(event.target.files?.[0] || null)}
+                    />
+                </label>
+                <div className="flex flex-1 rounded-2xl border border-[#ead5c5] bg-[#fffaf6] p-2 shadow-inner">
+                    <textarea
+                        value={input}
+                        onChange={(event) => setInput(event.target.value)}
+                        onKeyDown={(event) => {
+                            if (event.key === 'Enter' && !event.shiftKey) {
+                                event.preventDefault();
+                                handleSend();
+                            }
+                        }}
+                        placeholder={`Preguntale a ${AGENT_NAME}: IVA, CxP, facturas...`}
+                        className={`${compact ? 'min-h-[48px]' : 'min-h-[54px]'} flex-1 resize-none bg-transparent px-3 py-2 text-sm font-semibold text-[#3d1b1e] outline-none`}
+                    />
+                    {file && (
+                        <button
+                            type="button"
+                            onClick={() => setFile(null)}
+                            className="self-center rounded-xl p-2 text-stone-400 transition hover:bg-stone-100 hover:text-rose-600"
+                        >
+                            <Icon path={Icons.x} className="h-4 w-4" />
+                        </button>
+                    )}
+                    <button
+                        type="button"
+                        onClick={() => handleSend()}
+                        disabled={loading || (!input.trim() && !file)}
+                        className="self-end rounded-xl bg-[#a81d24] p-3 text-white shadow-lg shadow-[#a81d24]/20 transition hover:bg-[#7f1218] disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                        <Icon path={Icons.send} className="h-5 w-5" />
+                    </button>
+                </div>
+            </div>
+        </div>
+    );
+
+    if (floating) {
+        return (
+            <div className="fixed bottom-5 right-5 z-[80] no-print">
+                {isOpen && (
+                    <section className="mb-4 flex h-[min(680px,calc(100vh-7rem))] w-[calc(100vw-2rem)] max-w-[440px] flex-col overflow-hidden rounded-[2rem] border border-[#ead5c5] bg-white shadow-2xl shadow-[#2b1113]/35">
+                        <div className="relative overflow-hidden bg-gradient-to-br from-[#2b1113] via-[#7f1218] to-[#a81d24] px-5 py-4 text-white">
+                            <div className="absolute inset-0 opacity-20" style={{ backgroundImage: 'radial-gradient(circle at 20% 20%, #f2b635 0 2px, transparent 2px)', backgroundSize: '24px 24px' }} />
+                            <div className="relative flex items-center justify-between gap-3">
+                                <div className="flex items-center gap-3">
+                                    <div className="rounded-2xl bg-white p-1.5 shadow-xl">
+                                        <img src={APP_BRAND_LOGO} alt={APP_BRAND_NAME} className="h-10 w-10 rounded-xl object-cover" />
+                                    </div>
+                                    <div>
+                                        <div className="text-[10px] font-black uppercase tracking-[0.28em] text-[#f2b635]">{AGENT_NAME}</div>
+                                        <div className="text-sm font-black">Agente contable fiscal</div>
+                                    </div>
+                                </div>
+                                <button
+                                    type="button"
+                                    onClick={() => setIsOpen(false)}
+                                    className="rounded-2xl bg-white/10 p-2 text-white/80 transition hover:bg-white/20 hover:text-white"
+                                    aria-label={`Cerrar ${AGENT_NAME}`}
+                                >
+                                    <Icon path={Icons.x} className="h-5 w-5" />
+                                </button>
+                            </div>
+                        </div>
+
+                        <div className="flex-1 space-y-3 overflow-y-auto bg-[#fffaf6] p-4">
+                            <div className="flex flex-wrap gap-2">
+                                {quickPrompts.slice(0, 3).map((prompt) => (
+                                    <button
+                                        key={prompt}
+                                        type="button"
+                                        onClick={() => handleSend(prompt)}
+                                        disabled={loading}
+                                        className="rounded-full border border-[#ead5c5] bg-white px-3 py-1.5 text-[11px] font-bold text-[#7f1218] transition hover:border-[#f2b635] hover:bg-[#fff0c8] disabled:opacity-50"
+                                    >
+                                        {prompt.replace('Analiza esta factura y crea un borrador fiscal.', 'Analizar factura')}
+                                    </button>
+                                ))}
+                            </div>
+                            {messages.map((message) => <MessageBubble key={message.id} message={message} />)}
+                            {loading && (
+                                <div className="flex justify-start">
+                                    <div className="rounded-3xl border border-[#ead5c5] bg-white px-5 py-4 text-sm font-black text-[#7f1218] shadow-sm">
+                                        {AGENT_NAME} esta revisando...
+                                    </div>
+                                </div>
+                            )}
+                            <div ref={endRef} />
+                        </div>
+
+                        <ChatComposer compact />
+                    </section>
+                )}
+
+                <button
+                    type="button"
+                    onClick={() => setIsOpen((value) => !value)}
+                    className="group flex items-center gap-3 rounded-full bg-[#a81d24] px-4 py-3 text-white shadow-2xl shadow-[#7f1218]/35 transition hover:-translate-y-0.5 hover:bg-[#7f1218]"
+                    aria-label={`${isOpen ? 'Cerrar' : 'Abrir'} ${AGENT_NAME}`}
+                >
+                    <span className="flex h-11 w-11 items-center justify-center rounded-full bg-white text-[#7f1218] shadow-inner">
+                        <Icon path={Icons.bot} className="h-6 w-6" />
+                    </span>
+                    <span className="hidden pr-2 text-left sm:block">
+                        <span className="block text-[10px] font-black uppercase tracking-[0.25em] text-[#f2b635]">Abrir chat</span>
+                        <span className="block text-sm font-black">{AGENT_NAME}</span>
+                    </span>
+                </button>
+            </div>
+        );
+    }
+
     return (
         <div className="min-h-screen bg-[#fbf4ed] p-4 md:p-8">
             <style>{`
@@ -315,7 +470,7 @@ export default function AIAssistant() {
                                     <img src={APP_BRAND_LOGO} alt={APP_BRAND_NAME} className="h-14 w-14 rounded-xl object-cover" />
                                 </div>
                                 <div>
-                                    <div className="text-xs font-black uppercase tracking-[0.35em] text-[#f2b635]">Bandeja IA Fiscal</div>
+                                    <div className="text-xs font-black uppercase tracking-[0.35em] text-[#f2b635]">{AGENT_NAME}</div>
                                     <h1 className="mt-1 text-2xl font-black">Agente contable conversacional</h1>
                                     <p className="mt-1 max-w-2xl text-sm font-semibold text-white/75">
                                         Pregunta por tus datos, sube soportes y genera borradores revisables sin tocar WhatsApp.
@@ -342,76 +497,7 @@ export default function AIAssistant() {
                             <div ref={endRef} />
                         </div>
 
-                        <div className="border-t border-[#ead5c5] bg-white p-4">
-                            {error && (
-                                <div className="mb-3 flex items-start gap-2 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs font-bold text-amber-800">
-                                    <Icon path={Icons.alert} className="mt-0.5 h-4 w-4" />
-                                    <span>{error}</span>
-                                </div>
-                            )}
-                            {actionMessage && (
-                                <div className="mb-3 flex items-start gap-2 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-xs font-bold text-emerald-800">
-                                    <Icon path={Icons.check} className="mt-0.5 h-4 w-4" />
-                                    <span>{actionMessage}</span>
-                                </div>
-                            )}
-                            <div className="mb-3 flex flex-wrap gap-2">
-                                {quickPrompts.map((prompt) => (
-                                    <button
-                                        key={prompt}
-                                        type="button"
-                                        onClick={() => handleSend(prompt)}
-                                        disabled={loading}
-                                        className="rounded-full border border-[#ead5c5] bg-[#fff8f2] px-3 py-1.5 text-xs font-bold text-[#7f1218] transition hover:border-[#f2b635] hover:bg-[#fff0c8] disabled:opacity-50"
-                                    >
-                                        {prompt}
-                                    </button>
-                                ))}
-                            </div>
-                            <div className="flex flex-col gap-3 md:flex-row">
-                                <label className="flex cursor-pointer items-center justify-center gap-2 rounded-2xl border border-dashed border-[#d9b99f] bg-[#fff8f2] px-4 py-3 text-sm font-black text-[#7f1218] transition hover:bg-[#fff0c8]">
-                                    <Icon path={Icons.upload} className="h-5 w-5" />
-                                    {selectedFileLabel || 'Adjuntar foto/PDF'}
-                                    <input
-                                        type="file"
-                                        accept="image/*,.pdf"
-                                        className="hidden"
-                                        onChange={(event) => setFile(event.target.files?.[0] || null)}
-                                    />
-                                </label>
-                                <div className="flex flex-1 rounded-2xl border border-[#ead5c5] bg-[#fffaf6] p-2 shadow-inner">
-                                    <textarea
-                                        value={input}
-                                        onChange={(event) => setInput(event.target.value)}
-                                        onKeyDown={(event) => {
-                                            if (event.key === 'Enter' && !event.shiftKey) {
-                                                event.preventDefault();
-                                                handleSend();
-                                            }
-                                        }}
-                                        placeholder="Preguntale algo: 'cuanto IVA llevamos?', 'analiza esta factura', 'que CxP vencen?'"
-                                        className="min-h-[54px] flex-1 resize-none bg-transparent px-3 py-2 text-sm font-semibold text-[#3d1b1e] outline-none"
-                                    />
-                                    {file && (
-                                        <button
-                                            type="button"
-                                            onClick={() => setFile(null)}
-                                            className="self-center rounded-xl p-2 text-stone-400 transition hover:bg-stone-100 hover:text-rose-600"
-                                        >
-                                            <Icon path={Icons.x} className="h-4 w-4" />
-                                        </button>
-                                    )}
-                                    <button
-                                        type="button"
-                                        onClick={() => handleSend()}
-                                        disabled={loading || (!input.trim() && !file)}
-                                        className="self-end rounded-xl bg-[#a81d24] p-3 text-white shadow-lg shadow-[#a81d24]/20 transition hover:bg-[#7f1218] disabled:cursor-not-allowed disabled:opacity-40"
-                                    >
-                                        <Icon path={Icons.send} className="h-5 w-5" />
-                                    </button>
-                                </div>
-                            </div>
-                        </div>
+                        <ChatComposer />
                     </div>
                 </section>
 

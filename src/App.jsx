@@ -810,6 +810,7 @@ function AppContent() {
                     <Route path="*" element={<Navigate to="/" />} />
                 </Routes>
             </main>
+            {isAdmin && currentPath !== '/agente-ia' && <AIAssistant floating />}
         </>
     );
 }
