@@ -170,11 +170,57 @@ function normalizeDate(value) {
     return new Date(value._seconds * 1000).toISOString().substring(0, 10);
   }
   if (value instanceof Date) return value.toISOString().substring(0, 10);
-  if (typeof value === 'string') return value.substring(0, 10);
+  if (typeof value === 'string') {
+    const raw = value.trim();
+    const isoMatch = raw.match(/^(\d{4})-(\d{2})-(\d{2})/);
+    if (isoMatch) return `${isoMatch[1]}-${isoMatch[2]}-${isoMatch[3]}`;
+
+    const numericMatch = raw.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})$/);
+    if (numericMatch) {
+      const day = numericMatch[1].padStart(2, '0');
+      const month = numericMatch[2].padStart(2, '0');
+      const year = numericMatch[3].length === 2 ? `20${numericMatch[3]}` : numericMatch[3];
+      return `${year}-${month}-${day}`;
+    }
+
+    const monthNames = {
+      jan: '01', january: '01', ene: '01', enero: '01',
+      feb: '02', february: '02', febrero: '02',
+      mar: '03', march: '03', marzo: '03',
+      apr: '04', april: '04', abr: '04', abril: '04',
+      may: '05', mayo: '05',
+      jun: '06', june: '06', junio: '06',
+      jul: '07', july: '07', julio: '07',
+      aug: '08', august: '08', ago: '08', agosto: '08',
+      sep: '09', sept: '09', september: '09', septiembre: '09',
+      oct: '10', october: '10', octubre: '10',
+      nov: '11', november: '11', noviembre: '11',
+      dec: '12', december: '12', dic: '12', diciembre: '12',
+    };
+    const textMatch = raw.match(/^(\d{1,2})[-/\s.]([A-Za-zÁÉÍÓÚáéíóúñÑ]+)[-/\s.](\d{2,4})$/);
+    if (textMatch) {
+      const day = textMatch[1].padStart(2, '0');
+      const monthKey = normalizeComparableText(textMatch[2]);
+      const month = monthNames[monthKey];
+      const year = textMatch[3].length === 2 ? `20${textMatch[3]}` : textMatch[3];
+      if (month) return `${year}-${month}-${day}`;
+    }
+
+    return raw.substring(0, 10);
+  }
   return '';
 }
 
 function normalizeAmount(value) {
+  if (typeof value === 'string') {
+    const cleaned = value
+      .replace(/[^\d,.-]/g, '')
+      .replace(/,(?=\d{3}(\D|$))/g, '')
+      .replace(',', '.');
+    const parsedString = Number(cleaned || 0);
+    if (Number.isFinite(parsedString)) return Math.round(parsedString * 100) / 100;
+  }
+
   const parsed = Number(value ?? 0);
   if (!Number.isFinite(parsed)) return 0;
   return Math.round(parsed * 100) / 100;
@@ -2954,6 +3000,18 @@ async function callOpenAIFiscalAssistant({
           ? 'En Modo Digitador debes revisar: fecha, proveedor, numero de factura, subtotal, IVA, total, retenciones, tipo gasto/compra, credito/contado, metodo de pago, categoria y descripcion.'
           : '',
         safeDigitizerOptions.mode === 'digitizer'
+          ? 'Reglas OCR para facturas nicaraguenses: lee FACTURA como invoiceNumber; convierte fechas tipo 23-May-2026, 23/MAY/2026 o 23-mayo-2026 a formato ISO YYYY-MM-DD; interpreta montos como 12,819.38, 1,922.91 y 14,742.29 sin perder decimales.'
+          : '',
+        safeDigitizerOptions.mode === 'digitizer'
+          ? 'Si ves la leyenda "NO SUJETOS A RETENCIONES", "NO SUJETO A RETENCION" o similar, eso confirma que no lleva retenciones: usa retentionIr2=0, retentionMunicipal1=0, no preguntes por retenciones y no lo marques como alerta.'
+          : '',
+        safeDigitizerOptions.mode === 'digitizer'
+          ? 'Si la factura trae productos de inventario o costo de venta como camaron, langosta, carne, pollo, cerdo, pescado, alimentos, insumos operativos o mercaderia, clasificala como compra_contado o compra_credito, no como gasto.'
+          : '',
+        safeDigitizerOptions.mode === 'digitizer'
+          ? 'Si la factura dice CONDICION: contado, 1 dia contado o similar, usa compra_contado/gasto_contado y paymentMethod="Contado" salvo que el usuario indique transferencia, POS o efectivo.'
+          : '',
+        safeDigitizerOptions.mode === 'digitizer'
           ? 'En Modo Digitador pregunta solo lo que bloquea el registro. Si algo puede inferirse por learning.supplierProfiles con alta confianza, usalo y menciona que lo aprendiste.'
           : '',
         safeDigitizerOptions.autoRegister
@@ -3294,7 +3352,12 @@ function getDigitizerAutoRegisterBlockers({
   const date = normalizeDate(draft.date);
   const supplier = cleanAiText(draft.supplier || draft.payableProvider);
   const invoiceNumber = cleanAiText(draft.invoiceNumber || draft.payableInvoiceNumber);
-  const retentionText = getRetentionIntentText(message, conversationHistory);
+  const retentionText = getRetentionIntentText([
+    message,
+    aiResult.reply || '',
+    ...(aiResult.followUpQuestions || []),
+    ...(aiResult.quickReplies || []),
+  ].join(' '), conversationHistory);
   const hasRetentionSupport = supportFiles.some((file) => ['retentionIr2', 'retentionMunicipal1'].includes(file.type));
   const profile = findSupplierProfileForDraft(context, draft);
   const learnedNoRetention = profile?.usualRetentionMode === 'none'
@@ -3303,6 +3366,8 @@ function getDigitizerAutoRegisterBlockers({
   const compactRetentionText = retentionText.replace(/\s+/g, '');
   const userConfirmedNoRetention = compactRetentionText.includes('notieneretenciones')
     || compactRetentionText.includes('sinretencion')
+    || compactRetentionText.includes('nosujetosaretenciones')
+    || compactRetentionText.includes('nosujetoaretencion')
     || retentionText.includes('ninguna');
   const userConfirmedRetention = compactRetentionText.includes('soloir2')
     || compactRetentionText.includes('solomunicipal')
