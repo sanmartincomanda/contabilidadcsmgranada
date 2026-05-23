@@ -530,10 +530,14 @@ export default function AIAssistant({ floating = false }) {
             });
             const result = response.data?.result || {};
             const autoRegistration = response.data?.autoRegistration || null;
+            const autoBlockers = autoRegistration?.blockers || [];
+            const autoBlockerText = autoBlockers.length > 3
+                ? `${autoBlockers.slice(0, 3).join('; ')} y ${autoBlockers.length - 3} pendientes mas`
+                : autoBlockers.join('; ');
             const autoRegisterText = autoRegistration?.confirmed
                 ? `\n\nAuto-registro seguro completado en ${autoRegistration.targetCollection || 'el sistema'}.`
-                : autoRegistration?.attempted && autoRegistration.blockers?.length
-                    ? `\n\nAuto-registro seguro no se ejecuto todavia: ${autoRegistration.blockers.join('; ')}.`
+                : autoRegistration?.attempted && autoBlockers.length
+                    ? `\n\nAuto-registro seguro no se ejecuto todavia: ${autoBlockerText}.`
                     : '';
             setMessages((prev) => [
                 ...prev,

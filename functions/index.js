@@ -2849,6 +2849,58 @@ function isPdfAiSupport(file = {}) {
   return source.includes('.pdf') || source.includes('application/pdf');
 }
 
+function inferMimeType(file = {}) {
+  const contentType = normalizeComparableText(file.contentType);
+  const source = `${file.fileName || ''} ${file.path || ''} ${file.url || ''}`.toLowerCase();
+
+  if (contentType.includes('png') || source.includes('.png')) return 'image/png';
+  if (contentType.includes('webp') || source.includes('.webp')) return 'image/webp';
+  if (contentType.includes('pdf') || source.includes('.pdf')) return 'application/pdf';
+  return 'image/jpeg';
+}
+
+async function buildOpenAiSupportContent(file = {}) {
+  if (!file?.url && !file?.path) return null;
+
+  if (isPdfAiSupport(file)) {
+    if (!file.url) return null;
+    return {
+      type: 'input_file',
+      file_url: file.url,
+      filename: file.fileName || `${file.type}.pdf`,
+    };
+  }
+
+  if (file.path) {
+    try {
+      const [buffer] = await admin.storage().bucket().file(file.path).download();
+      if (buffer.length <= 12 * 1024 * 1024) {
+        return {
+          type: 'input_image',
+          image_url: `data:${inferMimeType(file)};base64,${buffer.toString('base64')}`,
+          detail: 'high',
+        };
+      }
+      logger.warn('Soporte IA demasiado grande para enviarlo como data URL; usando URL publico', {
+        path: file.path,
+        size: buffer.length,
+      });
+    } catch (error) {
+      logger.warn('No pude descargar soporte IA desde Storage; usando URL publico si existe', {
+        path: file.path,
+        error: error?.message,
+      });
+    }
+  }
+
+  if (!file.url) return null;
+  return {
+    type: 'input_image',
+    image_url: file.url,
+    detail: 'high',
+  };
+}
+
 function emptyFiscalAssistantDraft() {
   return {
     targetType: 'none',
@@ -3055,6 +3107,13 @@ function parseFiscalAssistantPayload(payload = {}, fallback = {}, context = {}) 
   }
 
   logger.warn('Respuesta OpenAI no fue JSON recuperable; usando fallback seguro', {
+    status: payload.status,
+    incompleteDetails: payload.incomplete_details,
+    error: payload.error,
+    outputTypes: Array.isArray(payload.output) ? payload.output.map((item) => item.type || item.role || 'unknown').slice(0, 8) : [],
+    contentTypes: Array.isArray(payload.output)
+      ? payload.output.flatMap((item) => (item.content || []).map((contentItem) => contentItem.type || 'unknown')).slice(0, 12)
+      : [],
     outputTextPreview: normalizeText(payload.output_text).slice(0, 600),
   });
   return normalizeFiscalAssistantResult({}, fallback, context);
@@ -3148,7 +3207,9 @@ async function callOpenAIFiscalAssistant({
         'Regla obligatoria para facturas con soporte: antes de preparar un borrador confirmable, valida retenciones.',
         'Si hay soporte adjunto y no hay comprobante de retencion ni confirmacion del usuario en el mensaje/historial, la primera pregunta debe ser: "Esta factura lleva retencion de anticipo IR 2%, retencion municipal 1%, ambas o ninguna?".',
         'Para esa pregunta usa exactamente quickReplies: ["No tiene retenciones", "Solo IR 2%", "Solo municipal 1%", "Ambas retenciones"].',
-        'Si todavia no confirmaron retenciones, suggestedDraft.targetType debe ser "none"; puedes resumir lo que leiste, pero no envies borrador registrable.',
+        'Aunque falte confirmar retenciones, primero debes leer la factura y llenar suggestedDraft con fecha, proveedor, factura, subtotal, IVA, total, tipo compra/gasto, metodo y categoria si son visibles o inferibles.',
+        'No pongas suggestedDraft.targetType="none" solo porque faltan retenciones. Usa targetType none solo si no puedes leer el soporte o no puedes distinguir compra/gasto despues de aplicar reglas e historial.',
+        'Si faltan retenciones, bloquea solo el registro automatico usando followUpQuestions y warnings, pero deja el borrador preparado para que el usuario responda rapido.',
         'Si hay soportes de retencion adjuntos, leelos y extrae numero, fecha, proveedor, base y monto retenido cuando sea visible.',
         'Si hay una retencion adjunta pero no puedes leerla bien, pregunta por el monto o pide otra foto antes de confirmar.',
         'Si el usuario responde "No tiene retenciones", continua con retentionIr2=0 y retentionMunicipal1=0.',
@@ -3191,23 +3252,8 @@ async function callOpenAIFiscalAssistant({
     },
   ];
 
-  safeSupportFiles.forEach((file) => {
-    if (!file.url) return;
-    if (isPdfAiSupport(file)) {
-      content.push({
-        type: 'input_file',
-        file_url: file.url,
-        filename: file.fileName || `${file.type}.pdf`,
-      });
-      return;
-    }
-
-    content.push({
-      type: 'input_image',
-      image_url: file.url,
-      detail: 'high',
-    });
-  });
+  const supportContent = await Promise.all(safeSupportFiles.map((file) => buildOpenAiSupportContent(file)));
+  supportContent.filter(Boolean).forEach((item) => content.push(item));
 
   const response = await fetch('https://api.openai.com/v1/responses', {
     method: 'POST',
@@ -3226,7 +3272,10 @@ async function callOpenAIFiscalAssistant({
       text: {
         format: fiscalDraftSchema(),
       },
-      max_output_tokens: 1800,
+      reasoning: {
+        effort: 'minimal',
+      },
+      max_output_tokens: 5000,
     }),
   });
 
