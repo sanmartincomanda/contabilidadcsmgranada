@@ -25,12 +25,50 @@ const Icon = ({ path, className = 'h-5 w-5' }) => (
 );
 
 const quickPrompts = [
-    'Analiza esta factura y crea un borrador fiscal.',
+    'Analiza esta factura y dime que falta para registrarla.',
+    'Soy trabajador, guiame paso a paso para subir un gasto.',
     'Que cuentas por pagar estan vencidas?',
     'Cuanto vendimos este mes sin IVA?',
-    'Cuanto IVA comprado y vendido llevamos?',
-    'Resume los gastos mas fuertes del mes.',
+    'Dame un resumen facil para gerencia.',
 ];
+
+const workerRoleOptions = [
+    {
+        id: 'administracion',
+        label: 'Administracion',
+        tone: 'resumen ejecutivo, acciones claras y control fiscal',
+    },
+    {
+        id: 'contabilidad',
+        label: 'Contabilidad',
+        tone: 'detalle fiscal, validaciones y soporte documental',
+    },
+    {
+        id: 'caja',
+        label: 'Caja',
+        tone: 'instrucciones cortas, paso a paso y sin tecnicismos',
+    },
+    {
+        id: 'bodega',
+        label: 'Bodega',
+        tone: 'enfocado en compras, proveedores, facturas y recepcion',
+    },
+];
+
+const getWorkerRole = (roleId) => (
+    workerRoleOptions.find((role) => role.id === roleId) || workerRoleOptions[0]
+);
+
+const buildWelcomeMessage = () => ({
+    id: 'welcome',
+    role: 'assistant',
+    text: `Soy ${AGENT_NAME}. Puedo conversar contigo como asistente contable: si eres trabajador te guio paso a paso, si eres administracion te doy resumen y acciones. Tambien puedo leer facturas, pedirte lo que falte y preparar borradores revisables.`,
+    quickReplies: [
+        'Quiero subir una factura',
+        'Soy de caja, ayudame',
+        'Que pendientes hay hoy?',
+    ],
+});
 
 const emptyDraft = {
     targetType: 'none',
@@ -78,6 +116,41 @@ const classificationOptions = [
         description: 'Inventario, mercaderia o costo de venta.',
     },
 ];
+
+const deriveQuickReplies = (message = {}) => {
+    if (Array.isArray(message.quickReplies) && message.quickReplies.length) {
+        return message.quickReplies.slice(0, 4);
+    }
+
+    const questionText = [...(message.followUpQuestions || []), message.text || '']
+        .join(' ')
+        .toLowerCase();
+
+    if (questionText.includes('gasto') && questionText.includes('compra')) {
+        return ['Es gasto', 'Es compra', 'No estoy seguro'];
+    }
+
+    if (questionText.includes('credito') || questionText.includes('crédito') || questionText.includes('contado')) {
+        return ['Es credito', 'Es contado', 'Fue transferencia'];
+    }
+
+    if (questionText.includes('retencion') || questionText.includes('retención')) {
+        return ['Tiene retencion IR 2%', 'Tiene municipal 1%', 'No tiene retenciones'];
+    }
+
+    if (questionText.includes('factura') || questionText.includes('numero')) {
+        return ['No trae numero', 'Lo escribo manual', 'Esta en la foto'];
+    }
+
+    return [];
+};
+
+const inferClassificationFromReply = (text = '') => {
+    const normalized = text.toLowerCase();
+    if (normalized.includes('gasto')) return 'gasto';
+    if (normalized.includes('compra')) return 'compra';
+    return '';
+};
 
 const assistantCallable = httpsCallable(functions, 'fiscalAssistantChat');
 const confirmDraftCallable = httpsCallable(functions, 'confirmFiscalAssistantDraft');
@@ -139,8 +212,23 @@ const SupportPreview = ({ item }) => {
     );
 };
 
-const MessageBubble = ({ message }) => {
+const TypingIndicator = ({ compactText = 'MARTIN IA esta pensando' }) => (
+    <div className="flex justify-start">
+        <div className="flex items-center gap-3 rounded-3xl border border-[#ead5c5] bg-white px-5 py-4 text-sm font-black text-[#7f1218] shadow-sm">
+            <span>{compactText}</span>
+            <span className="flex gap-1">
+                <span className="h-2 w-2 animate-bounce rounded-full bg-[#a81d24]" />
+                <span className="h-2 w-2 animate-bounce rounded-full bg-[#c58a19]" style={{ animationDelay: '120ms' }} />
+                <span className="h-2 w-2 animate-bounce rounded-full bg-[#a81d24]" style={{ animationDelay: '240ms' }} />
+            </span>
+        </div>
+    </div>
+);
+
+const MessageBubble = ({ message, onQuickReply }) => {
     const isUser = message.role === 'user';
+    const quickReplies = !isUser ? deriveQuickReplies(message) : [];
+
     return (
         <div className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
             <div className={`max-w-[88%] rounded-3xl px-5 py-4 shadow-sm ${
@@ -151,6 +239,20 @@ const MessageBubble = ({ message }) => {
                 <div className="whitespace-pre-wrap text-sm font-semibold leading-relaxed">{message.text}</div>
                 <FollowUpPanel warnings={message.warnings || []} questions={message.followUpQuestions || []} />
                 {message.support && <SupportPreview item={message.support} />}
+                {quickReplies.length > 0 && (
+                    <div className="mt-4 flex flex-wrap gap-2">
+                        {quickReplies.map((reply) => (
+                            <button
+                                key={reply}
+                                type="button"
+                                onClick={() => onQuickReply?.(reply)}
+                                className="rounded-full border border-[#ead5c5] bg-[#fff8f2] px-3 py-1.5 text-xs font-black text-[#7f1218] transition hover:border-[#f2b635] hover:bg-[#fff0c8]"
+                            >
+                                {reply}
+                            </button>
+                        ))}
+                    </div>
+                )}
                 {message.draft?.targetType && message.draft.targetType !== 'none' && (
                     <div className="mt-4 rounded-2xl border border-[#f2b635]/50 bg-[#fff8e6] p-4 text-[#4b1b1f]">
                         <div className="mb-3 flex items-center justify-between gap-3">
@@ -178,16 +280,19 @@ const MessageBubble = ({ message }) => {
 
 export default function AIAssistant({ floating = false }) {
     const [isOpen, setIsOpen] = useState(false);
-    const [messages, setMessages] = useState([
-        {
-            id: 'welcome',
-            role: 'assistant',
-            text: `Soy ${AGENT_NAME}, tu agente contable. Puedes preguntarme por ventas, IVA, cuentas por pagar o subir una factura/recibo para que prepare un borrador.`,
-        },
-    ]);
+    const [messages, setMessages] = useState(() => {
+        try {
+            const saved = JSON.parse(localStorage.getItem('martinIA.chat') || '[]');
+            return Array.isArray(saved) && saved.length ? saved.slice(-30) : [buildWelcomeMessage()];
+        } catch (error) {
+            return [buildWelcomeMessage()];
+        }
+    });
     const [input, setInput] = useState('');
     const [file, setFile] = useState(null);
     const [classificationHint, setClassificationHint] = useState('auto');
+    const [workerRole, setWorkerRole] = useState(() => localStorage.getItem('martinIA.workerRole') || 'administracion');
+    const [workerName, setWorkerName] = useState(() => localStorage.getItem('martinIA.workerName') || '');
     const [loading, setLoading] = useState(false);
     const [drafts, setDrafts] = useState([]);
     const [error, setError] = useState('');
@@ -211,12 +316,25 @@ export default function AIAssistant({ floating = false }) {
         endRef.current?.scrollIntoView({ behavior: 'smooth' });
     }, [messages, loading]);
 
+    useEffect(() => {
+        localStorage.setItem('martinIA.chat', JSON.stringify(messages.slice(-30)));
+    }, [messages]);
+
+    useEffect(() => {
+        localStorage.setItem('martinIA.workerRole', workerRole);
+    }, [workerRole]);
+
+    useEffect(() => {
+        localStorage.setItem('martinIA.workerName', workerName);
+    }, [workerName]);
+
     const selectedFileLabel = useMemo(() => {
         if (!file) return '';
         return `${file.name} (${Math.round(file.size / 1024)} KB)`;
     }, [file]);
 
-    const handleSend = async (overrideText = '') => {
+    const handleSend = async (overrideText = '', options = {}) => {
+        if (loading) return;
         const text = (overrideText || input).trim();
         if (!text && !file) return;
 
@@ -225,6 +343,18 @@ export default function AIAssistant({ floating = false }) {
 
         let support = null;
         const userMessageId = `u_${Date.now()}`;
+        const hintForRequest = options.classificationHintOverride || classificationHint;
+        const currentWorkerRole = getWorkerRole(workerRole);
+        const recentConversation = messages.slice(-10).map((entry) => ({
+            role: entry.role,
+            text: entry.text,
+            followUpQuestions: entry.followUpQuestions || [],
+            quickReplies: entry.quickReplies || [],
+            hasSupport: Boolean(entry.support),
+            supportUrl: entry.support?.url || '',
+            draftTargetType: entry.draft?.targetType || '',
+        }));
+        const reusableSupport = [...messages].reverse().find((entry) => entry.support)?.support || null;
         try {
             if (file) {
                 const uploaded = await uploadInvoicePhoto(file, 'ai/fiscal_supports', userMessageId);
@@ -237,11 +367,15 @@ export default function AIAssistant({ floating = false }) {
                 };
             }
 
-            const selectedClassification = classificationOptions.find((option) => option.id === classificationHint);
+            const supportForRequest = support || (options.reuseLastSupport ? reusableSupport : null);
+            const selectedClassification = classificationOptions.find((option) => option.id === hintForRequest);
             const messageForAi = [
                 text || 'Analiza este soporte fiscal y crea un borrador.',
-                file && selectedClassification
+                (file || options.reuseLastSupport) && selectedClassification
                     ? `Clasificacion indicada por el usuario: ${selectedClassification.label}. Si esta clasificacion no coincide con la factura, pregunta antes de crear un borrador definitivo.`
+                    : '',
+                options.reuseLastSupport && reusableSupport
+                    ? 'Esta respuesta corresponde al ultimo soporte/factura enviado en la conversacion.'
                     : '',
             ].filter(Boolean).join('\n');
 
@@ -252,9 +386,9 @@ export default function AIAssistant({ floating = false }) {
                     role: 'user',
                     text: [
                         text || 'Analiza este soporte fiscal.',
-                        file && selectedClassification ? `Tipo: ${selectedClassification.label}` : '',
+                        (file || options.reuseLastSupport) && selectedClassification ? `Tipo: ${selectedClassification.label}` : '',
                     ].filter(Boolean).join('\n'),
-                    support,
+                    support: support || (options.reuseLastSupport ? reusableSupport : null),
                 },
             ]);
             setInput('');
@@ -263,8 +397,15 @@ export default function AIAssistant({ floating = false }) {
 
             const response = await assistantCallable({
                 message: messageForAi,
-                classificationHint,
-                support,
+                classificationHint: hintForRequest,
+                support: supportForRequest,
+                conversationHistory: recentConversation,
+                workerProfile: {
+                    name: workerName.trim(),
+                    role: currentWorkerRole.id,
+                    roleLabel: currentWorkerRole.label,
+                    tone: currentWorkerRole.tone,
+                },
             });
             const result = response.data?.result || {};
             setMessages((prev) => [
@@ -276,6 +417,7 @@ export default function AIAssistant({ floating = false }) {
                     draft: result.suggestedDraft || emptyDraft,
                     warnings: result.warnings || [],
                     followUpQuestions: result.followUpQuestions || [],
+                    quickReplies: result.quickReplies || [],
                 },
             ]);
         } catch (err) {
@@ -317,6 +459,14 @@ export default function AIAssistant({ floating = false }) {
         }
     };
 
+    const handleQuickReply = (reply) => {
+        const classification = inferClassificationFromReply(reply);
+        handleSend(reply, {
+            reuseLastSupport: true,
+            classificationHintOverride: classification || classificationHint,
+        });
+    };
+
     const handleRejectDraft = async (draft) => {
         if (!draft?.id || processingDraftId) return;
         if (!window.confirm('Rechazar este borrador IA?')) return;
@@ -349,6 +499,46 @@ export default function AIAssistant({ floating = false }) {
                     <span>{actionMessage}</span>
                 </div>
             )}
+            <div className="mb-3 rounded-2xl border border-[#ead5c5] bg-[#fffaf6] p-3">
+                <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                        <div className="text-[10px] font-black uppercase tracking-[0.22em] text-[#7f1218]">Modo conversacion</div>
+                        {!compact && <p className="text-xs font-semibold text-stone-500">MARTIN IA adapta su respuesta segun quien lo usa.</p>}
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2">
+                        <input
+                            value={workerName}
+                            onChange={(event) => setWorkerName(event.target.value)}
+                            placeholder="Nombre opcional"
+                            className="min-w-[130px] rounded-xl border border-[#ead5c5] bg-white px-3 py-2 text-xs font-bold text-[#4b1b1f] outline-none transition focus:border-[#a81d24] focus:ring-2 focus:ring-[#a81d24]/10"
+                        />
+                        <button
+                            type="button"
+                            onClick={() => setMessages([buildWelcomeMessage()])}
+                            className="rounded-xl border border-[#ead5c5] bg-white px-3 py-2 text-[11px] font-black text-stone-500 transition hover:bg-[#fff0c8] hover:text-[#7f1218]"
+                        >
+                            Nuevo chat
+                        </button>
+                    </div>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                    {workerRoleOptions.map((role) => (
+                        <button
+                            key={role.id}
+                            type="button"
+                            onClick={() => setWorkerRole(role.id)}
+                            className={`rounded-full border px-3 py-1.5 text-[11px] font-black transition ${
+                                workerRole === role.id
+                                    ? 'border-[#a81d24] bg-[#a81d24] text-white'
+                                    : 'border-[#ead5c5] bg-white text-[#7f1218] hover:bg-[#fff0c8]'
+                            }`}
+                            title={role.tone}
+                        >
+                            {role.label}
+                        </button>
+                    ))}
+                </div>
+            </div>
             {!compact && (
                 <div className="mb-3 flex flex-wrap gap-2">
                     {quickPrompts.map((prompt) => (
@@ -407,7 +597,7 @@ export default function AIAssistant({ floating = false }) {
                                 handleSend();
                             }
                         }}
-                        placeholder={`Preguntale a ${AGENT_NAME}: IVA, CxP, facturas...`}
+                        placeholder={`Escribe como en WhatsApp: "subi esta factura", "es credito", "que falta"...`}
                         className={`${compact ? 'min-h-[48px]' : 'min-h-[54px]'} flex-1 resize-none bg-transparent px-3 py-2 text-sm font-semibold text-[#3d1b1e] outline-none`}
                     />
                     {file && (
@@ -474,13 +664,9 @@ export default function AIAssistant({ floating = false }) {
                                     </button>
                                 ))}
                             </div>
-                            {messages.map((message) => <MessageBubble key={message.id} message={message} />)}
+                            {messages.map((message) => <MessageBubble key={message.id} message={message} onQuickReply={handleQuickReply} />)}
                             {loading && (
-                                <div className="flex justify-start">
-                                    <div className="rounded-3xl border border-[#ead5c5] bg-white px-5 py-4 text-sm font-black text-[#7f1218] shadow-sm">
-                                        {AGENT_NAME} esta revisando...
-                                    </div>
-                                </div>
+                                <TypingIndicator compactText={`${AGENT_NAME} esta revisando`} />
                             )}
                             <div ref={endRef} />
                         </div>
@@ -540,13 +726,9 @@ export default function AIAssistant({ floating = false }) {
 
                     <div className="flex h-[66vh] min-h-[560px] flex-col">
                         <div className="flex-1 space-y-4 overflow-y-auto bg-[#fffaf6] p-5">
-                            {messages.map((message) => <MessageBubble key={message.id} message={message} />)}
+                            {messages.map((message) => <MessageBubble key={message.id} message={message} onQuickReply={handleQuickReply} />)}
                             {loading && (
-                                <div className="flex justify-start">
-                                    <div className="rounded-3xl border border-[#ead5c5] bg-white px-5 py-4 text-sm font-black text-[#7f1218] shadow-sm">
-                                        Pensando y revisando datos...
-                                    </div>
-                                </div>
+                                <TypingIndicator compactText="Pensando y revisando datos" />
                             )}
                             <div ref={endRef} />
                         </div>

@@ -2630,8 +2630,12 @@ function fiscalDraftSchema() {
           type: 'array',
           items: { type: 'string' },
         },
+        quickReplies: {
+          type: 'array',
+          items: { type: 'string' },
+        },
       },
-      required: ['reply', 'intent', 'confidence', 'warnings', 'suggestedDraft', 'followUpQuestions'],
+      required: ['reply', 'intent', 'confidence', 'warnings', 'suggestedDraft', 'followUpQuestions', 'quickReplies'],
     },
   };
 }
@@ -2642,19 +2646,63 @@ function normalizeClassificationHint(value) {
   return 'auto';
 }
 
-async function callOpenAIFiscalAssistant({ message, support, context, classificationHint = 'auto' }) {
+function sanitizeConversationHistory(value) {
+  if (!Array.isArray(value)) return [];
+
+  return value.slice(-10).map((entry) => ({
+    role: normalizeComparableText(entry?.role) === 'assistant' ? 'assistant' : 'user',
+    text: normalizeText(entry?.text).slice(0, 700),
+    followUpQuestions: Array.isArray(entry?.followUpQuestions)
+      ? entry.followUpQuestions.map((question) => normalizeText(question).slice(0, 220)).filter(Boolean).slice(0, 4)
+      : [],
+    quickReplies: Array.isArray(entry?.quickReplies)
+      ? entry.quickReplies.map((reply) => normalizeText(reply).slice(0, 80)).filter(Boolean).slice(0, 4)
+      : [],
+    hasSupport: Boolean(entry?.hasSupport),
+    supportUrl: normalizeText(entry?.supportUrl).slice(0, 500),
+    draftTargetType: normalizeText(entry?.draftTargetType).slice(0, 80),
+  })).filter((entry) => entry.text || entry.hasSupport || entry.followUpQuestions.length);
+}
+
+function normalizeWorkerProfile(value = {}) {
+  const role = normalizeComparableText(value.role) || 'administracion';
+  const allowedRoles = new Set(['administracion', 'contabilidad', 'caja', 'bodega']);
+  return {
+    name: normalizeText(value.name).slice(0, 80),
+    role: allowedRoles.has(role) ? role : 'administracion',
+    roleLabel: normalizeText(value.roleLabel).slice(0, 80) || 'Administracion',
+    tone: normalizeText(value.tone).slice(0, 220) || 'resumen ejecutivo, acciones claras y control fiscal',
+  };
+}
+
+async function callOpenAIFiscalAssistant({
+  message,
+  support,
+  context,
+  classificationHint = 'auto',
+  conversationHistory = [],
+  workerProfile = {},
+}) {
   const apiKey = OPENAI_API_KEY.value();
   if (!apiKey) {
     throw new HttpsError('failed-precondition', 'Falta configurar OPENAI_API_KEY en Firebase Functions.');
   }
 
   const hint = normalizeClassificationHint(classificationHint);
+  const safeConversationHistory = sanitizeConversationHistory(conversationHistory);
+  const safeWorkerProfile = normalizeWorkerProfile(workerProfile);
   const content = [
     {
       type: 'input_text',
       text: [
         'Eres el Agente IA Fiscal de Carnes San Martin Granada.',
-        'Responde en espanol claro y practico.',
+        'Tu nombre es MARTIN IA. Actua como un companero contable de confianza, paciente, conversacional y practico.',
+        'Responde en espanol claro, natural y cercano. No suenes como formulario ni como robot.',
+        'Relacionate bien con trabajadores: explica sin reganar, guia paso a paso y confirma antes de asumir.',
+        'Si habla caja o bodega, usa instrucciones cortas. Si habla contabilidad, da detalle fiscal. Si habla administracion, resume con acciones.',
+        'Haz maximo dos preguntas de seguimiento por turno. Si falta informacion critica, pregunta una cosa primero y ofrece botones cortos en quickReplies.',
+        'Cuando adjunten facturas, primero reconoce lo que ves, luego di que falta, luego propone el siguiente paso.',
+        'Si el trabajador responde a una pregunta anterior, usa conversationHistory para continuar, no empieces desde cero.',
         'Puedes contestar preguntas usando el contexto contable resumido.',
         'Si hay soporte/foto, extrae datos para crear un borrador fiscal, pero nunca confirmes registro definitivo.',
         'Aprende patrones del contexto learning.supplierProfiles: proveedor habitual, tipo usual, categoria usual y forma de pago usual.',
@@ -2667,6 +2715,9 @@ async function callOpenAIFiscalAssistant({ message, support, context, classifica
         'Para estado de resultado, ventas contables usan subtotal, no total con IVA.',
         'Si no puedes leer fecha, proveedor, factura o montos con confianza, no inventes: usa request_more_info y pregunta exactamente que falta.',
         'Si tienes dudas fuertes, suggestedDraft.targetType debe ser none o la mejor opcion con warnings claros.',
+        'quickReplies debe traer 2 a 4 respuestas cortas y utiles cuando convenga, por ejemplo: "Es gasto", "Es compra", "Es credito", "Es contado". Si no aplica, usa [].',
+        `Perfil de quien conversa JSON: ${JSON.stringify(safeWorkerProfile)}`,
+        `Historial reciente JSON: ${JSON.stringify(safeConversationHistory)}`,
         `Pregunta o instruccion del usuario: ${message}`,
         `Contexto contable JSON: ${JSON.stringify(context)}`,
       ].join('\n'),
@@ -2731,6 +2782,8 @@ exports.fiscalAssistantChat = onCall(FISCAL_ASSISTANT_FUNCTION_OPTIONS, async (r
   const message = normalizeText(request.data?.message);
   const support = request.data?.support || null;
   const classificationHint = normalizeClassificationHint(request.data?.classificationHint);
+  const conversationHistory = sanitizeConversationHistory(request.data?.conversationHistory);
+  const workerProfile = normalizeWorkerProfile(request.data?.workerProfile || {});
 
   if (!message && !support?.url) {
     throw new HttpsError('invalid-argument', 'Escribe una pregunta o adjunta una foto/documento.');
@@ -2742,12 +2795,16 @@ exports.fiscalAssistantChat = onCall(FISCAL_ASSISTANT_FUNCTION_OPTIONS, async (r
     support,
     context,
     classificationHint,
+    conversationHistory,
+    workerProfile,
   });
 
   const chatRef = await firestore.collection('ai_fiscal_chats').add({
     actorEmail,
     message,
     classificationHint,
+    workerProfile,
+    conversationHistory,
     support: support || null,
     result: aiResult,
     contextSnapshot: context,
@@ -2762,6 +2819,7 @@ exports.fiscalAssistantChat = onCall(FISCAL_ASSISTANT_FUNCTION_OPTIONS, async (r
       aiStatus: 'review_required',
       userMessage: message,
       classificationHint,
+      workerProfile,
       support: support || null,
       fotoFacturaUrl: support?.url || '',
       fotoFacturaPath: support?.path || '',
