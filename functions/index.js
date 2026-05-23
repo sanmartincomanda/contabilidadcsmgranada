@@ -230,6 +230,13 @@ function normalizeAmountFrom(source, keys, fallback = 0) {
   return normalizeAmount(pickFirstValue(source, keys) ?? fallback);
 }
 
+function formatFiscalAmount(value) {
+  return `C$ ${normalizeAmount(value).toLocaleString('en-US', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`;
+}
+
 function resolveSaleFinancials(row) {
   const total = normalizeAmountFrom(row, [
     'total',
@@ -2753,6 +2760,77 @@ function fiscalDraftSchema() {
   };
 }
 
+function fiscalExtractionSchema() {
+  return {
+    type: 'json_schema',
+    name: 'fiscal_invoice_extraction',
+    strict: true,
+    schema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        confidence: { type: 'number' },
+        warnings: {
+          type: 'array',
+          items: { type: 'string' },
+        },
+        suggestedDraft: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            targetType: {
+              type: 'string',
+              enum: ['none', 'gasto_credito', 'gasto_contado', 'compra_credito', 'compra_contado', 'abono_cxp', 'factura_membretada_venta'],
+            },
+            date: { type: 'string' },
+            supplier: { type: 'string' },
+            invoiceNumber: { type: 'string' },
+            category: { type: 'string' },
+            description: { type: 'string' },
+            paymentMethod: { type: 'string' },
+            paymentReference: { type: 'string' },
+            subtotal: { type: 'number' },
+            iva: { type: 'number' },
+            total: { type: 'number' },
+            retentionIr2: { type: 'number' },
+            retentionMunicipal1: { type: 'number' },
+            payableProvider: { type: 'string' },
+            payableInvoiceNumber: { type: 'string' },
+            amountPaid: { type: 'number' },
+          },
+          required: [
+            'targetType',
+            'date',
+            'supplier',
+            'invoiceNumber',
+            'category',
+            'description',
+            'paymentMethod',
+            'paymentReference',
+            'subtotal',
+            'iva',
+            'total',
+            'retentionIr2',
+            'retentionMunicipal1',
+            'payableProvider',
+            'payableInvoiceNumber',
+            'amountPaid',
+          ],
+        },
+        followUpQuestions: {
+          type: 'array',
+          items: { type: 'string' },
+        },
+        quickReplies: {
+          type: 'array',
+          items: { type: 'string' },
+        },
+      },
+      required: ['confidence', 'warnings', 'suggestedDraft', 'followUpQuestions', 'quickReplies'],
+    },
+  };
+}
+
 function normalizeClassificationHint(value) {
   const hint = normalizeComparableText(value);
   if (hint === 'gasto' || hint === 'compra') return hint;
@@ -2871,6 +2949,14 @@ async function buildOpenAiSupportContent(file = {}) {
     };
   }
 
+  if (file.url) {
+    return {
+      type: 'input_image',
+      image_url: file.url,
+      detail: 'high',
+    };
+  }
+
   if (file.path) {
     try {
       const [buffer] = await admin.storage().bucket().file(file.path).download();
@@ -2893,12 +2979,18 @@ async function buildOpenAiSupportContent(file = {}) {
     }
   }
 
-  if (!file.url) return null;
-  return {
-    type: 'input_image',
-    image_url: file.url,
-    detail: 'high',
-  };
+  return null;
+}
+
+async function appendSupportFilesToOpenAiContent(content, supportFiles = []) {
+  for (const [index, file] of supportFiles.entries()) {
+    content.push({
+      type: 'input_text',
+      text: `Soporte ${index + 1}: ${file.label || getAiSupportLabel(file.type)}. Tipo interno: ${file.type || 'invoice'}. Lee esta imagen/PDF antes de responder.`,
+    });
+    const supportContent = await buildOpenAiSupportContent(file);
+    if (supportContent) content.push(supportContent);
+  }
 }
 
 function emptyFiscalAssistantDraft() {
@@ -3074,7 +3166,7 @@ function extractJsonObjectFromText(value = '') {
   return '';
 }
 
-function parseFiscalAssistantPayload(payload = {}, fallback = {}, context = {}) {
+function collectOpenAiPayloadCandidates(payload = {}) {
   const candidates = [];
 
   if (payload.output_parsed) candidates.push(payload.output_parsed);
@@ -3087,6 +3179,12 @@ function parseFiscalAssistantPayload(payload = {}, fallback = {}, context = {}) 
       if (contentItem.output_text) candidates.push(contentItem.output_text);
     });
   });
+
+  return candidates;
+}
+
+function parseFiscalAssistantPayload(payload = {}, fallback = {}, context = {}) {
+  const candidates = collectOpenAiPayloadCandidates(payload);
 
   for (const candidate of candidates) {
     if (!candidate) continue;
@@ -3119,6 +3217,38 @@ function parseFiscalAssistantPayload(payload = {}, fallback = {}, context = {}) 
   return normalizeFiscalAssistantResult({}, fallback, context);
 }
 
+function parseFiscalExtractionPayload(payload = {}) {
+  const candidates = collectOpenAiPayloadCandidates(payload);
+
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+
+    if (typeof candidate === 'object') return candidate;
+
+    const text = normalizeText(candidate);
+    const attempts = [text, extractJsonObjectFromText(text)].filter(Boolean);
+    for (const attempt of attempts) {
+      try {
+        return JSON.parse(attempt);
+      } catch (error) {
+        // Try the next candidate; if all fail, we fall back below.
+      }
+    }
+  }
+
+  logger.warn('Extraccion OpenAI no fue JSON recuperable', {
+    status: payload.status,
+    incompleteDetails: payload.incomplete_details,
+    error: payload.error,
+    outputTypes: Array.isArray(payload.output) ? payload.output.map((item) => item.type || item.role || 'unknown').slice(0, 8) : [],
+    contentTypes: Array.isArray(payload.output)
+      ? payload.output.flatMap((item) => (item.content || []).map((contentItem) => contentItem.type || 'unknown')).slice(0, 12)
+      : [],
+    outputTextPreview: normalizeText(payload.output_text).slice(0, 600),
+  });
+  return null;
+}
+
 function normalizeWorkerProfile(value = {}) {
   const role = normalizeComparableText(value.role) || 'administracion';
   const allowedRoles = new Set(['administracion', 'contabilidad', 'caja', 'bodega']);
@@ -3128,6 +3258,143 @@ function normalizeWorkerProfile(value = {}) {
     roleLabel: normalizeText(value.roleLabel).slice(0, 80) || 'Administracion',
     tone: normalizeText(value.tone).slice(0, 220) || 'resumen ejecutivo, acciones claras y control fiscal',
   };
+}
+
+function buildDigitizerReplyFromDraft(aiResult = {}) {
+  const draft = aiResult.suggestedDraft || {};
+  const typeLabel = {
+    gasto_credito: 'gasto a credito',
+    gasto_contado: 'gasto de contado',
+    compra_credito: 'compra a credito',
+    compra_contado: 'compra de contado',
+    abono_cxp: 'abono a cuenta por pagar',
+    factura_membretada_venta: 'factura membretada de venta',
+    none: 'soporte pendiente de clasificar',
+  }[draft.targetType] || 'soporte fiscal';
+
+  const summary = [
+    draft.supplier ? `proveedor ${draft.supplier}` : '',
+    draft.invoiceNumber ? `factura ${draft.invoiceNumber}` : '',
+    draft.date ? `fecha ${draft.date}` : '',
+    draft.total ? `total ${formatFiscalAmount(draft.total)}` : '',
+  ].filter(Boolean).join(', ');
+
+  const fiscal = [
+    Number(draft.subtotal) > 0 ? `Subtotal ${formatFiscalAmount(draft.subtotal)}` : '',
+    Number(draft.iva) > 0 ? `IVA ${formatFiscalAmount(draft.iva)}` : '',
+    Number(draft.retentionIr2) > 0 ? `Ret. IR 2% ${formatFiscalAmount(draft.retentionIr2)}` : '',
+    Number(draft.retentionMunicipal1) > 0 ? `Ret. municipal 1% ${formatFiscalAmount(draft.retentionMunicipal1)}` : '',
+  ].filter(Boolean).join(' | ');
+
+  const parts = [];
+  parts.push(`Modo Digitador activo. Lei los soportes y prepare un borrador como ${typeLabel}.`);
+  if (summary) parts.push(`Datos detectados: ${summary}.`);
+  if (fiscal) parts.push(fiscal);
+  if (draft.category) parts.push(`Categoria sugerida: ${draft.category}.`);
+  if ((aiResult.followUpQuestions || []).length) {
+    parts.push(`Antes de registrar necesito confirmar: ${(aiResult.followUpQuestions || []).slice(0, 2).join(' ')}`);
+  } else {
+    parts.push('Si todo esta correcto, podes confirmar el registro.');
+  }
+
+  return parts.join('\n');
+}
+
+async function callOpenAIFiscalExtractor({
+  apiKey,
+  message,
+  supportFiles = [],
+  context,
+  classificationHint = 'auto',
+  digitizerOptions = {},
+  conversationHistory = [],
+}) {
+  const hint = normalizeClassificationHint(classificationHint);
+  const safeDigitizerOptions = normalizeDigitizerOptions(digitizerOptions);
+  const safeConversationHistory = sanitizeConversationHistory(conversationHistory);
+  const safeSupportFiles = sanitizeAiSupportFiles(supportFiles);
+  const hasRetentionSupport = safeSupportFiles.some((file) => ['retentionIr2', 'retentionMunicipal1'].includes(file.type));
+  const content = [
+    {
+      type: 'input_text',
+      text: [
+        'Eres MARTIN IA en modo digitador fiscal. Tarea unica: leer soportes/fotos/PDF y devolver JSON estructurado corto.',
+        'No escribas explicaciones largas. No inventes datos. Si un campo no se lee, dejalo vacio o 0 y pregunta solo lo indispensable.',
+        'Lee todos los soportes: factura principal, retencion anticipo IR 2%, retencion municipal 1%. Cada imagen viene precedida por su etiqueta.',
+        'Si hay soporte de retencion IR, extrae retentionIr2. Si hay soporte de retencion municipal, extrae retentionMunicipal1.',
+        'Si hay factura y retenciones, NO preguntes si lleva retenciones salvo que los soportes no sean legibles.',
+        'Si ves NO SUJETOS A RETENCIONES y no hay soportes de retencion, usa retenciones 0.',
+        'Compra = productos vendibles o costo directo de inventario: camaron, langosta, carne, pollo, pescado, mariscos, mercaderia.',
+        'Gasto = insumos no revendibles/operativos: rollos termicos, papel termico, bolsas, limpieza, oficina, mantenimiento, servicios.',
+        'Si es gasto, category debe ser exactamente una de context.categories.expenseCategories. Si no hay coincidencia, usa context.categories.fallbackExpenseCategory.',
+        'Si es compra, usa category "Compra" salvo que el contexto indique algo mejor.',
+        'Si condicion dice contado, 1 dia contado o similar, usa *_contado y paymentMethod "Contado". Si dice credito, usa *_credito.',
+        `Pista usuario: ${hint}.`,
+        `Auto-registro seguro: ${safeDigitizerOptions.autoRegister ? 'si' : 'no'}.`,
+        `Hay soportes de retencion adjuntos: ${hasRetentionSupport ? 'si' : 'no'}.`,
+        `Historial reciente JSON: ${JSON.stringify(safeConversationHistory)}`,
+        `Mensaje usuario: ${message}`,
+        `Contexto categorias/aprendizaje JSON: ${JSON.stringify({
+          learning: context.learning,
+          categories: context.categories,
+        })}`,
+      ].join('\n'),
+    },
+  ];
+
+  await appendSupportFilesToOpenAiContent(content, safeSupportFiles);
+
+  const response = await fetch('https://api.openai.com/v1/responses', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      model: OPENAI_FISCAL_MODEL.value(),
+      input: [
+        {
+          role: 'user',
+          content,
+        },
+      ],
+      text: {
+        format: fiscalExtractionSchema(),
+      },
+      reasoning: {
+        effort: 'minimal',
+      },
+      max_output_tokens: 2200,
+    }),
+  });
+
+  const payload = await response.json().catch(() => ({}));
+
+  if (!response.ok) {
+    logger.error('OpenAI fiscal extractor error', {
+      status: response.status,
+      payload,
+    });
+    return null;
+  }
+
+  const extracted = parseFiscalExtractionPayload(payload);
+  if (!extracted) return null;
+
+  const normalized = normalizeFiscalAssistantResult({
+    reply: buildDigitizerReplyFromDraft(extracted),
+    intent: (extracted.followUpQuestions || []).length
+      ? 'request_more_info'
+      : (extracted.suggestedDraft?.targetType === 'none' ? 'analyze_support' : 'create_draft'),
+    confidence: extracted.confidence,
+    warnings: extracted.warnings,
+    suggestedDraft: extracted.suggestedDraft,
+    followUpQuestions: extracted.followUpQuestions,
+    quickReplies: extracted.quickReplies,
+  }, {}, context);
+
+  normalized.reply = buildDigitizerReplyFromDraft(normalized);
+  return normalized;
 }
 
 async function callOpenAIFiscalAssistant({
@@ -3166,6 +3433,21 @@ async function callOpenAIFiscalAssistant({
       ? ['No tiene retenciones', 'Solo IR 2%', 'Solo municipal 1%', 'Ambas retenciones']
       : ['Revisar ventas', 'Revisar CxP', 'Subir factura'],
   };
+
+  if (hasSupport && safeDigitizerOptions.mode === 'digitizer') {
+    const extractedResult = await callOpenAIFiscalExtractor({
+      apiKey,
+      message,
+      supportFiles: safeSupportFiles,
+      context,
+      classificationHint: hint,
+      digitizerOptions: safeDigitizerOptions,
+      conversationHistory: safeConversationHistory,
+    });
+
+    if (extractedResult) return extractedResult;
+  }
+
   const content = [
     {
       type: 'input_text',
@@ -3252,8 +3534,7 @@ async function callOpenAIFiscalAssistant({
     },
   ];
 
-  const supportContent = await Promise.all(safeSupportFiles.map((file) => buildOpenAiSupportContent(file)));
-  supportContent.filter(Boolean).forEach((item) => content.push(item));
+  await appendSupportFilesToOpenAiContent(content, safeSupportFiles);
 
   const response = await fetch('https://api.openai.com/v1/responses', {
     method: 'POST',
