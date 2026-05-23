@@ -2986,7 +2986,7 @@ async function appendSupportFilesToOpenAiContent(content, supportFiles = []) {
   for (const [index, file] of supportFiles.entries()) {
     content.push({
       type: 'input_text',
-      text: `Soporte ${index + 1}: ${file.label || getAiSupportLabel(file.type)}. Tipo interno: ${file.type || 'invoice'}. Lee esta imagen/PDF antes de responder.`,
+      text: `Soporte ${index + 1}: ${file.label || getAiSupportLabel(file.type)}. Tipo interno: ${file.type || 'invoice'}. Esta etiqueta es autoritativa: si dice retentionIr2 es retencion IR 2%, si dice retentionMunicipal1 es retencion municipal 1%. Lee esta imagen/PDF antes de responder.`,
     });
     const supportContent = await buildOpenAiSupportContent(file);
     if (supportContent) content.push(supportContent);
@@ -3116,6 +3116,74 @@ function normalizeFiscalAssistantResult(value = {}, fallback = {}, context = {})
     quickReplies: Array.isArray(value?.quickReplies)
       ? value.quickReplies.map((item) => normalizeText(item).slice(0, 80)).filter(Boolean).slice(0, 4)
       : (fallback.quickReplies || []),
+  };
+}
+
+function getRetentionSupportFlags(supportFiles = []) {
+  return {
+    hasIr2: supportFiles.some((file) => normalizeComparableText(file.type) === 'retentionir2'),
+    hasMunicipal1: supportFiles.some((file) => normalizeComparableText(file.type) === 'retentionmunicipal1'),
+  };
+}
+
+function isRetentionOnlyPrompt(value = '') {
+  const text = normalizeComparableText(value);
+  return text.includes('retencion') || text.includes('retenciones');
+}
+
+function hasCompleteFiscalDraft(draft = {}) {
+  const targetType = normalizeText(draft.targetType);
+  const allowedTargets = new Set(['gasto_credito', 'gasto_contado', 'compra_credito', 'compra_contado']);
+  return allowedTargets.has(targetType)
+    && DATE_REGEX.test(normalizeDate(draft.date))
+    && Boolean(cleanAiText(draft.supplier || draft.payableProvider))
+    && Boolean(cleanAiText(draft.invoiceNumber || draft.payableInvoiceNumber))
+    && normalizeAmount(draft.subtotal) > 0
+    && normalizeAmount(draft.total) > 0;
+}
+
+function applyRetentionSupportRules(aiResult = {}, supportFiles = []) {
+  const flags = getRetentionSupportFlags(supportFiles);
+  if (!flags.hasIr2 && !flags.hasMunicipal1) return aiResult;
+
+  const draft = { ...(aiResult.suggestedDraft || {}) };
+  const subtotal = normalizeAmount(draft.subtotal);
+
+  if (subtotal > 0 && flags.hasIr2 && normalizeAmount(draft.retentionIr2) <= 0) {
+    draft.retentionIr2 = normalizeAmount(subtotal * 0.02);
+  }
+
+  if (subtotal > 0 && flags.hasMunicipal1 && normalizeAmount(draft.retentionMunicipal1) <= 0) {
+    draft.retentionMunicipal1 = normalizeAmount(subtotal * 0.01);
+  }
+
+  const cleanedQuestions = (aiResult.followUpQuestions || [])
+    .filter((question) => !isRetentionOnlyPrompt(question));
+  const cleanedWarnings = (aiResult.warnings || [])
+    .filter((warning) => !isRetentionOnlyPrompt(warning));
+  const cleanedQuickReplies = (aiResult.quickReplies || [])
+    .filter((reply) => !isRetentionOnlyPrompt(reply));
+
+  const confidence = hasCompleteFiscalDraft(draft)
+    ? Math.max(Number(aiResult.confidence || 0), 0.92)
+    : Number(aiResult.confidence || 0);
+
+  const supportText = [
+    flags.hasIr2 ? 'retencion IR 2%' : '',
+    flags.hasMunicipal1 ? 'retencion municipal 1%' : '',
+  ].filter(Boolean).join(' y ');
+  const reply = normalizeText(aiResult.reply).includes('Soportes de retencion vinculados')
+    ? aiResult.reply
+    : `${normalizeText(aiResult.reply)}\nSoportes de retencion vinculados: ${supportText}.`.trim();
+
+  return {
+    ...aiResult,
+    reply,
+    confidence,
+    warnings: cleanedWarnings,
+    suggestedDraft: draft,
+    followUpQuestions: cleanedQuestions,
+    quickReplies: cleanedQuickReplies,
   };
 }
 
@@ -3313,7 +3381,8 @@ async function callOpenAIFiscalExtractor({
   const safeDigitizerOptions = normalizeDigitizerOptions(digitizerOptions);
   const safeConversationHistory = sanitizeConversationHistory(conversationHistory);
   const safeSupportFiles = sanitizeAiSupportFiles(supportFiles);
-  const hasRetentionSupport = safeSupportFiles.some((file) => ['retentionIr2', 'retentionMunicipal1'].includes(file.type));
+  const retentionFlags = getRetentionSupportFlags(safeSupportFiles);
+  const hasRetentionSupport = retentionFlags.hasIr2 || retentionFlags.hasMunicipal1;
   const content = [
     {
       type: 'input_text',
@@ -3321,8 +3390,12 @@ async function callOpenAIFiscalExtractor({
         'Eres MARTIN IA en modo digitador fiscal. Tarea unica: leer soportes/fotos/PDF y devolver JSON estructurado corto.',
         'No escribas explicaciones largas. No inventes datos. Si un campo no se lee, dejalo vacio o 0 y pregunta solo lo indispensable.',
         'Lee todos los soportes: factura principal, retencion anticipo IR 2%, retencion municipal 1%. Cada imagen viene precedida por su etiqueta.',
-        'Si hay soporte de retencion IR, extrae retentionIr2. Si hay soporte de retencion municipal, extrae retentionMunicipal1.',
-        'Si hay factura y retenciones, NO preguntes si lleva retenciones salvo que los soportes no sean legibles.',
+        'Relaciona retenciones con la factura principal usando numero de factura, proveedor, RUC, fecha y monto base. Si fueron subidas en el mismo turno, tratalas como documentos vinculados salvo que claramente pertenezcan a otro proveedor/factura.',
+        'Si hay soporte etiquetado como retentionIr2, extrae retentionIr2 aunque el documento use frases como anticipo IR, retencion definitiva, impuesto sobre la renta o 2%.',
+        'Si hay soporte etiquetado como retentionMunicipal1, extrae retentionMunicipal1 aunque el documento use frases como alcaldia, municipal, IMI, impuesto municipal o 1%.',
+        'Si el soporte de retencion muestra numero de factura o proveedor, comparalo con la factura principal y menciona mismatch solo si contradice claramente.',
+        'Si hay factura y retenciones adjuntas, NO preguntes si lleva retenciones. Ya lleva retenciones porque los soportes fueron adjuntados.',
+        'Si el monto de una retencion no es legible pero el soporte existe y el subtotal/base de la factura es visible, calcula IR como subtotal*0.02 y municipal como subtotal*0.01 segun el tipo de soporte.',
         'Si ves NO SUJETOS A RETENCIONES y no hay soportes de retencion, usa retenciones 0.',
         'Compra = productos vendibles o costo directo de inventario: camaron, langosta, carne, pollo, pescado, mariscos, mercaderia.',
         'Gasto = insumos no revendibles/operativos: rollos termicos, papel termico, bolsas, limpieza, oficina, mantenimiento, servicios.',
@@ -3381,7 +3454,7 @@ async function callOpenAIFiscalExtractor({
   const extracted = parseFiscalExtractionPayload(payload);
   if (!extracted) return null;
 
-  const normalized = normalizeFiscalAssistantResult({
+  let normalized = normalizeFiscalAssistantResult({
     reply: buildDigitizerReplyFromDraft(extracted),
     intent: (extracted.followUpQuestions || []).length
       ? 'request_more_info'
@@ -3393,7 +3466,14 @@ async function callOpenAIFiscalExtractor({
     quickReplies: extracted.quickReplies,
   }, {}, context);
 
+  normalized = applyRetentionSupportRules(normalized, safeSupportFiles);
   normalized.reply = buildDigitizerReplyFromDraft(normalized);
+  if (retentionFlags.hasIr2 || retentionFlags.hasMunicipal1) {
+    normalized.reply = `${normalized.reply}\nSoportes de retencion vinculados: ${[
+      retentionFlags.hasIr2 ? 'IR 2%' : '',
+      retentionFlags.hasMunicipal1 ? 'municipal 1%' : '',
+    ].filter(Boolean).join(' y ')}.`;
+  }
   return normalized;
 }
 
@@ -3418,7 +3498,8 @@ async function callOpenAIFiscalAssistant({
   const safeWorkerProfile = normalizeWorkerProfile(workerProfile);
   const safeSupportFiles = sanitizeAiSupportFiles(supportFiles, support);
   const hasSupport = safeSupportFiles.length > 0;
-  const hasRetentionSupport = safeSupportFiles.some((file) => ['retentionIr2', 'retentionMunicipal1'].includes(file.type));
+  const retentionFlags = getRetentionSupportFlags(safeSupportFiles);
+  const hasRetentionSupport = retentionFlags.hasIr2 || retentionFlags.hasMunicipal1;
   const safeFallbackResult = {
     reply: hasSupport
       ? `${safeDigitizerOptions.mode === 'digitizer' ? 'Modo Digitador activo. ' : ''}Ya guarde el soporte en la bandeja de MARTIN IA, pero necesito confirmar un dato fiscal antes de armar el borrador. ¿Esta factura lleva retencion de anticipo IR 2%, retencion municipal 1%, ambas o ninguna?`
@@ -3433,6 +3514,12 @@ async function callOpenAIFiscalAssistant({
       ? ['No tiene retenciones', 'Solo IR 2%', 'Solo municipal 1%', 'Ambas retenciones']
       : ['Revisar ventas', 'Revisar CxP', 'Subir factura'],
   };
+
+  if (hasRetentionSupport) {
+    safeFallbackResult.reply = `${safeDigitizerOptions.mode === 'digitizer' ? 'Modo Digitador activo. ' : ''}Ya guarde la factura y los soportes de retencion en la bandeja de MARTIN IA. No voy a preguntarte si lleva retencion porque ya adjuntaste el soporte; necesito reintentar lectura o confirmar manualmente los datos que no se lean.`;
+    safeFallbackResult.followUpQuestions = ['No pude leer todos los campos; confirma proveedor, factura o montos si no aparecen en el borrador.'];
+    safeFallbackResult.quickReplies = ['Reintentar lectura', 'Confirmo datos', 'Registrar manual'];
+  }
 
   if (hasSupport && safeDigitizerOptions.mode === 'digitizer') {
     const extractedResult = await callOpenAIFiscalExtractor({
@@ -3493,7 +3580,9 @@ async function callOpenAIFiscalAssistant({
         'No pongas suggestedDraft.targetType="none" solo porque faltan retenciones. Usa targetType none solo si no puedes leer el soporte o no puedes distinguir compra/gasto despues de aplicar reglas e historial.',
         'Si faltan retenciones, bloquea solo el registro automatico usando followUpQuestions y warnings, pero deja el borrador preparado para que el usuario responda rapido.',
         'Si hay soportes de retencion adjuntos, leelos y extrae numero, fecha, proveedor, base y monto retenido cuando sea visible.',
-        'Si hay una retencion adjunta pero no puedes leerla bien, pregunta por el monto o pide otra foto antes de confirmar.',
+        'Si las retenciones fueron adjuntadas en el mismo turno, relacionalas con la factura principal por numero de factura/proveedor/RUC/fecha. No vuelvas a preguntar si lleva retencion; extrae o calcula el monto segun el soporte adjunto.',
+        'Si hay soporte IR 2% y el monto no se lee pero el subtotal/base si, calcula retentionIr2=subtotal*0.02. Si hay soporte municipal 1% y el monto no se lee pero el subtotal/base si, calcula retentionMunicipal1=subtotal*0.01.',
+        'Si hay una retencion adjunta pero no puedes leerla bien y tampoco puedes calcularla por subtotal/base, pregunta por el monto o pide otra foto antes de confirmar.',
         'Si el usuario responde "No tiene retenciones", continua con retentionIr2=0 y retentionMunicipal1=0.',
         'Si responde "Solo IR 2%", calcula retentionIr2 sobre subtotal cuando sea posible y deja retentionMunicipal1=0.',
         'Si responde "Solo municipal 1%", calcula retentionMunicipal1 sobre subtotal cuando sea posible y deja retentionIr2=0.',
@@ -3570,7 +3659,10 @@ async function callOpenAIFiscalAssistant({
     throw new HttpsError('internal', payload?.error?.message || 'OpenAI no pudo procesar la solicitud.');
   }
 
-  return parseFiscalAssistantPayload(payload, safeFallbackResult, context);
+  return applyRetentionSupportRules(
+    parseFiscalAssistantPayload(payload, safeFallbackResult, context),
+    safeSupportFiles,
+  );
 }
 
 exports.fiscalAssistantChat = onCall(FISCAL_ASSISTANT_FUNCTION_OPTIONS, async (request) => {
