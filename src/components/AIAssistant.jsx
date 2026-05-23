@@ -350,7 +350,7 @@ export default function AIAssistant({ floating = false }) {
     const [supportFiles, setSupportFiles] = useState(createEmptySupportFilesState);
     const [classificationHint, setClassificationHint] = useState('auto');
     const [assistantMode, setAssistantMode] = useState(() => localStorage.getItem('martinIA.assistantMode') || 'chat');
-    const [autoRegisterDigitizer, setAutoRegisterDigitizer] = useState(() => localStorage.getItem('martinIA.autoRegisterDigitizer') === 'true');
+    const [autoRegisterDigitizer, setAutoRegisterDigitizer] = useState(() => localStorage.getItem('martinIA.autoRegisterDigitizer') !== 'false');
     const [workerRole, setWorkerRole] = useState(() => localStorage.getItem('martinIA.workerRole') || 'administracion');
     const [workerName, setWorkerName] = useState(() => localStorage.getItem('martinIA.workerName') || '');
     const [loading, setLoading] = useState(false);
@@ -468,7 +468,7 @@ export default function AIAssistant({ floating = false }) {
                 : (options.reuseLastSupport ? reusableSupportFiles : []);
             const supportForRequest = support || (supportFilesForRequest[0] || null);
             const selectedClassification = classificationOptions.find((option) => option.id === hintForRequest);
-            const currentAssistantMode = options.assistantModeOverride || assistantMode;
+            const currentAssistantMode = options.assistantModeOverride || (hasSelectedSupport || options.reuseLastSupport ? 'digitizer' : assistantMode);
             const digitizerActive = currentAssistantMode === 'digitizer';
             const messageForAi = [
                 text || (digitizerActive
@@ -616,179 +616,39 @@ export default function AIAssistant({ floating = false }) {
         }
     };
 
-    const renderChatComposer = (compact = false) => (
-        <div className="border-t border-[#ead5c5] bg-white p-4">
-            {error && (
-                <div className="mb-3 flex items-start gap-2 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs font-bold text-amber-800">
-                    <Icon path={Icons.alert} className="mt-0.5 h-4 w-4" />
-                    <span>{error}</span>
-                </div>
-            )}
-            {actionMessage && (
-                <div className="mb-3 flex items-start gap-2 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-xs font-bold text-emerald-800">
-                    <Icon path={Icons.check} className="mt-0.5 h-4 w-4" />
-                    <span>{actionMessage}</span>
-                </div>
-            )}
-            <div className="mb-3 rounded-2xl border border-[#ead5c5] bg-[#fffaf6] p-3">
-                <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-                    <div>
-                        <div className="text-[10px] font-black uppercase tracking-[0.22em] text-[#7f1218]">Modo MARTIN IA</div>
-                        {!compact && <p className="text-xs font-semibold text-stone-500">Usa digitador cuando solo quieras subir facturas y que aprenda patrones.</p>}
-                    </div>
-                    {assistantMode === 'digitizer' && (
-                        <label className="flex cursor-pointer items-center gap-2 rounded-xl border border-[#ead5c5] bg-white px-3 py-2 text-[11px] font-black text-[#7f1218]">
-                            <input
-                                type="checkbox"
-                                checked={autoRegisterDigitizer}
-                                onChange={(event) => setAutoRegisterDigitizer(event.target.checked)}
-                                className="h-4 w-4 accent-[#a81d24]"
-                            />
-                            Auto-registro seguro
-                        </label>
-                    )}
-                </div>
-                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                    {assistantModeOptions.map((mode) => (
-                        <button
-                            key={mode.id}
-                            type="button"
-                            onClick={() => setAssistantMode(mode.id)}
-                            className={`rounded-2xl border px-4 py-3 text-left transition ${
-                                assistantMode === mode.id
-                                    ? 'border-[#a81d24] bg-[#a81d24] text-white shadow-lg shadow-[#a81d24]/15'
-                                    : 'border-[#ead5c5] bg-white text-[#4b1b1f] hover:bg-[#fff0c8]'
-                            }`}
-                        >
-                            <span className="block text-xs font-black uppercase tracking-[0.2em]">{mode.label}</span>
-                            {!compact && <span className="mt-1 block text-xs font-semibold opacity-75">{mode.description}</span>}
-                        </button>
-                    ))}
-                </div>
-                {assistantMode === 'digitizer' && (
-                    <div className="mt-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-bold text-amber-900">
-                        Digitador aprende por proveedor. Para auto-registrar exige confianza alta, datos completos y retenciones claras o aprendidas.
+    const renderChatComposer = (compact = false) => {
+        const supportLabels = selectedSupportEntries.map((entry) => `${entry.label}: ${entry.file.name}`);
+
+        return (
+            <div className="border-t border-[#ead5c5] bg-white p-3">
+                {(error || actionMessage) && (
+                    <div className={`mb-3 rounded-2xl px-4 py-3 text-xs font-bold ${
+                        error
+                            ? 'border border-amber-200 bg-amber-50 text-amber-800'
+                            : 'border border-emerald-200 bg-emerald-50 text-emerald-800'
+                    }`}>
+                        {error || actionMessage}
                     </div>
                 )}
-            </div>
-            <div className="mb-3 rounded-2xl border border-[#ead5c5] bg-[#fffaf6] p-3">
-                <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-                    <div>
-                        <div className="text-[10px] font-black uppercase tracking-[0.22em] text-[#7f1218]">Modo conversacion</div>
-                        {!compact && <p className="text-xs font-semibold text-stone-500">MARTIN IA adapta su respuesta segun quien lo usa.</p>}
-                    </div>
-                    <div className="flex flex-wrap items-center gap-2">
-                        <input
-                            value={workerName}
-                            onChange={(event) => setWorkerName(event.target.value)}
-                            placeholder="Nombre opcional"
-                            className="min-w-[130px] rounded-xl border border-[#ead5c5] bg-white px-3 py-2 text-xs font-bold text-[#4b1b1f] outline-none transition focus:border-[#a81d24] focus:ring-2 focus:ring-[#a81d24]/10"
-                        />
-                        <button
-                            type="button"
-                            onClick={() => setMessages([buildWelcomeMessage()])}
-                            className="rounded-xl border border-[#ead5c5] bg-white px-3 py-2 text-[11px] font-black text-stone-500 transition hover:bg-[#fff0c8] hover:text-[#7f1218]"
-                        >
-                            Nuevo chat
-                        </button>
-                    </div>
-                </div>
-                <div className="flex flex-wrap gap-2">
-                    {workerRoleOptions.map((role) => (
-                        <button
-                            key={role.id}
-                            type="button"
-                            onClick={() => setWorkerRole(role.id)}
-                            className={`rounded-full border px-3 py-1.5 text-[11px] font-black transition ${
-                                workerRole === role.id
-                                    ? 'border-[#a81d24] bg-[#a81d24] text-white'
-                                    : 'border-[#ead5c5] bg-white text-[#7f1218] hover:bg-[#fff0c8]'
-                            }`}
-                            title={role.tone}
-                        >
-                            {role.label}
-                        </button>
-                    ))}
-                </div>
-            </div>
-            {!compact && (
-                <div className="mb-3 flex flex-wrap gap-2">
-                    {quickPrompts.map((prompt) => (
-                        <button
-                            key={prompt}
-                            type="button"
-                            onClick={() => handleSend(prompt)}
-                            disabled={loading}
-                            className="rounded-full border border-[#ead5c5] bg-[#fff8f2] px-3 py-1.5 text-xs font-bold text-[#7f1218] transition hover:border-[#f2b635] hover:bg-[#fff0c8] disabled:opacity-50"
-                        >
-                            {prompt}
-                        </button>
-                    ))}
-                </div>
-            )}
-            <div className="flex flex-col gap-3">
-                <div className="rounded-2xl border border-dashed border-[#d9b99f] bg-[#fff8f2] p-3">
-                    <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-                        <div>
-                            <div className="flex items-center gap-2 text-sm font-black text-[#7f1218]">
-                                <Icon path={Icons.upload} className="h-5 w-5" />
-                                Soportes de factura
-                            </div>
-                            {!compact && <p className="mt-1 text-xs font-semibold text-stone-500">Adjunta factura y, si aplica, fotos/PDF de retenciones para que MARTIN IA las lea.</p>}
-                        </div>
-                        {hasSelectedSupport && (
-                            <button
-                                type="button"
-                                onClick={() => setSupportFiles(createEmptySupportFilesState())}
-                                className="rounded-xl border border-[#ead5c5] bg-white px-3 py-1.5 text-[11px] font-black text-stone-500 transition hover:bg-white hover:text-rose-700"
-                            >
-                                Quitar soportes
-                            </button>
-                        )}
-                    </div>
-                    <div className={`grid grid-cols-1 gap-2 ${compact ? '' : 'md:grid-cols-3'}`}>
-                        {SUPPORT_FILE_TYPES.map((type) => {
-                            const selected = supportFiles[type.key];
-                            return (
-                                <label key={type.key} className="cursor-pointer rounded-xl border border-[#ead5c5] bg-white px-3 py-2 text-xs font-bold text-[#4b1b1f] transition hover:border-[#f2b635] hover:bg-[#fffaf6]">
-                                    <span className="block text-[10px] font-black uppercase tracking-[0.16em] text-[#7f1218]">{type.label}</span>
-                                    <span className="mt-1 block truncate text-[11px] font-semibold text-stone-500">
-                                        {selected ? selected.name : 'Seleccionar foto/PDF'}
-                                    </span>
-                                    <input
-                                        type="file"
-                                        accept="image/*,.pdf"
-                                        className="hidden"
-                                        onChange={(event) => setSupportFiles((prev) => ({ ...prev, [type.key]: event.target.files?.[0] || null }))}
-                                    />
-                                </label>
-                            );
-                        })}
-                    </div>
-                </div>
+
                 {hasSelectedSupport && (
-                    <div className="rounded-2xl border border-[#ead5c5] bg-[#fffaf6] p-3">
-                        <div className="mb-2 text-[10px] font-black uppercase tracking-[0.22em] text-[#7f1218]">Que es esta factura?</div>
-                        <div className="flex flex-wrap gap-2">
-                            {classificationOptions.map((option) => (
-                                <button
-                                    key={option.id}
-                                    type="button"
-                                    onClick={() => setClassificationHint(option.id)}
-                                    className={`rounded-xl border px-3 py-2 text-left text-xs font-black transition ${
-                                        classificationHint === option.id
-                                            ? 'border-[#a81d24] bg-[#a81d24] text-white'
-                                            : 'border-[#ead5c5] bg-white text-[#7f1218] hover:bg-[#fff0c8]'
-                                    }`}
-                                >
-                                    <span className="block">{option.label}</span>
-                                    {!compact && <span className="mt-0.5 block text-[10px] font-semibold opacity-75">{option.description}</span>}
-                                </button>
-                            ))}
-                        </div>
+                    <div className="mb-2 flex flex-wrap items-center gap-2">
+                        {supportLabels.map((label) => (
+                            <span key={label} className="max-w-full truncate rounded-full border border-[#ead5c5] bg-[#fff8f2] px-3 py-1 text-[11px] font-bold text-[#7f1218]">
+                                {label}
+                            </span>
+                        ))}
+                        <button
+                            type="button"
+                            onClick={() => setSupportFiles(createEmptySupportFilesState())}
+                            className="rounded-full px-2 py-1 text-[11px] font-bold text-stone-400 transition hover:bg-stone-100 hover:text-rose-700"
+                        >
+                            quitar
+                        </button>
                     </div>
                 )}
-                <div className="flex flex-1 rounded-2xl border border-[#ead5c5] bg-[#fffaf6] p-2 shadow-inner">
+
+                <div className="rounded-[1.4rem] border border-[#ead5c5] bg-[#fffaf6] p-2 shadow-inner">
                     <textarea
                         value={input}
                         onChange={(event) => setInput(event.target.value)}
@@ -798,30 +658,54 @@ export default function AIAssistant({ floating = false }) {
                                 handleSend();
                             }
                         }}
-                        placeholder={`Escribe como en WhatsApp: "subi esta factura", "es credito", "que falta"...`}
-                        className={`${compact ? 'min-h-[48px]' : 'min-h-[54px]'} flex-1 resize-none bg-transparent px-3 py-2 text-sm font-semibold text-[#3d1b1e] outline-none`}
+                        placeholder="Escribe o adjunta una factura..."
+                        className={`${compact ? 'min-h-[52px]' : 'min-h-[64px]'} w-full resize-none bg-transparent px-3 py-2 text-sm font-semibold text-[#3d1b1e] outline-none`}
                     />
-                    {hasSelectedSupport && (
-                        <button
-                            type="button"
-                            onClick={() => setSupportFiles(createEmptySupportFilesState())}
-                            className="self-center rounded-xl p-2 text-stone-400 transition hover:bg-stone-100 hover:text-rose-600"
-                        >
-                            <Icon path={Icons.x} className="h-4 w-4" />
-                        </button>
-                    )}
-                    <button
-                        type="button"
-                        onClick={() => handleSend()}
-                        disabled={loading || (!input.trim() && !hasSelectedSupport)}
-                        className="self-end rounded-xl bg-[#a81d24] p-3 text-white shadow-lg shadow-[#a81d24]/20 transition hover:bg-[#7f1218] disabled:cursor-not-allowed disabled:opacity-40"
-                    >
-                        <Icon path={Icons.send} className="h-5 w-5" />
-                    </button>
+                    <div className="flex flex-wrap items-center justify-between gap-2 border-t border-[#ead5c5]/70 pt-2">
+                        <div className="flex flex-wrap gap-1.5">
+                            {SUPPORT_FILE_TYPES.map((type) => {
+                                const selected = supportFiles[type.key];
+                                const shortLabel = type.key === 'invoice' ? 'Factura' : type.key === 'retentionIr2' ? 'Ret. IR' : 'Ret. municipal';
+                                return (
+                                    <label key={type.key} className={`cursor-pointer rounded-full border px-3 py-1.5 text-[11px] font-black transition ${
+                                        selected
+                                            ? 'border-[#a81d24] bg-[#a81d24] text-white'
+                                            : 'border-[#ead5c5] bg-white text-[#7f1218] hover:bg-[#fff0c8]'
+                                    }`}>
+                                        {selected ? `${shortLabel} lista` : shortLabel}
+                                        <input
+                                            type="file"
+                                            accept="image/*,.pdf"
+                                            className="hidden"
+                                            onChange={(event) => setSupportFiles((prev) => ({ ...prev, [type.key]: event.target.files?.[0] || null }))}
+                                        />
+                                    </label>
+                                );
+                            })}
+                        </div>
+                        <div className="flex items-center gap-2">
+                            <button
+                                type="button"
+                                onClick={() => setMessages([buildWelcomeMessage()])}
+                                className="rounded-full px-3 py-2 text-[11px] font-black text-stone-400 transition hover:bg-stone-100 hover:text-[#7f1218]"
+                            >
+                                Nuevo
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => handleSend()}
+                                disabled={loading || (!input.trim() && !hasSelectedSupport)}
+                                className="rounded-full bg-[#a81d24] p-3 text-white shadow-lg shadow-[#a81d24]/20 transition hover:bg-[#7f1218] disabled:cursor-not-allowed disabled:opacity-40"
+                                aria-label="Enviar mensaje"
+                            >
+                                <Icon path={Icons.send} className="h-5 w-5" />
+                            </button>
+                        </div>
+                    </div>
                 </div>
             </div>
-        </div>
-    );
+        );
+    };
 
     if (floating) {
         return (
@@ -837,7 +721,7 @@ export default function AIAssistant({ floating = false }) {
                                     </div>
                                     <div>
                                         <div className="text-[10px] font-black uppercase tracking-[0.28em] text-[#f2b635]">{AGENT_NAME}</div>
-                        <div className="text-sm font-black">{assistantMode === 'digitizer' ? 'Modo Digitador' : 'Agente contable fiscal'}</div>
+                                        <div className="text-sm font-black">Chat contable</div>
                                     </div>
                                 </div>
                                 <button
@@ -852,19 +736,6 @@ export default function AIAssistant({ floating = false }) {
                         </div>
 
                         <div className="flex-1 space-y-3 overflow-y-auto bg-[#fffaf6] p-4">
-                            <div className="flex flex-wrap gap-2">
-                                {quickPrompts.slice(0, 3).map((prompt) => (
-                                    <button
-                                        key={prompt}
-                                        type="button"
-                                        onClick={() => handleSend(prompt)}
-                                        disabled={loading}
-                                        className="rounded-full border border-[#ead5c5] bg-white px-3 py-1.5 text-[11px] font-bold text-[#7f1218] transition hover:border-[#f2b635] hover:bg-[#fff0c8] disabled:opacity-50"
-                                    >
-                                        {prompt.replace('Analiza esta factura y crea un borrador fiscal.', 'Analizar factura')}
-                                    </button>
-                                ))}
-                            </div>
                             {messages.map((message) => <MessageBubble key={message.id} message={message} onQuickReply={handleQuickReply} />)}
                             {loading && (
                                 <TypingIndicator compactText={`${AGENT_NAME} esta revisando`} />
@@ -887,7 +758,7 @@ export default function AIAssistant({ floating = false }) {
                     </span>
                     <span className="hidden pr-2 text-left sm:block">
                         <span className="block text-[10px] font-black uppercase tracking-[0.25em] text-[#f2b635]">Abrir chat</span>
-                        <span className="block text-sm font-black">{assistantMode === 'digitizer' ? 'MARTIN Digitador' : AGENT_NAME}</span>
+                        <span className="block text-sm font-black">{AGENT_NAME}</span>
                     </span>
                 </button>
             </div>
@@ -901,37 +772,27 @@ export default function AIAssistant({ floating = false }) {
                 .ai-rise { animation: ai-rise .42s cubic-bezier(.22,1,.36,1) both; }
             `}</style>
 
-            <div className="mx-auto grid max-w-7xl gap-6 lg:grid-cols-[1.35fr_0.65fr]">
+            <div className="mx-auto max-w-5xl">
                 <section className="ai-rise overflow-hidden rounded-[2rem] border border-[#ead5c5] bg-white shadow-2xl shadow-[#7f1218]/10">
-                    <div className="relative overflow-hidden bg-gradient-to-br from-[#2b1113] via-[#7f1218] to-[#a81d24] px-6 py-6 text-white">
+                    <div className="relative overflow-hidden bg-gradient-to-br from-[#2b1113] via-[#7f1218] to-[#a81d24] px-5 py-4 text-white">
                         <div className="absolute inset-0 opacity-20" style={{ backgroundImage: 'radial-gradient(circle at 20% 20%, #f2b635 0 2px, transparent 2px)', backgroundSize: '26px 26px' }} />
                         <div className="relative flex flex-wrap items-center justify-between gap-4">
                             <div className="flex items-center gap-4">
-                                <div className="rounded-2xl bg-white p-2 shadow-xl">
-                                    <img src={APP_BRAND_LOGO} alt={APP_BRAND_NAME} className="h-14 w-14 rounded-xl object-cover" />
+                                <div className="rounded-2xl bg-white p-1.5 shadow-xl">
+                                    <img src={APP_BRAND_LOGO} alt={APP_BRAND_NAME} className="h-11 w-11 rounded-xl object-cover" />
                                 </div>
                                 <div>
                                     <div className="text-xs font-black uppercase tracking-[0.35em] text-[#f2b635]">{AGENT_NAME}</div>
-                                    <h1 className="mt-1 text-2xl font-black">{assistantMode === 'digitizer' ? 'Modo Digitador de facturas' : 'Agente contable conversacional'}</h1>
-                                    <p className="mt-1 max-w-2xl text-sm font-semibold text-white/75">
-                                        {assistantMode === 'digitizer'
-                                            ? 'Sube facturas, retenciones y soportes para que MARTIN IA lea, aprenda y prepare el registro contable.'
-                                            : 'Pregunta por tus datos, sube soportes y genera borradores revisables sin tocar WhatsApp.'}
-                                    </p>
+                                    <h1 className="mt-1 text-xl font-black">Escribe o adjunta una factura</h1>
                                 </div>
                             </div>
-                            <div className="rounded-2xl border border-white/15 bg-white/10 px-4 py-3 text-right backdrop-blur">
-                                <div className="text-[10px] font-black uppercase tracking-[0.25em] text-[#f8d8c8]">
-                                    {autoRegisterDigitizer && assistantMode === 'digitizer' ? 'Auto seguro' : 'Modo seguro'}
-                                </div>
-                                <div className="text-sm font-black">
-                                    {autoRegisterDigitizer && assistantMode === 'digitizer' ? 'Solo si pasa controles' : 'Siempre revisas antes de guardar'}
-                                </div>
+                            <div className="rounded-full border border-white/15 bg-white/10 px-3 py-1.5 text-xs font-black text-white/85 backdrop-blur">
+                                MARTIN decide el modo
                             </div>
                         </div>
                     </div>
 
-                    <div className="flex h-[66vh] min-h-[560px] flex-col">
+                    <div className="flex h-[calc(100vh-11rem)] min-h-[520px] flex-col">
                         <div className="flex-1 space-y-4 overflow-y-auto bg-[#fffaf6] p-5">
                             {messages.map((message) => <MessageBubble key={message.id} message={message} onQuickReply={handleQuickReply} />)}
                             {loading && (
@@ -944,7 +805,7 @@ export default function AIAssistant({ floating = false }) {
                     </div>
                 </section>
 
-                <aside className="ai-rise space-y-5" style={{ animationDelay: '120ms' }}>
+                <aside className="hidden" style={{ animationDelay: '120ms' }}>
                     <div className="rounded-[2rem] border border-[#ead5c5] bg-white p-5 shadow-xl shadow-[#7f1218]/8">
                         <div className="mb-4 flex items-center gap-3">
                             <div className="rounded-2xl bg-[#fff0c8] p-3 text-[#8a5a11]">
