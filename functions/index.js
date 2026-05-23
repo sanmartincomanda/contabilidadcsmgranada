@@ -2728,6 +2728,143 @@ function isPdfAiSupport(file = {}) {
   return source.includes('.pdf') || source.includes('application/pdf');
 }
 
+function emptyFiscalAssistantDraft() {
+  return {
+    targetType: 'none',
+    date: '',
+    supplier: '',
+    invoiceNumber: '',
+    category: '',
+    description: '',
+    paymentMethod: '',
+    paymentReference: '',
+    subtotal: 0,
+    iva: 0,
+    total: 0,
+    retentionIr2: 0,
+    retentionMunicipal1: 0,
+    payableProvider: '',
+    payableInvoiceNumber: '',
+    amountPaid: 0,
+  };
+}
+
+function normalizeFiscalAssistantResult(value = {}, fallback = {}) {
+  const allowedIntents = new Set(['answer_question', 'create_draft', 'analyze_support', 'request_more_info', 'system_status']);
+  const allowedTargets = new Set(['none', 'gasto_credito', 'gasto_contado', 'compra_credito', 'compra_contado', 'abono_cxp', 'factura_membretada_venta']);
+  const rawDraft = value?.suggestedDraft && typeof value.suggestedDraft === 'object' ? value.suggestedDraft : {};
+  const draft = { ...emptyFiscalAssistantDraft(), ...rawDraft };
+  const numberFields = ['subtotal', 'iva', 'total', 'retentionIr2', 'retentionMunicipal1', 'amountPaid'];
+
+  numberFields.forEach((field) => {
+    draft[field] = normalizeAmount(draft[field]);
+  });
+
+  draft.targetType = allowedTargets.has(draft.targetType) ? draft.targetType : 'none';
+
+  return {
+    reply: normalizeText(value?.reply || fallback.reply).slice(0, 2400)
+      || 'Puedo ayudarte, pero necesito confirmar un dato antes de registrar.',
+    intent: allowedIntents.has(value?.intent) ? value.intent : (fallback.intent || 'request_more_info'),
+    confidence: Math.max(0, Math.min(1, Number(value?.confidence ?? fallback.confidence ?? 0.35) || 0.35)),
+    warnings: Array.isArray(value?.warnings)
+      ? value.warnings.map((item) => normalizeText(item).slice(0, 220)).filter(Boolean).slice(0, 6)
+      : (fallback.warnings || []),
+    suggestedDraft: draft,
+    followUpQuestions: Array.isArray(value?.followUpQuestions)
+      ? value.followUpQuestions.map((item) => normalizeText(item).slice(0, 220)).filter(Boolean).slice(0, 4)
+      : (fallback.followUpQuestions || []),
+    quickReplies: Array.isArray(value?.quickReplies)
+      ? value.quickReplies.map((item) => normalizeText(item).slice(0, 80)).filter(Boolean).slice(0, 4)
+      : (fallback.quickReplies || []),
+  };
+}
+
+function extractJsonObjectFromText(value = '') {
+  const raw = normalizeText(value)
+    .replace(/^```(?:json)?/i, '')
+    .replace(/```$/i, '')
+    .trim();
+
+  if (!raw) return '';
+  if (raw.startsWith('{') && raw.endsWith('}')) return raw;
+
+  let start = -1;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+
+  for (let index = 0; index < raw.length; index += 1) {
+    const char = raw[index];
+
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (char === '\\') {
+        escaped = true;
+      } else if (char === '"') {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (char === '"') {
+      inString = true;
+      continue;
+    }
+
+    if (char === '{') {
+      if (depth === 0) start = index;
+      depth += 1;
+    } else if (char === '}') {
+      depth -= 1;
+      if (depth === 0 && start >= 0) {
+        return raw.slice(start, index + 1);
+      }
+    }
+  }
+
+  return '';
+}
+
+function parseFiscalAssistantPayload(payload = {}, fallback = {}) {
+  const candidates = [];
+
+  if (payload.output_parsed) candidates.push(payload.output_parsed);
+  if (payload.output_text) candidates.push(payload.output_text);
+
+  (payload.output || []).forEach((item) => {
+    (item.content || []).forEach((contentItem) => {
+      if (contentItem.parsed) candidates.push(contentItem.parsed);
+      if (contentItem.text) candidates.push(contentItem.text);
+      if (contentItem.output_text) candidates.push(contentItem.output_text);
+    });
+  });
+
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+
+    if (typeof candidate === 'object') {
+      return normalizeFiscalAssistantResult(candidate, fallback);
+    }
+
+    const text = normalizeText(candidate);
+    const attempts = [text, extractJsonObjectFromText(text)].filter(Boolean);
+    for (const attempt of attempts) {
+      try {
+        return normalizeFiscalAssistantResult(JSON.parse(attempt), fallback);
+      } catch (error) {
+        // Try the next candidate; if all fail, we fall back below.
+      }
+    }
+  }
+
+  logger.warn('Respuesta OpenAI no fue JSON recuperable; usando fallback seguro', {
+    outputTextPreview: normalizeText(payload.output_text).slice(0, 600),
+  });
+  return normalizeFiscalAssistantResult({}, fallback);
+}
+
 function normalizeWorkerProfile(value = {}) {
   const role = normalizeComparableText(value.role) || 'administracion';
   const allowedRoles = new Set(['administracion', 'contabilidad', 'caja', 'bodega']);
@@ -2759,6 +2896,20 @@ async function callOpenAIFiscalAssistant({
   const safeSupportFiles = sanitizeAiSupportFiles(supportFiles, support);
   const hasSupport = safeSupportFiles.length > 0;
   const hasRetentionSupport = safeSupportFiles.some((file) => ['retentionIr2', 'retentionMunicipal1'].includes(file.type));
+  const safeFallbackResult = {
+    reply: hasSupport
+      ? 'Ya guarde el soporte en la bandeja de MARTIN IA, pero necesito confirmar un dato fiscal antes de armar el borrador. ¿Esta factura lleva retencion de anticipo IR 2%, retencion municipal 1%, ambas o ninguna?'
+      : 'Te escucho. Decime que necesitas revisar o adjunta una factura para analizarla.',
+    intent: hasSupport ? 'request_more_info' : 'answer_question',
+    confidence: 0.35,
+    warnings: hasSupport ? ['No pude estructurar la respuesta automaticamente, pero el soporte quedo conservado para continuar.'] : [],
+    followUpQuestions: hasSupport
+      ? ['¿Esta factura lleva retencion de anticipo IR 2%, retencion municipal 1%, ambas o ninguna?']
+      : [],
+    quickReplies: hasSupport
+      ? ['No tiene retenciones', 'Solo IR 2%', 'Solo municipal 1%', 'Ambas retenciones']
+      : ['Revisar ventas', 'Revisar CxP', 'Subir factura'],
+  };
   const content = [
     {
       type: 'input_text',
@@ -2860,18 +3011,7 @@ async function callOpenAIFiscalAssistant({
     throw new HttpsError('internal', payload?.error?.message || 'OpenAI no pudo procesar la solicitud.');
   }
 
-  const text = payload.output_text
-    || payload.output?.flatMap((item) => item.content || [])
-      .map((item) => item.text || '')
-      .join('')
-    || '';
-
-  try {
-    return JSON.parse(text);
-  } catch (error) {
-    logger.error('Respuesta OpenAI no es JSON valido', { text, error: error.message });
-    throw new HttpsError('internal', 'La IA respondio en un formato no valido. Intenta nuevamente.');
-  }
+  return parseFiscalAssistantPayload(payload, safeFallbackResult);
 }
 
 exports.fiscalAssistantChat = onCall(FISCAL_ASSISTANT_FUNCTION_OPTIONS, async (request) => {
