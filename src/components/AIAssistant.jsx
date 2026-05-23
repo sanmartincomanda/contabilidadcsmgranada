@@ -3,7 +3,13 @@ import { collection, limit, onSnapshot, orderBy, query, Timestamp } from 'fireba
 import { httpsCallable } from 'firebase/functions';
 import { db, functions } from '../firebase';
 import { APP_BRAND_LOGO, APP_BRAND_NAME, fmt } from '../constants';
-import { getSupportUrl, isPdfSupportRecord, uploadInvoicePhoto } from '../services/fiscalUtils';
+import {
+    getSupportFiles,
+    getSupportUrl,
+    isPdfSupportRecord,
+    SUPPORT_FILE_TYPES,
+    uploadFiscalSupportFiles,
+} from '../services/fiscalUtils';
 
 const Icons = {
     send: 'M5 12h14M12 5l7 7-7 7',
@@ -88,6 +94,11 @@ const emptyDraft = {
     payableInvoiceNumber: '',
     amountPaid: 0,
 };
+
+const createEmptySupportFilesState = () => SUPPORT_FILE_TYPES.reduce((acc, item) => {
+    acc[item.key] = null;
+    return acc;
+}, {});
 
 const targetLabels = {
     none: 'Sin borrador',
@@ -198,16 +209,36 @@ const FollowUpPanel = ({ warnings = [], questions = [] }) => {
 };
 
 const SupportPreview = ({ item }) => {
-    const url = getSupportUrl(item || {});
-    if (!url) return null;
+    const files = getSupportFiles(item || {});
+    const normalizedFiles = files.length
+        ? files
+        : getSupportUrl(item || {})
+            ? [{ ...(item || {}), label: item?.label || 'Soporte fiscal', url: getSupportUrl(item || {}) }]
+            : [];
+    if (!normalizedFiles.length) return null;
 
     return (
-        <div className="mt-3 overflow-hidden rounded-3xl border border-[#ead5c5] bg-[#fffaf5] p-2">
-            {isPdfSupportRecord(item) ? (
-                <iframe title="Soporte IA fiscal" src={url} className="h-72 w-full rounded-2xl bg-white" />
-            ) : (
-                <img src={url} alt="Soporte fiscal" className="max-h-80 w-full rounded-2xl object-contain" />
-            )}
+        <div className="mt-3 space-y-3">
+            {normalizedFiles.map((support, index) => {
+                const url = support.url || getSupportUrl(support);
+                if (!url) return null;
+
+                return (
+                    <div key={`${support.type || index}-${support.path || url}`} className="overflow-hidden rounded-3xl border border-[#ead5c5] bg-[#fffaf5] p-2">
+                        <div className="mb-2 flex items-center justify-between gap-3 px-2 pt-1">
+                            <div className="text-[10px] font-black uppercase tracking-[0.2em] text-[#7f1218]">{support.label || 'Soporte fiscal'}</div>
+                            <a href={url} target="_blank" rel="noreferrer" className="text-[10px] font-black uppercase tracking-[0.16em] text-[#a16a0c]">
+                                Abrir
+                            </a>
+                        </div>
+                        {isPdfSupportRecord(support) ? (
+                            <iframe title={support.label || 'Soporte IA fiscal'} src={url} className="h-72 w-full rounded-2xl bg-white" />
+                        ) : (
+                            <img src={url} alt={support.label || 'Soporte fiscal'} className="max-h-80 w-full rounded-2xl object-contain" />
+                        )}
+                    </div>
+                );
+            })}
         </div>
     );
 };
@@ -238,7 +269,9 @@ const MessageBubble = ({ message, onQuickReply }) => {
             }`}>
                 <div className="whitespace-pre-wrap text-sm font-semibold leading-relaxed">{message.text}</div>
                 <FollowUpPanel warnings={message.warnings || []} questions={message.followUpQuestions || []} />
-                {message.support && <SupportPreview item={message.support} />}
+                {(message.support || message.supportFiles?.length > 0) && (
+                    <SupportPreview item={{ support: message.support, supportFiles: message.supportFiles || [] }} />
+                )}
                 {quickReplies.length > 0 && (
                     <div className="mt-4 flex flex-wrap gap-2">
                         {quickReplies.map((reply) => (
@@ -289,7 +322,7 @@ export default function AIAssistant({ floating = false }) {
         }
     });
     const [input, setInput] = useState('');
-    const [file, setFile] = useState(null);
+    const [supportFiles, setSupportFiles] = useState(createEmptySupportFilesState);
     const [classificationHint, setClassificationHint] = useState('auto');
     const [workerRole, setWorkerRole] = useState(() => localStorage.getItem('martinIA.workerRole') || 'administracion');
     const [workerName, setWorkerName] = useState(() => localStorage.getItem('martinIA.workerName') || '');
@@ -328,20 +361,24 @@ export default function AIAssistant({ floating = false }) {
         localStorage.setItem('martinIA.workerName', workerName);
     }, [workerName]);
 
-    const selectedFileLabel = useMemo(() => {
-        if (!file) return '';
-        return `${file.name} (${Math.round(file.size / 1024)} KB)`;
-    }, [file]);
+    const selectedSupportEntries = useMemo(() => (
+        SUPPORT_FILE_TYPES
+            .map((type) => ({ ...type, file: supportFiles[type.key] }))
+            .filter((entry) => Boolean(entry.file))
+    ), [supportFiles]);
+
+    const hasSelectedSupport = selectedSupportEntries.length > 0;
 
     const handleSend = async (overrideText = '', options = {}) => {
         if (loading) return;
         const text = (overrideText || input).trim();
-        if (!text && !file) return;
+        if (!text && !hasSelectedSupport) return;
 
         setLoading(true);
         setError('');
 
         let support = null;
+        let uploadedSupportFiles = [];
         const userMessageId = `u_${Date.now()}`;
         const hintForRequest = options.classificationHintOverride || classificationHint;
         const currentWorkerRole = getWorkerRole(workerRole);
@@ -350,34 +387,61 @@ export default function AIAssistant({ floating = false }) {
             text: entry.text,
             followUpQuestions: entry.followUpQuestions || [],
             quickReplies: entry.quickReplies || [],
-            hasSupport: Boolean(entry.support),
+            hasSupport: Boolean(entry.support || entry.supportFiles?.length),
             supportUrl: entry.support?.url || '',
+            supportFiles: entry.supportFiles || [],
             draftTargetType: entry.draft?.targetType || '',
         }));
-        const reusableSupport = [...messages].reverse().find((entry) => entry.support)?.support || null;
+        const reusableSupportMessage = [...messages].reverse().find((entry) => entry.support || entry.supportFiles?.length) || null;
+        const reusableSupport = reusableSupportMessage?.support || null;
+        const reusableSupportFiles = reusableSupportMessage?.supportFiles || (reusableSupport ? [reusableSupport] : []);
+        const reusableSupportItem = {
+            support: reusableSupport,
+            supportFiles: reusableSupportFiles,
+        };
         try {
-            if (file) {
-                const uploaded = await uploadInvoicePhoto(file, 'ai/fiscal_supports', userMessageId);
-                support = {
-                    ...(uploaded.support || {}),
-                    url: uploaded.fotoFacturaUrl,
-                    path: uploaded.fotoFacturaPath,
+            if (hasSelectedSupport) {
+                const shouldPreserveExistingSupport = Boolean(
+                    reusableSupportFiles.length
+                    && !supportFiles.invoice
+                    && (options.reuseLastSupport || supportFiles.retentionIr2 || supportFiles.retentionMunicipal1)
+                );
+                const uploaded = await uploadFiscalSupportFiles(
+                    supportFiles,
+                    'ai/fiscal_supports',
+                    userMessageId,
+                    shouldPreserveExistingSupport ? reusableSupportItem : {}
+                );
+                support = uploaded.support
+                    ? {
+                        ...(uploaded.support || {}),
+                        url: uploaded.fotoFacturaUrl || uploaded.support.url,
+                        path: uploaded.fotoFacturaPath || uploaded.support.path,
+                        source: 'app_ai_chat',
+                        uploadedAt: new Date().toISOString(),
+                    }
+                    : null;
+                uploadedSupportFiles = (uploaded.supportFiles || []).map((item) => ({
+                    ...item,
                     source: 'app_ai_chat',
-                    uploadedAt: new Date().toISOString(),
-                };
+                    uploadedAt: item.uploadedAt || new Date().toISOString(),
+                }));
             }
 
-            const supportForRequest = support || (options.reuseLastSupport ? reusableSupport : null);
+            const supportFilesForRequest = uploadedSupportFiles.length
+                ? uploadedSupportFiles
+                : (options.reuseLastSupport ? reusableSupportFiles : []);
+            const supportForRequest = support || (supportFilesForRequest[0] || null);
             const selectedClassification = classificationOptions.find((option) => option.id === hintForRequest);
             const messageForAi = [
                 text || 'Analiza este soporte fiscal. Antes de crear el borrador, confirma si la factura lleva retenciones.',
-                (file || options.reuseLastSupport) && selectedClassification
+                (hasSelectedSupport || options.reuseLastSupport) && selectedClassification
                     ? `Clasificacion indicada por el usuario: ${selectedClassification.label}. Si esta clasificacion no coincide con la factura, pregunta antes de crear un borrador definitivo.`
                     : '',
-                file
-                    ? 'Regla de entrevista: la primera validacion fiscal debe ser si la factura tiene retencion de anticipo IR 2%, retencion municipal 1%, ambas o ninguna.'
+                hasSelectedSupport
+                    ? 'Lee todos los soportes adjuntos: factura principal y comprobantes de retencion si existen. Usa esos soportes como respaldo del registro.'
                     : '',
-                options.reuseLastSupport && reusableSupport
+                options.reuseLastSupport && reusableSupportFiles.length
                     ? 'Esta respuesta corresponde al ultimo soporte/factura enviado en la conversacion.'
                     : '',
             ].filter(Boolean).join('\n');
@@ -389,19 +453,22 @@ export default function AIAssistant({ floating = false }) {
                     role: 'user',
                     text: [
                         text || 'Analiza este soporte fiscal.',
-                        (file || options.reuseLastSupport) && selectedClassification ? `Tipo: ${selectedClassification.label}` : '',
+                        (hasSelectedSupport || options.reuseLastSupport) && selectedClassification ? `Tipo: ${selectedClassification.label}` : '',
+                        uploadedSupportFiles.length ? `Soportes adjuntos: ${uploadedSupportFiles.map((item) => item.label).join(', ')}` : '',
                     ].filter(Boolean).join('\n'),
-                    support: support || (options.reuseLastSupport ? reusableSupport : null),
+                    support: support || (supportFilesForRequest[0] || null),
+                    supportFiles: supportFilesForRequest,
                 },
             ]);
             setInput('');
-            setFile(null);
+            setSupportFiles(createEmptySupportFilesState());
             setClassificationHint('auto');
 
             const response = await assistantCallable({
                 message: messageForAi,
                 classificationHint: hintForRequest,
                 support: supportForRequest,
+                supportFiles: supportFilesForRequest,
                 conversationHistory: recentConversation,
                 workerProfile: {
                     name: workerName.trim(),
@@ -557,18 +624,47 @@ export default function AIAssistant({ floating = false }) {
                     ))}
                 </div>
             )}
-            <div className={`flex flex-col gap-3 ${compact ? '' : 'md:flex-row'}`}>
-                <label className="flex cursor-pointer items-center justify-center gap-2 rounded-2xl border border-dashed border-[#d9b99f] bg-[#fff8f2] px-4 py-3 text-sm font-black text-[#7f1218] transition hover:bg-[#fff0c8]">
-                    <Icon path={Icons.upload} className="h-5 w-5" />
-                    {selectedFileLabel || 'Adjuntar foto/PDF'}
-                    <input
-                        type="file"
-                        accept="image/*,.pdf"
-                        className="hidden"
-                        onChange={(event) => setFile(event.target.files?.[0] || null)}
-                    />
-                </label>
-                {file && (
+            <div className="flex flex-col gap-3">
+                <div className="rounded-2xl border border-dashed border-[#d9b99f] bg-[#fff8f2] p-3">
+                    <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                        <div>
+                            <div className="flex items-center gap-2 text-sm font-black text-[#7f1218]">
+                                <Icon path={Icons.upload} className="h-5 w-5" />
+                                Soportes de factura
+                            </div>
+                            {!compact && <p className="mt-1 text-xs font-semibold text-stone-500">Adjunta factura y, si aplica, fotos/PDF de retenciones para que MARTIN IA las lea.</p>}
+                        </div>
+                        {hasSelectedSupport && (
+                            <button
+                                type="button"
+                                onClick={() => setSupportFiles(createEmptySupportFilesState())}
+                                className="rounded-xl border border-[#ead5c5] bg-white px-3 py-1.5 text-[11px] font-black text-stone-500 transition hover:bg-white hover:text-rose-700"
+                            >
+                                Quitar soportes
+                            </button>
+                        )}
+                    </div>
+                    <div className={`grid grid-cols-1 gap-2 ${compact ? '' : 'md:grid-cols-3'}`}>
+                        {SUPPORT_FILE_TYPES.map((type) => {
+                            const selected = supportFiles[type.key];
+                            return (
+                                <label key={type.key} className="cursor-pointer rounded-xl border border-[#ead5c5] bg-white px-3 py-2 text-xs font-bold text-[#4b1b1f] transition hover:border-[#f2b635] hover:bg-[#fffaf6]">
+                                    <span className="block text-[10px] font-black uppercase tracking-[0.16em] text-[#7f1218]">{type.label}</span>
+                                    <span className="mt-1 block truncate text-[11px] font-semibold text-stone-500">
+                                        {selected ? selected.name : 'Seleccionar foto/PDF'}
+                                    </span>
+                                    <input
+                                        type="file"
+                                        accept="image/*,.pdf"
+                                        className="hidden"
+                                        onChange={(event) => setSupportFiles((prev) => ({ ...prev, [type.key]: event.target.files?.[0] || null }))}
+                                    />
+                                </label>
+                            );
+                        })}
+                    </div>
+                </div>
+                {hasSelectedSupport && (
                     <div className="rounded-2xl border border-[#ead5c5] bg-[#fffaf6] p-3">
                         <div className="mb-2 text-[10px] font-black uppercase tracking-[0.22em] text-[#7f1218]">Que es esta factura?</div>
                         <div className="flex flex-wrap gap-2">
@@ -603,10 +699,10 @@ export default function AIAssistant({ floating = false }) {
                         placeholder={`Escribe como en WhatsApp: "subi esta factura", "es credito", "que falta"...`}
                         className={`${compact ? 'min-h-[48px]' : 'min-h-[54px]'} flex-1 resize-none bg-transparent px-3 py-2 text-sm font-semibold text-[#3d1b1e] outline-none`}
                     />
-                    {file && (
+                    {hasSelectedSupport && (
                         <button
                             type="button"
-                            onClick={() => setFile(null)}
+                            onClick={() => setSupportFiles(createEmptySupportFilesState())}
                             className="self-center rounded-xl p-2 text-stone-400 transition hover:bg-stone-100 hover:text-rose-600"
                         >
                             <Icon path={Icons.x} className="h-4 w-4" />
@@ -615,7 +711,7 @@ export default function AIAssistant({ floating = false }) {
                     <button
                         type="button"
                         onClick={() => handleSend()}
-                        disabled={loading || (!input.trim() && !file)}
+                        disabled={loading || (!input.trim() && !hasSelectedSupport)}
                         className="self-end rounded-xl bg-[#a81d24] p-3 text-white shadow-lg shadow-[#a81d24]/20 transition hover:bg-[#7f1218] disabled:cursor-not-allowed disabled:opacity-40"
                     >
                         <Icon path={Icons.send} className="h-5 w-5" />

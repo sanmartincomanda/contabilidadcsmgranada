@@ -2660,8 +2660,72 @@ function sanitizeConversationHistory(value) {
       : [],
     hasSupport: Boolean(entry?.hasSupport),
     supportUrl: normalizeText(entry?.supportUrl).slice(0, 500),
+    supportFiles: sanitizeAiSupportFiles(entry?.supportFiles).map((file) => ({
+      type: file.type,
+      label: file.label,
+      url: file.url,
+      fileName: file.fileName,
+      contentType: file.contentType,
+    })),
     draftTargetType: normalizeText(entry?.draftTargetType).slice(0, 80),
   })).filter((entry) => entry.text || entry.hasSupport || entry.followUpQuestions.length);
+}
+
+function getAiSupportLabel(type = '') {
+  const normalized = normalizeComparableText(type);
+  if (normalized === 'retentionir2') return 'Retencion anticipo IR 2%';
+  if (normalized === 'retentionmunicipal1') return 'Retencion municipal 1%';
+  return 'Factura / soporte principal';
+}
+
+function sanitizeAiSupportFile(file = {}, fallbackType = 'invoice') {
+  const type = normalizeText(file.type || fallbackType).slice(0, 60) || fallbackType;
+  const url = normalizeText(file.url || file.fotoFacturaUrl || file.media?.url).slice(0, 1200);
+  const path = normalizeText(file.path || file.fotoFacturaPath || file.media?.path).slice(0, 600);
+  if (!url && !path) return null;
+
+  return {
+    type,
+    label: normalizeText(file.label).slice(0, 120) || getAiSupportLabel(type),
+    url,
+    path,
+    source: normalizeText(file.source).slice(0, 80) || 'ai_fiscal_assistant',
+    sourceCollection: normalizeText(file.sourceCollection).slice(0, 120) || '',
+    sourceDocId: normalizeText(file.sourceDocId).slice(0, 160) || '',
+    fileName: normalizeText(file.fileName || file.name || file.filename).slice(0, 220),
+    contentType: normalizeText(file.contentType || file.mimeType || file.media?.mimeType).slice(0, 160),
+    uploadedAt: file.uploadedAt || null,
+  };
+}
+
+function sanitizeAiSupportFiles(value, support = null) {
+  const files = [];
+
+  if (Array.isArray(value)) {
+    value.forEach((file) => {
+      const normalized = sanitizeAiSupportFile(file);
+      if (normalized) files.push(normalized);
+    });
+  }
+
+  const single = sanitizeAiSupportFile(support || {});
+  if (single) files.push(single);
+
+  const seen = new Set();
+  return files.filter((file) => {
+    const key = file.path || file.url;
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  }).sort((left, right) => {
+    const order = { invoice: 0, retentionIr2: 1, retentionMunicipal1: 2 };
+    return (order[left.type] ?? 99) - (order[right.type] ?? 99);
+  }).slice(0, 3);
+}
+
+function isPdfAiSupport(file = {}) {
+  const source = `${file.url || ''} ${file.path || ''} ${file.contentType || ''}`.toLowerCase();
+  return source.includes('.pdf') || source.includes('application/pdf');
 }
 
 function normalizeWorkerProfile(value = {}) {
@@ -2678,6 +2742,7 @@ function normalizeWorkerProfile(value = {}) {
 async function callOpenAIFiscalAssistant({
   message,
   support,
+  supportFiles = [],
   context,
   classificationHint = 'auto',
   conversationHistory = [],
@@ -2691,7 +2756,9 @@ async function callOpenAIFiscalAssistant({
   const hint = normalizeClassificationHint(classificationHint);
   const safeConversationHistory = sanitizeConversationHistory(conversationHistory);
   const safeWorkerProfile = normalizeWorkerProfile(workerProfile);
-  const hasSupport = Boolean(support?.url);
+  const safeSupportFiles = sanitizeAiSupportFiles(supportFiles, support);
+  const hasSupport = safeSupportFiles.length > 0;
+  const hasRetentionSupport = safeSupportFiles.some((file) => ['retentionIr2', 'retentionMunicipal1'].includes(file.type));
   const content = [
     {
       type: 'input_text',
@@ -2704,9 +2771,11 @@ async function callOpenAIFiscalAssistant({
         'Haz maximo dos preguntas de seguimiento por turno. Si falta informacion critica, pregunta una cosa primero y ofrece botones cortos en quickReplies.',
         'Cuando adjunten facturas, primero reconoce lo que ves, luego di que falta, luego propone el siguiente paso.',
         'Regla obligatoria para facturas con soporte: antes de preparar un borrador confirmable, valida retenciones.',
-        'Si hay soporte adjunto y el mensaje/historial no confirma retenciones, la primera pregunta debe ser: "Esta factura lleva retencion de anticipo IR 2%, retencion municipal 1%, ambas o ninguna?".',
+        'Si hay soporte adjunto y no hay comprobante de retencion ni confirmacion del usuario en el mensaje/historial, la primera pregunta debe ser: "Esta factura lleva retencion de anticipo IR 2%, retencion municipal 1%, ambas o ninguna?".',
         'Para esa pregunta usa exactamente quickReplies: ["No tiene retenciones", "Solo IR 2%", "Solo municipal 1%", "Ambas retenciones"].',
         'Si todavia no confirmaron retenciones, suggestedDraft.targetType debe ser "none"; puedes resumir lo que leiste, pero no envies borrador registrable.',
+        'Si hay soportes de retencion adjuntos, leelos y extrae numero, fecha, proveedor, base y monto retenido cuando sea visible.',
+        'Si hay una retencion adjunta pero no puedes leerla bien, pregunta por el monto o pide otra foto antes de confirmar.',
         'Si el usuario responde "No tiene retenciones", continua con retentionIr2=0 y retentionMunicipal1=0.',
         'Si responde "Solo IR 2%", calcula retentionIr2 sobre subtotal cuando sea posible y deja retentionMunicipal1=0.',
         'Si responde "Solo municipal 1%", calcula retentionMunicipal1 sobre subtotal cuando sea posible y deja retentionIr2=0.',
@@ -2726,6 +2795,14 @@ async function callOpenAIFiscalAssistant({
         'Si tienes dudas fuertes, suggestedDraft.targetType debe ser none o la mejor opcion con warnings claros.',
         'quickReplies debe traer 2 a 4 respuestas cortas y utiles cuando convenga, por ejemplo: "Es gasto", "Es compra", "Es credito", "Es contado". Si no aplica, usa [].',
         `Hay soporte adjunto: ${hasSupport ? 'si' : 'no'}.`,
+        `Hay comprobante de retencion adjunto: ${hasRetentionSupport ? 'si' : 'no'}.`,
+        `Soportes adjuntos JSON: ${JSON.stringify(safeSupportFiles.map((file) => ({
+          type: file.type,
+          label: file.label,
+          fileName: file.fileName,
+          contentType: file.contentType,
+          url: file.url,
+        })))}`,
         `Perfil de quien conversa JSON: ${JSON.stringify(safeWorkerProfile)}`,
         `Historial reciente JSON: ${JSON.stringify(safeConversationHistory)}`,
         `Pregunta o instruccion del usuario: ${message}`,
@@ -2734,13 +2811,23 @@ async function callOpenAIFiscalAssistant({
     },
   ];
 
-  if (support?.url) {
+  safeSupportFiles.forEach((file) => {
+    if (!file.url) return;
+    if (isPdfAiSupport(file)) {
+      content.push({
+        type: 'input_file',
+        file_url: file.url,
+        filename: file.fileName || `${file.type}.pdf`,
+      });
+      return;
+    }
+
     content.push({
       type: 'input_image',
-      image_url: support.url,
+      image_url: file.url,
       detail: 'high',
     });
-  }
+  });
 
   const response = await fetch('https://api.openai.com/v1/responses', {
     method: 'POST',
@@ -2791,11 +2878,12 @@ exports.fiscalAssistantChat = onCall(FISCAL_ASSISTANT_FUNCTION_OPTIONS, async (r
   const actorEmail = ensureAdminUser(request.auth, 'usar el agente IA fiscal');
   const message = normalizeText(request.data?.message);
   const support = request.data?.support || null;
+  const supportFiles = sanitizeAiSupportFiles(request.data?.supportFiles, support);
   const classificationHint = normalizeClassificationHint(request.data?.classificationHint);
   const conversationHistory = sanitizeConversationHistory(request.data?.conversationHistory);
   const workerProfile = normalizeWorkerProfile(request.data?.workerProfile || {});
 
-  if (!message && !support?.url) {
+  if (!message && supportFiles.length === 0) {
     throw new HttpsError('invalid-argument', 'Escribe una pregunta o adjunta una foto/documento.');
   }
 
@@ -2803,6 +2891,7 @@ exports.fiscalAssistantChat = onCall(FISCAL_ASSISTANT_FUNCTION_OPTIONS, async (r
   const aiResult = await callOpenAIFiscalAssistant({
     message,
     support,
+    supportFiles,
     context,
     classificationHint,
     conversationHistory,
@@ -2816,23 +2905,26 @@ exports.fiscalAssistantChat = onCall(FISCAL_ASSISTANT_FUNCTION_OPTIONS, async (r
     workerProfile,
     conversationHistory,
     support: support || null,
+    supportFiles,
     result: aiResult,
     contextSnapshot: context,
     createdAt: FieldValue.serverTimestamp(),
   });
 
-  if (support?.url || aiResult?.suggestedDraft?.targetType !== 'none') {
+  if (supportFiles.length > 0 || aiResult?.suggestedDraft?.targetType !== 'none') {
+    const primarySupport = supportFiles[0] || support || null;
     await firestore.collection('ai_fiscal_inbox').add({
       actorEmail,
-      source: support?.source || 'app_chat',
+      source: primarySupport?.source || 'app_chat',
       status: 'draft',
       aiStatus: 'review_required',
       userMessage: message,
       classificationHint,
       workerProfile,
-      support: support || null,
-      fotoFacturaUrl: support?.url || '',
-      fotoFacturaPath: support?.path || '',
+      support: primarySupport,
+      supportFiles,
+      fotoFacturaUrl: primarySupport?.url || '',
+      fotoFacturaPath: primarySupport?.path || '',
       aiResult,
       suggestedDraft: aiResult?.suggestedDraft || null,
       confidence: aiResult?.confidence || 0,
@@ -2877,23 +2969,28 @@ function buildAiFiscalNumbers(draft = {}) {
 }
 
 function buildAiSupportPayload(inbox = {}) {
-  const support = inbox.support || {};
-  const url = normalizeText(support.url || inbox.fotoFacturaUrl);
-  const path = normalizeText(support.path || inbox.fotoFacturaPath);
+  const files = sanitizeAiSupportFiles(inbox.supportFiles, {
+    ...(inbox.support || {}),
+    url: inbox.support?.url || inbox.fotoFacturaUrl,
+    path: inbox.support?.path || inbox.fotoFacturaPath,
+  }).map((file) => ({
+    ...file,
+    source: file.source || inbox.source || 'ai_fiscal_assistant',
+    sourceCollection: file.sourceCollection || 'ai_fiscal_inbox',
+    sourceDocId: file.sourceDocId || inbox.id || '',
+  }));
+
+  const support = files.find((file) => file.type === 'invoice') || files[0] || {};
+  const url = normalizeText(support.url);
+  const path = normalizeText(support.path);
 
   if (!url && !path) return {};
 
   return {
     fotoFacturaUrl: url,
     fotoFacturaPath: path,
-    support: {
-      ...support,
-      url,
-      path,
-      source: support.source || inbox.source || 'ai_fiscal_assistant',
-      sourceCollection: support.sourceCollection || 'ai_fiscal_inbox',
-      sourceDocId: support.sourceDocId || inbox.id || '',
-    },
+    support,
+    supportFiles: files,
   };
 }
 
