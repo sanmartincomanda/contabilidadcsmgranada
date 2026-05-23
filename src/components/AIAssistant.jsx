@@ -9,6 +9,7 @@ import {
     isPdfSupportRecord,
     SUPPORT_FILE_TYPES,
     uploadFiscalSupportFiles,
+    uploadSupportFile,
 } from '../services/fiscalUtils';
 
 const Icons = {
@@ -23,6 +24,7 @@ const Icons = {
 };
 
 const AGENT_NAME = 'MARTIN IA';
+const MAX_BATCH_INVOICES = 10;
 
 const Icon = ({ path, className = 'h-5 w-5' }) => (
     <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth="2">
@@ -199,6 +201,23 @@ const timestampToDate = (value) => {
     return String(value);
 };
 
+const buildAutoRegisterStatusText = (autoRegistration) => {
+    if (!autoRegistration) return '';
+    if (autoRegistration.confirmed) {
+        return `\n\nAuto-registro seguro completado en ${autoRegistration.targetCollection || 'el sistema'}.`;
+    }
+
+    const blockers = autoRegistration.blockers || [];
+    if (autoRegistration.attempted && blockers.length) {
+        const blockerText = blockers.length > 3
+            ? `${blockers.slice(0, 3).join('; ')} y ${blockers.length - 3} pendientes mas`
+            : blockers.join('; ');
+        return `\n\nAuto-registro seguro no se ejecuto todavia: ${blockerText}.`;
+    }
+
+    return '';
+};
+
 const DraftField = ({ label, value, money = false }) => (
     <div className="rounded-2xl border border-[#ead5c5] bg-white/85 px-4 py-3 shadow-sm">
         <div className="text-[10px] font-black uppercase tracking-[0.2em] text-stone-400">{label}</div>
@@ -348,6 +367,7 @@ export default function AIAssistant({ floating = false }) {
     });
     const [input, setInput] = useState('');
     const [supportFiles, setSupportFiles] = useState(createEmptySupportFilesState);
+    const [batchInvoiceFiles, setBatchInvoiceFiles] = useState([]);
     const [classificationHint, setClassificationHint] = useState('auto');
     const [assistantMode, setAssistantMode] = useState(() => localStorage.getItem('martinIA.assistantMode') || 'chat');
     const [autoRegisterDigitizer, setAutoRegisterDigitizer] = useState(() => localStorage.getItem('martinIA.autoRegisterDigitizer') !== 'false');
@@ -403,11 +423,17 @@ export default function AIAssistant({ floating = false }) {
     ), [supportFiles]);
 
     const hasSelectedSupport = selectedSupportEntries.length > 0;
+    const hasBatchInvoices = batchInvoiceFiles.length > 0;
 
     const handleSend = async (overrideText = '', options = {}) => {
         if (loading) return;
         const text = (overrideText || input).trim();
-        if (!text && !hasSelectedSupport) return;
+        if (!text && !hasSelectedSupport && !hasBatchInvoices) return;
+
+        if (hasBatchInvoices) {
+            await handleBatchSend(text, options);
+            return;
+        }
 
         setLoading(true);
         setError('');
@@ -530,15 +556,7 @@ export default function AIAssistant({ floating = false }) {
             });
             const result = response.data?.result || {};
             const autoRegistration = response.data?.autoRegistration || null;
-            const autoBlockers = autoRegistration?.blockers || [];
-            const autoBlockerText = autoBlockers.length > 3
-                ? `${autoBlockers.slice(0, 3).join('; ')} y ${autoBlockers.length - 3} pendientes mas`
-                : autoBlockers.join('; ');
-            const autoRegisterText = autoRegistration?.confirmed
-                ? `\n\nAuto-registro seguro completado en ${autoRegistration.targetCollection || 'el sistema'}.`
-                : autoRegistration?.attempted && autoBlockers.length
-                    ? `\n\nAuto-registro seguro no se ejecuto todavia: ${autoBlockerText}.`
-                    : '';
+            const autoRegisterText = buildAutoRegisterStatusText(autoRegistration);
             setMessages((prev) => [
                 ...prev,
                 {
@@ -563,6 +581,135 @@ export default function AIAssistant({ floating = false }) {
                     id: `e_${Date.now()}`,
                     role: 'assistant',
                     text: `No pude completar la consulta: ${friendly}`,
+                },
+            ]);
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    const handleBatchSend = async (overrideText = '', options = {}) => {
+        if (loading || !batchInvoiceFiles.length) return;
+
+        const files = batchInvoiceFiles.slice(0, MAX_BATCH_INVOICES);
+        const text = (overrideText || input).trim();
+        const batchId = `batch_${Date.now()}`;
+        const hintForRequest = options.classificationHintOverride || classificationHint;
+        const currentWorkerRole = getWorkerRole(workerRole);
+        const recentConversation = messages.slice(-8).map((entry) => ({
+            role: entry.role,
+            text: entry.text,
+            followUpQuestions: entry.followUpQuestions || [],
+            quickReplies: entry.quickReplies || [],
+            hasSupport: Boolean(entry.support || entry.supportFiles?.length),
+            supportUrl: entry.support?.url || '',
+            supportFiles: entry.supportFiles || [],
+            draftTargetType: entry.draft?.targetType || '',
+        }));
+
+        setLoading(true);
+        setError('');
+        setActionMessage('');
+        setAssistantMode('digitizer');
+        setMessages((prev) => [
+            ...prev,
+            {
+                id: `${batchId}_user`,
+                role: 'user',
+                text: [
+                    text || `Procesa lote de ${files.length} facturas.`,
+                    'Modo: Digitador por lote',
+                    autoRegisterDigitizer ? 'Auto-registro seguro: activo' : 'Auto-registro seguro: apagado',
+                    `Facturas seleccionadas: ${files.map((file, index) => `${index + 1}. ${file.name}`).join(' | ')}`,
+                ].filter(Boolean).join('\n'),
+            },
+        ]);
+        setInput('');
+        setBatchInvoiceFiles([]);
+        setSupportFiles(createEmptySupportFilesState());
+        setClassificationHint('auto');
+
+        const totals = {
+            processed: 0,
+            registered: 0,
+            pending: 0,
+            failed: 0,
+        };
+
+        try {
+            for (const [index, file] of files.entries()) {
+                const invoiceNumber = index + 1;
+                try {
+                    const uploaded = await uploadSupportFile(file, 'ai/fiscal_supports', `${batchId}_${invoiceNumber}`, 'invoice');
+                    const supportFile = {
+                        ...uploaded,
+                        source: 'app_ai_batch',
+                        uploadedAt: uploaded.uploadedAt || new Date().toISOString(),
+                    };
+
+                    const response = await assistantCallable({
+                        message: [
+                            text || 'MODO DIGITADOR LOTE: lee esta factura y prepara el registro contable.',
+                            `Factura ${invoiceNumber} de ${files.length}. Procesala como factura independiente.`,
+                            'Si esta clara, intenta auto-registro seguro. Si falta algo, pregunta solo lo indispensable para esta factura.',
+                        ].join('\n'),
+                        classificationHint: hintForRequest,
+                        support: supportFile,
+                        supportFiles: [supportFile],
+                        digitizerOptions: {
+                            mode: 'digitizer',
+                            autoRegister: autoRegisterDigitizer,
+                        },
+                        conversationHistory: recentConversation,
+                        workerProfile: {
+                            name: workerName.trim(),
+                            role: currentWorkerRole.id,
+                            roleLabel: currentWorkerRole.label,
+                            tone: currentWorkerRole.tone,
+                        },
+                    });
+
+                    const result = response.data?.result || {};
+                    const autoRegistration = response.data?.autoRegistration || null;
+                    totals.processed += 1;
+                    if (autoRegistration?.confirmed) totals.registered += 1;
+                    else totals.pending += 1;
+
+                    setMessages((prev) => [
+                        ...prev,
+                        {
+                            id: `${batchId}_assistant_${invoiceNumber}`,
+                            role: 'assistant',
+                            text: `Factura ${invoiceNumber}/${files.length}\n${result.reply || 'Factura procesada.'}${buildAutoRegisterStatusText(autoRegistration)}`,
+                            draft: result.suggestedDraft || emptyDraft,
+                            warnings: result.warnings || [],
+                            followUpQuestions: result.followUpQuestions || [],
+                            quickReplies: result.quickReplies || [],
+                            support: supportFile,
+                            supportFiles: [supportFile],
+                        },
+                    ]);
+                } catch (err) {
+                    console.error(err);
+                    totals.failed += 1;
+                    setMessages((prev) => [
+                        ...prev,
+                        {
+                            id: `${batchId}_error_${invoiceNumber}`,
+                            role: 'assistant',
+                            text: `Factura ${invoiceNumber}/${files.length}\nNo pude procesar esta factura: ${err?.message || 'error desconocido'}. La seguimos manual si hace falta.`,
+                        },
+                    ]);
+                }
+            }
+
+            setMessages((prev) => [
+                ...prev,
+                {
+                    id: `${batchId}_summary`,
+                    role: 'assistant',
+                    text: `Resumen del lote: ${totals.processed} procesadas, ${totals.registered} registradas automaticamente, ${totals.pending} pendientes de confirmar y ${totals.failed} con error.`,
+                    quickReplies: totals.pending ? ['Revisar pendientes', 'No tiene retenciones', 'Es contado'] : ['Subir otro lote', 'Revisar CxP'],
                 },
             ]);
         } finally {
@@ -622,6 +769,8 @@ export default function AIAssistant({ floating = false }) {
 
     const renderChatComposer = (compact = false) => {
         const supportLabels = selectedSupportEntries.map((entry) => `${entry.label}: ${entry.file.name}`);
+        const batchLabels = batchInvoiceFiles.map((file, index) => `Factura ${index + 1}: ${file.name}`);
+        const attachmentLabels = [...supportLabels, ...batchLabels];
 
         return (
             <div className="border-t border-[#ead5c5] bg-white p-3">
@@ -635,16 +784,19 @@ export default function AIAssistant({ floating = false }) {
                     </div>
                 )}
 
-                {hasSelectedSupport && (
+                {(hasSelectedSupport || hasBatchInvoices) && (
                     <div className="mb-2 flex flex-wrap items-center gap-2">
-                        {supportLabels.map((label) => (
+                        {attachmentLabels.map((label) => (
                             <span key={label} className="max-w-full truncate rounded-full border border-[#ead5c5] bg-[#fff8f2] px-3 py-1 text-[11px] font-bold text-[#7f1218]">
                                 {label}
                             </span>
                         ))}
                         <button
                             type="button"
-                            onClick={() => setSupportFiles(createEmptySupportFilesState())}
+                            onClick={() => {
+                                setSupportFiles(createEmptySupportFilesState());
+                                setBatchInvoiceFiles([]);
+                            }}
                             className="rounded-full px-2 py-1 text-[11px] font-bold text-stone-400 transition hover:bg-stone-100 hover:text-rose-700"
                         >
                             quitar
@@ -662,11 +814,31 @@ export default function AIAssistant({ floating = false }) {
                                 handleSend();
                             }
                         }}
-                        placeholder="Escribe o adjunta una factura..."
+                        placeholder={hasBatchInvoices ? 'Opcional: instrucciones para este lote...' : 'Escribe o adjunta una factura...'}
                         className={`${compact ? 'min-h-[52px]' : 'min-h-[64px]'} w-full resize-none bg-transparent px-3 py-2 text-sm font-semibold text-[#3d1b1e] outline-none`}
                     />
                     <div className="flex flex-wrap items-center justify-between gap-2 border-t border-[#ead5c5]/70 pt-2">
                         <div className="flex flex-wrap gap-1.5">
+                            <label className={`cursor-pointer rounded-full border px-3 py-1.5 text-[11px] font-black transition ${
+                                hasBatchInvoices
+                                    ? 'border-[#a81d24] bg-[#a81d24] text-white'
+                                    : 'border-[#f2b635] bg-[#fff8e6] text-[#7f1218] hover:bg-[#fff0c8]'
+                            }`}>
+                                {hasBatchInvoices ? `Lote ${batchInvoiceFiles.length}/${MAX_BATCH_INVOICES}` : `Lote ${MAX_BATCH_INVOICES} facturas`}
+                                <input
+                                    type="file"
+                                    accept="image/*,.pdf"
+                                    multiple
+                                    className="hidden"
+                                    onChange={(event) => {
+                                        const selected = Array.from(event.target.files || []).slice(0, MAX_BATCH_INVOICES);
+                                        setBatchInvoiceFiles(selected);
+                                        setSupportFiles(createEmptySupportFilesState());
+                                        setAssistantMode('digitizer');
+                                        event.target.value = '';
+                                    }}
+                                />
+                            </label>
                             {SUPPORT_FILE_TYPES.map((type) => {
                                 const selected = supportFiles[type.key];
                                 const shortLabel = type.key === 'invoice' ? 'Factura' : type.key === 'retentionIr2' ? 'Ret. IR' : 'Ret. municipal';
@@ -681,7 +853,11 @@ export default function AIAssistant({ floating = false }) {
                                             type="file"
                                             accept="image/*,.pdf"
                                             className="hidden"
-                                            onChange={(event) => setSupportFiles((prev) => ({ ...prev, [type.key]: event.target.files?.[0] || null }))}
+                                            onChange={(event) => {
+                                                setBatchInvoiceFiles([]);
+                                                setSupportFiles((prev) => ({ ...prev, [type.key]: event.target.files?.[0] || null }));
+                                                event.target.value = '';
+                                            }}
                                         />
                                     </label>
                                 );
@@ -698,7 +874,7 @@ export default function AIAssistant({ floating = false }) {
                             <button
                                 type="button"
                                 onClick={() => handleSend()}
-                                disabled={loading || (!input.trim() && !hasSelectedSupport)}
+                                disabled={loading || (!input.trim() && !hasSelectedSupport && !hasBatchInvoices)}
                                 className="rounded-full bg-[#a81d24] p-3 text-white shadow-lg shadow-[#a81d24]/20 transition hover:bg-[#7f1218] disabled:cursor-not-allowed disabled:opacity-40"
                                 aria-label="Enviar mensaje"
                             >
