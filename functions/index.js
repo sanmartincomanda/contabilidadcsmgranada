@@ -2542,6 +2542,23 @@ async function fetchAssistantLearningProfiles() {
   return snapshot.docs.map((entry) => ({ id: entry.id, ...entry.data() }));
 }
 
+async function fetchAssistantCategories() {
+  const snapshot = await firestore.collection('categorias').limit(250).get();
+  return snapshot.docs
+    .map((entry) => ({
+      id: entry.id,
+      name: normalizeText(entry.data()?.name),
+      order: normalizeAmount(entry.data()?.order),
+    }))
+    .filter((category) => category.name)
+    .sort((left, right) => {
+      const leftOrder = Number.isFinite(left.order) && left.order > 0 ? left.order : 9999;
+      const rightOrder = Number.isFinite(right.order) && right.order > 0 ? right.order : 9999;
+      if (leftOrder !== rightOrder) return leftOrder - rightOrder;
+      return left.name.localeCompare(right.name, 'es');
+    });
+}
+
 async function fetchCollectionSince(collectionName, field, sinceValue, limitCount = 350) {
   const snapshot = await firestore
     .collection(collectionName)
@@ -2568,6 +2585,7 @@ async function buildFiscalAssistantContext() {
     cuentasPorPagar,
     abonosPagar,
     assistantLearning,
+    assistantCategories,
   ] = await Promise.all([
     fetchCollectionSince('ingresos', 'month', sixMonths),
     fetchCollectionSince('facturas_membretadas_ventas', 'saleDate', dateStart),
@@ -2576,6 +2594,7 @@ async function buildFiscalAssistantContext() {
     fetchCollectionSince('cuentas_por_pagar', 'month', sixMonths),
     fetchCollectionSince('abonos_pagar', 'fecha', dateStart),
     fetchAssistantLearningProfiles(),
+    fetchAssistantCategories(),
   ]);
 
   const currentMonthIncome = ingresos.filter((item) => item.month === monthStart);
@@ -2627,6 +2646,33 @@ async function buildFiscalAssistantContext() {
         cuentasPorPagar,
         savedProfiles: assistantLearning,
       }),
+    },
+    categories: {
+      expenseCategories: assistantCategories.map((category) => category.name),
+      fallbackExpenseCategory: 'Otros gastos (no categorizado)',
+      operationSupplyHints: [
+        'rollos termicos',
+        'papel termico',
+        'bolsas',
+        'empaque',
+        'etiquetas',
+        'limpieza',
+        'oficina',
+        'mantenimiento',
+        'servicios basicos',
+      ],
+      inventoryPurchaseHints: [
+        'camaron',
+        'langosta',
+        'carne',
+        'pollo',
+        'cerdo',
+        'pescado',
+        'mariscos',
+        'mercaderia',
+        'producto para vender',
+        'materia prima vendible',
+      ],
     },
   };
 }
@@ -2824,7 +2870,75 @@ function emptyFiscalAssistantDraft() {
   };
 }
 
-function normalizeFiscalAssistantResult(value = {}, fallback = {}) {
+function categoryKey(value) {
+  return normalizeComparableText(value)
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function pickExpenseCategory(rawCategory, context = {}) {
+  const categories = Array.isArray(context?.categories?.expenseCategories)
+    ? context.categories.expenseCategories.filter(Boolean)
+    : [];
+  const fallbackCategory = normalizeText(context?.categories?.fallbackExpenseCategory)
+    || 'Otros gastos (no categorizado)';
+  const requestedKey = categoryKey(rawCategory);
+
+  if (!categories.length) return normalizeText(rawCategory) || fallbackCategory;
+
+  const exact = categories.find((category) => categoryKey(category) === requestedKey);
+  if (exact) return exact;
+
+  const loose = requestedKey.length > 4
+    ? categories.find((category) => {
+      const currentKey = categoryKey(category);
+      return currentKey.includes(requestedKey) || requestedKey.includes(currentKey);
+    })
+    : null;
+  if (loose) return loose;
+
+  const keywordGroups = [
+    {
+      keys: ['rollo termico', 'rollos termicos', 'papel termico', 'equipo operacion', 'material operacion'],
+      categoryWords: ['material', 'equipo', 'operacion'],
+    },
+    {
+      keys: ['bolsa', 'bolsas', 'empaque', 'empaques', 'aditivo', 'aditivos'],
+      categoryWords: ['insumo', 'operativo'],
+    },
+    {
+      keys: ['limpieza', 'higiene', 'inocuidad'],
+      categoryWords: ['limpieza', 'higiene', 'inocuidad'],
+    },
+    {
+      keys: ['oficina', 'papeleria'],
+      categoryWords: ['oficina'],
+    },
+    {
+      keys: ['combustible', 'gasolina', 'diesel'],
+      categoryWords: ['combustible'],
+    },
+    {
+      keys: ['banco', 'bancario', 'comision'],
+      categoryWords: ['bancario'],
+    },
+  ];
+
+  const hint = keywordGroups.find((group) => group.keys.some((key) => requestedKey.includes(key)));
+  if (hint) {
+    const matched = categories.find((category) => {
+      const currentKey = categoryKey(category);
+      return hint.categoryWords.some((word) => currentKey.includes(word));
+    });
+    if (matched) return matched;
+  }
+
+  return categories.find((category) => categoryKey(category) === categoryKey(fallbackCategory))
+    || fallbackCategory;
+}
+
+function normalizeFiscalAssistantResult(value = {}, fallback = {}, context = {}) {
   const allowedIntents = new Set(['answer_question', 'create_draft', 'analyze_support', 'request_more_info', 'system_status']);
   const allowedTargets = new Set(['none', 'gasto_credito', 'gasto_contado', 'compra_credito', 'compra_contado', 'abono_cxp', 'factura_membretada_venta']);
   const rawDraft = value?.suggestedDraft && typeof value.suggestedDraft === 'object' ? value.suggestedDraft : {};
@@ -2836,6 +2950,12 @@ function normalizeFiscalAssistantResult(value = {}, fallback = {}) {
   });
 
   draft.targetType = allowedTargets.has(draft.targetType) ? draft.targetType : 'none';
+  if (draft.targetType.startsWith('gasto_')) {
+    draft.category = pickExpenseCategory(draft.category || draft.description, context);
+  }
+  if (draft.targetType.startsWith('compra_') && !normalizeText(draft.category)) {
+    draft.category = 'Compra';
+  }
 
   return {
     reply: normalizeText(value?.reply || fallback.reply).slice(0, 2400)
@@ -2902,7 +3022,7 @@ function extractJsonObjectFromText(value = '') {
   return '';
 }
 
-function parseFiscalAssistantPayload(payload = {}, fallback = {}) {
+function parseFiscalAssistantPayload(payload = {}, fallback = {}, context = {}) {
   const candidates = [];
 
   if (payload.output_parsed) candidates.push(payload.output_parsed);
@@ -2920,14 +3040,14 @@ function parseFiscalAssistantPayload(payload = {}, fallback = {}) {
     if (!candidate) continue;
 
     if (typeof candidate === 'object') {
-      return normalizeFiscalAssistantResult(candidate, fallback);
+      return normalizeFiscalAssistantResult(candidate, fallback, context);
     }
 
     const text = normalizeText(candidate);
     const attempts = [text, extractJsonObjectFromText(text)].filter(Boolean);
     for (const attempt of attempts) {
       try {
-        return normalizeFiscalAssistantResult(JSON.parse(attempt), fallback);
+        return normalizeFiscalAssistantResult(JSON.parse(attempt), fallback, context);
       } catch (error) {
         // Try the next candidate; if all fail, we fall back below.
       }
@@ -2937,7 +3057,7 @@ function parseFiscalAssistantPayload(payload = {}, fallback = {}) {
   logger.warn('Respuesta OpenAI no fue JSON recuperable; usando fallback seguro', {
     outputTextPreview: normalizeText(payload.output_text).slice(0, 600),
   });
-  return normalizeFiscalAssistantResult({}, fallback);
+  return normalizeFiscalAssistantResult({}, fallback, context);
 }
 
 function normalizeWorkerProfile(value = {}) {
@@ -3006,7 +3126,10 @@ async function callOpenAIFiscalAssistant({
           ? 'Si ves la leyenda "NO SUJETOS A RETENCIONES", "NO SUJETO A RETENCION" o similar, eso confirma que no lleva retenciones: usa retentionIr2=0, retentionMunicipal1=0, no preguntes por retenciones y no lo marques como alerta.'
           : '',
         safeDigitizerOptions.mode === 'digitizer'
-          ? 'Si la factura trae productos de inventario o costo de venta como camaron, langosta, carne, pollo, cerdo, pescado, alimentos, insumos operativos o mercaderia, clasificala como compra_contado o compra_credito, no como gasto.'
+          ? 'Si la factura trae productos vendibles, inventario o costo directo de venta como camaron, langosta, carne, pollo, cerdo, pescado, mariscos, alimentos para vender o mercaderia, clasificala como compra_contado o compra_credito, no como gasto.'
+          : '',
+        safeDigitizerOptions.mode === 'digitizer'
+          ? 'Si la factura trae insumos de operacion no revendibles como rollos termicos, papel termico, bolsas, empaques, etiquetas, limpieza, oficina, mantenimiento o servicios, clasificala como gasto_contado o gasto_credito y elige una categoria existente del contexto.'
           : '',
         safeDigitizerOptions.mode === 'digitizer'
           ? 'Si la factura dice CONDICION: contado, 1 dia contado o similar, usa compra_contado/gasto_contado y paymentMethod="Contado" salvo que el usuario indique transferencia, POS o efectivo.'
@@ -3037,8 +3160,12 @@ async function callOpenAIFiscalAssistant({
         'Si hay soporte/foto, extrae datos para crear un borrador fiscal, pero nunca confirmes registro definitivo.',
         'Aprende patrones del contexto learning.supplierProfiles: proveedor habitual, tipo usual, categoria usual y forma de pago usual.',
         'Si el proveedor ya existe en learning.supplierProfiles, usa ese historial como pista fuerte para distinguir gasto vs compra, salvo que la factura contradiga claramente.',
-        'Clasificacion: gasto operativo = servicios, mantenimiento, oficina, limpieza, viaticos, banco, seguros, nomina u otros gastos administrativos.',
-        'Clasificacion: compra = inventario, materia prima, mercaderia, carne, insumos vendidos o costo directo de venta.',
+        'Clasificacion: compra = inventario, materia prima vendible, mercaderia, carne, camaron, langosta, pollo, pescado, mariscos o costo directo de venta.',
+        'Clasificacion: gasto operativo = servicios, mantenimiento, oficina, limpieza, viaticos, banco, seguros, nomina, rollos termicos, papel termico, bolsas, empaques, etiquetas u otros gastos administrativos/operativos no revendibles.',
+        'Ejemplo obligatorio: camaron o langosta son productos vendibles, por tanto son compra, no gasto.',
+        'Ejemplo obligatorio: rollos termicos o papel termico son insumos de operacion, por tanto son gasto. Usa la categoria existente mas cercana, por ejemplo "Gastos por materiales y equipos de operaciones" o "Gastos por insumos operativos (bolsas,aditivos...)" si existe.',
+        'Para gastos, suggestedDraft.category debe ser EXACTAMENTE una categoria de context.categories.expenseCategories. No inventes categorias. Si no hay coincidencia clara, usa context.categories.fallbackExpenseCategory.',
+        'Para compras, suggestedDraft.category puede ser "Compra" o una categoria de inventario/costo directa si el contexto la trae, pero targetType debe iniciar con compra_.',
         `Pista directa del usuario para esta factura: ${hint}.`,
         'Si la pista directa es gasto, prioriza targetType gasto_credito o gasto_contado. Si es compra, prioriza compra_credito o compra_contado.',
         'Si la pista es auto y no puedes distinguir gasto vs compra con confianza, no inventes: usa request_more_info y pregunta "Esta factura la registro como gasto o como compra?".',
@@ -3113,7 +3240,7 @@ async function callOpenAIFiscalAssistant({
     throw new HttpsError('internal', payload?.error?.message || 'OpenAI no pudo procesar la solicitud.');
   }
 
-  return parseFiscalAssistantPayload(payload, safeFallbackResult);
+  return parseFiscalAssistantPayload(payload, safeFallbackResult, context);
 }
 
 exports.fiscalAssistantChat = onCall(FISCAL_ASSISTANT_FUNCTION_OPTIONS, async (request) => {
