@@ -1,4 +1,4 @@
-const { createHash } = require('node:crypto');
+const { createHash, randomUUID } = require('node:crypto');
 const admin = require('firebase-admin');
 const logger = require('firebase-functions/logger');
 const { onCall, onRequest, HttpsError } = require('firebase-functions/v2/https');
@@ -19,6 +19,11 @@ const SICAR_DB_NAME = defineSecret('SICAR_DB_NAME');
 const SICAR_INGRESOS_QUERY = defineSecret('SICAR_INGRESOS_QUERY');
 const SICAR_COMPRAS_QUERY = defineSecret('SICAR_COMPRAS_QUERY');
 const SICAR_SYNC_API_TOKEN = defineSecret('SICAR_SYNC_API_TOKEN');
+const WHATSAPP_VERIFY_TOKEN = defineSecret('WHATSAPP_VERIFY_TOKEN');
+const WHATSAPP_ACCESS_TOKEN = defineSecret('WHATSAPP_ACCESS_TOKEN');
+const OPENAI_API_KEY = defineSecret('OPENAI_API_KEY');
+const WHATSAPP_GRAPH_VERSION = defineString('WHATSAPP_GRAPH_VERSION', { default: 'v21.0' });
+const OPENAI_FISCAL_MODEL = defineString('OPENAI_FISCAL_MODEL', { default: 'gpt-5-mini' });
 const SICAR_BRANCH_ID = defineString('SICAR_BRANCH_ID', { default: 'granada' });
 const SICAR_BRANCH_NAME = defineString('SICAR_BRANCH_NAME', { default: 'CARNES SAN MARTIN GRANADA' });
 const SICAR_TIMEZONE = defineString('SICAR_TIMEZONE', { default: 'America/Managua' });
@@ -80,6 +85,25 @@ const PRIVATE_REPLAY_HTTP_FUNCTION_OPTIONS = {
   ...BASE_FUNCTION_OPTIONS,
   secrets: [
     SICAR_SYNC_API_TOKEN,
+  ],
+};
+
+const WHATSAPP_WEBHOOK_FUNCTION_OPTIONS = {
+  ...BASE_FUNCTION_OPTIONS,
+  timeoutSeconds: 60,
+  memory: '512MiB',
+  secrets: [
+    WHATSAPP_VERIFY_TOKEN,
+    WHATSAPP_ACCESS_TOKEN,
+  ],
+};
+
+const FISCAL_ASSISTANT_FUNCTION_OPTIONS = {
+  ...BASE_FUNCTION_OPTIONS,
+  timeoutSeconds: 90,
+  memory: '512MiB',
+  secrets: [
+    OPENAI_API_KEY,
   ],
 };
 
@@ -2062,6 +2086,983 @@ function ensureAdminUser(auth, actionLabel = 'sincronizar SICAR') {
 
   return email;
 }
+
+function getWhatsappMedia(message = {}) {
+  const supportedTypes = ['image', 'document', 'audio', 'video'];
+  const type = supportedTypes.find((candidate) => message[candidate]?.id);
+
+  if (!type) return null;
+
+  return {
+    type,
+    id: message[type].id,
+    mimeType: message[type].mime_type || '',
+    sha256: message[type].sha256 || '',
+    caption: message[type].caption || '',
+    fileName: message[type].filename || '',
+  };
+}
+
+function getWhatsappMessages(body = {}) {
+  const messages = [];
+
+  for (const entry of body.entry || []) {
+    for (const change of entry.changes || []) {
+      const value = change.value || {};
+      const contactByWaId = new Map((value.contacts || []).map((contact) => [contact.wa_id, contact]));
+
+      for (const message of value.messages || []) {
+        messages.push({
+          message,
+          value,
+          contact: contactByWaId.get(message.from) || {},
+        });
+      }
+    }
+  }
+
+  return messages;
+}
+
+function sanitizeStorageSegment(value, fallback = 'sin_identificar') {
+  return normalizeText(value || fallback)
+    .replace(/[^a-zA-Z0-9_-]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, 96) || fallback;
+}
+
+function extensionFromMime(mimeType = '', fileName = '') {
+  const existingExtension = normalizeText(fileName).split('.').pop();
+  if (existingExtension && existingExtension.length <= 8 && existingExtension !== fileName) {
+    return existingExtension.toLowerCase();
+  }
+
+  const normalized = mimeType.toLowerCase();
+  if (normalized.includes('pdf')) return 'pdf';
+  if (normalized.includes('png')) return 'png';
+  if (normalized.includes('webp')) return 'webp';
+  if (normalized.includes('jpeg') || normalized.includes('jpg')) return 'jpg';
+  if (normalized.includes('mp4')) return 'mp4';
+  if (normalized.includes('mpeg')) return 'mp3';
+  return 'bin';
+}
+
+function firebaseStorageUrl(bucketName, storagePath, token) {
+  return `https://firebasestorage.googleapis.com/v0/b/${bucketName}/o/${encodeURIComponent(storagePath)}?alt=media&token=${token}`;
+}
+
+async function fetchWhatsappJson(url, accessToken) {
+  const response = await fetch(url, {
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+    },
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`WhatsApp API respondio ${response.status}: ${text}`);
+  }
+
+  return response.json();
+}
+
+async function fetchWhatsappBuffer(url, accessToken) {
+  const response = await fetch(url, {
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+    },
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`No se pudo descargar media WhatsApp ${response.status}: ${text}`);
+  }
+
+  return Buffer.from(await response.arrayBuffer());
+}
+
+async function storeWhatsappMedia({ message, media, senderPhone, contactName }) {
+  const accessToken = WHATSAPP_ACCESS_TOKEN.value();
+  const graphVersion = WHATSAPP_GRAPH_VERSION.value();
+  const metadata = await fetchWhatsappJson(`https://graph.facebook.com/${graphVersion}/${media.id}`, accessToken);
+  const buffer = await fetchWhatsappBuffer(metadata.url, accessToken);
+  const contentType = metadata.mime_type || media.mimeType || 'application/octet-stream';
+  const extension = extensionFromMime(contentType, media.fileName);
+  const messageId = sanitizeStorageSegment(message.id || createHash('sha1').update(JSON.stringify(message)).digest('hex'));
+  const safePhone = sanitizeStorageSegment(senderPhone);
+  const safeMediaId = sanitizeStorageSegment(media.id, 'media');
+  const safeName = sanitizeStorageSegment(media.fileName || `${media.type}_${safeMediaId}`, media.type);
+  const storagePath = `whatsapp/inbox/${safePhone}/${messageId}/${safeName}.${extension}`;
+  const bucket = admin.storage().bucket();
+  const downloadToken = randomUUID();
+
+  await bucket.file(storagePath).save(buffer, {
+    resumable: false,
+    metadata: {
+      contentType,
+      metadata: {
+        firebaseStorageDownloadTokens: downloadToken,
+        whatsappMediaId: media.id,
+        whatsappMessageId: message.id || '',
+        whatsappSenderPhone: senderPhone || '',
+        whatsappSenderName: contactName || '',
+      },
+    },
+  });
+
+  return {
+    url: firebaseStorageUrl(bucket.name, storagePath, downloadToken),
+    path: storagePath,
+    mimeType: contentType,
+    fileName: media.fileName || `${safeName}.${extension}`,
+    size: buffer.length,
+    mediaId: media.id,
+    sha256: metadata.sha256 || media.sha256 || '',
+  };
+}
+
+async function upsertWhatsappInboxMessage({ message, value, contact }) {
+  const media = getWhatsappMedia(message);
+  const senderPhone = normalizeText(message.from);
+  const contactName = normalizeText(contact?.profile?.name);
+  const messageId = message.id || createHash('sha1').update(JSON.stringify(message)).digest('hex');
+  const inboxRef = firestore.collection('whatsapp_ai_inbox').doc(messageId);
+  const textBody = message.text?.body || media?.caption || '';
+  let mediaPayload = {};
+  let supportPayload = {};
+  let status = 'received';
+  let errorMessage = '';
+
+  if (media?.id) {
+    try {
+      const storedMedia = await storeWhatsappMedia({ message, media, senderPhone, contactName });
+      mediaPayload = {
+        ...storedMedia,
+        type: media.type,
+      };
+      supportPayload = {
+        fotoFacturaUrl: storedMedia.url,
+        fotoFacturaPath: storedMedia.path,
+        support: {
+          url: storedMedia.url,
+          path: storedMedia.path,
+          source: 'whatsapp',
+          sourceCollection: 'whatsapp_ai_inbox',
+          sourceDocId: messageId,
+          fileName: storedMedia.fileName,
+          contentType: storedMedia.mimeType,
+          uploadedAt: new Date().toISOString(),
+          whatsappMediaId: media.id,
+          whatsappMessageId: messageId,
+        },
+      };
+    } catch (error) {
+      status = 'error';
+      errorMessage = error.message;
+      logger.error('Error guardando media WhatsApp', {
+        messageId,
+        mediaId: media.id,
+        error: error.message,
+      });
+    }
+  }
+
+  await inboxRef.set({
+    source: 'whatsapp',
+    channel: 'whatsapp',
+    status,
+    aiStatus: 'pending_review',
+    targetType: 'unknown',
+    messageId,
+    senderPhone,
+    senderName: contactName,
+    phoneNumberId: value.metadata?.phone_number_id || '',
+    displayPhoneNumber: value.metadata?.display_phone_number || '',
+    messageType: message.type || '',
+    text: normalizeText(textBody),
+    media: mediaPayload,
+    error: errorMessage,
+    receivedAt: message.timestamp
+      ? admin.firestore.Timestamp.fromMillis(Number(message.timestamp) * 1000)
+      : FieldValue.serverTimestamp(),
+    createdAt: FieldValue.serverTimestamp(),
+    updatedAt: FieldValue.serverTimestamp(),
+    ...supportPayload,
+  }, { merge: true });
+
+  return {
+    messageId,
+    status,
+    hasMedia: Boolean(media?.id),
+    supportPath: supportPayload.fotoFacturaPath || '',
+  };
+}
+
+exports.whatsappWebhook = onRequest(WHATSAPP_WEBHOOK_FUNCTION_OPTIONS, async (request, response) => {
+  if (request.method === 'GET') {
+    const mode = request.query['hub.mode'];
+    const token = request.query['hub.verify_token'];
+    const challenge = request.query['hub.challenge'];
+
+    if (mode === 'subscribe' && token && token === WHATSAPP_VERIFY_TOKEN.value()) {
+      response.status(200).send(challenge || '');
+      return;
+    }
+
+    response.status(403).send('Token de verificacion invalido.');
+    return;
+  }
+
+  if (request.method !== 'POST') {
+    response.status(405).json({ ok: false, error: 'Metodo no permitido.' });
+    return;
+  }
+
+  try {
+    const messages = getWhatsappMessages(request.body || {});
+    const processed = [];
+
+    for (const item of messages) {
+      processed.push(await upsertWhatsappInboxMessage(item));
+    }
+
+    response.status(200).json({
+      ok: true,
+      received: messages.length,
+      processed,
+    });
+  } catch (error) {
+    logger.error('Error en whatsappWebhook', error);
+    response.status(500).json({
+      ok: false,
+      error: error.message || 'Error procesando webhook de WhatsApp.',
+    });
+  }
+});
+
+function getMonthStart(monthsBack = 0) {
+  const date = new Date();
+  date.setUTCDate(1);
+  date.setUTCHours(0, 0, 0, 0);
+  date.setUTCMonth(date.getUTCMonth() - monthsBack);
+  return date.toISOString().substring(0, 7);
+}
+
+function sumBy(items, amountKeys = ['amount', 'monto', 'total']) {
+  return items.reduce((sum, item) => {
+    const value = amountKeys.map((key) => item[key]).find((candidate) => candidate !== undefined && candidate !== null);
+    return normalizeAmount(sum + normalizeAmount(value));
+  }, 0);
+}
+
+function topByAmount(items, labelKeys, amountKeys, limit = 8) {
+  return [...items]
+    .map((item) => {
+      const label = labelKeys.map((key) => item[key]).find(Boolean) || item.id || 'Sin detalle';
+      const amount = amountKeys.map((key) => item[key]).find((candidate) => candidate !== undefined && candidate !== null);
+      return {
+        label: normalizeText(label).slice(0, 120),
+        amount: normalizeAmount(amount),
+        date: normalizeDate(item.date || item.fecha || item.saleDate),
+        id: item.id || '',
+      };
+    })
+    .sort((a, b) => b.amount - a.amount)
+    .slice(0, limit);
+}
+
+async function fetchCollectionSince(collectionName, field, sinceValue, limitCount = 350) {
+  const snapshot = await firestore
+    .collection(collectionName)
+    .where(field, '>=', sinceValue)
+    .limit(limitCount)
+    .get();
+
+  return snapshot.docs.map((entry) => ({
+    id: entry.id,
+    ...entry.data(),
+  }));
+}
+
+async function buildFiscalAssistantContext() {
+  const monthStart = getMonthStart(0);
+  const sixMonths = getMonthStart(6);
+  const dateStart = `${sixMonths}-01`;
+
+  const [
+    ingresos,
+    facturasMembretadas,
+    gastos,
+    compras,
+    cuentasPorPagar,
+    abonosPagar,
+  ] = await Promise.all([
+    fetchCollectionSince('ingresos', 'month', sixMonths),
+    fetchCollectionSince('facturas_membretadas_ventas', 'saleDate', dateStart),
+    fetchCollectionSince('gastos', 'date', dateStart),
+    fetchCollectionSince('compras', 'month', sixMonths),
+    fetchCollectionSince('cuentas_por_pagar', 'month', sixMonths),
+    fetchCollectionSince('abonos_pagar', 'fecha', dateStart),
+  ]);
+
+  const currentMonthIncome = ingresos.filter((item) => item.month === monthStart);
+  const currentMonthGastos = gastos.filter((item) => String(item.date || '').startsWith(monthStart));
+  const currentMonthCompras = compras.filter((item) => item.month === monthStart);
+  const pendingPayables = cuentasPorPagar.filter((item) => ['pendiente', 'parcial'].includes(normalizeComparableText(item.estado)));
+  const overduePayables = pendingPayables.filter((item) => item.vencimiento && item.vencimiento < new Date().toISOString().substring(0, 10));
+
+  return {
+    generatedAt: new Date().toISOString(),
+    branchName: getBranchName(),
+    currentMonth: monthStart,
+    windowStartMonth: sixMonths,
+    totals: {
+      currentMonthIncomeSubtotal: sumBy(currentMonthIncome, ['subtotal', 'amount']),
+      currentMonthIncomeIva: sumBy(currentMonthIncome, ['iva']),
+      currentMonthIncomeTotal: sumBy(currentMonthIncome, ['total', 'amount']),
+      currentMonthGastos: sumBy(currentMonthGastos, ['amount', 'monto', 'total']),
+      currentMonthComprasSubtotal: sumBy(currentMonthCompras, ['subtotal', 'amount']),
+      currentMonthComprasIva: sumBy(currentMonthCompras, ['iva']),
+      currentMonthComprasTotal: sumBy(currentMonthCompras, ['total', 'amount']),
+      pendingPayablesBalance: sumBy(pendingPayables, ['saldo']),
+      overduePayablesBalance: sumBy(overduePayables, ['saldo']),
+      sixMonthRetentionsIr2: sumBy([...compras, ...gastos, ...facturasMembretadas], ['retentionIr2']),
+      sixMonthRetentionsMunicipal1: sumBy([...compras, ...gastos, ...facturasMembretadas], ['retentionMunicipal1']),
+      sixMonthSalesIva: sumBy(ingresos, ['iva']),
+      sixMonthPurchaseIva: sumBy([...compras, ...gastos], ['iva']),
+    },
+    counts: {
+      ingresos: ingresos.length,
+      facturasMembretadas: facturasMembretadas.length,
+      gastos: gastos.length,
+      compras: compras.length,
+      cuentasPorPagar: cuentasPorPagar.length,
+      pendingPayables: pendingPayables.length,
+      overduePayables: overduePayables.length,
+      abonosPagar: abonosPagar.length,
+    },
+    highlights: {
+      topPendingPayables: topByAmount(pendingPayables, ['proveedor', 'supplier', 'descripcion'], ['saldo']),
+      topCurrentMonthExpenses: topByAmount(currentMonthGastos, ['description', 'descripcion', 'category', 'categoria'], ['amount', 'monto', 'total']),
+      topCurrentMonthPurchases: topByAmount(currentMonthCompras, ['supplier', 'proveedor', 'description'], ['total', 'amount']),
+      recentPayments: topByAmount(abonosPagar, ['proveedor'], ['montoTotal'], 6),
+    },
+  };
+}
+
+function fiscalDraftSchema() {
+  return {
+    type: 'json_schema',
+    name: 'fiscal_assistant_response',
+    strict: true,
+    schema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        reply: { type: 'string' },
+        intent: {
+          type: 'string',
+          enum: ['answer_question', 'create_draft', 'analyze_support', 'request_more_info', 'system_status'],
+        },
+        confidence: { type: 'number' },
+        warnings: {
+          type: 'array',
+          items: { type: 'string' },
+        },
+        suggestedDraft: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            targetType: {
+              type: 'string',
+              enum: ['none', 'gasto_credito', 'gasto_contado', 'compra_credito', 'compra_contado', 'abono_cxp', 'factura_membretada_venta'],
+            },
+            date: { type: 'string' },
+            supplier: { type: 'string' },
+            invoiceNumber: { type: 'string' },
+            category: { type: 'string' },
+            description: { type: 'string' },
+            paymentMethod: { type: 'string' },
+            paymentReference: { type: 'string' },
+            subtotal: { type: 'number' },
+            iva: { type: 'number' },
+            total: { type: 'number' },
+            retentionIr2: { type: 'number' },
+            retentionMunicipal1: { type: 'number' },
+            payableProvider: { type: 'string' },
+            payableInvoiceNumber: { type: 'string' },
+            amountPaid: { type: 'number' },
+          },
+          required: [
+            'targetType',
+            'date',
+            'supplier',
+            'invoiceNumber',
+            'category',
+            'description',
+            'paymentMethod',
+            'paymentReference',
+            'subtotal',
+            'iva',
+            'total',
+            'retentionIr2',
+            'retentionMunicipal1',
+            'payableProvider',
+            'payableInvoiceNumber',
+            'amountPaid',
+          ],
+        },
+        followUpQuestions: {
+          type: 'array',
+          items: { type: 'string' },
+        },
+      },
+      required: ['reply', 'intent', 'confidence', 'warnings', 'suggestedDraft', 'followUpQuestions'],
+    },
+  };
+}
+
+async function callOpenAIFiscalAssistant({ message, support, context }) {
+  const apiKey = OPENAI_API_KEY.value();
+  if (!apiKey) {
+    throw new HttpsError('failed-precondition', 'Falta configurar OPENAI_API_KEY en Firebase Functions.');
+  }
+
+  const content = [
+    {
+      type: 'input_text',
+      text: [
+        'Eres el Agente IA Fiscal de Carnes San Martin Granada.',
+        'Responde en espanol claro y practico.',
+        'Puedes contestar preguntas usando el contexto contable resumido.',
+        'Si hay soporte/foto, extrae datos para crear un borrador fiscal, pero nunca confirmes registro definitivo.',
+        'Para estado de resultado, ventas contables usan subtotal, no total con IVA.',
+        'Si no puedes leer fecha, proveedor, factura o montos con confianza, no inventes: usa request_more_info y pregunta exactamente que falta.',
+        'Si tienes dudas fuertes, suggestedDraft.targetType debe ser none o la mejor opcion con warnings claros.',
+        `Pregunta o instruccion del usuario: ${message}`,
+        `Contexto contable JSON: ${JSON.stringify(context)}`,
+      ].join('\n'),
+    },
+  ];
+
+  if (support?.url) {
+    content.push({
+      type: 'input_image',
+      image_url: support.url,
+      detail: 'high',
+    });
+  }
+
+  const response = await fetch('https://api.openai.com/v1/responses', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      model: OPENAI_FISCAL_MODEL.value(),
+      input: [
+        {
+          role: 'user',
+          content,
+        },
+      ],
+      text: {
+        format: fiscalDraftSchema(),
+      },
+      max_output_tokens: 1800,
+    }),
+  });
+
+  const payload = await response.json().catch(() => ({}));
+
+  if (!response.ok) {
+    logger.error('OpenAI fiscal assistant error', {
+      status: response.status,
+      payload,
+    });
+    throw new HttpsError('internal', payload?.error?.message || 'OpenAI no pudo procesar la solicitud.');
+  }
+
+  const text = payload.output_text
+    || payload.output?.flatMap((item) => item.content || [])
+      .map((item) => item.text || '')
+      .join('')
+    || '';
+
+  try {
+    return JSON.parse(text);
+  } catch (error) {
+    logger.error('Respuesta OpenAI no es JSON valido', { text, error: error.message });
+    throw new HttpsError('internal', 'La IA respondio en un formato no valido. Intenta nuevamente.');
+  }
+}
+
+exports.fiscalAssistantChat = onCall(FISCAL_ASSISTANT_FUNCTION_OPTIONS, async (request) => {
+  const actorEmail = ensureAdminUser(request.auth, 'usar el agente IA fiscal');
+  const message = normalizeText(request.data?.message);
+  const support = request.data?.support || null;
+
+  if (!message && !support?.url) {
+    throw new HttpsError('invalid-argument', 'Escribe una pregunta o adjunta una foto/documento.');
+  }
+
+  const context = await buildFiscalAssistantContext();
+  const aiResult = await callOpenAIFiscalAssistant({ message, support, context });
+
+  const chatRef = await firestore.collection('ai_fiscal_chats').add({
+    actorEmail,
+    message,
+    support: support || null,
+    result: aiResult,
+    contextSnapshot: context,
+    createdAt: FieldValue.serverTimestamp(),
+  });
+
+  if (support?.url || aiResult?.suggestedDraft?.targetType !== 'none') {
+    await firestore.collection('ai_fiscal_inbox').add({
+      actorEmail,
+      source: support?.source || 'app_chat',
+      status: 'draft',
+      aiStatus: 'review_required',
+      userMessage: message,
+      support: support || null,
+      fotoFacturaUrl: support?.url || '',
+      fotoFacturaPath: support?.path || '',
+      aiResult,
+      suggestedDraft: aiResult?.suggestedDraft || null,
+      confidence: aiResult?.confidence || 0,
+      chatId: chatRef.id,
+      createdAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+  }
+
+  return {
+    ok: true,
+    chatId: chatRef.id,
+    result: aiResult,
+  };
+});
+
+function cleanAiText(value) {
+  return normalizeText(value).slice(0, 260);
+}
+
+function getAiDraftDate(draft) {
+  const value = normalizeDate(draft?.date);
+  return DATE_REGEX.test(value) ? value : new Date().toISOString().substring(0, 10);
+}
+
+function buildAiFiscalNumbers(draft = {}) {
+  const subtotal = normalizeAmount(draft.subtotal || Math.max(normalizeAmount(draft.total) - normalizeAmount(draft.iva), 0));
+  const iva = normalizeAmount(draft.iva);
+  const total = normalizeAmount(draft.total || subtotal + iva || draft.amountPaid);
+  const retentionIr2 = normalizeAmount(draft.retentionIr2);
+  const retentionMunicipal1 = normalizeAmount(draft.retentionMunicipal1);
+
+  return {
+    amount: subtotal,
+    subtotal,
+    iva,
+    total,
+    retentionIr2,
+    retentionMunicipal1,
+    retentionTotal: normalizeAmount(retentionIr2 + retentionMunicipal1),
+  };
+}
+
+function buildAiSupportPayload(inbox = {}) {
+  const support = inbox.support || {};
+  const url = normalizeText(support.url || inbox.fotoFacturaUrl);
+  const path = normalizeText(support.path || inbox.fotoFacturaPath);
+
+  if (!url && !path) return {};
+
+  return {
+    fotoFacturaUrl: url,
+    fotoFacturaPath: path,
+    support: {
+      ...support,
+      url,
+      path,
+      source: support.source || inbox.source || 'ai_fiscal_assistant',
+      sourceCollection: support.sourceCollection || 'ai_fiscal_inbox',
+      sourceDocId: support.sourceDocId || inbox.id || '',
+    },
+  };
+}
+
+function buildAiCommonPayload({ inbox, draftId, actorEmail }) {
+  return {
+    source: 'ai_fiscal_assistant',
+    sourceType: 'ai_reviewed_draft',
+    sourceDraftId: draftId,
+    sourceChatId: inbox.chatId || '',
+    confirmedBy: actorEmail,
+    confirmedAt: FieldValue.serverTimestamp(),
+  };
+}
+
+async function findDailySaleByDate(date) {
+  const snapshot = await firestore.collection('ingresos').where('date', '==', date).limit(1).get();
+  if (!snapshot.empty) {
+    const docSnap = snapshot.docs[0];
+    return { id: docSnap.id, ...docSnap.data() };
+  }
+
+  return null;
+}
+
+async function findPayableForAiAbono(draft) {
+  const providerNeedle = normalizeComparableText(draft.payableProvider || draft.supplier);
+  const invoiceNeedle = normalizeComparableText(draft.payableInvoiceNumber || draft.invoiceNumber);
+  const snapshot = await firestore.collection('cuentas_por_pagar').where('estado', 'in', ['pendiente', 'parcial']).limit(350).get();
+  const candidates = snapshot.docs.map((entry) => ({ id: entry.id, ...entry.data() }));
+
+  return candidates.find((item) => {
+    const provider = normalizeComparableText(item.proveedor || item.supplier);
+    const invoice = normalizeComparableText(item.numero || item.factura || item.invoiceNumber);
+    const providerMatches = providerNeedle ? provider.includes(providerNeedle) || providerNeedle.includes(provider) : true;
+    const invoiceMatches = invoiceNeedle ? invoice === invoiceNeedle || invoice.includes(invoiceNeedle) || invoiceNeedle.includes(invoice) : true;
+    return providerMatches && invoiceMatches;
+  }) || null;
+}
+
+async function getNextAbonoSequence() {
+  const snapshot = await firestore.collection('abonos_pagar').orderBy('secuencia', 'desc').limit(1).get();
+  return snapshot.empty ? 1 : normalizeAmount(snapshot.docs[0].data().secuencia) + 1;
+}
+
+async function confirmAiPurchaseOrExpense({ inboxRef, inbox, draftId, draft, actorEmail, kind, credit }) {
+  const date = getAiDraftDate(draft);
+  const month = date.substring(0, 7);
+  const fiscal = buildAiFiscalNumbers(draft);
+  if (fiscal.total <= 0) {
+    throw new HttpsError('failed-precondition', 'El borrador no tiene un total valido.');
+  }
+
+  const isPurchase = kind === 'compra';
+  const targetCollection = isPurchase ? 'compras' : 'gastos';
+  const targetRef = firestore.collection(targetCollection).doc();
+  const payableRef = credit ? firestore.collection('cuentas_por_pagar').doc() : null;
+  const supportPayload = buildAiSupportPayload({ ...inbox, id: draftId });
+  const commonPayload = buildAiCommonPayload({ inbox, draftId, actorEmail });
+  const supplier = cleanAiText(draft.supplier || draft.payableProvider || 'SIN PROVEEDOR').toUpperCase();
+  const invoiceNumber = cleanAiText(draft.invoiceNumber || draft.payableInvoiceNumber);
+  const description = cleanAiText(draft.description || draft.category || 'REGISTRO IA FISCAL').toUpperCase();
+  const paymentType = credit ? 'credito' : cleanAiText(draft.paymentMethod || 'Transferencia');
+  const batch = firestore.batch();
+
+  const targetPayload = isPurchase ? {
+    date,
+    month,
+    supplier,
+    invoiceNumber,
+    description,
+    paymentType,
+    paymentReference: cleanAiText(draft.paymentReference).toUpperCase(),
+    branch: getBranchId(),
+    branchName: getBranchName(),
+    isInventoryCost: true,
+    linkedPayableId: payableRef?.id || null,
+    sourceFacturaId: payableRef?.id || null,
+    ...fiscal,
+    ...supportPayload,
+    ...commonPayload,
+    timestamp: FieldValue.serverTimestamp(),
+  } : {
+    date,
+    month,
+    supplier,
+    proveedor: supplier,
+    invoiceNumber,
+    factura: invoiceNumber,
+    category: cleanAiText(draft.category || 'Otros gastos (no categorizado)'),
+    categoria: cleanAiText(draft.category || 'Otros gastos (no categorizado)'),
+    description,
+    paymentType,
+    paymentReference: cleanAiText(draft.paymentReference).toUpperCase(),
+    branch: getBranchId(),
+    branchName: getBranchName(),
+    linkedPayableId: payableRef?.id || null,
+    ...fiscal,
+    ...supportPayload,
+    ...commonPayload,
+    timestamp: FieldValue.serverTimestamp(),
+  };
+
+  batch.set(targetRef, targetPayload);
+
+  if (payableRef) {
+    batch.set(payableRef, {
+      fecha: date,
+      month,
+      proveedor: supplier,
+      sucursal: getBranchName(),
+      branch: getBranchId(),
+      branchName: getBranchName(),
+      numero: invoiceNumber,
+      factura: invoiceNumber,
+      vencimiento: '',
+      descripcion: description,
+      monto: fiscal.total,
+      saldo: fiscal.total,
+      amount: fiscal.subtotal,
+      estado: 'pendiente',
+      paymentType: 'credito',
+      paymentReference: cleanAiText(draft.paymentReference).toUpperCase(),
+      isInventoryCost: isPurchase,
+      mirroredToCompras: isPurchase,
+      mirroredPurchaseId: isPurchase ? targetRef.id : null,
+      mirroredExpenseId: isPurchase ? null : targetRef.id,
+      ...fiscal,
+      ...supportPayload,
+      ...commonPayload,
+      timestamp: FieldValue.serverTimestamp(),
+    });
+  }
+
+  batch.set(inboxRef, {
+    status: 'confirmed',
+    targetCollection,
+    targetDocIds: {
+      [isPurchase ? 'compraId' : 'gastoId']: targetRef.id,
+      cuentaPorPagarId: payableRef?.id || null,
+    },
+    confirmedBy: actorEmail,
+    confirmedAt: FieldValue.serverTimestamp(),
+    updatedAt: FieldValue.serverTimestamp(),
+  }, { merge: true });
+
+  await batch.commit();
+
+  return {
+    targetCollection,
+    targetDocIds: {
+      [isPurchase ? 'compraId' : 'gastoId']: targetRef.id,
+      cuentaPorPagarId: payableRef?.id || null,
+    },
+  };
+}
+
+async function confirmAiStampedInvoice({ inboxRef, inbox, draftId, draft, actorEmail }) {
+  const saleDate = getAiDraftDate(draft);
+  const selectedSale = await findDailySaleByDate(saleDate);
+  if (!selectedSale) {
+    throw new HttpsError('failed-precondition', `Primero debe existir la venta diaria SICAR del ${saleDate}.`);
+  }
+
+  const fiscal = buildAiFiscalNumbers(draft);
+  if (fiscal.total <= 0) {
+    throw new HttpsError('failed-precondition', 'La factura membretada no tiene total valido.');
+  }
+
+  const invoiceRef = firestore.collection('facturas_membretadas_ventas').doc();
+  const supportPayload = buildAiSupportPayload({ ...inbox, id: draftId });
+  const commonPayload = buildAiCommonPayload({ inbox, draftId, actorEmail });
+  const batch = firestore.batch();
+
+  batch.set(invoiceRef, {
+    saleDate,
+    linkedIngresoId: selectedSale.id,
+    dailySaleCode: selectedSale.dailySaleCode || selectedSale.reference || `VENTA-${saleDate.replaceAll('-', '')}`,
+    numeroFactura: cleanAiText(draft.invoiceNumber || draft.payableInvoiceNumber),
+    paymentMethod: cleanAiText(draft.paymentMethod || 'Transferencia BAC'),
+    dailySaleSubtotal: normalizeAmount(selectedSale.subtotal || selectedSale.amount),
+    dailySaleIva: normalizeAmount(selectedSale.iva),
+    dailySaleTotal: normalizeAmount(selectedSale.total || selectedSale.amount),
+    branch: getBranchId(),
+    branchName: getBranchName(),
+    ...fiscal,
+    ...supportPayload,
+    ...commonPayload,
+    timestamp: FieldValue.serverTimestamp(),
+  });
+
+  batch.set(inboxRef, {
+    status: 'confirmed',
+    targetCollection: 'facturas_membretadas_ventas',
+    targetDocIds: {
+      facturaMembretadaId: invoiceRef.id,
+    },
+    confirmedBy: actorEmail,
+    confirmedAt: FieldValue.serverTimestamp(),
+    updatedAt: FieldValue.serverTimestamp(),
+  }, { merge: true });
+
+  await batch.commit();
+
+  return {
+    targetCollection: 'facturas_membretadas_ventas',
+    targetDocIds: {
+      facturaMembretadaId: invoiceRef.id,
+    },
+  };
+}
+
+async function confirmAiAbono({ inboxRef, inbox, draftId, draft, actorEmail }) {
+  const payable = await findPayableForAiAbono(draft);
+  if (!payable) {
+    throw new HttpsError('failed-precondition', 'No encontre una cuenta por pagar pendiente que coincida con proveedor/factura.');
+  }
+
+  const amount = normalizeAmount(draft.amountPaid || draft.total);
+  if (amount <= 0) {
+    throw new HttpsError('failed-precondition', 'El abono no tiene monto valido.');
+  }
+
+  const fecha = getAiDraftDate(draft);
+  const paymentMethod = normalizeComparableText(draft.paymentMethod).includes('efectivo') ? 'efectivo' : 'transferencia';
+  const supportPayload = buildAiSupportPayload({ ...inbox, id: draftId });
+  const commonPayload = buildAiCommonPayload({ inbox, draftId, actorEmail });
+  const secuencia = await getNextAbonoSequence();
+  const abonoRef = firestore.collection('abonos_pagar').doc();
+  const gastoDiarioRef = paymentMethod === 'efectivo' ? firestore.collection('gastosDiarios').doc() : null;
+  const payableRef = firestore.collection('cuentas_por_pagar').doc(payable.id);
+
+  await firestore.runTransaction(async (transaction) => {
+    const payableSnapshot = await transaction.get(payableRef);
+    if (!payableSnapshot.exists) {
+      throw new HttpsError('not-found', 'La cuenta por pagar ya no existe.');
+    }
+
+    const payableData = payableSnapshot.data();
+    const pago = Math.min(normalizeAmount(payableData.saldo), amount);
+    const nuevoSaldo = normalizeAmount(normalizeAmount(payableData.saldo) - pago);
+
+    transaction.update(payableRef, {
+      saldo: nuevoSaldo,
+      estado: nuevoSaldo <= 0 ? 'pagado' : 'parcial',
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+
+    transaction.set(abonoRef, {
+      fecha,
+      montoTotal: pago,
+      proveedor: payableData.proveedor || draft.payableProvider || draft.supplier || '',
+      secuencia,
+      paymentMethod,
+      linkedGastoDiarioId: gastoDiarioRef?.id || null,
+      detalleAfectado: [{ id: payable.id, montoAbonado: pago }],
+      ...supportPayload,
+      ...commonPayload,
+      timestamp: FieldValue.serverTimestamp(),
+    });
+
+    if (gastoDiarioRef) {
+      transaction.set(gastoDiarioRef, {
+        fecha,
+        caja: getCashboxName(),
+        descripcion: `ABONO A PROVEEDOR ${payableData.proveedor || draft.payableProvider || draft.supplier || ''}`,
+        monto: pago,
+        tipo: 'ABONO',
+        categoria: 'ABONO',
+        sucursal: getBranchId(),
+        branch: getBranchId(),
+        branchName: getBranchName(),
+        origen: 'abonos_pagar',
+        linkedAbonoId: abonoRef.id,
+        paymentMethod,
+        ...supportPayload,
+        ...commonPayload,
+        timestamp: FieldValue.serverTimestamp(),
+      });
+    }
+
+    transaction.set(inboxRef, {
+      status: 'confirmed',
+      targetCollection: 'abonos_pagar',
+      targetDocIds: {
+        abonoId: abonoRef.id,
+        cuentaPorPagarId: payable.id,
+        gastoDiarioId: gastoDiarioRef?.id || null,
+      },
+      confirmedBy: actorEmail,
+      confirmedAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+    }, { merge: true });
+  });
+
+  return {
+    targetCollection: 'abonos_pagar',
+    targetDocIds: {
+      abonoId: abonoRef.id,
+      cuentaPorPagarId: payable.id,
+      gastoDiarioId: gastoDiarioRef?.id || null,
+    },
+  };
+}
+
+exports.confirmFiscalAssistantDraft = onCall(BASE_FUNCTION_OPTIONS, async (request) => {
+  const actorEmail = ensureAdminUser(request.auth, 'confirmar borradores del agente IA');
+  const draftId = normalizeText(request.data?.draftId);
+  const overrides = request.data?.overrides || {};
+
+  if (!draftId) {
+    throw new HttpsError('invalid-argument', 'Falta draftId.');
+  }
+
+  const inboxRef = firestore.collection('ai_fiscal_inbox').doc(draftId);
+  const inboxSnapshot = await inboxRef.get();
+  if (!inboxSnapshot.exists) {
+    throw new HttpsError('not-found', 'El borrador IA no existe.');
+  }
+
+  const inbox = { id: draftId, ...inboxSnapshot.data() };
+  if (inbox.status === 'confirmed') {
+    return {
+      ok: true,
+      alreadyConfirmed: true,
+      targetCollection: inbox.targetCollection || '',
+      targetDocIds: inbox.targetDocIds || {},
+    };
+  }
+
+  if (inbox.status === 'rejected') {
+    throw new HttpsError('failed-precondition', 'Este borrador ya fue rechazado.');
+  }
+
+  const draft = {
+    ...(inbox.suggestedDraft || {}),
+    ...overrides,
+  };
+
+  switch (draft.targetType) {
+    case 'gasto_credito':
+      return { ok: true, ...(await confirmAiPurchaseOrExpense({ inboxRef, inbox, draftId, draft, actorEmail, kind: 'gasto', credit: true })) };
+    case 'gasto_contado':
+      return { ok: true, ...(await confirmAiPurchaseOrExpense({ inboxRef, inbox, draftId, draft, actorEmail, kind: 'gasto', credit: false })) };
+    case 'compra_credito':
+      return { ok: true, ...(await confirmAiPurchaseOrExpense({ inboxRef, inbox, draftId, draft, actorEmail, kind: 'compra', credit: true })) };
+    case 'compra_contado':
+      return { ok: true, ...(await confirmAiPurchaseOrExpense({ inboxRef, inbox, draftId, draft, actorEmail, kind: 'compra', credit: false })) };
+    case 'factura_membretada_venta':
+      return { ok: true, ...(await confirmAiStampedInvoice({ inboxRef, inbox, draftId, draft, actorEmail })) };
+    case 'abono_cxp':
+      return { ok: true, ...(await confirmAiAbono({ inboxRef, inbox, draftId, draft, actorEmail })) };
+    default:
+      throw new HttpsError('failed-precondition', 'La IA no propuso un tipo de registro confirmable.');
+  }
+});
+
+exports.rejectFiscalAssistantDraft = onCall(BASE_FUNCTION_OPTIONS, async (request) => {
+  const actorEmail = ensureAdminUser(request.auth, 'rechazar borradores del agente IA');
+  const draftId = normalizeText(request.data?.draftId);
+
+  if (!draftId) {
+    throw new HttpsError('invalid-argument', 'Falta draftId.');
+  }
+
+  await firestore.collection('ai_fiscal_inbox').doc(draftId).set({
+    status: 'rejected',
+    rejectedBy: actorEmail,
+    rejectedAt: FieldValue.serverTimestamp(),
+    updatedAt: FieldValue.serverTimestamp(),
+  }, { merge: true });
+
+  return { ok: true };
+});
 
 exports.syncSicarIngresosCarnesAmparito = onCall(INCOME_CALLABLE_FUNCTION_OPTIONS, async (request) => {
   const actorEmail = ensureAdminUser(request.auth, 'sincronizar ingresos SICAR');

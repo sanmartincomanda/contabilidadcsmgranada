@@ -7,7 +7,14 @@ import {
 } from 'firebase/firestore';
 import { APP_BRAND_NAME, DEFAULT_BRANCH_ID, DEFAULT_BRANCH_NAME, DEFAULT_CASHBOX_NAME, fmt } from '../constants';
 import { deletePayableTransaction } from '../services/linkedTransactions';
-import { buildFiscalPayload, uploadInvoicePhoto } from '../services/fiscalUtils';
+import {
+    buildFiscalPayload,
+    getSupportPath,
+    getSupportUrl,
+    hasSupport,
+    isPdfSupportRecord,
+    uploadInvoicePhoto,
+} from '../services/fiscalUtils';
 
 // --- ICONOS SVG INLINE ---
 const Icon = ({ path, className = "w-5 h-5" }) => (
@@ -32,7 +39,10 @@ const Icons = {
     receipt: "M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01",
     arrowRightCircle: "M13 9l3 3m0 0l-3 3m3-3H8m13 0a9 9 0 11-18 0 9 9 0 0118 0z",
     calculator: "M9 7h6m0 10v-3m-3 3h.01M9 17h.01M9 14h.01M12 14h.01M15 11h.01M12 11h.01M9 11h.01M7 21h10a2 2 0 002-2V5a2 2 0 00-2-2H7a2 2 0 00-2 2v14a2 2 0 002 2z",
-    square: "M4 6a2 2 0 012-2h12a2 2 0 012 2v12a2 2 0 01-2 2H6a2 2 0 01-2-2V6z"
+    square: "M4 6a2 2 0 012-2h12a2 2 0 012 2v12a2 2 0 01-2 2H6a2 2 0 01-2-2V6z",
+    eye: "M15 12a3 3 0 11-6 0 3 3 0 016 0z M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z",
+    upload: "M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0l-4 4m4-4v12",
+    paperClip: "M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.586-6.586a4 4 0 00-5.657-5.657L5.757 10.757a6 6 0 108.486 8.486L20.829 12.657"
 };
 
 // --- ANIMACIONES ---
@@ -136,6 +146,199 @@ const Spinner = () => (
         <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
     </svg>
 );
+
+const DetailRow = ({ label, value, accent = false }) => (
+    <div className={`rounded-xl border px-4 py-3 ${accent ? 'border-[#ead5c5] bg-[#fff8f5]' : 'border-stone-200 bg-white'}`}>
+        <div className="text-[10px] font-bold uppercase tracking-[0.18em] text-slate-400">{label}</div>
+        <div className={`mt-1 break-words text-sm font-bold ${accent ? 'text-[#7f1218]' : 'text-slate-800'}`}>{value || '---'}</div>
+    </div>
+);
+
+const getPaymentLabel = (method) => {
+    if (method === 'efectivo') return 'Efectivo';
+    if (method === 'transferencia') return 'Transferencia';
+    return method || 'Sin metodo';
+};
+
+const SupportPreviewModal = ({ record, type, onClose, onAttach }) => {
+    if (!record) return null;
+
+    const isAbono = type === 'abono';
+    const supportUrl = getSupportUrl(record);
+    const supportPath = getSupportPath(record);
+    const title = isAbono
+        ? `Abono #${record.secuencia || record.id}`
+        : `Factura ${record.numero || record.factura || record.id}`;
+    const subtitle = isAbono
+        ? `${record.proveedor || 'Proveedor'} - ${fmt(record.montoTotal || 0)}`
+        : `${record.proveedor || 'Proveedor'} - Saldo ${fmt(record.saldo || 0)}`;
+    const affected = record.detalleAfectado || [];
+
+    return (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
+            <button className="absolute inset-0 bg-[#2b1113]/60 backdrop-blur-sm" onClick={onClose} aria-label="Cerrar" />
+            <div className="relative grid max-h-[92vh] w-full max-w-6xl overflow-hidden rounded-3xl border border-[#ead5c5] bg-white shadow-2xl lg:grid-cols-[1.05fr_0.95fr]">
+                <div className="flex max-h-[92vh] flex-col overflow-hidden">
+                    <div className="bg-gradient-to-br from-[#7f1218] to-[#2b1113] px-6 py-5 text-white">
+                        <div className="flex items-start justify-between gap-4">
+                            <div>
+                                <p className="text-[10px] font-bold uppercase tracking-[0.32em] text-[#f2b635]">Expediente documental</p>
+                                <h2 className="mt-2 text-2xl font-black">{title}</h2>
+                                <p className="mt-1 text-sm font-semibold text-white/75">{subtitle}</p>
+                                <div className="mt-3 flex flex-wrap gap-2">
+                                    <Badge variant={hasSupport(record) ? 'success' : 'warning'}>
+                                        {hasSupport(record) ? 'Con soporte' : 'Sin soporte'}
+                                    </Badge>
+                                    <Badge variant={isAbono ? 'info' : 'default'}>{isAbono ? 'Abono' : 'Cuenta por pagar'}</Badge>
+                                </div>
+                            </div>
+                            <button onClick={onClose} className="rounded-xl bg-white/10 p-2 transition hover:bg-white/20">
+                                <Icon path={Icons.x} className="h-5 w-5 text-white" />
+                            </button>
+                        </div>
+                    </div>
+
+                    <div className="overflow-y-auto p-6">
+                        {isAbono ? (
+                            <>
+                                <div className="mb-5 grid grid-cols-1 gap-3 sm:grid-cols-3">
+                                    <DetailRow label="Fecha" value={record.fecha} />
+                                    <DetailRow label="Metodo" value={getPaymentLabel(record.paymentMethod)} />
+                                    <DetailRow label="Monto abonado" value={fmt(record.montoTotal || 0)} accent />
+                                </div>
+                                <div className="rounded-2xl border border-stone-200 bg-stone-50 p-4">
+                                    <div className="mb-3 text-xs font-bold uppercase tracking-[0.22em] text-slate-500">Facturas afectadas</div>
+                                    {affected.length === 0 ? (
+                                        <p className="text-sm font-semibold text-slate-400">Sin detalle de facturas.</p>
+                                    ) : (
+                                        <div className="space-y-2">
+                                            {affected.map((item, index) => (
+                                                <div key={`${item.id}-${index}`} className="flex items-center justify-between rounded-xl border border-stone-200 bg-white px-4 py-3">
+                                                    <div>
+                                                        <div className="text-xs font-black text-slate-800">Factura vinculada</div>
+                                                        <div className="text-[11px] font-mono text-slate-400">{item.id}</div>
+                                                    </div>
+                                                    <div className="text-sm font-black text-emerald-700">{fmt(item.montoAbonado || 0)}</div>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    )}
+                                </div>
+                            </>
+                        ) : (
+                            <>
+                                <div className="mb-5 grid grid-cols-1 gap-3 sm:grid-cols-3">
+                                    <DetailRow label="Subtotal" value={fmt(record.subtotal ?? record.amount ?? 0)} />
+                                    <DetailRow label="IVA" value={fmt(record.iva || 0)} />
+                                    <DetailRow label="Total factura" value={fmt(record.total ?? record.monto ?? 0)} accent />
+                                </div>
+                                <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                                    <DetailRow label="Proveedor" value={record.proveedor} />
+                                    <DetailRow label="Fecha emision" value={record.fecha} />
+                                    <DetailRow label="Vencimiento" value={record.vencimiento || 'Sin vencimiento'} />
+                                    <DetailRow label="Estado" value={record.estado} />
+                                    <DetailRow label="Saldo" value={fmt(record.saldo || 0)} accent />
+                                    <DetailRow label="Retenciones" value={`IR ${fmt(record.retentionIr2 || 0)} / Municipal ${fmt(record.retentionMunicipal1 || 0)}`} />
+                                    <DetailRow label="Referencia pago" value={record.paymentReference} />
+                                    <DetailRow label="Ruta soporte" value={supportPath} />
+                                </div>
+                            </>
+                        )}
+                    </div>
+
+                    <div className="flex flex-wrap justify-end gap-2 border-t border-stone-200 bg-stone-50 px-6 py-4">
+                        <Button variant="ghost" onClick={onClose}>Cerrar</Button>
+                        <Button variant="outline" onClick={() => onAttach(record, type)} className="flex items-center gap-2">
+                            <Icon path={Icons.upload} className="h-4 w-4" />
+                            {supportUrl ? 'Reemplazar soporte' : 'Adjuntar soporte'}
+                        </Button>
+                    </div>
+                </div>
+
+                <div className="max-h-[92vh] overflow-y-auto border-l border-[#ead5c5] bg-[#fbf6f1] p-5">
+                    <div className="mb-3 flex items-center justify-between gap-3">
+                        <div>
+                            <div className="text-xs font-black uppercase tracking-[0.25em] text-[#7f1218]">Soporte</div>
+                            <p className="text-xs font-semibold text-stone-500">Foto, PDF o documento recibido por WhatsApp/manual</p>
+                        </div>
+                        {supportUrl && (
+                            <a href={supportUrl} target="_blank" rel="noreferrer" className="rounded-lg bg-[#a81d24] px-3 py-1.5 text-xs font-bold text-white">
+                                Abrir
+                            </a>
+                        )}
+                    </div>
+
+                    {supportUrl ? (
+                        isPdfSupportRecord(record) ? (
+                            <iframe title="Soporte cuenta por pagar" src={supportUrl} className="h-[70vh] w-full rounded-2xl border border-stone-200 bg-white" />
+                        ) : (
+                            <div className="overflow-hidden rounded-2xl border border-stone-200 bg-white p-2 shadow-sm">
+                                <img src={supportUrl} alt="Soporte fiscal" className="max-h-[72vh] w-full rounded-xl object-contain" />
+                            </div>
+                        )
+                    ) : (
+                        <div className="flex min-h-[420px] flex-col items-center justify-center rounded-2xl border-2 border-dashed border-stone-300 bg-white text-center">
+                            <Icon path={Icons.paperClip} className="mb-3 h-12 w-12 text-stone-300" />
+                            <div className="text-sm font-black text-stone-500">Sin soporte adjunto</div>
+                            <p className="mt-1 max-w-xs text-xs font-semibold text-stone-400">Adjunta una foto/PDF o usa una imagen recibida por WhatsApp en el flujo IA.</p>
+                        </div>
+                    )}
+                </div>
+            </div>
+        </div>
+    );
+};
+
+const AttachSupportModal = ({ target, loading, onClose, onSave }) => {
+    const [file, setFile] = useState(null);
+    if (!target) return null;
+
+    return (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center p-4">
+            <button className="absolute inset-0 bg-[#2b1113]/55 backdrop-blur-sm" onClick={onClose} aria-label="Cerrar" />
+            <div className="relative w-full max-w-lg overflow-hidden rounded-2xl border border-[#ead5c5] bg-white shadow-2xl">
+                <div className="bg-[#7f1218] px-6 py-5 text-white">
+                    <div className="flex items-start justify-between gap-4">
+                        <div>
+                            <p className="text-[10px] font-bold uppercase tracking-[0.28em] text-[#f2b635]">Soporte unico</p>
+                            <h3 className="mt-2 text-xl font-black">{target.type === 'abono' ? 'Adjuntar soporte al abono' : 'Adjuntar soporte a factura'}</h3>
+                            <p className="mt-1 text-xs font-semibold text-white/70">Se guarda una sola imagen en Storage y se comparte la referencia con el registro vinculado.</p>
+                        </div>
+                        <button onClick={onClose} disabled={loading} className="rounded-xl bg-white/10 p-2 transition hover:bg-white/20 disabled:opacity-50">
+                            <Icon path={Icons.x} className="h-5 w-5 text-white" />
+                        </button>
+                    </div>
+                </div>
+                <div className="p-6">
+                    <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs font-semibold text-amber-800">
+                        Cuando este soporte venga del webhook de WhatsApp, el documento contable solo guardara la misma URL/ruta; no se subira otra copia.
+                    </div>
+                    <div className="rounded-xl border border-stone-200 bg-stone-50 p-4">
+                        <label className="text-xs font-bold uppercase tracking-wider text-slate-500">Foto o PDF</label>
+                        <input
+                            type="file"
+                            accept="image/*,.pdf"
+                            onChange={e => setFile(e.target.files?.[0] || null)}
+                            className="mt-2 block w-full text-xs text-slate-500 file:mr-3 file:rounded-lg file:border-0 file:bg-[#fff0f0] file:px-3 file:py-2 file:text-xs file:font-semibold file:text-[#a81d24]"
+                        />
+                        {file && <p className="mt-2 text-xs font-bold text-emerald-700">Archivo seleccionado: {file.name}</p>}
+                    </div>
+                    <div className="mt-6 flex justify-end gap-2">
+                        <Button variant="ghost" onClick={onClose} disabled={loading}>Cancelar</Button>
+                        <Button
+                            variant="success"
+                            disabled={loading || !file}
+                            onClick={() => onSave(target, file)}
+                            className="flex items-center gap-2"
+                        >
+                            {loading ? <><Spinner /> Guardando...</> : <><Icon path={Icons.upload} className="h-4 w-4" /> Guardar soporte</>}
+                        </Button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    );
+};
 
 // --- COMPONENTE PRINCIPAL ---
 export function AccountsPayable({ data }) {
@@ -303,6 +506,10 @@ export function AccountsPayable({ data }) {
     const [proveedorSeleccionado, setProveedorSeleccionado] = useState('');
     const [montoPrevisualizado, setMontoPrevisualizado] = useState(0);
     const [paymentMethod, setPaymentMethod] = useState('transferencia');
+    const [abonoPhoto, setAbonoPhoto] = useState(null);
+    const [detailTarget, setDetailTarget] = useState(null);
+    const [supportTarget, setSupportTarget] = useState(null);
+    const [supportSaving, setSupportSaving] = useState(false);
 
     const closeModalAbono = useCallback(() => {
         setShowModalAbono(false);
@@ -310,6 +517,7 @@ export function AccountsPayable({ data }) {
         setMontoAbono('');
         setMontoPrevisualizado(0);
         setPaymentMethod('transferencia');
+        setAbonoPhoto(null);
     }, []);
 
     useEffect(() => {
@@ -346,6 +554,9 @@ export function AccountsPayable({ data }) {
             const nuevaSecuencia = snap.empty ? 1 : (snap.docs[0].data().secuencia + 1);
             const abonoRef = doc(collection(db, 'abonos_pagar'));
             const gastoDiarioRef = paymentMethod === 'efectivo' ? doc(collection(db, 'gastosDiarios')) : null;
+            const supportPayload = abonoPhoto
+                ? await uploadInvoicePhoto(abonoPhoto, 'facturas/abonos_pagar', abonoRef.id)
+                : {};
 
             await runTransaction(db, async (transaction) => {
                 let restante = montoTotalAbono;
@@ -381,6 +592,7 @@ export function AccountsPayable({ data }) {
                     paymentMethod,
                     linkedGastoDiarioId: gastoDiarioRef?.id || null,
                     detalleAfectado: facturasAfectadas,
+                    ...supportPayload,
                     timestamp: Timestamp.now()
                 });
 
@@ -398,6 +610,7 @@ export function AccountsPayable({ data }) {
                         origen: 'abonos_pagar',
                         linkedAbonoId: abonoRef.id,
                         paymentMethod,
+                        ...supportPayload,
                         timestamp: Timestamp.now()
                     });
                 }
@@ -410,7 +623,7 @@ export function AccountsPayable({ data }) {
             isProcessingRef.current = false;
             setLoading(false);
         }
-    }, [closeModalAbono, montoAbono, paymentMethod, selectedFacturas, proveedorSeleccionado]);
+    }, [abonoPhoto, closeModalAbono, montoAbono, paymentMethod, selectedFacturas, proveedorSeleccionado]);
 
     const handleDeleteAbono = useCallback(async (abonoDoc) => {
         if (isProcessingRef.current) return;
@@ -470,6 +683,52 @@ export function AccountsPayable({ data }) {
             setLoading(false);
         }
     }, []);
+
+    const openAttachSupport = useCallback((record, type) => {
+        setSupportTarget({ record, type });
+    }, []);
+
+    const handleSaveSupport = useCallback(async (target, file) => {
+        if (!target?.record?.id || !file || supportSaving) return;
+
+        setSupportSaving(true);
+        try {
+            const isAbono = target.type === 'abono';
+            const collectionName = isAbono ? 'abonos_pagar' : 'cuentas_por_pagar';
+            const folder = isAbono ? 'facturas/abonos_pagar' : 'facturas/cuentas_por_pagar';
+            const supportPayload = await uploadInvoicePhoto(file, folder, target.record.id);
+            const sharedPayload = {
+                ...supportPayload,
+                supportSourceCollection: collectionName,
+                supportSourceDocId: target.record.id,
+                supportUpdatedAt: Timestamp.now(),
+            };
+            const batch = writeBatch(db);
+
+            batch.set(doc(db, collectionName, target.record.id), sharedPayload, { merge: true });
+
+            if (!isAbono && target.record.mirroredPurchaseId) {
+                batch.set(doc(db, 'compras', target.record.mirroredPurchaseId), sharedPayload, { merge: true });
+            }
+
+            if (isAbono && target.record.linkedGastoDiarioId) {
+                batch.set(doc(db, 'gastosDiarios', target.record.linkedGastoDiarioId), sharedPayload, { merge: true });
+            }
+
+            await batch.commit();
+            setDetailTarget(prev => (
+                prev?.record?.id === target.record.id && prev?.type === target.type
+                    ? { ...prev, record: { ...prev.record, ...sharedPayload } }
+                    : prev
+            ));
+            setSupportTarget(null);
+        } catch (error) {
+            console.error(error);
+            alert('No se pudo guardar el soporte: ' + error.message);
+        } finally {
+            setSupportSaving(false);
+        }
+    }, [supportSaving]);
 
     const handleAddProveedor = useCallback(async (e) => {
         e.preventDefault();
@@ -812,13 +1071,36 @@ export function AccountsPayable({ data }) {
                                                                     </Badge>
                                                                 </td>
                                                                 <td className="px-4 py-3 text-center">
-                                                                    <button
-                                                                        onClick={() => handleDeleteFactura(f)}
-                                                                        disabled={loading}
-                                                                        className="p-1.5 text-stone-300 hover:text-red-500 hover:bg-red-50 rounded-lg transition-all opacity-0 group-hover:opacity-100 disabled:opacity-20"
-                                                                    >
-                                                                        <Icon path={Icons.trash} className="w-3.5 h-3.5" />
-                                                                    </button>
+                                                                    <div className="flex items-center justify-end gap-1.5">
+                                                                        <button
+                                                                            onClick={() => setDetailTarget({ record: f, type: 'factura' })}
+                                                                            disabled={loading}
+                                                                            className={`inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[10px] font-bold uppercase transition disabled:opacity-20 ${
+                                                                                hasSupport(f)
+                                                                                    ? 'bg-emerald-50 text-emerald-700 hover:bg-emerald-100'
+                                                                                    : 'bg-amber-50 text-amber-700 hover:bg-amber-100'
+                                                                            }`}
+                                                                            title={hasSupport(f) ? 'Ver soporte' : 'Adjuntar soporte'}
+                                                                        >
+                                                                            <Icon path={Icons.eye} className="w-3.5 h-3.5" />
+                                                                            {hasSupport(f) ? 'Ver' : 'Soporte'}
+                                                                        </button>
+                                                                        <button
+                                                                            onClick={() => openAttachSupport(f, 'factura')}
+                                                                            disabled={loading}
+                                                                            className="p-1.5 text-slate-400 hover:text-emerald-600 hover:bg-emerald-50 rounded-lg transition-all disabled:opacity-20"
+                                                                            title="Adjuntar soporte"
+                                                                        >
+                                                                            <Icon path={Icons.upload} className="w-3.5 h-3.5" />
+                                                                        </button>
+                                                                        <button
+                                                                            onClick={() => handleDeleteFactura(f)}
+                                                                            disabled={loading}
+                                                                            className="p-1.5 text-stone-300 hover:text-red-500 hover:bg-red-50 rounded-lg transition-all opacity-0 group-hover:opacity-100 disabled:opacity-20"
+                                                                        >
+                                                                            <Icon path={Icons.trash} className="w-3.5 h-3.5" />
+                                                                        </button>
+                                                                    </div>
                                                                 </td>
                                                             </tr>
                                                         );
@@ -876,13 +1158,36 @@ export function AccountsPayable({ data }) {
                                                         </td>
                                                         <td className="px-4 py-3 text-right font-bold text-emerald-600">{fmt(a.montoTotal)}</td>
                                                         <td className="px-4 py-3 text-center">
-                                                            <button
-                                                                onClick={() => handleDeleteAbono(a)}
-                                                                disabled={loading}
-                                                                className="text-red-500 hover:text-red-700 font-semibold text-xs uppercase px-3 py-1 hover:bg-red-50 rounded-lg transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-                                                            >
-                                                                Anular
-                                                            </button>
+                                                            <div className="flex items-center justify-center gap-1.5">
+                                                                <button
+                                                                    onClick={() => setDetailTarget({ record: a, type: 'abono' })}
+                                                                    disabled={loading}
+                                                                    className={`inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[10px] font-bold uppercase transition disabled:opacity-20 ${
+                                                                        hasSupport(a)
+                                                                            ? 'bg-emerald-50 text-emerald-700 hover:bg-emerald-100'
+                                                                            : 'bg-amber-50 text-amber-700 hover:bg-amber-100'
+                                                                    }`}
+                                                                    title={hasSupport(a) ? 'Ver soporte' : 'Adjuntar soporte'}
+                                                                >
+                                                                    <Icon path={Icons.eye} className="w-3.5 h-3.5" />
+                                                                    {hasSupport(a) ? 'Ver' : 'Soporte'}
+                                                                </button>
+                                                                <button
+                                                                    onClick={() => openAttachSupport(a, 'abono')}
+                                                                    disabled={loading}
+                                                                    className="p-1.5 text-slate-400 hover:text-emerald-600 hover:bg-emerald-50 rounded-lg transition-all disabled:opacity-20"
+                                                                    title="Adjuntar soporte"
+                                                                >
+                                                                    <Icon path={Icons.upload} className="w-3.5 h-3.5" />
+                                                                </button>
+                                                                <button
+                                                                    onClick={() => handleDeleteAbono(a)}
+                                                                    disabled={loading}
+                                                                    className="text-red-500 hover:text-red-700 font-semibold text-xs uppercase px-3 py-1 hover:bg-red-50 rounded-lg transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                                                                >
+                                                                    Anular
+                                                                </button>
+                                                            </div>
                                                         </td>
                                                     </tr>
                                                 ))}
@@ -1096,6 +1401,23 @@ export function AccountsPayable({ data }) {
                                 </div>
 
                                 {/* Botones de acción */}
+                                <div className="mb-5 rounded-xl border border-stone-200 bg-stone-50 p-4">
+                                    <div className="flex items-start justify-between gap-3">
+                                        <div>
+                                            <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Soporte del abono</label>
+                                            <p className="mt-1 text-xs font-semibold text-slate-500">Comprobante de transferencia, recibo, foto o PDF.</p>
+                                        </div>
+                                        <Icon path={Icons.paperClip} className="h-5 w-5 text-slate-300" />
+                                    </div>
+                                    <input
+                                        type="file"
+                                        accept="image/*,.pdf"
+                                        onChange={e => setAbonoPhoto(e.target.files?.[0] || null)}
+                                        className="mt-3 block w-full text-xs text-slate-500 file:mr-3 file:rounded-lg file:border-0 file:bg-[#fff0f0] file:px-3 file:py-2 file:text-xs file:font-semibold file:text-[#a81d24]"
+                                    />
+                                    {abonoPhoto && <p className="mt-2 text-xs font-bold text-emerald-700">Archivo seleccionado: {abonoPhoto.name}</p>}
+                                </div>
+
                                 <div className="flex gap-2 pt-4 border-t border-stone-100">
                                     <Button variant="ghost" onClick={closeModalAbono} disabled={loading} className="flex-1">
                                         Cancelar
@@ -1117,6 +1439,24 @@ export function AccountsPayable({ data }) {
                             </div>
                         </div>
                     </div>
+                )}
+
+                {detailTarget && (
+                    <SupportPreviewModal
+                        record={detailTarget.record}
+                        type={detailTarget.type}
+                        onClose={() => setDetailTarget(null)}
+                        onAttach={openAttachSupport}
+                    />
+                )}
+
+                {supportTarget && (
+                    <AttachSupportModal
+                        target={supportTarget}
+                        loading={supportSaving}
+                        onClose={() => setSupportTarget(null)}
+                        onSave={handleSaveSupport}
+                    />
                 )}
             </div>
         </div>

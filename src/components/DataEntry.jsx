@@ -16,6 +16,10 @@ import {
     buildFiscalPayload,
     computeFiscalAmounts,
     computeRetentions,
+    getSupportPath,
+    getSupportUrl,
+    hasSupport,
+    isPdfSupportRecord,
     uploadInvoicePhoto,
 } from '../services/fiscalUtils';
 
@@ -228,12 +232,12 @@ const getRecordTitle = (item, fields) => {
     return item?.id ? `Registro ${item.id}` : 'Registro contable';
 };
 
-const isPdfSupport = (item) => String(item?.fotoFacturaPath || item?.fotoFacturaUrl || '').toLowerCase().includes('.pdf');
+const isPdfSupport = (item) => isPdfSupportRecord(item);
 
 const RecordDetailModal = ({ item, collectionName, fields, onClose, onEdit }) => {
     if (!item) return null;
 
-    const supportUrl = item.fotoFacturaUrl || '';
+    const supportUrl = getSupportUrl(item);
     const detailRows = Object.entries(fields).map(([key, field]) => ({
         key,
         label: field.label,
@@ -243,7 +247,7 @@ const RecordDetailModal = ({ item, collectionName, fields, onClose, onEdit }) =>
         ['ID', item.id],
         ['Origen', item.sourceLabel || item.source || item.sourceSystem],
         ['Referencia SICAR', item.sourceRecordId || item.sourceRawId || item.dailySaleCode],
-        ['Ruta soporte', item.fotoFacturaPath],
+        ['Ruta soporte', getSupportPath(item)],
     ].filter(([, value]) => value);
 
     return (
@@ -477,8 +481,8 @@ const EditRecordModal = ({ item, collectionName, fields, onClose, onSaved }) => 
                                     <div className="text-xs font-black uppercase tracking-[0.2em] text-[#7f1218]">Soporte / foto</div>
                                     <p className="text-xs font-semibold text-stone-500">Puedes adjuntar o reemplazar foto/PDF de factura o soporte.</p>
                                 </div>
-                                {item.fotoFacturaUrl && (
-                                    <a href={item.fotoFacturaUrl} target="_blank" rel="noreferrer" className="rounded-lg border border-[#a81d24] px-3 py-1.5 text-xs font-bold text-[#a81d24]">
+                                {getSupportUrl(item) && (
+                                    <a href={getSupportUrl(item)} target="_blank" rel="noreferrer" className="rounded-lg border border-[#a81d24] px-3 py-1.5 text-xs font-bold text-[#a81d24]">
                                         Ver soporte actual
                                     </a>
                                 )}
@@ -639,7 +643,7 @@ const EditableRow = ({ item, collectionName, fields, onUpdate, onDelete }) => {
                 </td>
             ))}
             <td className="py-2.5 px-3">
-                {item.fotoFacturaUrl ? (
+                {hasSupport(item) ? (
                     <Badge variant="success">Con soporte</Badge>
                 ) : (
                     <Badge>Sin soporte</Badge>
@@ -780,7 +784,7 @@ const EditableList = ({
 
     const hasData = filteredData && filteredData.length > 0;
     const filteredTotal = filteredData.reduce((sum, item) => sum + (Number(item.total ?? item.amount ?? item.monto ?? item.subtotal) || 0), 0);
-    const supportCount = filteredData.filter((item) => item.fotoFacturaUrl).length;
+    const supportCount = filteredData.filter((item) => hasSupport(item)).length;
     const activeAdvancedCount = Object.entries(advancedFilters || {})
         .filter(([key, value]) => !['dateFrom', 'dateTo'].includes(key) && value)
         .length;

@@ -21,7 +21,8 @@ const Icons = {
     cash: "M17 9V7a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2m2 4h10a2 2 0 002-2v-6a2 2 0 00-2-2H9a2 2 0 00-2 2v6a2 2 0 002 2zm7-5a2 2 0 11-4 0 2 2 0 014 0z",
     receipt: "M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01",
     trendingUp: "M13 7h8m0 0v8m0-8l-8-8-4 4-6-6",
-    trendingDown: "M13 17h8m0 0V9m0 8l-8-8-4 4-6-6"
+    trendingDown: "M13 17h8m0 0V9m0 8l-8-8-4 4-6-6",
+    bot: "M9.75 17L9 20l-1.5-3M14.25 17l.75 3 1.5-3M7 8h10M7 12h10m-5-9v2m-6 8a6 6 0 1112 0v3a2 2 0 01-2 2H8a2 2 0 01-2-2v-3z"
 };
 
 const Icon = ({ path, className = 'w-5 h-5' }) => (
@@ -233,6 +234,9 @@ export default function Header() {
                                         <NavLink to="/conciliacion" icon="check" active={isActive('/conciliacion')}>
                                             Conciliacion
                                         </NavLink>
+                                        <NavLink to="/agente-ia" icon="bot" active={isActive('/agente-ia')}>
+                                            Agente IA
+                                        </NavLink>
                                         <NavLink to="/reportes" icon="chart" active={isActive('/reportes')}>
                                             Reportes
                                         </NavLink>
@@ -369,6 +373,14 @@ export default function Header() {
                                         onClick={() => setIsMobileMenuOpen(false)}
                                     >
                                         Conciliacion
+                                    </NavLink>
+                                    <NavLink
+                                        to="/agente-ia"
+                                        icon="bot"
+                                        active={isActive('/agente-ia')}
+                                        onClick={() => setIsMobileMenuOpen(false)}
+                                    >
+                                        Agente IA
                                     </NavLink>
                                     <NavLink
                                         to="/reportes"

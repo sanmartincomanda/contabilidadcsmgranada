@@ -2,7 +2,7 @@
 
 Esta carpeta deja lista la integracion entre SICAR/MySQL y Firebase para `CARNES SAN MARTIN GRANADA`.
 
-Ahora existen tres flujos:
+Ahora existen cinco flujos:
 
 - `ingresos`
   - sincroniza ventas diarias a la coleccion `ingresos`
@@ -12,6 +12,15 @@ Ahora existen tres flujos:
 - `ventas_privadas`
   - toma ventas desde Firestore privado
   - despues las transforma a `ingresos`
+- `whatsapp_ai_inbox`
+  - recibe fotos/PDF desde WhatsApp Cloud API
+  - guarda el archivo una sola vez en Storage bajo `whatsapp/inbox/...`
+  - crea un documento en `whatsapp_ai_inbox` con `fotoFacturaUrl`, `fotoFacturaPath` y `support`
+  - los registros contables solo deben copiar esa referencia, no volver a subir la foto
+- `ai_fiscal_inbox`
+  - recibe soportes subidos desde el modulo `Agente IA`
+  - usa OpenAI Vision via Function segura para extraer datos fiscales
+  - crea borradores revisables, no registros definitivos
 
 ## Base privada de integracion
 
@@ -34,6 +43,63 @@ Cada documento queda con:
 - `targetDocIds`
 
 Esto sirve como capa oculta de staging para luego seguir trabajando la integracion sin tocar la operacion diaria.
+
+## Soportes desde WhatsApp
+
+El webhook `whatsappWebhook` queda preparado para recibir imagenes y documentos.
+
+Secrets requeridos:
+
+```powershell
+firebase functions:secrets:set WHATSAPP_VERIFY_TOKEN
+firebase functions:secrets:set WHATSAPP_ACCESS_TOKEN
+```
+
+Parametro opcional de Functions:
+
+```text
+WHATSAPP_GRAPH_VERSION
+```
+
+Contrato de soporte compartido:
+
+- el archivo original se guarda una sola vez en Firebase Storage
+- el documento de WhatsApp queda en `whatsapp_ai_inbox/{messageId}`
+- la transaccion contable guarda la misma URL/ruta en `fotoFacturaUrl`, `fotoFacturaPath` y `support`
+- si luego se confirma como cuenta por pagar, abono, gasto o compra, se copia la referencia, no el archivo
+
+## Agente IA dentro de la app
+
+El modulo `Agente IA` evita depender de WhatsApp al inicio.
+
+Funcion callable:
+
+```text
+fiscalAssistantChat
+```
+
+Secret requerido:
+
+```powershell
+firebase functions:secrets:set OPENAI_API_KEY
+```
+
+Parametro opcional:
+
+```text
+OPENAI_FISCAL_MODEL
+```
+
+Por costo, el valor por defecto del agente es `gpt-5-mini`. Si se necesita maxima precision para documentos dificiles, se puede cambiar el parametro a `gpt-5.5` sin tocar codigo.
+
+Flujo:
+
+- el navegador sube la foto/PDF a Storage
+- la Function recibe la URL del soporte y un mensaje del usuario
+- la Function resume datos contables de Firestore
+- OpenAI responde en JSON estructurado con respuesta conversacional y posible borrador fiscal
+- se guarda auditoria en `ai_fiscal_chats`
+- si hay soporte o borrador, se crea `ai_fiscal_inbox` para revision
 
 ## Tiempo real
 

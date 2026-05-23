@@ -61,6 +61,50 @@ export const computeRetentions = ({ subtotal = 0, retentionIr2 = 0, retentionMun
     };
 };
 
+export const buildSupportPayload = ({
+    url = '',
+    path = '',
+    source = 'manual',
+    sourceCollection = '',
+    sourceDocId = '',
+    fileName = '',
+    contentType = '',
+    uploadedAt = null,
+} = {}) => {
+    const safeUrl = url || '';
+    const safePath = path || '';
+
+    return {
+        fotoFacturaUrl: safeUrl,
+        fotoFacturaPath: safePath,
+        support: {
+            url: safeUrl,
+            path: safePath,
+            source,
+            sourceCollection,
+            sourceDocId,
+            fileName,
+            contentType,
+            uploadedAt: uploadedAt || new Date().toISOString(),
+        },
+    };
+};
+
+export const getSupportUrl = (item = {}) => (
+    item.fotoFacturaUrl || item.support?.url || item.media?.url || ''
+);
+
+export const getSupportPath = (item = {}) => (
+    item.fotoFacturaPath || item.support?.path || item.media?.path || ''
+);
+
+export const hasSupport = (item = {}) => Boolean(getSupportUrl(item));
+
+export const isPdfSupportRecord = (item = {}) => {
+    const source = `${getSupportPath(item)} ${getSupportUrl(item)} ${item.support?.contentType || item.media?.mimeType || ''}`.toLowerCase();
+    return source.includes('.pdf') || source.includes('application/pdf');
+};
+
 export const buildFiscalPayload = (values = {}) => {
     const fiscal = computeFiscalAmounts(values);
     const retentions = computeRetentions({
@@ -106,10 +150,7 @@ const sanitizeFileName = (fileName = 'soporte') => (
 
 export async function uploadInvoicePhoto(file, folder, docId) {
     if (!file) {
-        return {
-            fotoFacturaUrl: '',
-            fotoFacturaPath: '',
-        };
+        return buildSupportPayload();
     }
 
     if (file.size > MAX_INVOICE_FILE_SIZE_BYTES) {
@@ -153,10 +194,13 @@ export async function uploadInvoicePhoto(file, folder, docId) {
             );
         });
 
-        return {
-            fotoFacturaUrl: await getDownloadURL(snapshot.ref),
-            fotoFacturaPath: storagePath,
-        };
+        return buildSupportPayload({
+            url: await getDownloadURL(snapshot.ref),
+            path: storagePath,
+            source: 'manual',
+            fileName: file.name || '',
+            contentType: file.type || 'application/octet-stream',
+        });
     } catch (error) {
         throw new Error(getStorageErrorMessage(error));
     }
