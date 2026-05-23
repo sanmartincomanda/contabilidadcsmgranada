@@ -32,10 +32,24 @@ const Icon = ({ path, className = 'h-5 w-5' }) => (
 
 const quickPrompts = [
     'Analiza esta factura y dime que falta para registrarla.',
+    'Activa modo digitador para esta factura.',
     'Soy trabajador, guiame paso a paso para subir un gasto.',
     'Que cuentas por pagar estan vencidas?',
     'Cuanto vendimos este mes sin IVA?',
     'Dame un resumen facil para gerencia.',
+];
+
+const assistantModeOptions = [
+    {
+        id: 'chat',
+        label: 'Modo Chat',
+        description: 'Consulta, explica y ayuda paso a paso.',
+    },
+    {
+        id: 'digitizer',
+        label: 'Modo Digitador',
+        description: 'Lee facturas, aprende patrones y prepara registros.',
+    },
 ];
 
 const workerRoleOptions = [
@@ -68,11 +82,11 @@ const getWorkerRole = (roleId) => (
 const buildWelcomeMessage = () => ({
     id: 'welcome',
     role: 'assistant',
-    text: `Soy ${AGENT_NAME}. Puedo conversar contigo como asistente contable: si eres trabajador te guio paso a paso, si eres administracion te doy resumen y acciones. Tambien puedo leer facturas, pedirte lo que falte y preparar borradores revisables.`,
+    text: `Soy ${AGENT_NAME}. Puedo conversar contigo como asistente contable o trabajar en Modo Digitador para leer facturas, aprender proveedores y preparar registros cada vez con menos preguntas.`,
     quickReplies: [
         'Quiero subir una factura',
+        'Activar modo digitador',
         'Soy de caja, ayudame',
-        'Que pendientes hay hoy?',
     ],
 });
 
@@ -153,6 +167,10 @@ const deriveQuickReplies = (message = {}) => {
         return ['No trae numero', 'Lo escribo manual', 'Esta en la foto'];
     }
 
+    if (questionText.includes('digitador')) {
+        return ['Activar modo digitador', 'Auto-registro seguro', 'Solo preparar borrador'];
+    }
+
     return [];
 };
 
@@ -160,6 +178,13 @@ const inferClassificationFromReply = (text = '') => {
     const normalized = text.toLowerCase();
     if (normalized.includes('gasto')) return 'gasto';
     if (normalized.includes('compra')) return 'compra';
+    return '';
+};
+
+const inferModeFromReply = (text = '') => {
+    const normalized = text.toLowerCase();
+    if (normalized.includes('digitador')) return 'digitizer';
+    if (normalized.includes('chat')) return 'chat';
     return '';
 };
 
@@ -324,6 +349,8 @@ export default function AIAssistant({ floating = false }) {
     const [input, setInput] = useState('');
     const [supportFiles, setSupportFiles] = useState(createEmptySupportFilesState);
     const [classificationHint, setClassificationHint] = useState('auto');
+    const [assistantMode, setAssistantMode] = useState(() => localStorage.getItem('martinIA.assistantMode') || 'chat');
+    const [autoRegisterDigitizer, setAutoRegisterDigitizer] = useState(() => localStorage.getItem('martinIA.autoRegisterDigitizer') === 'true');
     const [workerRole, setWorkerRole] = useState(() => localStorage.getItem('martinIA.workerRole') || 'administracion');
     const [workerName, setWorkerName] = useState(() => localStorage.getItem('martinIA.workerName') || '');
     const [loading, setLoading] = useState(false);
@@ -360,6 +387,14 @@ export default function AIAssistant({ floating = false }) {
     useEffect(() => {
         localStorage.setItem('martinIA.workerName', workerName);
     }, [workerName]);
+
+    useEffect(() => {
+        localStorage.setItem('martinIA.assistantMode', assistantMode);
+    }, [assistantMode]);
+
+    useEffect(() => {
+        localStorage.setItem('martinIA.autoRegisterDigitizer', String(autoRegisterDigitizer));
+    }, [autoRegisterDigitizer]);
 
     const selectedSupportEntries = useMemo(() => (
         SUPPORT_FILE_TYPES
@@ -433,8 +468,18 @@ export default function AIAssistant({ floating = false }) {
                 : (options.reuseLastSupport ? reusableSupportFiles : []);
             const supportForRequest = support || (supportFilesForRequest[0] || null);
             const selectedClassification = classificationOptions.find((option) => option.id === hintForRequest);
+            const currentAssistantMode = options.assistantModeOverride || assistantMode;
+            const digitizerActive = currentAssistantMode === 'digitizer';
             const messageForAi = [
-                text || 'Analiza este soporte fiscal. Antes de crear el borrador, confirma si la factura lleva retenciones.',
+                text || (digitizerActive
+                    ? 'MODO DIGITADOR: lee esta factura, extrae los campos y prepara el registro contable.'
+                    : 'Analiza este soporte fiscal. Antes de crear el borrador, confirma si la factura lleva retenciones.'),
+                digitizerActive
+                    ? 'MODO DIGITADOR ACTIVO: actua como digitador experto. Prioriza OCR fiscal, aprende proveedor, clasifica gasto/compra, completa campos y pregunta solo lo indispensable.'
+                    : '',
+                digitizerActive && autoRegisterDigitizer
+                    ? 'Auto-registro seguro solicitado: solo registrar automaticamente si todos los campos estan completos, la confianza es muy alta y no hay preguntas pendientes.'
+                    : '',
                 (hasSelectedSupport || options.reuseLastSupport) && selectedClassification
                     ? `Clasificacion indicada por el usuario: ${selectedClassification.label}. Si esta clasificacion no coincide con la factura, pregunta antes de crear un borrador definitivo.`
                     : '',
@@ -453,6 +498,8 @@ export default function AIAssistant({ floating = false }) {
                     role: 'user',
                     text: [
                         text || 'Analiza este soporte fiscal.',
+                        digitizerActive ? 'Modo: Digitador' : '',
+                        digitizerActive && autoRegisterDigitizer ? 'Auto-registro seguro: activo' : '',
                         (hasSelectedSupport || options.reuseLastSupport) && selectedClassification ? `Tipo: ${selectedClassification.label}` : '',
                         uploadedSupportFiles.length ? `Soportes adjuntos: ${uploadedSupportFiles.map((item) => item.label).join(', ')}` : '',
                     ].filter(Boolean).join('\n'),
@@ -469,6 +516,10 @@ export default function AIAssistant({ floating = false }) {
                 classificationHint: hintForRequest,
                 support: supportForRequest,
                 supportFiles: supportFilesForRequest,
+                digitizerOptions: {
+                    mode: currentAssistantMode,
+                    autoRegister: digitizerActive && autoRegisterDigitizer,
+                },
                 conversationHistory: recentConversation,
                 workerProfile: {
                     name: workerName.trim(),
@@ -478,12 +529,18 @@ export default function AIAssistant({ floating = false }) {
                 },
             });
             const result = response.data?.result || {};
+            const autoRegistration = response.data?.autoRegistration || null;
+            const autoRegisterText = autoRegistration?.confirmed
+                ? `\n\nAuto-registro seguro completado en ${autoRegistration.targetCollection || 'el sistema'}.`
+                : autoRegistration?.attempted && autoRegistration.blockers?.length
+                    ? `\n\nAuto-registro seguro no se ejecuto todavia: ${autoRegistration.blockers.join('; ')}.`
+                    : '';
             setMessages((prev) => [
                 ...prev,
                 {
                     id: `a_${Date.now()}`,
                     role: 'assistant',
-                    text: result.reply || 'Listo, procese tu solicitud.',
+                    text: `${result.reply || 'Listo, procese tu solicitud.'}${autoRegisterText}`,
                     draft: result.suggestedDraft || emptyDraft,
                     warnings: result.warnings || [],
                     followUpQuestions: result.followUpQuestions || [],
@@ -531,9 +588,13 @@ export default function AIAssistant({ floating = false }) {
 
     const handleQuickReply = (reply) => {
         const classification = inferClassificationFromReply(reply);
+        const mode = inferModeFromReply(reply);
+        if (mode) setAssistantMode(mode);
+        if (reply.toLowerCase().includes('auto-registro')) setAutoRegisterDigitizer(true);
         handleSend(reply, {
             reuseLastSupport: true,
             classificationHintOverride: classification || classificationHint,
+            assistantModeOverride: mode || assistantMode,
         });
     };
 
@@ -569,6 +630,47 @@ export default function AIAssistant({ floating = false }) {
                     <span>{actionMessage}</span>
                 </div>
             )}
+            <div className="mb-3 rounded-2xl border border-[#ead5c5] bg-[#fffaf6] p-3">
+                <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                        <div className="text-[10px] font-black uppercase tracking-[0.22em] text-[#7f1218]">Modo MARTIN IA</div>
+                        {!compact && <p className="text-xs font-semibold text-stone-500">Usa digitador cuando solo quieras subir facturas y que aprenda patrones.</p>}
+                    </div>
+                    {assistantMode === 'digitizer' && (
+                        <label className="flex cursor-pointer items-center gap-2 rounded-xl border border-[#ead5c5] bg-white px-3 py-2 text-[11px] font-black text-[#7f1218]">
+                            <input
+                                type="checkbox"
+                                checked={autoRegisterDigitizer}
+                                onChange={(event) => setAutoRegisterDigitizer(event.target.checked)}
+                                className="h-4 w-4 accent-[#a81d24]"
+                            />
+                            Auto-registro seguro
+                        </label>
+                    )}
+                </div>
+                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                    {assistantModeOptions.map((mode) => (
+                        <button
+                            key={mode.id}
+                            type="button"
+                            onClick={() => setAssistantMode(mode.id)}
+                            className={`rounded-2xl border px-4 py-3 text-left transition ${
+                                assistantMode === mode.id
+                                    ? 'border-[#a81d24] bg-[#a81d24] text-white shadow-lg shadow-[#a81d24]/15'
+                                    : 'border-[#ead5c5] bg-white text-[#4b1b1f] hover:bg-[#fff0c8]'
+                            }`}
+                        >
+                            <span className="block text-xs font-black uppercase tracking-[0.2em]">{mode.label}</span>
+                            {!compact && <span className="mt-1 block text-xs font-semibold opacity-75">{mode.description}</span>}
+                        </button>
+                    ))}
+                </div>
+                {assistantMode === 'digitizer' && (
+                    <div className="mt-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-bold text-amber-900">
+                        Digitador aprende por proveedor. Para auto-registrar exige confianza alta, datos completos y retenciones claras o aprendidas.
+                    </div>
+                )}
+            </div>
             <div className="mb-3 rounded-2xl border border-[#ead5c5] bg-[#fffaf6] p-3">
                 <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
                     <div>
@@ -735,7 +837,7 @@ export default function AIAssistant({ floating = false }) {
                                     </div>
                                     <div>
                                         <div className="text-[10px] font-black uppercase tracking-[0.28em] text-[#f2b635]">{AGENT_NAME}</div>
-                                        <div className="text-sm font-black">Agente contable fiscal</div>
+                        <div className="text-sm font-black">{assistantMode === 'digitizer' ? 'Modo Digitador' : 'Agente contable fiscal'}</div>
                                     </div>
                                 </div>
                                 <button
@@ -785,7 +887,7 @@ export default function AIAssistant({ floating = false }) {
                     </span>
                     <span className="hidden pr-2 text-left sm:block">
                         <span className="block text-[10px] font-black uppercase tracking-[0.25em] text-[#f2b635]">Abrir chat</span>
-                        <span className="block text-sm font-black">{AGENT_NAME}</span>
+                        <span className="block text-sm font-black">{assistantMode === 'digitizer' ? 'MARTIN Digitador' : AGENT_NAME}</span>
                     </span>
                 </button>
             </div>
@@ -810,15 +912,21 @@ export default function AIAssistant({ floating = false }) {
                                 </div>
                                 <div>
                                     <div className="text-xs font-black uppercase tracking-[0.35em] text-[#f2b635]">{AGENT_NAME}</div>
-                                    <h1 className="mt-1 text-2xl font-black">Agente contable conversacional</h1>
+                                    <h1 className="mt-1 text-2xl font-black">{assistantMode === 'digitizer' ? 'Modo Digitador de facturas' : 'Agente contable conversacional'}</h1>
                                     <p className="mt-1 max-w-2xl text-sm font-semibold text-white/75">
-                                        Pregunta por tus datos, sube soportes y genera borradores revisables sin tocar WhatsApp.
+                                        {assistantMode === 'digitizer'
+                                            ? 'Sube facturas, retenciones y soportes para que MARTIN IA lea, aprenda y prepare el registro contable.'
+                                            : 'Pregunta por tus datos, sube soportes y genera borradores revisables sin tocar WhatsApp.'}
                                     </p>
                                 </div>
                             </div>
                             <div className="rounded-2xl border border-white/15 bg-white/10 px-4 py-3 text-right backdrop-blur">
-                                <div className="text-[10px] font-black uppercase tracking-[0.25em] text-[#f8d8c8]">Modo seguro</div>
-                                <div className="text-sm font-black">Siempre revisas antes de guardar</div>
+                                <div className="text-[10px] font-black uppercase tracking-[0.25em] text-[#f8d8c8]">
+                                    {autoRegisterDigitizer && assistantMode === 'digitizer' ? 'Auto seguro' : 'Modo seguro'}
+                                </div>
+                                <div className="text-sm font-black">
+                                    {autoRegisterDigitizer && assistantMode === 'digitizer' ? 'Solo si pasa controles' : 'Siempre revisas antes de guardar'}
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -916,9 +1024,10 @@ export default function AIAssistant({ floating = false }) {
                     <div className="rounded-[2rem] border border-[#ead5c5] bg-[#2b1113] p-5 text-white shadow-xl shadow-[#2b1113]/15">
                         <div className="mb-2 text-xs font-black uppercase tracking-[0.25em] text-[#f2b635]">Como usarlo</div>
                         <div className="space-y-3 text-sm font-semibold text-white/75">
-                            <p>1. Sube foto/PDF de factura o recibo.</p>
-                            <p>2. Pide que lo analice o pregunta por tus datos.</p>
-                            <p>3. Revisa el borrador antes de registrarlo oficialmente.</p>
+                            <p>1. Activa Modo Digitador para facturas.</p>
+                            <p>2. Sube factura y retenciones si existen.</p>
+                            <p>3. MARTIN IA aprende proveedor, categoria, pago y retenciones.</p>
+                            <p>4. Auto-registro seguro solo corre si todo viene claro.</p>
                         </div>
                     </div>
                 </aside>

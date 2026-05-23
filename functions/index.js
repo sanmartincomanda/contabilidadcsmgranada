@@ -2388,6 +2388,7 @@ function buildSupplierLearningProfiles({ gastos = [], compras = [], cuentasPorPa
       contadoCount: 0,
       categories: {},
       paymentMethods: {},
+      retentionModes: {},
       lastInvoiceNumber: '',
       lastSeenAt: '',
     };
@@ -2404,6 +2405,16 @@ function buildSupplierLearningProfiles({ gastos = [], compras = [], cuentasPorPa
       const paymentMethod = normalizeText(patch.paymentMethod);
       existing.paymentMethods[paymentMethod] = (existing.paymentMethods[paymentMethod] || 0) + 1;
     }
+    const ir = normalizeAmount(patch.retentionIr2);
+    const municipal = normalizeAmount(patch.retentionMunicipal1);
+    const retentionMode = ir > 0 && municipal > 0
+      ? 'both'
+      : ir > 0
+        ? 'ir2'
+        : municipal > 0
+          ? 'municipal1'
+          : 'none';
+    existing.retentionModes[retentionMode] = (existing.retentionModes[retentionMode] || 0) + 1;
     if (patch.invoiceNumber) existing.lastInvoiceNumber = normalizeText(patch.invoiceNumber);
     if (patch.lastSeenAt && (!existing.lastSeenAt || patch.lastSeenAt > existing.lastSeenAt)) {
       existing.lastSeenAt = patch.lastSeenAt;
@@ -2418,6 +2429,8 @@ function buildSupplierLearningProfiles({ gastos = [], compras = [], cuentasPorPa
       credit: profile.credit,
       category: profile.category,
       paymentMethod: profile.paymentMethod,
+      retentionIr2: profile.retentionIr2,
+      retentionMunicipal1: profile.retentionMunicipal1,
       invoiceNumber: profile.lastInvoiceNumber,
       lastSeenAt: profile.lastSeenAt,
     });
@@ -2428,6 +2441,8 @@ function buildSupplierLearningProfiles({ gastos = [], compras = [], cuentasPorPa
     credit: Boolean(item.linkedPayableId || normalizeComparableText(item.paymentType).includes('credito')),
     category: item.category || item.categoria,
     paymentMethod: item.paymentType || item.paymentMethod,
+    retentionIr2: item.retentionIr2,
+    retentionMunicipal1: item.retentionMunicipal1,
     invoiceNumber: item.invoiceNumber || item.factura,
     lastSeenAt: item.date || item.fecha || '',
   }));
@@ -2437,6 +2452,8 @@ function buildSupplierLearningProfiles({ gastos = [], compras = [], cuentasPorPa
     credit: Boolean(item.linkedPayableId || normalizeComparableText(item.paymentType).includes('credito')),
     category: item.category || item.categoria,
     paymentMethod: item.paymentType || item.paymentMethod,
+    retentionIr2: item.retentionIr2,
+    retentionMunicipal1: item.retentionMunicipal1,
     invoiceNumber: item.invoiceNumber || item.factura,
     lastSeenAt: item.date || item.fecha || '',
   }));
@@ -2446,6 +2463,8 @@ function buildSupplierLearningProfiles({ gastos = [], compras = [], cuentasPorPa
     credit: true,
     category: item.category || item.categoria,
     paymentMethod: 'credito',
+    retentionIr2: item.retentionIr2,
+    retentionMunicipal1: item.retentionMunicipal1,
     invoiceNumber: item.numero || item.factura || item.invoiceNumber,
     lastSeenAt: item.fecha || item.date || '',
   }));
@@ -2462,6 +2481,8 @@ function buildSupplierLearningProfiles({ gastos = [], compras = [], cuentasPorPa
       usualCredit: profile.creditCount > profile.contadoCount,
       usualCategory: mostUsed(profile.categories),
       usualPaymentMethod: mostUsed(profile.paymentMethods),
+      usualRetentionMode: mostUsed(profile.retentionModes),
+      retentionConfidence: normalizeAmount((profile.retentionModes[mostUsed(profile.retentionModes)] || 0) / Math.max(profile.compraCount + profile.gastoCount, 1)),
       lastInvoiceNumber: profile.lastInvoiceNumber,
       evidenceCount: profile.compraCount + profile.gastoCount,
       lastSeenAt: profile.lastSeenAt,
@@ -2644,6 +2665,14 @@ function normalizeClassificationHint(value) {
   const hint = normalizeComparableText(value);
   if (hint === 'gasto' || hint === 'compra') return hint;
   return 'auto';
+}
+
+function normalizeDigitizerOptions(value = {}) {
+  const mode = normalizeComparableText(value.mode) === 'digitizer' ? 'digitizer' : 'chat';
+  return {
+    mode,
+    autoRegister: mode === 'digitizer' && normalizeBoolean(value.autoRegister),
+  };
 }
 
 function sanitizeConversationHistory(value) {
@@ -2882,6 +2911,7 @@ async function callOpenAIFiscalAssistant({
   supportFiles = [],
   context,
   classificationHint = 'auto',
+  digitizerOptions = {},
   conversationHistory = [],
   workerProfile = {},
 }) {
@@ -2891,6 +2921,7 @@ async function callOpenAIFiscalAssistant({
   }
 
   const hint = normalizeClassificationHint(classificationHint);
+  const safeDigitizerOptions = normalizeDigitizerOptions(digitizerOptions);
   const safeConversationHistory = sanitizeConversationHistory(conversationHistory);
   const safeWorkerProfile = normalizeWorkerProfile(workerProfile);
   const safeSupportFiles = sanitizeAiSupportFiles(supportFiles, support);
@@ -2898,7 +2929,7 @@ async function callOpenAIFiscalAssistant({
   const hasRetentionSupport = safeSupportFiles.some((file) => ['retentionIr2', 'retentionMunicipal1'].includes(file.type));
   const safeFallbackResult = {
     reply: hasSupport
-      ? 'Ya guarde el soporte en la bandeja de MARTIN IA, pero necesito confirmar un dato fiscal antes de armar el borrador. ¿Esta factura lleva retencion de anticipo IR 2%, retencion municipal 1%, ambas o ninguna?'
+      ? `${safeDigitizerOptions.mode === 'digitizer' ? 'Modo Digitador activo. ' : ''}Ya guarde el soporte en la bandeja de MARTIN IA, pero necesito confirmar un dato fiscal antes de armar el borrador. ¿Esta factura lleva retencion de anticipo IR 2%, retencion municipal 1%, ambas o ninguna?`
       : 'Te escucho. Decime que necesitas revisar o adjunta una factura para analizarla.',
     intent: hasSupport ? 'request_more_info' : 'answer_question',
     confidence: 0.35,
@@ -2916,6 +2947,18 @@ async function callOpenAIFiscalAssistant({
       text: [
         'Eres el Agente IA Fiscal de Carnes San Martin Granada.',
         'Tu nombre es MARTIN IA. Actua como un companero contable de confianza, paciente, conversacional y practico.',
+        safeDigitizerOptions.mode === 'digitizer'
+          ? 'MODO DIGITADOR ACTIVO: tu prioridad es leer facturas y soportes como digitador experto, extraer campos contables, aprender patrones y dejar un borrador listo.'
+          : 'MODO CHAT ACTIVO: ayuda con consultas, explicaciones y borradores cuando el usuario lo pida.',
+        safeDigitizerOptions.mode === 'digitizer'
+          ? 'En Modo Digitador debes revisar: fecha, proveedor, numero de factura, subtotal, IVA, total, retenciones, tipo gasto/compra, credito/contado, metodo de pago, categoria y descripcion.'
+          : '',
+        safeDigitizerOptions.mode === 'digitizer'
+          ? 'En Modo Digitador pregunta solo lo que bloquea el registro. Si algo puede inferirse por learning.supplierProfiles con alta confianza, usalo y menciona que lo aprendiste.'
+          : '',
+        safeDigitizerOptions.autoRegister
+          ? 'El usuario activo Auto-registro seguro. Aun asi, solo propone borrador confirmable si estas muy seguro y no hay preguntas pendientes.'
+          : '',
         'Responde en espanol claro, natural y cercano. No suenes como formulario ni como robot.',
         'Relacionate bien con trabajadores: explica sin reganar, guia paso a paso y confirma antes de asumir.',
         'Si habla caja o bodega, usa instrucciones cortas. Si habla contabilidad, da detalle fiscal. Si habla administracion, resume con acciones.',
@@ -2947,6 +2990,7 @@ async function callOpenAIFiscalAssistant({
         'quickReplies debe traer 2 a 4 respuestas cortas y utiles cuando convenga, por ejemplo: "Es gasto", "Es compra", "Es credito", "Es contado". Si no aplica, usa [].',
         `Hay soporte adjunto: ${hasSupport ? 'si' : 'no'}.`,
         `Hay comprobante de retencion adjunto: ${hasRetentionSupport ? 'si' : 'no'}.`,
+        `Opciones digitador JSON: ${JSON.stringify(safeDigitizerOptions)}.`,
         `Soportes adjuntos JSON: ${JSON.stringify(safeSupportFiles.map((file) => ({
           type: file.type,
           label: file.label,
@@ -3020,6 +3064,7 @@ exports.fiscalAssistantChat = onCall(FISCAL_ASSISTANT_FUNCTION_OPTIONS, async (r
   const support = request.data?.support || null;
   const supportFiles = sanitizeAiSupportFiles(request.data?.supportFiles, support);
   const classificationHint = normalizeClassificationHint(request.data?.classificationHint);
+  const digitizerOptions = normalizeDigitizerOptions(request.data?.digitizerOptions || {});
   const conversationHistory = sanitizeConversationHistory(request.data?.conversationHistory);
   const workerProfile = normalizeWorkerProfile(request.data?.workerProfile || {});
 
@@ -3034,6 +3079,7 @@ exports.fiscalAssistantChat = onCall(FISCAL_ASSISTANT_FUNCTION_OPTIONS, async (r
     supportFiles,
     context,
     classificationHint,
+    digitizerOptions,
     conversationHistory,
     workerProfile,
   });
@@ -3042,6 +3088,7 @@ exports.fiscalAssistantChat = onCall(FISCAL_ASSISTANT_FUNCTION_OPTIONS, async (r
     actorEmail,
     message,
     classificationHint,
+    digitizerOptions,
     workerProfile,
     conversationHistory,
     support: support || null,
@@ -3051,15 +3098,25 @@ exports.fiscalAssistantChat = onCall(FISCAL_ASSISTANT_FUNCTION_OPTIONS, async (r
     createdAt: FieldValue.serverTimestamp(),
   });
 
+  let draftId = '';
+  let autoRegistration = {
+    attempted: false,
+    confirmed: false,
+    blockers: [],
+  };
+
   if (supportFiles.length > 0 || aiResult?.suggestedDraft?.targetType !== 'none') {
     const primarySupport = supportFiles[0] || support || null;
-    await firestore.collection('ai_fiscal_inbox').add({
+    const inboxRef = firestore.collection('ai_fiscal_inbox').doc();
+    draftId = inboxRef.id;
+    const inboxPayload = {
       actorEmail,
       source: primarySupport?.source || 'app_chat',
       status: 'draft',
       aiStatus: 'review_required',
       userMessage: message,
       classificationHint,
+      digitizerOptions,
       workerProfile,
       support: primarySupport,
       supportFiles,
@@ -3071,12 +3128,68 @@ exports.fiscalAssistantChat = onCall(FISCAL_ASSISTANT_FUNCTION_OPTIONS, async (r
       chatId: chatRef.id,
       createdAt: FieldValue.serverTimestamp(),
       updatedAt: FieldValue.serverTimestamp(),
-    });
+    };
+
+    await inboxRef.set(inboxPayload);
+
+    if (digitizerOptions.mode === 'digitizer' && digitizerOptions.autoRegister) {
+      const blockers = getDigitizerAutoRegisterBlockers({
+        aiResult,
+        digitizerOptions,
+        supportFiles,
+        message,
+        conversationHistory,
+        context,
+      });
+
+      autoRegistration = {
+        attempted: true,
+        confirmed: false,
+        blockers,
+      };
+
+      if (blockers.length === 0) {
+        try {
+          const confirmation = await confirmFiscalAssistantDraftInternal({
+            actorEmail,
+            draftId,
+            overrides: {},
+          });
+          autoRegistration = {
+            attempted: true,
+            confirmed: true,
+            blockers: [],
+            targetCollection: confirmation.targetCollection || '',
+            targetDocIds: confirmation.targetDocIds || {},
+          };
+          await inboxRef.set({
+            digitizerAutoRegistered: true,
+            digitizerAutoRegisteredAt: FieldValue.serverTimestamp(),
+          }, { merge: true });
+        } catch (error) {
+          logger.warn('Auto-registro digitador no pudo confirmarse', {
+            draftId,
+            message: error.message,
+          });
+          autoRegistration = {
+            attempted: true,
+            confirmed: false,
+            blockers: [error.message || 'No se pudo confirmar automaticamente'],
+          };
+          await inboxRef.set({
+            digitizerAutoRegisterError: error.message || 'No se pudo confirmar automaticamente',
+            updatedAt: FieldValue.serverTimestamp(),
+          }, { merge: true });
+        }
+      }
+    }
   }
 
   return {
     ok: true,
     chatId: chatRef.id,
+    draftId,
+    autoRegistration,
     result: aiResult,
   };
 });
@@ -3145,6 +3258,81 @@ function buildAiCommonPayload({ inbox, draftId, actorEmail }) {
   };
 }
 
+function findSupplierProfileForDraft(context = {}, draft = {}) {
+  const supplierKey = normalizeComparableText(draft.supplier || draft.payableProvider);
+  if (!supplierKey) return null;
+
+  return (context.learning?.supplierProfiles || []).find((profile) => {
+    const profileKey = normalizeComparableText(profile.supplier);
+    return profileKey && (profileKey === supplierKey || profileKey.includes(supplierKey) || supplierKey.includes(profileKey));
+  }) || null;
+}
+
+function getRetentionIntentText(message = '', conversationHistory = []) {
+  return normalizeComparableText([
+    message,
+    ...conversationHistory.map((entry) => entry?.text || ''),
+    ...conversationHistory.flatMap((entry) => entry?.quickReplies || []),
+  ].join(' '));
+}
+
+function getDigitizerAutoRegisterBlockers({
+  aiResult = {},
+  digitizerOptions = {},
+  supportFiles = [],
+  message = '',
+  conversationHistory = [],
+  context = {},
+}) {
+  const options = normalizeDigitizerOptions(digitizerOptions);
+  const draft = aiResult.suggestedDraft || {};
+  const blockers = [];
+  const targetType = normalizeText(draft.targetType);
+  const allowedTargets = new Set(['gasto_credito', 'gasto_contado', 'compra_credito', 'compra_contado']);
+  const fiscal = buildAiFiscalNumbers(draft);
+  const confidence = Number(aiResult.confidence || 0);
+  const date = normalizeDate(draft.date);
+  const supplier = cleanAiText(draft.supplier || draft.payableProvider);
+  const invoiceNumber = cleanAiText(draft.invoiceNumber || draft.payableInvoiceNumber);
+  const retentionText = getRetentionIntentText(message, conversationHistory);
+  const hasRetentionSupport = supportFiles.some((file) => ['retentionIr2', 'retentionMunicipal1'].includes(file.type));
+  const profile = findSupplierProfileForDraft(context, draft);
+  const learnedNoRetention = profile?.usualRetentionMode === 'none'
+    && normalizeAmount(profile.retentionConfidence) >= 0.85
+    && normalizeAmount(profile.evidenceCount) >= 3;
+  const compactRetentionText = retentionText.replace(/\s+/g, '');
+  const userConfirmedNoRetention = compactRetentionText.includes('notieneretenciones')
+    || compactRetentionText.includes('sinretencion')
+    || retentionText.includes('ninguna');
+  const userConfirmedRetention = compactRetentionText.includes('soloir2')
+    || compactRetentionText.includes('solomunicipal')
+    || compactRetentionText.includes('ambasretenciones')
+    || retentionText.includes('retencion');
+
+  if (options.mode !== 'digitizer') blockers.push('Modo Digitador no esta activo');
+  if (!options.autoRegister) blockers.push('Auto-registro seguro esta apagado');
+  if (!supportFiles.length) blockers.push('No hay foto/PDF de soporte');
+  if (!allowedTargets.has(targetType)) blockers.push('La IA no propuso gasto o compra confirmable');
+  if (confidence < 0.9) blockers.push('Confianza menor a 90%');
+  if ((aiResult.warnings || []).length) blockers.push('Hay alertas pendientes');
+  if ((aiResult.followUpQuestions || []).length) blockers.push('Hay preguntas pendientes');
+  if (!DATE_REGEX.test(date)) blockers.push('Falta fecha valida');
+  if (!supplier) blockers.push('Falta proveedor');
+  if (!invoiceNumber) blockers.push('Falta numero de factura');
+  if (fiscal.total <= 0 || fiscal.subtotal <= 0) blockers.push('Faltan montos validos');
+  if (!cleanAiText(draft.paymentMethod) && !targetType.includes('credito')) blockers.push('Falta metodo de pago');
+
+  if (fiscal.retentionTotal <= 0 && !userConfirmedNoRetention && !learnedNoRetention && !hasRetentionSupport) {
+    blockers.push('Retenciones no confirmadas ni aprendidas');
+  }
+
+  if (fiscal.retentionTotal > 0 && !hasRetentionSupport && !userConfirmedRetention) {
+    blockers.push('La retencion tiene monto, pero falta soporte o confirmacion');
+  }
+
+  return blockers;
+}
+
 async function rememberAiFiscalLearning({ draft, kind, credit, targetCollection, targetDocIds, actorEmail }) {
   const supplier = cleanAiText(draft.supplier || draft.payableProvider || '').toUpperCase();
   const supplierKey = normalizeComparableText(supplier);
@@ -3158,6 +3346,8 @@ async function rememberAiFiscalLearning({ draft, kind, credit, targetCollection,
     targetCollection,
     category: cleanAiText(draft.category || ''),
     paymentMethod: cleanAiText(draft.paymentMethod || (credit ? 'credito' : '')),
+    retentionIr2: normalizeAmount(draft.retentionIr2),
+    retentionMunicipal1: normalizeAmount(draft.retentionMunicipal1),
     lastInvoiceNumber: cleanAiText(draft.invoiceNumber || draft.payableInvoiceNumber || ''),
     lastDescription: cleanAiText(draft.description || ''),
     lastTargetDocIds: targetDocIds || {},
@@ -3469,11 +3659,7 @@ async function confirmAiAbono({ inboxRef, inbox, draftId, draft, actorEmail }) {
   };
 }
 
-exports.confirmFiscalAssistantDraft = onCall(BASE_FUNCTION_OPTIONS, async (request) => {
-  const actorEmail = ensureAdminUser(request.auth, 'confirmar borradores del agente IA');
-  const draftId = normalizeText(request.data?.draftId);
-  const overrides = request.data?.overrides || {};
-
+async function confirmFiscalAssistantDraftInternal({ actorEmail, draftId, overrides = {} }) {
   if (!draftId) {
     throw new HttpsError('invalid-argument', 'Falta draftId.');
   }
@@ -3519,6 +3705,14 @@ exports.confirmFiscalAssistantDraft = onCall(BASE_FUNCTION_OPTIONS, async (reque
     default:
       throw new HttpsError('failed-precondition', 'La IA no propuso un tipo de registro confirmable.');
   }
+}
+
+exports.confirmFiscalAssistantDraft = onCall(BASE_FUNCTION_OPTIONS, async (request) => {
+  const actorEmail = ensureAdminUser(request.auth, 'confirmar borradores del agente IA');
+  const draftId = normalizeText(request.data?.draftId);
+  const overrides = request.data?.overrides || {};
+
+  return confirmFiscalAssistantDraftInternal({ actorEmail, draftId, overrides });
 });
 
 exports.rejectFiscalAssistantDraft = onCall(BASE_FUNCTION_OPTIONS, async (request) => {
