@@ -4,6 +4,17 @@ import { storage } from '../firebase';
 const MAX_INVOICE_FILE_SIZE_BYTES = 10 * 1024 * 1024;
 const INVOICE_UPLOAD_TIMEOUT_MS = 60000;
 
+export const SUPPORT_FILE_TYPES = [
+    { key: 'invoice', label: 'Factura / soporte principal' },
+    { key: 'retentionIr2', label: 'Retencion anticipo IR 2%' },
+    { key: 'retentionMunicipal1', label: 'Retencion municipal 1%' },
+];
+
+const SUPPORT_FILE_LABELS = SUPPORT_FILE_TYPES.reduce((acc, item) => {
+    acc[item.key] = item.label;
+    return acc;
+}, {});
+
 export const PAYMENT_METHODS = [
     'BAC POS',
     'Banpro POS',
@@ -70,38 +81,105 @@ export const buildSupportPayload = ({
     fileName = '',
     contentType = '',
     uploadedAt = null,
+    type = 'invoice',
+    label = '',
 } = {}) => {
     const safeUrl = url || '';
     const safePath = path || '';
+    const support = {
+        type,
+        label: label || SUPPORT_FILE_LABELS[type] || 'Soporte fiscal',
+        url: safeUrl,
+        path: safePath,
+        source,
+        sourceCollection,
+        sourceDocId,
+        fileName,
+        contentType,
+        uploadedAt: uploadedAt || new Date().toISOString(),
+    };
 
     return {
         fotoFacturaUrl: safeUrl,
         fotoFacturaPath: safePath,
-        support: {
-            url: safeUrl,
-            path: safePath,
-            source,
-            sourceCollection,
-            sourceDocId,
-            fileName,
-            contentType,
-            uploadedAt: uploadedAt || new Date().toISOString(),
-        },
+        support,
+        supportFiles: safeUrl || safePath ? [support] : [],
+    };
+};
+
+const normalizeSupportFile = (file = {}, fallbackType = 'invoice') => {
+    const type = file.type || fallbackType;
+    const url = file.url || file.fotoFacturaUrl || file.media?.url || '';
+    const path = file.path || file.fotoFacturaPath || file.media?.path || '';
+
+    return {
+        type,
+        label: file.label || SUPPORT_FILE_LABELS[type] || 'Soporte fiscal',
+        url,
+        path,
+        source: file.source || 'manual',
+        sourceCollection: file.sourceCollection || '',
+        sourceDocId: file.sourceDocId || '',
+        fileName: file.fileName || file.name || '',
+        contentType: file.contentType || file.mimeType || file.media?.mimeType || '',
+        uploadedAt: file.uploadedAt || null,
+    };
+};
+
+export const getSupportFiles = (item = {}) => {
+    const files = [];
+
+    if (Array.isArray(item.supportFiles)) {
+        item.supportFiles.forEach((file) => files.push(normalizeSupportFile(file)));
+    }
+
+    const legacy = normalizeSupportFile({
+        ...(item.support || item.media || {}),
+        url: item.fotoFacturaUrl || item.support?.url || item.media?.url,
+        path: item.fotoFacturaPath || item.support?.path || item.media?.path,
+    });
+
+    if (legacy.url || legacy.path) {
+        const alreadyExists = files.some((file) => (
+            (legacy.path && file.path === legacy.path) || (legacy.url && file.url === legacy.url)
+        ));
+        if (!alreadyExists) files.unshift(legacy);
+    }
+
+    return files
+        .filter((file) => file.url || file.path)
+        .sort((left, right) => {
+            const leftIndex = SUPPORT_FILE_TYPES.findIndex((itemType) => itemType.key === left.type);
+            const rightIndex = SUPPORT_FILE_TYPES.findIndex((itemType) => itemType.key === right.type);
+            return (leftIndex === -1 ? 99 : leftIndex) - (rightIndex === -1 ? 99 : rightIndex);
+        });
+};
+
+const buildSupportFilesPayload = (supportFiles = []) => {
+    const normalized = supportFiles.map((file) => normalizeSupportFile(file)).filter((file) => file.url || file.path);
+    const primary = normalized.find((file) => file.type === 'invoice') || normalized[0] || {};
+
+    return {
+        fotoFacturaUrl: primary.url || '',
+        fotoFacturaPath: primary.path || '',
+        support: primary.url || primary.path ? primary : normalizeSupportFile(),
+        supportFiles: normalized,
     };
 };
 
 export const getSupportUrl = (item = {}) => (
-    item.fotoFacturaUrl || item.support?.url || item.media?.url || ''
+    getSupportFiles(item)[0]?.url || item.url || ''
 );
 
 export const getSupportPath = (item = {}) => (
-    item.fotoFacturaPath || item.support?.path || item.media?.path || ''
+    getSupportFiles(item)[0]?.path || item.path || ''
 );
 
-export const hasSupport = (item = {}) => Boolean(getSupportUrl(item));
+export const hasSupport = (item = {}) => getSupportFiles(item).length > 0;
 
 export const isPdfSupportRecord = (item = {}) => {
-    const source = `${getSupportPath(item)} ${getSupportUrl(item)} ${item.support?.contentType || item.media?.mimeType || ''}`.toLowerCase();
+    const first = getSupportFiles(item)[0] || normalizeSupportFile(item);
+    const source = `${first.path || getSupportPath(item)} ${first.url || getSupportUrl(item)} ${first.contentType || item.support?.contentType || item.media?.mimeType || ''}`.toLowerCase();
     return source.includes('.pdf') || source.includes('application/pdf');
 };
 
@@ -157,10 +235,22 @@ export async function uploadInvoicePhoto(file, folder, docId) {
         throw new Error('La foto o PDF supera 10 MB. Comprimilo o envia una imagen mas liviana.');
     }
 
+    const uploaded = await uploadSupportFile(file, folder, docId, 'invoice');
+    return buildSupportFilesPayload([uploaded]);
+}
+
+export async function uploadSupportFile(file, folder, docId, type = 'invoice') {
+    if (!file) return null;
+
+    if (file.size > MAX_INVOICE_FILE_SIZE_BYTES) {
+        throw new Error('La foto o PDF supera 10 MB. Comprimilo o envia una imagen mas liviana.');
+    }
+
     const extension = file.name?.includes('.') ? file.name.split('.').pop() : 'jpg';
     const safeDocId = String(docId || Date.now()).replace(/[^a-zA-Z0-9_-]/g, '_');
     const safeName = sanitizeFileName(file.name);
-    const storagePath = `${folder}/${safeDocId}/${Date.now()}_${safeName}.${extension}`;
+    const safeType = String(type || 'invoice').replace(/[^a-zA-Z0-9_-]/g, '_');
+    const storagePath = `${folder}/${safeDocId}/${safeType}/${Date.now()}_${safeName}.${extension}`;
     const storageRef = ref(storage, storagePath);
 
     try {
@@ -194,14 +284,33 @@ export async function uploadInvoicePhoto(file, folder, docId) {
             );
         });
 
-        return buildSupportPayload({
+        return normalizeSupportFile({
             url: await getDownloadURL(snapshot.ref),
             path: storagePath,
             source: 'manual',
             fileName: file.name || '',
             contentType: file.type || 'application/octet-stream',
+            type,
         });
     } catch (error) {
         throw new Error(getStorageErrorMessage(error));
     }
+}
+
+export async function uploadFiscalSupportFiles(filesByType = {}, folder, docId, existingItem = {}) {
+    const selectedEntries = SUPPORT_FILE_TYPES
+        .map(({ key }) => [key, filesByType[key]])
+        .filter(([, file]) => Boolean(file));
+
+    if (selectedEntries.length === 0) return {};
+
+    const uploaded = [];
+    for (const [type, file] of selectedEntries) {
+        uploaded.push(await uploadSupportFile(file, folder, docId, type));
+    }
+
+    const replacedTypes = new Set(uploaded.map((file) => file.type));
+    const preserved = getSupportFiles(existingItem).filter((file) => !replacedTypes.has(file.type));
+
+    return buildSupportFilesPayload([...preserved, ...uploaded]);
 }

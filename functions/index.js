@@ -2371,6 +2371,110 @@ function topByAmount(items, labelKeys, amountKeys, limit = 8) {
     .slice(0, limit);
 }
 
+function buildSupplierLearningProfiles({ gastos = [], compras = [], cuentasPorPagar = [], savedProfiles = [] }) {
+  const profiles = new Map();
+
+  function addProfile(rawSupplier, patch = {}) {
+    const supplier = normalizeText(rawSupplier).toUpperCase();
+    const key = normalizeComparableText(supplier);
+    if (!key) return;
+
+    const existing = profiles.get(key) || {
+      supplier,
+      supplierKey: key,
+      gastoCount: 0,
+      compraCount: 0,
+      creditCount: 0,
+      contadoCount: 0,
+      categories: {},
+      paymentMethods: {},
+      lastInvoiceNumber: '',
+      lastSeenAt: '',
+    };
+
+    if (patch.kind === 'gasto') existing.gastoCount += 1;
+    if (patch.kind === 'compra') existing.compraCount += 1;
+    if (patch.credit === true) existing.creditCount += 1;
+    if (patch.credit === false) existing.contadoCount += 1;
+    if (patch.category) {
+      const category = normalizeText(patch.category);
+      existing.categories[category] = (existing.categories[category] || 0) + 1;
+    }
+    if (patch.paymentMethod) {
+      const paymentMethod = normalizeText(patch.paymentMethod);
+      existing.paymentMethods[paymentMethod] = (existing.paymentMethods[paymentMethod] || 0) + 1;
+    }
+    if (patch.invoiceNumber) existing.lastInvoiceNumber = normalizeText(patch.invoiceNumber);
+    if (patch.lastSeenAt && (!existing.lastSeenAt || patch.lastSeenAt > existing.lastSeenAt)) {
+      existing.lastSeenAt = patch.lastSeenAt;
+    }
+
+    profiles.set(key, existing);
+  }
+
+  savedProfiles.forEach((profile) => {
+    addProfile(profile.supplier, {
+      kind: profile.kind,
+      credit: profile.credit,
+      category: profile.category,
+      paymentMethod: profile.paymentMethod,
+      invoiceNumber: profile.lastInvoiceNumber,
+      lastSeenAt: profile.lastSeenAt,
+    });
+  });
+
+  gastos.forEach((item) => addProfile(item.supplier || item.proveedor, {
+    kind: 'gasto',
+    credit: Boolean(item.linkedPayableId || normalizeComparableText(item.paymentType).includes('credito')),
+    category: item.category || item.categoria,
+    paymentMethod: item.paymentType || item.paymentMethod,
+    invoiceNumber: item.invoiceNumber || item.factura,
+    lastSeenAt: item.date || item.fecha || '',
+  }));
+
+  compras.forEach((item) => addProfile(item.supplier || item.proveedor, {
+    kind: 'compra',
+    credit: Boolean(item.linkedPayableId || normalizeComparableText(item.paymentType).includes('credito')),
+    category: item.category || item.categoria,
+    paymentMethod: item.paymentType || item.paymentMethod,
+    invoiceNumber: item.invoiceNumber || item.factura,
+    lastSeenAt: item.date || item.fecha || '',
+  }));
+
+  cuentasPorPagar.forEach((item) => addProfile(item.proveedor || item.supplier, {
+    kind: item.isInventoryCost ? 'compra' : 'gasto',
+    credit: true,
+    category: item.category || item.categoria,
+    paymentMethod: 'credito',
+    invoiceNumber: item.numero || item.factura || item.invoiceNumber,
+    lastSeenAt: item.fecha || item.date || '',
+  }));
+
+  const mostUsed = (values = {}) => Object.entries(values)
+    .sort((left, right) => right[1] - left[1])
+    .map(([value]) => value)[0] || '';
+
+  return Array.from(profiles.values())
+    .map((profile) => ({
+      supplier: profile.supplier,
+      usualType: profile.compraCount > profile.gastoCount ? 'compra' : 'gasto',
+      confidence: normalizeAmount(Math.max(profile.compraCount, profile.gastoCount) / Math.max(profile.compraCount + profile.gastoCount, 1)),
+      usualCredit: profile.creditCount > profile.contadoCount,
+      usualCategory: mostUsed(profile.categories),
+      usualPaymentMethod: mostUsed(profile.paymentMethods),
+      lastInvoiceNumber: profile.lastInvoiceNumber,
+      evidenceCount: profile.compraCount + profile.gastoCount,
+      lastSeenAt: profile.lastSeenAt,
+    }))
+    .sort((left, right) => right.evidenceCount - left.evidenceCount)
+    .slice(0, 40);
+}
+
+async function fetchAssistantLearningProfiles() {
+  const snapshot = await firestore.collection('ai_fiscal_learning').limit(120).get();
+  return snapshot.docs.map((entry) => ({ id: entry.id, ...entry.data() }));
+}
+
 async function fetchCollectionSince(collectionName, field, sinceValue, limitCount = 350) {
   const snapshot = await firestore
     .collection(collectionName)
@@ -2396,6 +2500,7 @@ async function buildFiscalAssistantContext() {
     compras,
     cuentasPorPagar,
     abonosPagar,
+    assistantLearning,
   ] = await Promise.all([
     fetchCollectionSince('ingresos', 'month', sixMonths),
     fetchCollectionSince('facturas_membretadas_ventas', 'saleDate', dateStart),
@@ -2403,6 +2508,7 @@ async function buildFiscalAssistantContext() {
     fetchCollectionSince('compras', 'month', sixMonths),
     fetchCollectionSince('cuentas_por_pagar', 'month', sixMonths),
     fetchCollectionSince('abonos_pagar', 'fecha', dateStart),
+    fetchAssistantLearningProfiles(),
   ]);
 
   const currentMonthIncome = ingresos.filter((item) => item.month === monthStart);
@@ -2446,6 +2552,14 @@ async function buildFiscalAssistantContext() {
       topCurrentMonthExpenses: topByAmount(currentMonthGastos, ['description', 'descripcion', 'category', 'categoria'], ['amount', 'monto', 'total']),
       topCurrentMonthPurchases: topByAmount(currentMonthCompras, ['supplier', 'proveedor', 'description'], ['total', 'amount']),
       recentPayments: topByAmount(abonosPagar, ['proveedor'], ['montoTotal'], 6),
+    },
+    learning: {
+      supplierProfiles: buildSupplierLearningProfiles({
+        gastos,
+        compras,
+        cuentasPorPagar,
+        savedProfiles: assistantLearning,
+      }),
     },
   };
 }
@@ -2522,12 +2636,19 @@ function fiscalDraftSchema() {
   };
 }
 
-async function callOpenAIFiscalAssistant({ message, support, context }) {
+function normalizeClassificationHint(value) {
+  const hint = normalizeComparableText(value);
+  if (hint === 'gasto' || hint === 'compra') return hint;
+  return 'auto';
+}
+
+async function callOpenAIFiscalAssistant({ message, support, context, classificationHint = 'auto' }) {
   const apiKey = OPENAI_API_KEY.value();
   if (!apiKey) {
     throw new HttpsError('failed-precondition', 'Falta configurar OPENAI_API_KEY en Firebase Functions.');
   }
 
+  const hint = normalizeClassificationHint(classificationHint);
   const content = [
     {
       type: 'input_text',
@@ -2536,6 +2657,13 @@ async function callOpenAIFiscalAssistant({ message, support, context }) {
         'Responde en espanol claro y practico.',
         'Puedes contestar preguntas usando el contexto contable resumido.',
         'Si hay soporte/foto, extrae datos para crear un borrador fiscal, pero nunca confirmes registro definitivo.',
+        'Aprende patrones del contexto learning.supplierProfiles: proveedor habitual, tipo usual, categoria usual y forma de pago usual.',
+        'Si el proveedor ya existe en learning.supplierProfiles, usa ese historial como pista fuerte para distinguir gasto vs compra, salvo que la factura contradiga claramente.',
+        'Clasificacion: gasto operativo = servicios, mantenimiento, oficina, limpieza, viaticos, banco, seguros, nomina u otros gastos administrativos.',
+        'Clasificacion: compra = inventario, materia prima, mercaderia, carne, insumos vendidos o costo directo de venta.',
+        `Pista directa del usuario para esta factura: ${hint}.`,
+        'Si la pista directa es gasto, prioriza targetType gasto_credito o gasto_contado. Si es compra, prioriza compra_credito o compra_contado.',
+        'Si la pista es auto y no puedes distinguir gasto vs compra con confianza, no inventes: usa request_more_info y pregunta "Esta factura la registro como gasto o como compra?".',
         'Para estado de resultado, ventas contables usan subtotal, no total con IVA.',
         'Si no puedes leer fecha, proveedor, factura o montos con confianza, no inventes: usa request_more_info y pregunta exactamente que falta.',
         'Si tienes dudas fuertes, suggestedDraft.targetType debe ser none o la mejor opcion con warnings claros.',
@@ -2602,17 +2730,24 @@ exports.fiscalAssistantChat = onCall(FISCAL_ASSISTANT_FUNCTION_OPTIONS, async (r
   const actorEmail = ensureAdminUser(request.auth, 'usar el agente IA fiscal');
   const message = normalizeText(request.data?.message);
   const support = request.data?.support || null;
+  const classificationHint = normalizeClassificationHint(request.data?.classificationHint);
 
   if (!message && !support?.url) {
     throw new HttpsError('invalid-argument', 'Escribe una pregunta o adjunta una foto/documento.');
   }
 
   const context = await buildFiscalAssistantContext();
-  const aiResult = await callOpenAIFiscalAssistant({ message, support, context });
+  const aiResult = await callOpenAIFiscalAssistant({
+    message,
+    support,
+    context,
+    classificationHint,
+  });
 
   const chatRef = await firestore.collection('ai_fiscal_chats').add({
     actorEmail,
     message,
+    classificationHint,
     support: support || null,
     result: aiResult,
     contextSnapshot: context,
@@ -2626,6 +2761,7 @@ exports.fiscalAssistantChat = onCall(FISCAL_ASSISTANT_FUNCTION_OPTIONS, async (r
       status: 'draft',
       aiStatus: 'review_required',
       userMessage: message,
+      classificationHint,
       support: support || null,
       fotoFacturaUrl: support?.url || '',
       fotoFacturaPath: support?.path || '',
@@ -2702,6 +2838,29 @@ function buildAiCommonPayload({ inbox, draftId, actorEmail }) {
     confirmedBy: actorEmail,
     confirmedAt: FieldValue.serverTimestamp(),
   };
+}
+
+async function rememberAiFiscalLearning({ draft, kind, credit, targetCollection, targetDocIds, actorEmail }) {
+  const supplier = cleanAiText(draft.supplier || draft.payableProvider || '').toUpperCase();
+  const supplierKey = normalizeComparableText(supplier);
+  if (!supplierKey) return;
+
+  await firestore.collection('ai_fiscal_learning').doc(supplierKey).set({
+    supplier,
+    supplierKey,
+    kind,
+    credit,
+    targetCollection,
+    category: cleanAiText(draft.category || ''),
+    paymentMethod: cleanAiText(draft.paymentMethod || (credit ? 'credito' : '')),
+    lastInvoiceNumber: cleanAiText(draft.invoiceNumber || draft.payableInvoiceNumber || ''),
+    lastDescription: cleanAiText(draft.description || ''),
+    lastTargetDocIds: targetDocIds || {},
+    evidenceCount: FieldValue.increment(1),
+    updatedBy: actorEmail,
+    updatedAt: FieldValue.serverTimestamp(),
+    lastSeenAt: new Date().toISOString().substring(0, 10),
+  }, { merge: true });
 }
 
 async function findDailySaleByDate(date) {
@@ -2837,12 +2996,23 @@ async function confirmAiPurchaseOrExpense({ inboxRef, inbox, draftId, draft, act
 
   await batch.commit();
 
+  const targetDocIds = {
+    [isPurchase ? 'compraId' : 'gastoId']: targetRef.id,
+    cuentaPorPagarId: payableRef?.id || null,
+  };
+
+  await rememberAiFiscalLearning({
+    draft,
+    kind,
+    credit,
+    targetCollection,
+    targetDocIds,
+    actorEmail,
+  });
+
   return {
     targetCollection,
-    targetDocIds: {
-      [isPurchase ? 'compraId' : 'gastoId']: targetRef.id,
-      cuentaPorPagarId: payableRef?.id || null,
-    },
+    targetDocIds,
   };
 }
 

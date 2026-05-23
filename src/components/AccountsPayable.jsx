@@ -9,10 +9,13 @@ import { APP_BRAND_NAME, DEFAULT_BRANCH_ID, DEFAULT_BRANCH_NAME, DEFAULT_CASHBOX
 import { deletePayableTransaction } from '../services/linkedTransactions';
 import {
     buildFiscalPayload,
+    getSupportFiles,
     getSupportPath,
     getSupportUrl,
     hasSupport,
     isPdfSupportRecord,
+    SUPPORT_FILE_TYPES,
+    uploadFiscalSupportFiles,
     uploadInvoicePhoto,
 } from '../services/fiscalUtils';
 
@@ -147,6 +150,34 @@ const Spinner = () => (
     </svg>
 );
 
+const createEmptySupportFilesState = () => SUPPORT_FILE_TYPES.reduce((acc, item) => {
+    acc[item.key] = null;
+    return acc;
+}, {});
+
+const SupportFilesInput = ({ files, onChange, disabled = false, single = false }) => {
+    const types = single ? SUPPORT_FILE_TYPES.slice(0, 1) : SUPPORT_FILE_TYPES;
+    return (
+        <div className={`grid grid-cols-1 gap-3 ${single ? '' : 'md:grid-cols-3'}`}>
+            {types.map((type) => (
+                <div key={type.key} className="rounded-xl border border-stone-200 bg-white p-3">
+                    <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
+                        {single ? 'Foto o PDF' : type.label}
+                    </label>
+                    <input
+                        type="file"
+                        accept="image/*,.pdf"
+                        onChange={(event) => onChange(type.key, event.target.files?.[0] || null)}
+                        className="mt-2 block w-full text-xs text-slate-500 file:mr-3 file:rounded-lg file:border-0 file:bg-[#fff0f0] file:px-3 file:py-2 file:text-xs file:font-semibold file:text-[#a81d24]"
+                        disabled={disabled}
+                    />
+                    {files?.[type.key] && <p className="mt-2 truncate text-xs font-bold text-emerald-700">{files[type.key].name}</p>}
+                </div>
+            ))}
+        </div>
+    );
+};
+
 const DetailRow = ({ label, value, accent = false }) => (
     <div className={`rounded-xl border px-4 py-3 ${accent ? 'border-[#ead5c5] bg-[#fff8f5]' : 'border-stone-200 bg-white'}`}>
         <div className="text-[10px] font-bold uppercase tracking-[0.18em] text-slate-400">{label}</div>
@@ -164,8 +195,9 @@ const SupportPreviewModal = ({ record, type, onClose, onAttach }) => {
     if (!record) return null;
 
     const isAbono = type === 'abono';
-    const supportUrl = getSupportUrl(record);
-    const supportPath = getSupportPath(record);
+    const supportFiles = getSupportFiles(record);
+    const supportUrl = supportFiles[0]?.url || getSupportUrl(record);
+    const supportPath = supportFiles.map((support) => `${support.label}: ${support.path}`).join(' | ') || getSupportPath(record);
     const title = isAbono
         ? `Abono #${record.secuencia || record.id}`
         : `Factura ${record.numero || record.factura || record.id}`;
@@ -258,24 +290,39 @@ const SupportPreviewModal = ({ record, type, onClose, onAttach }) => {
                 <div className="max-h-[92vh] overflow-y-auto border-l border-[#ead5c5] bg-[#fbf6f1] p-5">
                     <div className="mb-3 flex items-center justify-between gap-3">
                         <div>
-                            <div className="text-xs font-black uppercase tracking-[0.25em] text-[#7f1218]">Soporte</div>
-                            <p className="text-xs font-semibold text-stone-500">Foto, PDF o documento recibido por WhatsApp/manual</p>
+                            <div className="text-xs font-black uppercase tracking-[0.25em] text-[#7f1218]">Soportes</div>
+                            <p className="text-xs font-semibold text-stone-500">Factura principal y comprobantes de retenciones</p>
                         </div>
-                        {supportUrl && (
+                        {supportUrl && supportFiles.length === 1 && (
                             <a href={supportUrl} target="_blank" rel="noreferrer" className="rounded-lg bg-[#a81d24] px-3 py-1.5 text-xs font-bold text-white">
                                 Abrir
                             </a>
                         )}
                     </div>
 
-                    {supportUrl ? (
-                        isPdfSupportRecord(record) ? (
-                            <iframe title="Soporte cuenta por pagar" src={supportUrl} className="h-[70vh] w-full rounded-2xl border border-stone-200 bg-white" />
-                        ) : (
-                            <div className="overflow-hidden rounded-2xl border border-stone-200 bg-white p-2 shadow-sm">
-                                <img src={supportUrl} alt="Soporte fiscal" className="max-h-[72vh] w-full rounded-xl object-contain" />
-                            </div>
-                        )
+                    {supportFiles.length > 0 ? (
+                        <div className="space-y-4">
+                            {supportFiles.map((support) => (
+                                <div key={`${support.type}-${support.path || support.url}`} className="rounded-2xl border border-stone-200 bg-white p-3 shadow-sm">
+                                    <div className="mb-2 flex items-center justify-between gap-3">
+                                        <div>
+                                            <div className="text-[10px] font-black uppercase tracking-[0.22em] text-[#7f1218]">{support.label}</div>
+                                            {support.fileName && <div className="mt-1 text-xs font-semibold text-stone-400">{support.fileName}</div>}
+                                        </div>
+                                        {support.url && (
+                                            <a href={support.url} target="_blank" rel="noreferrer" className="rounded-lg bg-[#a81d24] px-3 py-1.5 text-xs font-bold text-white">
+                                                Abrir
+                                            </a>
+                                        )}
+                                    </div>
+                                    {isPdfSupportRecord(support) ? (
+                                        <iframe title={support.label} src={support.url} className="h-[52vh] w-full rounded-xl border border-stone-200 bg-white" />
+                                    ) : (
+                                        <img src={support.url} alt={support.label} className="max-h-[56vh] w-full rounded-xl object-contain" />
+                                    )}
+                                </div>
+                            ))}
+                        </div>
                     ) : (
                         <div className="flex min-h-[420px] flex-col items-center justify-center rounded-2xl border-2 border-dashed border-stone-300 bg-white text-center">
                             <Icon path={Icons.paperClip} className="mb-3 h-12 w-12 text-stone-300" />
@@ -290,8 +337,11 @@ const SupportPreviewModal = ({ record, type, onClose, onAttach }) => {
 };
 
 const AttachSupportModal = ({ target, loading, onClose, onSave }) => {
-    const [file, setFile] = useState(null);
+    const [files, setFiles] = useState(createEmptySupportFilesState());
     if (!target) return null;
+
+    const hasSelectedFile = Object.values(files).some(Boolean);
+    const isAbono = target.type === 'abono';
 
     return (
         <div className="fixed inset-0 z-[70] flex items-center justify-center p-4">
@@ -302,7 +352,9 @@ const AttachSupportModal = ({ target, loading, onClose, onSave }) => {
                         <div>
                             <p className="text-[10px] font-bold uppercase tracking-[0.28em] text-[#f2b635]">Soporte unico</p>
                             <h3 className="mt-2 text-xl font-black">{target.type === 'abono' ? 'Adjuntar soporte al abono' : 'Adjuntar soporte a factura'}</h3>
-                            <p className="mt-1 text-xs font-semibold text-white/70">Se guarda una sola imagen en Storage y se comparte la referencia con el registro vinculado.</p>
+                            <p className="mt-1 text-xs font-semibold text-white/70">
+                                {isAbono ? 'Adjunta el comprobante del abono.' : 'Adjunta factura principal y, si aplica, las dos retenciones.'}
+                            </p>
                         </div>
                         <button onClick={onClose} disabled={loading} className="rounded-xl bg-white/10 p-2 transition hover:bg-white/20 disabled:opacity-50">
                             <Icon path={Icons.x} className="h-5 w-5 text-white" />
@@ -311,24 +363,22 @@ const AttachSupportModal = ({ target, loading, onClose, onSave }) => {
                 </div>
                 <div className="p-6">
                     <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs font-semibold text-amber-800">
-                        Cuando este soporte venga del webhook de WhatsApp, el documento contable solo guardara la misma URL/ruta; no se subira otra copia.
+                        Para facturas con retenciones puedes guardar hasta 3 archivos: factura, retencion IR y retencion municipal.
                     </div>
                     <div className="rounded-xl border border-stone-200 bg-stone-50 p-4">
-                        <label className="text-xs font-bold uppercase tracking-wider text-slate-500">Foto o PDF</label>
-                        <input
-                            type="file"
-                            accept="image/*,.pdf"
-                            onChange={e => setFile(e.target.files?.[0] || null)}
-                            className="mt-2 block w-full text-xs text-slate-500 file:mr-3 file:rounded-lg file:border-0 file:bg-[#fff0f0] file:px-3 file:py-2 file:text-xs file:font-semibold file:text-[#a81d24]"
+                        <SupportFilesInput
+                            files={files}
+                            onChange={(type, file) => setFiles((prev) => ({ ...prev, [type]: file }))}
+                            disabled={loading}
+                            single={isAbono}
                         />
-                        {file && <p className="mt-2 text-xs font-bold text-emerald-700">Archivo seleccionado: {file.name}</p>}
                     </div>
                     <div className="mt-6 flex justify-end gap-2">
                         <Button variant="ghost" onClick={onClose} disabled={loading}>Cancelar</Button>
                         <Button
                             variant="success"
-                            disabled={loading || !file}
-                            onClick={() => onSave(target, file)}
+                            disabled={loading || !hasSelectedFile}
+                            onClick={() => onSave(target, files)}
                             className="flex items-center gap-2"
                         >
                             {loading ? <><Spinner /> Guardando...</> : <><Icon path={Icons.upload} className="h-4 w-4" /> Guardar soporte</>}
@@ -374,7 +424,7 @@ export function AccountsPayable({ data }) {
         retentionMunicipal1: '',
         paymentReference: ''
     });
-    const [facturaPhoto, setFacturaPhoto] = useState(null);
+    const [facturaSupportFiles, setFacturaSupportFiles] = useState(createEmptySupportFilesState());
 
     // --- CÁLCULOS MEMOIZADOS ---
     const { facturasPorProveedor, saldoTotalGeneral, stats } = useMemo(() => {
@@ -430,7 +480,7 @@ export function AccountsPayable({ data }) {
             const facturaRef = doc(collection(db, 'cuentas_por_pagar'));
             const compraRef = doc(collection(db, 'compras'), `credito_${facturaRef.id}`);
             const batch = writeBatch(db);
-            const photoPayload = await uploadInvoicePhoto(facturaPhoto, 'facturas/cuentas_por_pagar', facturaRef.id);
+            const photoPayload = await uploadFiscalSupportFiles(facturaSupportFiles, 'facturas/cuentas_por_pagar', facturaRef.id);
 
             batch.set(facturaRef, {
                 fecha: facturaForm.fecha,
@@ -490,14 +540,14 @@ export function AccountsPayable({ data }) {
                 retentionMunicipal1: '',
                 paymentReference: ''
             }));
-            setFacturaPhoto(null);
+            setFacturaSupportFiles(createEmptySupportFilesState());
         } catch (error) {
             console.error(error);
             alert("Error al guardar: " + error.message);
         } finally {
             setLoading(false);
         }
-    }, [facturaForm, facturaPhoto]);
+    }, [facturaForm, facturaSupportFiles]);
 
     // --- MODAL ABONOS ---
     const [showModalAbono, setShowModalAbono] = useState(false);
@@ -688,15 +738,17 @@ export function AccountsPayable({ data }) {
         setSupportTarget({ record, type });
     }, []);
 
-    const handleSaveSupport = useCallback(async (target, file) => {
-        if (!target?.record?.id || !file || supportSaving) return;
+    const handleSaveSupport = useCallback(async (target, files) => {
+        if (!target?.record?.id || !Object.values(files || {}).some(Boolean) || supportSaving) return;
 
         setSupportSaving(true);
         try {
             const isAbono = target.type === 'abono';
             const collectionName = isAbono ? 'abonos_pagar' : 'cuentas_por_pagar';
             const folder = isAbono ? 'facturas/abonos_pagar' : 'facturas/cuentas_por_pagar';
-            const supportPayload = await uploadInvoicePhoto(file, folder, target.record.id);
+            const supportPayload = isAbono
+                ? await uploadInvoicePhoto(files.invoice, folder, target.record.id)
+                : await uploadFiscalSupportFiles(files, folder, target.record.id, target.record);
             const sharedPayload = {
                 ...supportPayload,
                 supportSourceCollection: collectionName,
@@ -991,9 +1043,16 @@ export function AccountsPayable({ data }) {
                                         onChange={e => setFacturaForm({ ...facturaForm, paymentReference: e.target.value })}
                                     />
 
-                                    <div className="space-y-1.5">
-                                        <label className="text-xs font-semibold uppercase tracking-wider text-slate-500">Foto de factura</label>
-                                        <input type="file" accept="image/*,.pdf" onChange={e => setFacturaPhoto(e.target.files?.[0] || null)} className="block w-full text-xs text-slate-500 file:mr-3 file:rounded-lg file:border-0 file:bg-[#fff0f0] file:px-3 file:py-2 file:text-xs file:font-semibold file:text-[#a81d24]" />
+                                    <div className="space-y-2 rounded-xl border border-[#ead5c5] bg-[#fff8f5] p-3">
+                                        <div>
+                                            <label className="text-xs font-semibold uppercase tracking-wider text-slate-500">Soportes fiscales</label>
+                                            <p className="mt-1 text-xs font-semibold text-slate-400">Factura principal + retencion IR + retencion municipal.</p>
+                                        </div>
+                                        <SupportFilesInput
+                                            files={facturaSupportFiles}
+                                            onChange={(type, file) => setFacturaSupportFiles((prev) => ({ ...prev, [type]: file }))}
+                                            disabled={loading}
+                                        />
                                     </div>
 
                                     <Button type="submit" disabled={loading} className="w-full py-3">

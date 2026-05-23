@@ -61,6 +61,24 @@ const targetLabels = {
     factura_membretada_venta: 'Factura membretada',
 };
 
+const classificationOptions = [
+    {
+        id: 'auto',
+        label: 'MARTIN IA decide',
+        description: 'Usa el historial y si duda te pregunta.',
+    },
+    {
+        id: 'gasto',
+        label: 'Es gasto',
+        description: 'Servicios, viaticos, mantenimiento, oficina, etc.',
+    },
+    {
+        id: 'compra',
+        label: 'Es compra',
+        description: 'Inventario, mercaderia o costo de venta.',
+    },
+];
+
 const assistantCallable = httpsCallable(functions, 'fiscalAssistantChat');
 const confirmDraftCallable = httpsCallable(functions, 'confirmFiscalAssistantDraft');
 const rejectDraftCallable = httpsCallable(functions, 'rejectFiscalAssistantDraft');
@@ -169,6 +187,7 @@ export default function AIAssistant({ floating = false }) {
     ]);
     const [input, setInput] = useState('');
     const [file, setFile] = useState(null);
+    const [classificationHint, setClassificationHint] = useState('auto');
     const [loading, setLoading] = useState(false);
     const [drafts, setDrafts] = useState([]);
     const [error, setError] = useState('');
@@ -218,20 +237,33 @@ export default function AIAssistant({ floating = false }) {
                 };
             }
 
+            const selectedClassification = classificationOptions.find((option) => option.id === classificationHint);
+            const messageForAi = [
+                text || 'Analiza este soporte fiscal y crea un borrador.',
+                file && selectedClassification
+                    ? `Clasificacion indicada por el usuario: ${selectedClassification.label}. Si esta clasificacion no coincide con la factura, pregunta antes de crear un borrador definitivo.`
+                    : '',
+            ].filter(Boolean).join('\n');
+
             setMessages((prev) => [
                 ...prev,
                 {
                     id: userMessageId,
                     role: 'user',
-                    text: text || 'Analiza este soporte fiscal.',
+                    text: [
+                        text || 'Analiza este soporte fiscal.',
+                        file && selectedClassification ? `Tipo: ${selectedClassification.label}` : '',
+                    ].filter(Boolean).join('\n'),
                     support,
                 },
             ]);
             setInput('');
             setFile(null);
+            setClassificationHint('auto');
 
             const response = await assistantCallable({
-                message: text || 'Analiza este soporte fiscal y crea un borrador.',
+                message: messageForAi,
+                classificationHint,
                 support,
             });
             const result = response.data?.result || {};
@@ -303,7 +335,7 @@ export default function AIAssistant({ floating = false }) {
         }
     };
 
-    const ChatComposer = ({ compact = false }) => (
+    const renderChatComposer = (compact = false) => (
         <div className="border-t border-[#ead5c5] bg-white p-4">
             {error && (
                 <div className="mb-3 flex items-start gap-2 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs font-bold text-amber-800">
@@ -343,6 +375,28 @@ export default function AIAssistant({ floating = false }) {
                         onChange={(event) => setFile(event.target.files?.[0] || null)}
                     />
                 </label>
+                {file && (
+                    <div className="rounded-2xl border border-[#ead5c5] bg-[#fffaf6] p-3">
+                        <div className="mb-2 text-[10px] font-black uppercase tracking-[0.22em] text-[#7f1218]">Que es esta factura?</div>
+                        <div className="flex flex-wrap gap-2">
+                            {classificationOptions.map((option) => (
+                                <button
+                                    key={option.id}
+                                    type="button"
+                                    onClick={() => setClassificationHint(option.id)}
+                                    className={`rounded-xl border px-3 py-2 text-left text-xs font-black transition ${
+                                        classificationHint === option.id
+                                            ? 'border-[#a81d24] bg-[#a81d24] text-white'
+                                            : 'border-[#ead5c5] bg-white text-[#7f1218] hover:bg-[#fff0c8]'
+                                    }`}
+                                >
+                                    <span className="block">{option.label}</span>
+                                    {!compact && <span className="mt-0.5 block text-[10px] font-semibold opacity-75">{option.description}</span>}
+                                </button>
+                            ))}
+                        </div>
+                    </div>
+                )}
                 <div className="flex flex-1 rounded-2xl border border-[#ead5c5] bg-[#fffaf6] p-2 shadow-inner">
                     <textarea
                         value={input}
@@ -431,7 +485,7 @@ export default function AIAssistant({ floating = false }) {
                             <div ref={endRef} />
                         </div>
 
-                        <ChatComposer compact />
+                        {renderChatComposer(true)}
                     </section>
                 )}
 
@@ -497,7 +551,7 @@ export default function AIAssistant({ floating = false }) {
                             <div ref={endRef} />
                         </div>
 
-                        <ChatComposer />
+                        {renderChatComposer()}
                     </div>
                 </section>
 

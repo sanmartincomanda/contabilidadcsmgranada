@@ -16,11 +16,13 @@ import {
     buildFiscalPayload,
     computeFiscalAmounts,
     computeRetentions,
+    getSupportFiles,
     getSupportPath,
     getSupportUrl,
     hasSupport,
     isPdfSupportRecord,
-    uploadInvoicePhoto,
+    SUPPORT_FILE_TYPES,
+    uploadFiscalSupportFiles,
 } from '../services/fiscalUtils';
 
 // --- ICONOS SVG INLINE ---
@@ -161,6 +163,31 @@ const PHOTO_EDIT_FOLDERS = {
     compras: 'facturas/compras',
 };
 
+const createEmptySupportFilesState = () => SUPPORT_FILE_TYPES.reduce((acc, item) => {
+    acc[item.key] = null;
+    return acc;
+}, {});
+
+const SupportFilesInput = ({ files, onChange, disabled = false, compact = false }) => (
+    <div className={`grid grid-cols-1 gap-3 ${compact ? '' : 'md:grid-cols-3'}`}>
+        {SUPPORT_FILE_TYPES.map((type) => (
+            <div key={type.key} className="rounded-xl border border-[#ead5c5] bg-white p-3">
+                <label className="text-[10px] font-black uppercase tracking-[0.18em] text-[#7f1218]">{type.label}</label>
+                <input
+                    type="file"
+                    accept="image/*,.pdf"
+                    onChange={(event) => onChange(type.key, event.target.files?.[0] || null)}
+                    className="mt-2 block w-full text-xs text-stone-500 file:mr-2 file:rounded-lg file:border-0 file:bg-[#fff0f0] file:px-3 file:py-2 file:text-xs file:font-semibold file:text-[#a81d24]"
+                    disabled={disabled}
+                />
+                {files?.[type.key] && (
+                    <p className="mt-2 truncate text-xs font-bold text-emerald-700">{files[type.key].name}</p>
+                )}
+            </div>
+        ))}
+    </div>
+);
+
 const cleanForFirestore = (value) => {
     if (value === undefined) return null;
     if (value === null) return null;
@@ -237,7 +264,8 @@ const isPdfSupport = (item) => isPdfSupportRecord(item);
 const RecordDetailModal = ({ item, collectionName, fields, onClose, onEdit }) => {
     if (!item) return null;
 
-    const supportUrl = getSupportUrl(item);
+    const supportFiles = getSupportFiles(item);
+    const supportUrl = supportFiles[0]?.url || getSupportUrl(item);
     const detailRows = Object.entries(fields).map(([key, field]) => ({
         key,
         label: field.label,
@@ -247,7 +275,7 @@ const RecordDetailModal = ({ item, collectionName, fields, onClose, onEdit }) =>
         ['ID', item.id],
         ['Origen', item.sourceLabel || item.source || item.sourceSystem],
         ['Referencia SICAR', item.sourceRecordId || item.sourceRawId || item.dailySaleCode],
-        ['Ruta soporte', getSupportPath(item)],
+        ['Rutas soporte', supportFiles.map((file) => `${file.label}: ${file.path}`).join(' | ') || getSupportPath(item)],
     ].filter(([, value]) => value);
 
     return (
@@ -324,23 +352,38 @@ const RecordDetailModal = ({ item, collectionName, fields, onClose, onEdit }) =>
                     <div className="mb-3 flex items-center justify-between gap-3">
                         <div>
                             <div className="text-xs font-black uppercase tracking-[0.25em] text-[#7f1218]">Soporte fiscal</div>
-                            <p className="text-xs font-semibold text-stone-500">Factura, recibo o respaldo adjunto</p>
+                            <p className="text-xs font-semibold text-stone-500">Factura y comprobantes de retenciones adjuntos</p>
                         </div>
-                        {supportUrl && (
+                        {supportUrl && supportFiles.length === 1 && (
                             <a href={supportUrl} target="_blank" rel="noreferrer" className="rounded-lg bg-[#a81d24] px-3 py-1.5 text-xs font-bold text-white">
                                 Abrir
                             </a>
                         )}
                     </div>
 
-                    {supportUrl ? (
-                        isPdfSupport(item) ? (
-                            <iframe title="Soporte fiscal" src={supportUrl} className="h-[70vh] w-full rounded-2xl border border-stone-200 bg-white" />
-                        ) : (
-                            <div className="overflow-hidden rounded-2xl border border-stone-200 bg-white p-2 shadow-sm">
-                                <img src={supportUrl} alt="Soporte fiscal" className="max-h-[72vh] w-full rounded-xl object-contain" />
-                            </div>
-                        )
+                    {supportFiles.length > 0 ? (
+                        <div className="space-y-4">
+                            {supportFiles.map((support) => (
+                                <div key={`${support.type}-${support.path || support.url}`} className="rounded-2xl border border-stone-200 bg-white p-3 shadow-sm">
+                                    <div className="mb-2 flex items-center justify-between gap-3">
+                                        <div>
+                                            <div className="text-[10px] font-black uppercase tracking-[0.22em] text-[#7f1218]">{support.label}</div>
+                                            {support.fileName && <div className="mt-1 text-xs font-semibold text-stone-400">{support.fileName}</div>}
+                                        </div>
+                                        {support.url && (
+                                            <a href={support.url} target="_blank" rel="noreferrer" className="rounded-lg bg-[#a81d24] px-3 py-1.5 text-xs font-bold text-white">
+                                                Abrir
+                                            </a>
+                                        )}
+                                    </div>
+                                    {isPdfSupport(support) ? (
+                                        <iframe title={support.label} src={support.url} className="h-[52vh] w-full rounded-xl border border-stone-200 bg-white" />
+                                    ) : (
+                                        <img src={support.url} alt={support.label} className="max-h-[56vh] w-full rounded-xl object-contain" />
+                                    )}
+                                </div>
+                            ))}
+                        </div>
                     ) : (
                         <div className="flex min-h-[420px] flex-col items-center justify-center rounded-2xl border-2 border-dashed border-stone-300 bg-white text-center">
                             <Icon path={Icons.receipt} className="mb-3 h-12 w-12 text-stone-300" />
@@ -356,13 +399,14 @@ const RecordDetailModal = ({ item, collectionName, fields, onClose, onEdit }) =>
 
 const EditRecordModal = ({ item, collectionName, fields, onClose, onSaved }) => {
     const [editData, setEditData] = useState(item);
-    const [photoFile, setPhotoFile] = useState(null);
+    const [supportFiles, setSupportFiles] = useState(createEmptySupportFilesState());
     const [loading, setLoading] = useState(false);
     const canAttachPhoto = Boolean(PHOTO_EDIT_FOLDERS[collectionName]);
+    const currentSupportFiles = getSupportFiles(item);
 
     useEffect(() => {
         setEditData(item);
-        setPhotoFile(null);
+        setSupportFiles(createEmptySupportFilesState());
     }, [item]);
 
     if (!item) return null;
@@ -419,8 +463,8 @@ const EditRecordModal = ({ item, collectionName, fields, onClose, onSaved }) => 
         try {
             let dataToSave = buildEditablePayload(collectionName, editData, fields);
 
-            if (photoFile && canAttachPhoto) {
-                const photoPayload = await uploadInvoicePhoto(photoFile, PHOTO_EDIT_FOLDERS[collectionName], item.id);
+            if (canAttachPhoto && Object.values(supportFiles).some(Boolean)) {
+                const photoPayload = await uploadFiscalSupportFiles(supportFiles, PHOTO_EDIT_FOLDERS[collectionName], item.id, item);
                 dataToSave = { ...dataToSave, ...photoPayload };
             }
 
@@ -478,23 +522,33 @@ const EditRecordModal = ({ item, collectionName, fields, onClose, onSaved }) => 
                         <div className="mt-5 rounded-xl border border-[#ead5c5] bg-[#fff8f5] p-4">
                             <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
                                 <div>
-                                    <div className="text-xs font-black uppercase tracking-[0.2em] text-[#7f1218]">Soporte / foto</div>
-                                    <p className="text-xs font-semibold text-stone-500">Puedes adjuntar o reemplazar foto/PDF de factura o soporte.</p>
+                                    <div className="text-xs font-black uppercase tracking-[0.2em] text-[#7f1218]">Soportes fiscales</div>
+                                    <p className="text-xs font-semibold text-stone-500">Puedes adjuntar factura principal y comprobantes de retenciones.</p>
                                 </div>
-                                {getSupportUrl(item) && (
-                                    <a href={getSupportUrl(item)} target="_blank" rel="noreferrer" className="rounded-lg border border-[#a81d24] px-3 py-1.5 text-xs font-bold text-[#a81d24]">
-                                        Ver soporte actual
-                                    </a>
-                                )}
+                                <Badge variant={currentSupportFiles.length ? 'success' : 'warning'}>
+                                    {currentSupportFiles.length ? `${currentSupportFiles.length} soporte(s)` : 'Sin soporte'}
+                                </Badge>
                             </div>
-                            <input
-                                type="file"
-                                accept="image/*,.pdf"
-                                onChange={(e) => setPhotoFile(e.target.files?.[0] || null)}
-                                className="block w-full text-xs text-stone-500 file:mr-3 file:rounded-lg file:border-0 file:bg-[#fff0f0] file:px-3 file:py-2 file:text-xs file:font-semibold file:text-[#a81d24]"
+                            {currentSupportFiles.length > 0 && (
+                                <div className="mb-3 flex flex-wrap gap-2">
+                                    {currentSupportFiles.map((support) => (
+                                        <a
+                                            key={`${support.type}-${support.path || support.url}`}
+                                            href={support.url}
+                                            target="_blank"
+                                            rel="noreferrer"
+                                            className="rounded-lg border border-[#a81d24] px-3 py-1.5 text-xs font-bold text-[#a81d24]"
+                                        >
+                                            Ver {support.label}
+                                        </a>
+                                    ))}
+                                </div>
+                            )}
+                            <SupportFilesInput
+                                files={supportFiles}
+                                onChange={(type, file) => setSupportFiles((prev) => ({ ...prev, [type]: file }))}
                                 disabled={loading}
                             />
-                            {photoFile && <p className="mt-2 text-xs font-bold text-emerald-700">Archivo seleccionado: {photoFile.name}</p>}
                         </div>
                     )}
                 </div>
@@ -1124,7 +1178,7 @@ const FiscalExpenseForm = ({ categories, loading, setLoading, onSuccess }) => {
     const [total, setTotal] = useState('');
     const [retentionIr2, setRetentionIr2] = useState('');
     const [retentionMunicipal1, setRetentionMunicipal1] = useState('');
-    const [invoicePhoto, setInvoicePhoto] = useState(null);
+    const [supportFiles, setSupportFiles] = useState(createEmptySupportFilesState());
 
     const resetForm = () => {
         setSupplier('');
@@ -1138,7 +1192,7 @@ const FiscalExpenseForm = ({ categories, loading, setLoading, onSuccess }) => {
         setTotal('');
         setRetentionIr2('');
         setRetentionMunicipal1('');
-        setInvoicePhoto(null);
+        setSupportFiles(createEmptySupportFilesState());
     };
 
     const handleSubmit = async (e) => {
@@ -1152,7 +1206,7 @@ const FiscalExpenseForm = ({ categories, loading, setLoading, onSuccess }) => {
         setLoading(true);
         try {
             const gastoRef = doc(collection(db, 'gastos'));
-            const photoPayload = await uploadInvoicePhoto(invoicePhoto, 'facturas/gastos', gastoRef.id);
+            const photoPayload = await uploadFiscalSupportFiles(supportFiles, 'facturas/gastos', gastoRef.id);
             await setDoc(gastoRef, {
                 date,
                 month: date.substring(0, 7),
@@ -1203,9 +1257,16 @@ const FiscalExpenseForm = ({ categories, loading, setLoading, onSuccess }) => {
                 <Input label="Retencion municipal 1%" type="number" step="0.01" icon="scale" placeholder="0.00" value={retentionMunicipal1} onChange={e => setRetentionMunicipal1(e.target.value)} />
             </div>
             <FiscalPreview subtotal={subtotal} iva={iva} total={total} retentionIr2={retentionIr2} retentionMunicipal1={retentionMunicipal1} />
-            <div className="space-y-1">
-                <label className="text-xs font-bold uppercase tracking-wider text-stone-500">Foto de factura</label>
-                <input type="file" accept="image/*,.pdf" onChange={e => setInvoicePhoto(e.target.files?.[0] || null)} className="block w-full text-xs text-stone-500 file:mr-2 file:py-1 file:px-3 file:rounded-full file:border-0 file:text-xs file:font-semibold file:bg-[#fff0f0] file:text-[#a81d24] hover:file:bg-[#ffe1e1] cursor-pointer" />
+            <div className="space-y-2 rounded-xl border border-[#ead5c5] bg-[#fff8f5] p-3">
+                <div>
+                    <label className="text-xs font-bold uppercase tracking-wider text-stone-500">Soportes fiscales</label>
+                    <p className="mt-1 text-xs font-semibold text-stone-400">Sube factura principal y, si aplica, las dos retenciones.</p>
+                </div>
+                <SupportFilesInput
+                    files={supportFiles}
+                    onChange={(type, file) => setSupportFiles((prev) => ({ ...prev, [type]: file }))}
+                    disabled={loading}
+                />
             </div>
             <Button type="submit" variant="danger" disabled={loading} className="w-full">{loading ? 'Guardando...' : 'Registrar Gasto'}</Button>
         </form>
@@ -1226,7 +1287,7 @@ const FiscalPurchasesForm = ({ categories, loading, setLoading, onSuccess }) => 
     const [total, setTotal] = useState('');
     const [retentionIr2, setRetentionIr2] = useState('');
     const [retentionMunicipal1, setRetentionMunicipal1] = useState('');
-    const [invoicePhoto, setInvoicePhoto] = useState(null);
+    const [supportFiles, setSupportFiles] = useState(createEmptySupportFilesState());
 
     const resetForm = () => {
         setSupplier('');
@@ -1240,7 +1301,7 @@ const FiscalPurchasesForm = ({ categories, loading, setLoading, onSuccess }) => 
         setTotal('');
         setRetentionIr2('');
         setRetentionMunicipal1('');
-        setInvoicePhoto(null);
+        setSupportFiles(createEmptySupportFilesState());
     };
 
     const handleSubmit = async (e) => {
@@ -1256,7 +1317,7 @@ const FiscalPurchasesForm = ({ categories, loading, setLoading, onSuccess }) => 
         try {
             const batch = writeBatch(db);
             const purchaseRef = doc(collection(db, 'compras'));
-            const photoPayload = await uploadInvoicePhoto(invoicePhoto, 'facturas/compras', purchaseRef.id);
+            const photoPayload = await uploadFiscalSupportFiles(supportFiles, 'facturas/compras', purchaseRef.id);
             const purchasePayload = {
                 date,
                 month: date.substring(0, 7),
@@ -1368,9 +1429,16 @@ const FiscalPurchasesForm = ({ categories, loading, setLoading, onSuccess }) => 
                 <Input label="Retencion municipal 1%" type="number" step="0.01" icon="scale" placeholder="0.00" value={retentionMunicipal1} onChange={e => setRetentionMunicipal1(e.target.value)} />
             </div>
             <FiscalPreview subtotal={subtotal} iva={iva} total={total} retentionIr2={retentionIr2} retentionMunicipal1={retentionMunicipal1} />
-            <div className="space-y-1">
-                <label className="text-xs font-bold uppercase tracking-wider text-stone-500">Foto de factura</label>
-                <input type="file" accept="image/*,.pdf" onChange={e => setInvoicePhoto(e.target.files?.[0] || null)} className="block w-full text-xs text-stone-500 file:mr-2 file:py-1 file:px-3 file:rounded-full file:border-0 file:text-xs file:font-semibold file:bg-purple-100 file:text-purple-700 hover:file:bg-purple-200 cursor-pointer" />
+            <div className="space-y-2 rounded-xl border border-purple-200 bg-purple-50/60 p-3">
+                <div>
+                    <label className="text-xs font-bold uppercase tracking-wider text-stone-500">Soportes fiscales</label>
+                    <p className="mt-1 text-xs font-semibold text-stone-500">Sube factura principal y, si aplica, los soportes de retenciones.</p>
+                </div>
+                <SupportFilesInput
+                    files={supportFiles}
+                    onChange={(type, file) => setSupportFiles((prev) => ({ ...prev, [type]: file }))}
+                    disabled={loading}
+                />
             </div>
             <Button type="submit" variant="purple" disabled={loading} className="w-full">{loading ? 'Guardando...' : 'Registrar Compra'}</Button>
         </form>
