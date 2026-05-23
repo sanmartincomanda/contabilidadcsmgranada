@@ -135,7 +135,7 @@ const deriveQuickReplies = (message = {}) => {
     }
 
     if (questionText.includes('retencion') || questionText.includes('retención')) {
-        return ['Tiene retencion IR 2%', 'Tiene municipal 1%', 'No tiene retenciones'];
+        return ['No tiene retenciones', 'Solo IR 2%', 'Solo municipal 1%', 'Ambas retenciones'];
     }
 
     if (questionText.includes('factura') || questionText.includes('numero')) {
@@ -370,9 +370,12 @@ export default function AIAssistant({ floating = false }) {
             const supportForRequest = support || (options.reuseLastSupport ? reusableSupport : null);
             const selectedClassification = classificationOptions.find((option) => option.id === hintForRequest);
             const messageForAi = [
-                text || 'Analiza este soporte fiscal y crea un borrador.',
+                text || 'Analiza este soporte fiscal. Antes de crear el borrador, confirma si la factura lleva retenciones.',
                 (file || options.reuseLastSupport) && selectedClassification
                     ? `Clasificacion indicada por el usuario: ${selectedClassification.label}. Si esta clasificacion no coincide con la factura, pregunta antes de crear un borrador definitivo.`
+                    : '',
+                file
+                    ? 'Regla de entrevista: la primera validacion fiscal debe ser si la factura tiene retencion de anticipo IR 2%, retencion municipal 1%, ambas o ninguna.'
                     : '',
                 options.reuseLastSupport && reusableSupport
                     ? 'Esta respuesta corresponde al ultimo soporte/factura enviado en la conversacion.'

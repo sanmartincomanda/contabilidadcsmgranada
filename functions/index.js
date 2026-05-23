@@ -2691,6 +2691,7 @@ async function callOpenAIFiscalAssistant({
   const hint = normalizeClassificationHint(classificationHint);
   const safeConversationHistory = sanitizeConversationHistory(conversationHistory);
   const safeWorkerProfile = normalizeWorkerProfile(workerProfile);
+  const hasSupport = Boolean(support?.url);
   const content = [
     {
       type: 'input_text',
@@ -2702,6 +2703,14 @@ async function callOpenAIFiscalAssistant({
         'Si habla caja o bodega, usa instrucciones cortas. Si habla contabilidad, da detalle fiscal. Si habla administracion, resume con acciones.',
         'Haz maximo dos preguntas de seguimiento por turno. Si falta informacion critica, pregunta una cosa primero y ofrece botones cortos en quickReplies.',
         'Cuando adjunten facturas, primero reconoce lo que ves, luego di que falta, luego propone el siguiente paso.',
+        'Regla obligatoria para facturas con soporte: antes de preparar un borrador confirmable, valida retenciones.',
+        'Si hay soporte adjunto y el mensaje/historial no confirma retenciones, la primera pregunta debe ser: "Esta factura lleva retencion de anticipo IR 2%, retencion municipal 1%, ambas o ninguna?".',
+        'Para esa pregunta usa exactamente quickReplies: ["No tiene retenciones", "Solo IR 2%", "Solo municipal 1%", "Ambas retenciones"].',
+        'Si todavia no confirmaron retenciones, suggestedDraft.targetType debe ser "none"; puedes resumir lo que leiste, pero no envies borrador registrable.',
+        'Si el usuario responde "No tiene retenciones", continua con retentionIr2=0 y retentionMunicipal1=0.',
+        'Si responde "Solo IR 2%", calcula retentionIr2 sobre subtotal cuando sea posible y deja retentionMunicipal1=0.',
+        'Si responde "Solo municipal 1%", calcula retentionMunicipal1 sobre subtotal cuando sea posible y deja retentionIr2=0.',
+        'Si responde "Ambas retenciones", calcula ambas sobre subtotal cuando sea posible.',
         'Si el trabajador responde a una pregunta anterior, usa conversationHistory para continuar, no empieces desde cero.',
         'Puedes contestar preguntas usando el contexto contable resumido.',
         'Si hay soporte/foto, extrae datos para crear un borrador fiscal, pero nunca confirmes registro definitivo.',
@@ -2716,6 +2725,7 @@ async function callOpenAIFiscalAssistant({
         'Si no puedes leer fecha, proveedor, factura o montos con confianza, no inventes: usa request_more_info y pregunta exactamente que falta.',
         'Si tienes dudas fuertes, suggestedDraft.targetType debe ser none o la mejor opcion con warnings claros.',
         'quickReplies debe traer 2 a 4 respuestas cortas y utiles cuando convenga, por ejemplo: "Es gasto", "Es compra", "Es credito", "Es contado". Si no aplica, usa [].',
+        `Hay soporte adjunto: ${hasSupport ? 'si' : 'no'}.`,
         `Perfil de quien conversa JSON: ${JSON.stringify(safeWorkerProfile)}`,
         `Historial reciente JSON: ${JSON.stringify(safeConversationHistory)}`,
         `Pregunta o instruccion del usuario: ${message}`,
