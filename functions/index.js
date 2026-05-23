@@ -2874,6 +2874,7 @@ function getAiSupportLabel(type = '') {
   const normalized = normalizeComparableText(type);
   if (normalized === 'retentionir2') return 'Retencion anticipo IR 2%';
   if (normalized === 'retentionmunicipal1') return 'Retencion municipal 1%';
+  if (normalized === 'attachment') return 'Adjunto fiscal';
   return 'Factura / soporte principal';
 }
 
@@ -2917,9 +2918,9 @@ function sanitizeAiSupportFiles(value, support = null) {
     seen.add(key);
     return true;
   }).sort((left, right) => {
-    const order = { invoice: 0, retentionIr2: 1, retentionMunicipal1: 2 };
+    const order = { invoice: 0, attachment: 1, retentionIr2: 2, retentionMunicipal1: 3 };
     return (order[left.type] ?? 99) - (order[right.type] ?? 99);
-  }).slice(0, 3);
+  }).slice(0, 10);
 }
 
 function isPdfAiSupport(file = {}) {
@@ -2986,7 +2987,7 @@ async function appendSupportFilesToOpenAiContent(content, supportFiles = []) {
   for (const [index, file] of supportFiles.entries()) {
     content.push({
       type: 'input_text',
-      text: `Soporte ${index + 1}: ${file.label || getAiSupportLabel(file.type)}. Tipo interno: ${file.type || 'invoice'}. Esta etiqueta es autoritativa: si dice retentionIr2 es retencion IR 2%, si dice retentionMunicipal1 es retencion municipal 1%. Lee esta imagen/PDF antes de responder.`,
+      text: `Soporte ${index + 1}: ${file.label || getAiSupportLabel(file.type)}. Tipo interno: ${file.type || 'attachment'}. Si el tipo es attachment, debes determinar si es factura, retencion IR 2%, retencion municipal 1%, recibo u otro soporte. Si dice retentionIr2 es retencion IR 2%, si dice retentionMunicipal1 es retencion municipal 1%. Lee esta imagen/PDF antes de responder.`,
     });
     const supportContent = await buildOpenAiSupportContent(file);
     if (supportContent) content.push(supportContent);
@@ -3389,10 +3390,13 @@ async function callOpenAIFiscalExtractor({
       text: [
         'Eres MARTIN IA en modo digitador fiscal. Tarea unica: leer soportes/fotos/PDF y devolver JSON estructurado corto.',
         'No escribas explicaciones largas. No inventes datos. Si un campo no se lee, dejalo vacio o 0 y pregunta solo lo indispensable.',
-        'Lee todos los soportes: factura principal, retencion anticipo IR 2%, retencion municipal 1%. Cada imagen viene precedida por su etiqueta.',
+        'Lee todos los soportes del mensaje. Pueden venir de 1 a 10 imagenes/PDF sin etiqueta contable. Cada imagen viene precedida por un indice.',
+        'Primero clasifica mentalmente cada soporte: factura principal, retencion anticipo IR 2%, retencion municipal 1%, recibo de pago, comprobante bancario u otro soporte.',
+        'Si hay varias facturas distintas no relacionadas, procesa la factura mas completa/legible y pregunta si debe continuar con las demas. Si hay factura + retenciones del mismo proveedor/factura, arma un solo borrador con todo vinculado.',
         'Relaciona retenciones con la factura principal usando numero de factura, proveedor, RUC, fecha y monto base. Si fueron subidas en el mismo turno, tratalas como documentos vinculados salvo que claramente pertenezcan a otro proveedor/factura.',
         'Si hay soporte etiquetado como retentionIr2, extrae retentionIr2 aunque el documento use frases como anticipo IR, retencion definitiva, impuesto sobre la renta o 2%.',
         'Si hay soporte etiquetado como retentionMunicipal1, extrae retentionMunicipal1 aunque el documento use frases como alcaldia, municipal, IMI, impuesto municipal o 1%.',
+        'Si el tipo interno es attachment, identifica retencion IR por textos como DGI, anticipo IR, retencion IR, 2%, impuesto sobre la renta; identifica retencion municipal por alcaldia, municipal, IMI, 1%, impuesto municipal.',
         'Si el soporte de retencion muestra numero de factura o proveedor, comparalo con la factura principal y menciona mismatch solo si contradice claramente.',
         'Si hay factura y retenciones adjuntas, NO preguntes si lleva retenciones. Ya lleva retenciones porque los soportes fueron adjuntados.',
         'Si el monto de una retencion no es legible pero el soporte existe y el subtotal/base de la factura es visible, calcula IR como subtotal*0.02 y municipal como subtotal*0.01 segun el tipo de soporte.',
@@ -3907,7 +3911,9 @@ function getDigitizerAutoRegisterBlockers({
     ...(aiResult.followUpQuestions || []),
     ...(aiResult.quickReplies || []),
   ].join(' '), conversationHistory);
-  const hasRetentionSupport = supportFiles.some((file) => ['retentionIr2', 'retentionMunicipal1'].includes(file.type));
+  const retentionFlags = getRetentionSupportFlags(supportFiles);
+  const hasRetentionSupport = retentionFlags.hasIr2 || retentionFlags.hasMunicipal1;
+  const hasGenericAttachmentSet = supportFiles.length > 1 && supportFiles.some((file) => normalizeComparableText(file.type) === 'attachment');
   const profile = findSupplierProfileForDraft(context, draft);
   const learnedNoRetention = profile?.usualRetentionMode === 'none'
     && normalizeAmount(profile.retentionConfidence) >= 0.85
@@ -3940,7 +3946,7 @@ function getDigitizerAutoRegisterBlockers({
     blockers.push('Retenciones no confirmadas ni aprendidas');
   }
 
-  if (fiscal.retentionTotal > 0 && !hasRetentionSupport && !userConfirmedRetention) {
+  if (fiscal.retentionTotal > 0 && !hasRetentionSupport && !hasGenericAttachmentSet && !userConfirmedRetention) {
     blockers.push('La retencion tiene monto, pero falta soporte o confirmacion');
   }
 

@@ -593,7 +593,7 @@ export default function AIAssistant({ floating = false }) {
 
         const files = batchInvoiceFiles.slice(0, MAX_BATCH_INVOICES);
         const text = (overrideText || input).trim();
-        const batchId = `batch_${Date.now()}`;
+        const messageId = `u_${Date.now()}`;
         const hintForRequest = options.classificationHintOverride || classificationHint;
         const currentWorkerRole = getWorkerRole(workerRole);
         const recentConversation = messages.slice(-8).map((entry) => ({
@@ -614,13 +614,13 @@ export default function AIAssistant({ floating = false }) {
         setMessages((prev) => [
             ...prev,
             {
-                id: `${batchId}_user`,
+                id: messageId,
                 role: 'user',
                 text: [
-                    text || `Procesa lote de ${files.length} facturas.`,
-                    'Modo: Digitador por lote',
+                    text || `Analiza ${files.length} adjunto${files.length === 1 ? '' : 's'} fiscal${files.length === 1 ? '' : 'es'}.`,
+                    'Modo: Digitador',
                     autoRegisterDigitizer ? 'Auto-registro seguro: activo' : 'Auto-registro seguro: apagado',
-                    `Facturas seleccionadas: ${files.map((file, index) => `${index + 1}. ${file.name}`).join(' | ')}`,
+                    `Adjuntos: ${files.map((file, index) => `${index + 1}. ${file.name}`).join(' | ')}`,
                 ].filter(Boolean).join('\n'),
             },
         ]);
@@ -629,87 +629,67 @@ export default function AIAssistant({ floating = false }) {
         setSupportFiles(createEmptySupportFilesState());
         setClassificationHint('auto');
 
-        const totals = {
-            processed: 0,
-            registered: 0,
-            pending: 0,
-            failed: 0,
-        };
-
         try {
+            const uploadedSupportFiles = [];
             for (const [index, file] of files.entries()) {
-                const invoiceNumber = index + 1;
-                try {
-                    const uploaded = await uploadSupportFile(file, 'ai/fiscal_supports', `${batchId}_${invoiceNumber}`, 'invoice');
-                    const supportFile = {
-                        ...uploaded,
-                        source: 'app_ai_batch',
-                        uploadedAt: uploaded.uploadedAt || new Date().toISOString(),
-                    };
-
-                    const response = await assistantCallable({
-                        message: [
-                            text || 'MODO DIGITADOR LOTE: lee esta factura y prepara el registro contable.',
-                            `Factura ${invoiceNumber} de ${files.length}. Procesala como factura independiente.`,
-                            'Si esta clara, intenta auto-registro seguro. Si falta algo, pregunta solo lo indispensable para esta factura.',
-                        ].join('\n'),
-                        classificationHint: hintForRequest,
-                        support: supportFile,
-                        supportFiles: [supportFile],
-                        digitizerOptions: {
-                            mode: 'digitizer',
-                            autoRegister: autoRegisterDigitizer,
-                        },
-                        conversationHistory: recentConversation,
-                        workerProfile: {
-                            name: workerName.trim(),
-                            role: currentWorkerRole.id,
-                            roleLabel: currentWorkerRole.label,
-                            tone: currentWorkerRole.tone,
-                        },
-                    });
-
-                    const result = response.data?.result || {};
-                    const autoRegistration = response.data?.autoRegistration || null;
-                    totals.processed += 1;
-                    if (autoRegistration?.confirmed) totals.registered += 1;
-                    else totals.pending += 1;
-
-                    setMessages((prev) => [
-                        ...prev,
-                        {
-                            id: `${batchId}_assistant_${invoiceNumber}`,
-                            role: 'assistant',
-                            text: `Factura ${invoiceNumber}/${files.length}\n${result.reply || 'Factura procesada.'}${buildAutoRegisterStatusText(autoRegistration)}`,
-                            draft: result.suggestedDraft || emptyDraft,
-                            warnings: result.warnings || [],
-                            followUpQuestions: result.followUpQuestions || [],
-                            quickReplies: result.quickReplies || [],
-                            support: supportFile,
-                            supportFiles: [supportFile],
-                        },
-                    ]);
-                } catch (err) {
-                    console.error(err);
-                    totals.failed += 1;
-                    setMessages((prev) => [
-                        ...prev,
-                        {
-                            id: `${batchId}_error_${invoiceNumber}`,
-                            role: 'assistant',
-                            text: `Factura ${invoiceNumber}/${files.length}\nNo pude procesar esta factura: ${err?.message || 'error desconocido'}. La seguimos manual si hace falta.`,
-                        },
-                    ]);
-                }
+                const uploaded = await uploadSupportFile(file, 'ai/fiscal_supports', `${messageId}_${index + 1}`, 'attachment');
+                uploadedSupportFiles.push({
+                    ...uploaded,
+                    label: `Adjunto ${index + 1}`,
+                    source: 'app_ai_chat',
+                    uploadedAt: uploaded.uploadedAt || new Date().toISOString(),
+                });
             }
 
+            const response = await assistantCallable({
+                message: [
+                    text || 'MODO DIGITADOR: analiza todos los adjuntos fiscales de este mensaje.',
+                    `El usuario adjunto ${uploadedSupportFiles.length} imagen(es)/PDF. Determina tu mismo si cada adjunto es factura, retencion IR, retencion municipal, comprobante de pago u otro soporte.`,
+                    'Si los adjuntos pertenecen a la misma factura, arma un solo borrador con factura y retenciones vinculadas.',
+                    'Si ves varias facturas distintas, procesa la mas completa y preguntame si continuo con las demas.',
+                    'Si esta claro, intenta auto-registro seguro. Si falta algo, pregunta solo lo indispensable.',
+                ].join('\n'),
+                classificationHint: hintForRequest,
+                support: uploadedSupportFiles[0] || null,
+                supportFiles: uploadedSupportFiles,
+                digitizerOptions: {
+                    mode: 'digitizer',
+                    autoRegister: autoRegisterDigitizer,
+                },
+                conversationHistory: recentConversation,
+                workerProfile: {
+                    name: workerName.trim(),
+                    role: currentWorkerRole.id,
+                    roleLabel: currentWorkerRole.label,
+                    tone: currentWorkerRole.tone,
+                },
+            });
+
+            const result = response.data?.result || {};
+            const autoRegistration = response.data?.autoRegistration || null;
             setMessages((prev) => [
                 ...prev,
                 {
-                    id: `${batchId}_summary`,
+                    id: `a_${Date.now()}`,
                     role: 'assistant',
-                    text: `Resumen del lote: ${totals.processed} procesadas, ${totals.registered} registradas automaticamente, ${totals.pending} pendientes de confirmar y ${totals.failed} con error.`,
-                    quickReplies: totals.pending ? ['Revisar pendientes', 'No tiene retenciones', 'Es contado'] : ['Subir otro lote', 'Revisar CxP'],
+                    text: `${result.reply || 'Listo, revise los adjuntos.'}${buildAutoRegisterStatusText(autoRegistration)}`,
+                    draft: result.suggestedDraft || emptyDraft,
+                    warnings: result.warnings || [],
+                    followUpQuestions: result.followUpQuestions || [],
+                    quickReplies: result.quickReplies || [],
+                    support: uploadedSupportFiles[0] || null,
+                    supportFiles: uploadedSupportFiles,
+                },
+            ]);
+        } catch (err) {
+            console.error(err);
+            setError(err?.message || 'No pude procesar los adjuntos.');
+            setMessages((prev) => [
+                ...prev,
+                {
+                    id: `e_${Date.now()}`,
+                    role: 'assistant',
+                    text: `No pude completar la consulta: ${err?.message || 'No pude procesar los adjuntos.'}`,
                 },
             ]);
         } finally {
@@ -769,7 +749,7 @@ export default function AIAssistant({ floating = false }) {
 
     const renderChatComposer = (compact = false) => {
         const supportLabels = selectedSupportEntries.map((entry) => `${entry.label}: ${entry.file.name}`);
-        const batchLabels = batchInvoiceFiles.map((file, index) => `Factura ${index + 1}: ${file.name}`);
+        const batchLabels = batchInvoiceFiles.map((file, index) => `Adjunto ${index + 1}: ${file.name}`);
         const attachmentLabels = [...supportLabels, ...batchLabels];
 
         return (
@@ -814,7 +794,7 @@ export default function AIAssistant({ floating = false }) {
                                 handleSend();
                             }
                         }}
-                        placeholder={hasBatchInvoices ? 'Opcional: instrucciones para este lote...' : 'Escribe o adjunta una factura...'}
+                        placeholder={hasBatchInvoices ? 'Opcional: dile a MARTIN qué quieres hacer con estos adjuntos...' : 'Escribe o adjunta fotos...'}
                         className={`${compact ? 'min-h-[52px]' : 'min-h-[64px]'} w-full resize-none bg-transparent px-3 py-2 text-sm font-semibold text-[#3d1b1e] outline-none`}
                     />
                     <div className="flex flex-wrap items-center justify-between gap-2 border-t border-[#ead5c5]/70 pt-2">
@@ -824,7 +804,7 @@ export default function AIAssistant({ floating = false }) {
                                     ? 'border-[#a81d24] bg-[#a81d24] text-white'
                                     : 'border-[#f2b635] bg-[#fff8e6] text-[#7f1218] hover:bg-[#fff0c8]'
                             }`}>
-                                {hasBatchInvoices ? `Lote ${batchInvoiceFiles.length}/${MAX_BATCH_INVOICES}` : `Lote ${MAX_BATCH_INVOICES} facturas`}
+                                {hasBatchInvoices ? `${batchInvoiceFiles.length} adjunto${batchInvoiceFiles.length === 1 ? '' : 's'}` : 'Adjuntar foto'}
                                 <input
                                     type="file"
                                     accept="image/*,.pdf"
@@ -839,29 +819,9 @@ export default function AIAssistant({ floating = false }) {
                                     }}
                                 />
                             </label>
-                            {SUPPORT_FILE_TYPES.map((type) => {
-                                const selected = supportFiles[type.key];
-                                const shortLabel = type.key === 'invoice' ? 'Factura' : type.key === 'retentionIr2' ? 'Ret. IR' : 'Ret. municipal';
-                                return (
-                                    <label key={type.key} className={`cursor-pointer rounded-full border px-3 py-1.5 text-[11px] font-black transition ${
-                                        selected
-                                            ? 'border-[#a81d24] bg-[#a81d24] text-white'
-                                            : 'border-[#ead5c5] bg-white text-[#7f1218] hover:bg-[#fff0c8]'
-                                    }`}>
-                                        {selected ? `${shortLabel} lista` : shortLabel}
-                                        <input
-                                            type="file"
-                                            accept="image/*,.pdf"
-                                            className="hidden"
-                                            onChange={(event) => {
-                                                setBatchInvoiceFiles([]);
-                                                setSupportFiles((prev) => ({ ...prev, [type.key]: event.target.files?.[0] || null }));
-                                                event.target.value = '';
-                                            }}
-                                        />
-                                    </label>
-                                );
-                            })}
+                            <span className="px-2 py-1 text-[10px] font-black uppercase tracking-[0.14em] text-stone-400">
+                                Max {MAX_BATCH_INVOICES}
+                            </span>
                         </div>
                         <div className="flex items-center gap-2">
                             <button
