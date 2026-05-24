@@ -193,6 +193,7 @@ const inferModeFromReply = (text = '') => {
 const assistantCallable = httpsCallable(functions, 'fiscalAssistantChat');
 const confirmDraftCallable = httpsCallable(functions, 'confirmFiscalAssistantDraft');
 const rejectDraftCallable = httpsCallable(functions, 'rejectFiscalAssistantDraft');
+const trainMemoryCallable = httpsCallable(functions, 'trainFiscalAssistantMemory');
 
 const timestampToDate = (value) => {
     if (!value) return '';
@@ -209,13 +210,56 @@ const buildAutoRegisterStatusText = (autoRegistration) => {
 
     const blockers = autoRegistration.blockers || [];
     if (autoRegistration.attempted && blockers.length) {
-        const blockerText = blockers.length > 3
-            ? `${blockers.slice(0, 3).join('; ')} y ${blockers.length - 3} pendientes mas`
-            : blockers.join('; ');
-        return `\n\nAuto-registro seguro no se ejecuto todavia: ${blockerText}.`;
+        const mainBlocker = blockers.find((item) => !String(item).toLowerCase().includes('confianza')) || blockers[0];
+        return `\n\nQuedo como borrador pendiente. ${mainBlocker ? `Motivo: ${mainBlocker}. ` : ''}Si esta correcto, responde "si, registralo".`;
     }
 
     return '';
+};
+
+const normalizeIntentText = (value = '') => String(value)
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim();
+
+const isRegisterConfirmationIntent = (value = '') => {
+    const text = normalizeIntentText(value);
+    if (!text) return false;
+    return [
+        'si',
+        'si registralo',
+        'si registra',
+        'confirmo',
+        'confirmado',
+        'registralo',
+        'registrar',
+        'guardalo',
+        'guarda',
+        'ya puede registrar',
+        'puede registrar',
+        'registrar el gasto',
+        'registrar la compra',
+        'esta correcto',
+        'correcto',
+    ].some((phrase) => text === phrase || text.includes(phrase));
+};
+
+const isTrainingCorrectionIntent = (value = '') => {
+    const text = normalizeIntentText(value);
+    return [
+        'aprende',
+        'entrena',
+        'esta factura es',
+        'esto es',
+        'es gasto',
+        'es compra',
+        'categoria',
+        'retencion',
+        'transferencia',
+        'credito',
+        'contado',
+    ].some((phrase) => text.includes(phrase));
 };
 
 const DraftField = ({ label, value, money = false }) => (
@@ -425,9 +469,131 @@ export default function AIAssistant({ floating = false }) {
     const hasSelectedSupport = selectedSupportEntries.length > 0;
     const hasBatchInvoices = batchInvoiceFiles.length > 0;
 
+    const getLatestConfirmableDraft = () => {
+        const messageDraft = [...messages].reverse().find((message) => (
+            message.draftId
+            && message.draft?.targetType
+            && message.draft.targetType !== 'none'
+        ));
+        if (messageDraft) {
+            return {
+                id: messageDraft.draftId,
+                suggestedDraft: messageDraft.draft,
+            };
+        }
+
+        return drafts.find((draft) => (
+            draft.status !== 'confirmed'
+            && draft.status !== 'rejected'
+            && (draft.suggestedDraft?.targetType || draft.aiResult?.suggestedDraft?.targetType)
+            && (draft.suggestedDraft?.targetType || draft.aiResult?.suggestedDraft?.targetType) !== 'none'
+        )) || null;
+    };
+
+    const rememberCorrection = async (text, draftRecord) => {
+        if (!text || !draftRecord) return null;
+        const draft = draftRecord.suggestedDraft || draftRecord.aiResult?.suggestedDraft || draftRecord.draft || draftRecord;
+        if (!draft?.supplier && !draft?.payableProvider) return null;
+        return trainMemoryCallable({
+            message: text,
+            draft,
+            draftId: draftRecord.id || draftRecord.draftId || '',
+        });
+    };
+
+    const handleConfirmLatestDraft = async (text) => {
+        const draftRecord = getLatestConfirmableDraft();
+        if (!draftRecord?.id) {
+            setMessages((prev) => [
+                ...prev,
+                { id: `u_${Date.now()}`, role: 'user', text },
+                {
+                    id: `a_${Date.now()}`,
+                    role: 'assistant',
+                    text: 'No encontre un borrador pendiente para registrar. Adjunta la factura o vuelve a pedirme que la lea.',
+                },
+            ]);
+            return;
+        }
+
+        setLoading(true);
+        setError('');
+        try {
+            if (isTrainingCorrectionIntent(text)) {
+                await rememberCorrection(text, draftRecord);
+            }
+            const response = await confirmDraftCallable({ draftId: draftRecord.id });
+            const targetCollection = response.data?.targetCollection || 'registro';
+            setMessages((prev) => [
+                ...prev,
+                { id: `u_${Date.now()}`, role: 'user', text },
+                {
+                    id: `a_${Date.now()}`,
+                    role: 'assistant',
+                    text: `Registrado en ${targetCollection}. Tambien guarde este caso como aprendizaje para que MARTIN lo reconozca mejor la proxima vez.`,
+                    quickReplies: ['Subir otra factura', 'Ver pendientes'],
+                },
+            ]);
+        } catch (err) {
+            console.error(err);
+            setMessages((prev) => [
+                ...prev,
+                { id: `u_${Date.now()}`, role: 'user', text },
+                {
+                    id: `e_${Date.now()}`,
+                    role: 'assistant',
+                    text: `No pude registrar todavia: ${err?.message || 'error desconocido'}. Si me corriges el dato que falta, lo aprendo y reintentamos.`,
+                },
+            ]);
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    const handleTrainingCorrection = async (text) => {
+        const draftRecord = getLatestConfirmableDraft();
+        if (!draftRecord) return false;
+
+        setLoading(true);
+        setError('');
+        try {
+            const response = await rememberCorrection(text, draftRecord);
+            const learned = response?.data?.learned || {};
+            setMessages((prev) => [
+                ...prev,
+                { id: `u_${Date.now()}`, role: 'user', text },
+                {
+                    id: `a_${Date.now()}`,
+                    role: 'assistant',
+                    text: `Aprendido para ${learned.supplier || 'este proveedor'}. La proxima vez usare ese patron${learned.category ? ` con categoria ${learned.category}` : ''}${learned.paymentMethod ? ` y pago ${learned.paymentMethod}` : ''}. Si queres guardarlo ahora, responde "si, registralo".`,
+                    quickReplies: ['Si, registralo', 'Adjuntar otra foto'],
+                },
+            ]);
+            return true;
+        } catch (err) {
+            console.error(err);
+            setError(err?.message || 'No pude guardar el aprendizaje.');
+            return false;
+        } finally {
+            setLoading(false);
+        }
+    };
+
     const handleSend = async (overrideText = '', options = {}) => {
         if (loading) return;
         const text = (overrideText || input).trim();
+        if (text && !hasSelectedSupport && !hasBatchInvoices && isRegisterConfirmationIntent(text)) {
+            await handleConfirmLatestDraft(text);
+            setInput('');
+            return;
+        }
+        if (text && !hasSelectedSupport && !hasBatchInvoices && isTrainingCorrectionIntent(text)) {
+            const learned = await handleTrainingCorrection(text);
+            if (learned) {
+                setInput('');
+                return;
+            }
+        }
         if (!text && !hasSelectedSupport && !hasBatchInvoices) return;
 
         if (hasBatchInvoices) {
@@ -524,8 +690,6 @@ export default function AIAssistant({ floating = false }) {
                     role: 'user',
                     text: [
                         text || 'Analiza este soporte fiscal.',
-                        digitizerActive ? 'Modo: Digitador' : '',
-                        digitizerActive && autoRegisterDigitizer ? 'Auto-registro seguro: activo' : '',
                         (hasSelectedSupport || options.reuseLastSupport) && selectedClassification ? `Tipo: ${selectedClassification.label}` : '',
                         uploadedSupportFiles.length ? `Soportes adjuntos: ${uploadedSupportFiles.map((item) => item.label).join(', ')}` : '',
                     ].filter(Boolean).join('\n'),
@@ -563,6 +727,7 @@ export default function AIAssistant({ floating = false }) {
                     id: `a_${Date.now()}`,
                     role: 'assistant',
                     text: `${result.reply || 'Listo, procese tu solicitud.'}${autoRegisterText}`,
+                    draftId: response.data?.draftId || '',
                     draft: result.suggestedDraft || emptyDraft,
                     warnings: result.warnings || [],
                     followUpQuestions: result.followUpQuestions || [],
@@ -616,12 +781,10 @@ export default function AIAssistant({ floating = false }) {
             {
                 id: messageId,
                 role: 'user',
-                text: [
-                    text || `Analiza ${files.length} adjunto${files.length === 1 ? '' : 's'} fiscal${files.length === 1 ? '' : 'es'}.`,
-                    'Modo: Digitador',
-                    autoRegisterDigitizer ? 'Auto-registro seguro: activo' : 'Auto-registro seguro: apagado',
-                    `Adjuntos: ${files.map((file, index) => `${index + 1}. ${file.name}`).join(' | ')}`,
-                ].filter(Boolean).join('\n'),
+                    text: [
+                        text || `Analiza ${files.length} adjunto${files.length === 1 ? '' : 's'} fiscal${files.length === 1 ? '' : 'es'}.`,
+                        `Adjuntos: ${files.map((file, index) => `${index + 1}. ${file.name}`).join(' | ')}`,
+                    ].filter(Boolean).join('\n'),
             },
         ]);
         setInput('');
@@ -673,6 +836,7 @@ export default function AIAssistant({ floating = false }) {
                     id: `a_${Date.now()}`,
                     role: 'assistant',
                     text: `${result.reply || 'Listo, revise los adjuntos.'}${buildAutoRegisterStatusText(autoRegistration)}`,
+                    draftId: response.data?.draftId || '',
                     draft: result.suggestedDraft || emptyDraft,
                     warnings: result.warnings || [],
                     followUpQuestions: result.followUpQuestions || [],

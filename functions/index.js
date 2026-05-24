@@ -3356,7 +3356,7 @@ function buildDigitizerReplyFromDraft(aiResult = {}) {
   ].filter(Boolean).join(' | ');
 
   const parts = [];
-  parts.push(`Modo Digitador activo. Lei los soportes y prepare un borrador como ${typeLabel}.`);
+  parts.push(`Lei los soportes y prepare un borrador como ${typeLabel}.`);
   if (summary) parts.push(`Datos detectados: ${summary}.`);
   if (fiscal) parts.push(fiscal);
   if (draft.category) parts.push(`Categoria sugerida: ${draft.category}.`);
@@ -3832,6 +3832,118 @@ function buildAiFiscalNumbers(draft = {}) {
   };
 }
 
+function parseTrainingPatchFromMessage(message = '', draft = {}) {
+  const text = normalizeComparableText(message);
+  const subtotal = normalizeAmount(draft.subtotal || draft.amount || Math.max(normalizeAmount(draft.total) - normalizeAmount(draft.iva), 0));
+  const patch = {};
+
+  if (text.includes('compra')) patch.kind = 'compra';
+  if (text.includes('gasto')) patch.kind = 'gasto';
+
+  if (text.includes('credito') || text.includes('crédito')) {
+    patch.credit = true;
+    patch.paymentMethod = 'credito';
+  } else if (text.includes('contado')) {
+    patch.credit = false;
+    patch.paymentMethod = 'Contado';
+  } else if (text.includes('transferencia')) {
+    patch.credit = false;
+    patch.paymentMethod = 'Transferencia';
+  } else if (text.includes('efectivo')) {
+    patch.credit = false;
+    patch.paymentMethod = 'Efectivo';
+  }
+
+  const categoryMatch = normalizeText(message).match(/categor[ií]a\s*[:\-]?\s*([^.;,\n]+)/i);
+  if (categoryMatch?.[1]) patch.category = normalizeText(categoryMatch[1]).slice(0, 120);
+  if (!patch.category && patch.kind === 'compra') patch.category = 'Compra';
+
+  const noRetention = text.includes('no tiene retencion')
+    || text.includes('no tiene retenciones')
+    || text.includes('sin retencion')
+    || text.includes('sin retenciones')
+    || text.includes('no sujeto');
+  const hasIr = text.includes('ir 2') || text.includes('ir2') || text.includes('anticipo ir');
+  const hasMunicipal = text.includes('municipal') || text.includes('alcaldia') || text.includes('alcaldía') || text.includes('imi');
+
+  if (noRetention) {
+    patch.retentionIr2 = 0;
+    patch.retentionMunicipal1 = 0;
+    patch.retentionMode = 'none';
+  } else {
+    if (hasIr) patch.retentionIr2 = normalizeAmount(draft.retentionIr2) || normalizeAmount(subtotal * 0.02);
+    if (hasMunicipal) patch.retentionMunicipal1 = normalizeAmount(draft.retentionMunicipal1) || normalizeAmount(subtotal * 0.01);
+    if (hasIr && hasMunicipal) patch.retentionMode = 'both';
+    else if (hasIr) patch.retentionMode = 'ir2';
+    else if (hasMunicipal) patch.retentionMode = 'municipal1';
+  }
+
+  return patch;
+}
+
+async function rememberAiTrainingMemory({ draft = {}, message = '', actorEmail = '', draftId = '' }) {
+  const supplier = cleanAiText(draft.supplier || draft.payableProvider || '').toUpperCase();
+  const supplierKey = normalizeComparableText(supplier);
+  if (!supplierKey) {
+    throw new HttpsError('failed-precondition', 'Para entrenar necesito que el borrador tenga proveedor.');
+  }
+
+  const patch = parseTrainingPatchFromMessage(message, draft);
+  const targetType = normalizeText(draft.targetType);
+  const inferredKind = patch.kind || (targetType.includes('compra') ? 'compra' : targetType.includes('gasto') ? 'gasto' : '');
+  const inferredCredit = typeof patch.credit === 'boolean' ? patch.credit : targetType.includes('credito');
+  const retentionIr2 = Object.prototype.hasOwnProperty.call(patch, 'retentionIr2')
+    ? normalizeAmount(patch.retentionIr2)
+    : normalizeAmount(draft.retentionIr2);
+  const retentionMunicipal1 = Object.prototype.hasOwnProperty.call(patch, 'retentionMunicipal1')
+    ? normalizeAmount(patch.retentionMunicipal1)
+    : normalizeAmount(draft.retentionMunicipal1);
+
+  await firestore.collection('ai_fiscal_learning').doc(supplierKey).set({
+    supplier,
+    supplierKey,
+    kind: inferredKind,
+    credit: inferredCredit,
+    targetCollection: inferredKind === 'compra' ? 'compras' : inferredKind === 'gasto' ? 'gastos' : '',
+    category: cleanAiText(patch.category || draft.category || (inferredKind === 'compra' ? 'Compra' : '')),
+    paymentMethod: cleanAiText(patch.paymentMethod || draft.paymentMethod || (inferredCredit ? 'credito' : '')),
+    retentionIr2,
+    retentionMunicipal1,
+    lastInvoiceNumber: cleanAiText(draft.invoiceNumber || draft.payableInvoiceNumber || ''),
+    lastDescription: cleanAiText(draft.description || ''),
+    lastTrainingMessage: cleanAiText(message),
+    lastTrainingDraftId: cleanAiText(draftId),
+    trainingCorrections: FieldValue.arrayUnion({
+      message: cleanAiText(message),
+      kind: inferredKind,
+      credit: inferredCredit,
+      category: cleanAiText(patch.category || draft.category || ''),
+      paymentMethod: cleanAiText(patch.paymentMethod || draft.paymentMethod || ''),
+      retentionMode: patch.retentionMode || '',
+      retentionIr2,
+      retentionMunicipal1,
+      draftId: cleanAiText(draftId),
+      trainedAt: new Date().toISOString(),
+      trainedBy: actorEmail,
+    }),
+    evidenceCount: FieldValue.increment(1),
+    trainingCount: FieldValue.increment(1),
+    updatedBy: actorEmail,
+    updatedAt: FieldValue.serverTimestamp(),
+    lastSeenAt: new Date().toISOString().substring(0, 10),
+  }, { merge: true });
+
+  return {
+    supplier,
+    kind: inferredKind,
+    credit: inferredCredit,
+    category: cleanAiText(patch.category || draft.category || ''),
+    paymentMethod: cleanAiText(patch.paymentMethod || draft.paymentMethod || ''),
+    retentionIr2,
+    retentionMunicipal1,
+  };
+}
+
 function buildAiSupportPayload(inbox = {}) {
   const files = sanitizeAiSupportFiles(inbox.supportFiles, {
     ...(inbox.support || {}),
@@ -3915,6 +4027,8 @@ function getDigitizerAutoRegisterBlockers({
   const hasRetentionSupport = retentionFlags.hasIr2 || retentionFlags.hasMunicipal1;
   const hasGenericAttachmentSet = supportFiles.length > 1 && supportFiles.some((file) => normalizeComparableText(file.type) === 'attachment');
   const profile = findSupplierProfileForDraft(context, draft);
+  const supplierEvidenceCount = normalizeAmount(profile?.evidenceCount);
+  const requiredConfidence = supplierEvidenceCount >= 3 ? 0.78 : supplierEvidenceCount >= 1 ? 0.84 : 0.9;
   const learnedNoRetention = profile?.usualRetentionMode === 'none'
     && normalizeAmount(profile.retentionConfidence) >= 0.85
     && normalizeAmount(profile.evidenceCount) >= 3;
@@ -3933,7 +4047,7 @@ function getDigitizerAutoRegisterBlockers({
   if (!options.autoRegister) blockers.push('Auto-registro seguro esta apagado');
   if (!supportFiles.length) blockers.push('No hay foto/PDF de soporte');
   if (!allowedTargets.has(targetType)) blockers.push('La IA no propuso gasto o compra confirmable');
-  if (confidence < 0.9) blockers.push('Confianza menor a 90%');
+  if (confidence < requiredConfidence) blockers.push(`Confianza menor a ${Math.round(requiredConfidence * 100)}%`);
   if ((aiResult.warnings || []).length) blockers.push('Hay alertas pendientes');
   if ((aiResult.followUpQuestions || []).length) blockers.push('Hay preguntas pendientes');
   if (!DATE_REGEX.test(date)) blockers.push('Falta fecha valida');
@@ -4333,6 +4447,29 @@ exports.confirmFiscalAssistantDraft = onCall(BASE_FUNCTION_OPTIONS, async (reque
   const overrides = request.data?.overrides || {};
 
   return confirmFiscalAssistantDraftInternal({ actorEmail, draftId, overrides });
+});
+
+exports.trainFiscalAssistantMemory = onCall(BASE_FUNCTION_OPTIONS, async (request) => {
+  const actorEmail = ensureAdminUser(request.auth, 'entrenar a MARTIN IA');
+  const message = normalizeText(request.data?.message);
+  const draft = request.data?.draft || {};
+  const draftId = normalizeText(request.data?.draftId);
+
+  if (!message) {
+    throw new HttpsError('invalid-argument', 'Escribe que debe aprender MARTIN IA.');
+  }
+
+  const learned = await rememberAiTrainingMemory({
+    draft,
+    message,
+    actorEmail,
+    draftId,
+  });
+
+  return {
+    ok: true,
+    learned,
+  };
 });
 
 exports.rejectFiscalAssistantDraft = onCall(BASE_FUNCTION_OPTIONS, async (request) => {
