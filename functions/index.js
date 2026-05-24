@@ -2107,6 +2107,12 @@ async function replayPrivateSicarStaging({ preview = false, requeueErrors = true
     }
   }
 
+  await chatRef.set({
+    result: aiResult,
+    autoRegistration,
+    updatedAt: FieldValue.serverTimestamp(),
+  }, { merge: true });
+
   return {
     ok: true,
     cutoverDate,
@@ -3362,17 +3368,71 @@ function buildDigitizerReplyFromDraft(aiResult = {}) {
   ].filter(Boolean).join(' | ');
 
   const parts = [];
-  parts.push(`Lei los soportes y prepare un borrador como ${typeLabel}.`);
+  parts.push(`Lei los soportes y prepare el registro como ${typeLabel}.`);
   if (summary) parts.push(`Datos detectados: ${summary}.`);
   if (fiscal) parts.push(fiscal);
   if (draft.category) parts.push(`Categoria sugerida: ${draft.category}.`);
   if ((aiResult.followUpQuestions || []).length) {
-    parts.push(`Antes de registrar necesito confirmar: ${(aiResult.followUpQuestions || []).slice(0, 2).join(' ')}`);
+    parts.push(`Si no puedo registrarlo automaticamente, necesito corregir: ${(aiResult.followUpQuestions || []).slice(0, 2).join(' ')}`);
   } else {
-    parts.push('Si todo esta correcto, podes confirmar el registro.');
+    parts.push('Intentare registrarlo automaticamente y te dejare una nota de registro.');
   }
 
   return parts.join('\n');
+}
+
+function getAiTargetLabel(targetType = '') {
+  return {
+    gasto_credito: 'gasto a credito',
+    gasto_contado: 'gasto de contado',
+    compra_credito: 'compra a credito',
+    compra_contado: 'compra de contado',
+    abono_cxp: 'abono a cuenta por pagar',
+    factura_membretada_venta: 'factura membretada de venta',
+  }[normalizeText(targetType)] || 'registro fiscal';
+}
+
+function buildAutoRegistrationNote({
+  draft = {},
+  autoRegistration = {},
+  blockers = [],
+}) {
+  const fiscal = buildAiFiscalNumbers(draft);
+  const typeLabel = getAiTargetLabel(draft.targetType);
+  const supplier = cleanAiText(draft.supplier || draft.payableProvider || 'SIN PROVEEDOR');
+  const invoiceNumber = cleanAiText(draft.invoiceNumber || draft.payableInvoiceNumber || 'SIN FACTURA');
+  const date = normalizeDate(draft.date) || '';
+  const category = cleanAiText(draft.category || (normalizeText(draft.targetType).includes('compra') ? 'Compra' : ''));
+  const paymentMethod = cleanAiText(draft.paymentMethod || (normalizeText(draft.targetType).includes('credito') ? 'Credito' : ''));
+  const detailLines = [
+    `Tipo: ${typeLabel}`,
+    `Proveedor: ${supplier}`,
+    `Factura: ${invoiceNumber}`,
+    date ? `Fecha: ${date}` : '',
+    category ? `Categoria: ${category}` : '',
+    paymentMethod ? `Pago: ${paymentMethod}` : '',
+    fiscal.subtotal > 0 ? `Subtotal: ${formatFiscalAmount(fiscal.subtotal)}` : '',
+    fiscal.iva > 0 ? `IVA: ${formatFiscalAmount(fiscal.iva)}` : '',
+    fiscal.total > 0 ? `Total: ${formatFiscalAmount(fiscal.total)}` : '',
+    fiscal.retentionIr2 > 0 ? `Retencion IR 2%: ${formatFiscalAmount(fiscal.retentionIr2)}` : '',
+    fiscal.retentionMunicipal1 > 0 ? `Retencion municipal 1%: ${formatFiscalAmount(fiscal.retentionMunicipal1)}` : '',
+  ].filter(Boolean);
+
+  if (blockers.length) {
+    return [
+      'No lo registre todavia porque falta un dato minimo.',
+      `Falta corregir: ${blockers.slice(0, 4).join('; ')}.`,
+      detailLines.length ? `Lo que pude leer:\n${detailLines.join('\n')}` : '',
+      'Decime el cambio directo, por ejemplo: "es compra", "categoria: viaticos", "metodo transferencia", "no tiene retenciones", o adjunta otra foto mas clara.',
+    ].filter(Boolean).join('\n');
+  }
+
+  return [
+    'Nota de registro',
+    `Registrado automaticamente en ${autoRegistration.targetCollection || 'el sistema'}.`,
+    detailLines.join('\n'),
+    'Si algo quedo mal, decime el cambio directo: "cambia categoria a...", "ponlo como credito", "no tiene retenciones", "es compra" o "es gasto".',
+  ].filter(Boolean).join('\n');
 }
 
 async function callOpenAIFiscalExtractor({
@@ -3398,7 +3458,7 @@ async function callOpenAIFiscalExtractor({
         'No escribas explicaciones largas. No inventes datos. Si un campo no se lee, dejalo vacio o 0 y pregunta solo lo indispensable.',
         'Lee todos los soportes del mensaje. Pueden venir de 1 a 10 imagenes/PDF sin etiqueta contable. Cada imagen viene precedida por un indice.',
         'Primero clasifica mentalmente cada soporte: factura principal, retencion anticipo IR 2%, retencion municipal 1%, recibo de pago, comprobante bancario u otro soporte.',
-        'Si hay varias facturas distintas no relacionadas, procesa la factura mas completa/legible y pregunta si debe continuar con las demas. Si hay factura + retenciones del mismo proveedor/factura, arma un solo borrador con todo vinculado.',
+        'Si hay varias facturas distintas no relacionadas, procesa la factura mas completa/legible y pregunta si debe continuar con las demas. Si hay factura + retenciones del mismo proveedor/factura, arma un solo registro con todo vinculado.',
         'Relaciona retenciones con la factura principal usando numero de factura, proveedor, RUC, fecha y monto base. Si fueron subidas en el mismo turno, tratalas como documentos vinculados salvo que claramente pertenezcan a otro proveedor/factura.',
         'Si hay soporte etiquetado como retentionIr2, extrae retentionIr2 aunque el documento use frases como anticipo IR, retencion definitiva, impuesto sobre la renta o 2%.',
         'Si hay soporte etiquetado como retentionMunicipal1, extrae retentionMunicipal1 aunque el documento use frases como alcaldia, municipal, IMI, impuesto municipal o 1%.',
@@ -3413,7 +3473,7 @@ async function callOpenAIFiscalExtractor({
         'Si es compra, usa category "Compra" salvo que el contexto indique algo mejor.',
         'Si condicion dice contado, 1 dia contado o similar, usa *_contado y paymentMethod "Contado". Si dice credito, usa *_credito.',
         `Pista usuario: ${hint}.`,
-        `Auto-registro seguro: ${safeDigitizerOptions.autoRegister ? 'si' : 'no'}.`,
+        `Auto-registro: ${safeDigitizerOptions.autoRegister ? 'si' : 'no'}.`,
         `Hay soportes de retencion adjuntos: ${hasRetentionSupport ? 'si' : 'no'}.`,
         `Historial reciente JSON: ${JSON.stringify(safeConversationHistory)}`,
         `Mensaje usuario: ${message}`,
@@ -3512,7 +3572,7 @@ async function callOpenAIFiscalAssistant({
   const hasRetentionSupport = retentionFlags.hasIr2 || retentionFlags.hasMunicipal1;
   const safeFallbackResult = {
     reply: hasSupport
-      ? `${safeDigitizerOptions.mode === 'digitizer' ? 'Modo Digitador activo. ' : ''}Ya guarde el soporte en la bandeja de MARTIN IA, pero necesito confirmar un dato fiscal antes de armar el borrador. ¿Esta factura lleva retencion de anticipo IR 2%, retencion municipal 1%, ambas o ninguna?`
+      ? `${safeDigitizerOptions.mode === 'digitizer' ? 'Modo Digitador activo. ' : ''}Ya guarde el soporte en MARTIN IA, pero necesito un dato minimo antes de registrar. ¿Esta factura lleva retencion de anticipo IR 2%, retencion municipal 1%, ambas o ninguna?`
       : 'Te escucho. Decime que necesitas revisar o adjunta una factura para analizarla.',
     intent: hasSupport ? 'request_more_info' : 'answer_question',
     confidence: 0.35,
@@ -3526,8 +3586,8 @@ async function callOpenAIFiscalAssistant({
   };
 
   if (hasRetentionSupport) {
-    safeFallbackResult.reply = `${safeDigitizerOptions.mode === 'digitizer' ? 'Modo Digitador activo. ' : ''}Ya guarde la factura y los soportes de retencion en la bandeja de MARTIN IA. No voy a preguntarte si lleva retencion porque ya adjuntaste el soporte; necesito reintentar lectura o confirmar manualmente los datos que no se lean.`;
-    safeFallbackResult.followUpQuestions = ['No pude leer todos los campos; confirma proveedor, factura o montos si no aparecen en el borrador.'];
+    safeFallbackResult.reply = `${safeDigitizerOptions.mode === 'digitizer' ? 'Modo Digitador activo. ' : ''}Ya guarde la factura y los soportes de retencion en MARTIN IA. No voy a preguntarte si lleva retencion porque ya adjuntaste el soporte; si falta un dato minimo te dire exactamente que corregir.`;
+    safeFallbackResult.followUpQuestions = ['No pude leer todos los campos; confirma proveedor, factura o montos si no aparecen en el registro.'];
     safeFallbackResult.quickReplies = ['Reintentar lectura', 'Confirmo datos', 'Registrar manual'];
   }
 
@@ -3552,8 +3612,8 @@ async function callOpenAIFiscalAssistant({
         'Eres el Agente IA Fiscal de Carnes San Martin Granada.',
         'Tu nombre es MARTIN IA. Actua como un companero contable de confianza, paciente, conversacional y practico.',
         safeDigitizerOptions.mode === 'digitizer'
-          ? 'MODO DIGITADOR ACTIVO: tu prioridad es leer facturas y soportes como digitador experto, extraer campos contables, aprender patrones y dejar un borrador listo.'
-          : 'MODO CHAT ACTIVO: ayuda con consultas, explicaciones y borradores cuando el usuario lo pida.',
+          ? 'MODO DIGITADOR ACTIVO: tu prioridad es leer facturas y soportes como digitador experto, extraer campos contables, aprender patrones y preparar un registro automatico.'
+          : 'MODO CHAT ACTIVO: ayuda con consultas, explicaciones y registros cuando el usuario lo pida.',
         safeDigitizerOptions.mode === 'digitizer'
           ? 'En Modo Digitador debes revisar: fecha, proveedor, numero de factura, subtotal, IVA, total, retenciones, tipo gasto/compra, credito/contado, metodo de pago, categoria y descripcion.'
           : '',
@@ -3576,19 +3636,19 @@ async function callOpenAIFiscalAssistant({
           ? 'En Modo Digitador pregunta solo lo que bloquea el registro. Si algo puede inferirse por learning.supplierProfiles con alta confianza, usalo y menciona que lo aprendiste.'
           : '',
         safeDigitizerOptions.autoRegister
-          ? 'El usuario activo Auto-registro seguro. Aun asi, solo propone borrador confirmable si estas muy seguro y no hay preguntas pendientes.'
+          ? 'El usuario espera auto-registro. Propone el mejor registro posible y pregunta solo por datos minimos imposibles de leer.'
           : '',
         'Responde en espanol claro, natural y cercano. No suenes como formulario ni como robot.',
         'Relacionate bien con trabajadores: explica sin reganar, guia paso a paso y confirma antes de asumir.',
         'Si habla caja o bodega, usa instrucciones cortas. Si habla contabilidad, da detalle fiscal. Si habla administracion, resume con acciones.',
         'Haz maximo dos preguntas de seguimiento por turno. Si falta informacion critica, pregunta una cosa primero y ofrece botones cortos en quickReplies.',
         'Cuando adjunten facturas, primero reconoce lo que ves, luego di que falta, luego propone el siguiente paso.',
-        'Regla obligatoria para facturas con soporte: antes de preparar un borrador confirmable, valida retenciones.',
+        'Regla para facturas con soporte: valida retenciones con factura, adjuntos, historial o instruccion del usuario.',
         'Si hay soporte adjunto y no hay comprobante de retencion ni confirmacion del usuario en el mensaje/historial, la primera pregunta debe ser: "Esta factura lleva retencion de anticipo IR 2%, retencion municipal 1%, ambas o ninguna?".',
         'Para esa pregunta usa exactamente quickReplies: ["No tiene retenciones", "Solo IR 2%", "Solo municipal 1%", "Ambas retenciones"].',
         'Aunque falte confirmar retenciones, primero debes leer la factura y llenar suggestedDraft con fecha, proveedor, factura, subtotal, IVA, total, tipo compra/gasto, metodo y categoria si son visibles o inferibles.',
         'No pongas suggestedDraft.targetType="none" solo porque faltan retenciones. Usa targetType none solo si no puedes leer el soporte o no puedes distinguir compra/gasto despues de aplicar reglas e historial.',
-        'Si faltan retenciones, bloquea solo el registro automatico usando followUpQuestions y warnings, pero deja el borrador preparado para que el usuario responda rapido.',
+        'Si faltan retenciones pero la factura no muestra retencion y no hay soporte de retencion, puedes usar 0 y registrar. Si el documento indica retencion pero el monto no se lee, pregunta el monto exacto.',
         'Si hay soportes de retencion adjuntos, leelos y extrae numero, fecha, proveedor, base y monto retenido cuando sea visible.',
         'Si las retenciones fueron adjuntadas en el mismo turno, relacionalas con la factura principal por numero de factura/proveedor/RUC/fecha. No vuelvas a preguntar si lleva retencion; extrae o calcula el monto segun el soporte adjunto.',
         'Si hay soporte IR 2% y el monto no se lee pero el subtotal/base si, calcula retentionIr2=subtotal*0.02. Si hay soporte municipal 1% y el monto no se lee pero el subtotal/base si, calcula retentionMunicipal1=subtotal*0.01.',
@@ -3599,7 +3659,7 @@ async function callOpenAIFiscalAssistant({
         'Si responde "Ambas retenciones", calcula ambas sobre subtotal cuando sea posible.',
         'Si el trabajador responde a una pregunta anterior, usa conversationHistory para continuar, no empieces desde cero.',
         'Puedes contestar preguntas usando el contexto contable resumido.',
-        'Si hay soporte/foto, extrae datos para crear un borrador fiscal, pero nunca confirmes registro definitivo.',
+        'Si hay soporte/foto, extrae datos para crear un registro fiscal automatico; el sistema intentara guardarlo si los datos minimos estan completos.',
         'Aprende patrones del contexto learning.supplierProfiles: proveedor habitual, tipo usual, categoria usual y forma de pago usual.',
         'Si el proveedor ya existe en learning.supplierProfiles, usa ese historial como pista fuerte para distinguir gasto vs compra, salvo que la factura contradiga claramente.',
         'Clasificacion: compra = inventario, materia prima vendible, mercaderia, carne, camaron, langosta, pollo, pescado, mariscos o costo directo de venta.',
@@ -3701,6 +3761,7 @@ exports.fiscalAssistantChat = onCall(FISCAL_ASSISTANT_FUNCTION_OPTIONS, async (r
     workerProfile,
   });
   aiResult = applyLearningProfileToAssistantResult(aiResult, context, message);
+  aiResult = applyRegistrationDefaultsToAssistantResult(aiResult, context);
 
   const chatRef = await firestore.collection('ai_fiscal_chats').add({
     actorEmail,
@@ -3721,6 +3782,7 @@ exports.fiscalAssistantChat = onCall(FISCAL_ASSISTANT_FUNCTION_OPTIONS, async (r
     attempted: false,
     confirmed: false,
     blockers: [],
+    registrationNote: '',
   };
 
   if (supportFiles.length > 0 || aiResult?.suggestedDraft?.targetType !== 'none') {
@@ -3750,7 +3812,10 @@ exports.fiscalAssistantChat = onCall(FISCAL_ASSISTANT_FUNCTION_OPTIONS, async (r
 
     await inboxRef.set(inboxPayload);
 
-    if (digitizerOptions.mode === 'digitizer' && digitizerOptions.autoRegister) {
+    const shouldAttemptAutoRegister = digitizerOptions.mode === 'digitizer'
+      && (supportFiles.length > 0 || digitizerOptions.autoRegister || hasRegisterCommand(message));
+
+    if (shouldAttemptAutoRegister) {
       const blockers = getDigitizerAutoRegisterBlockers({
         aiResult,
         digitizerOptions,
@@ -3764,6 +3829,7 @@ exports.fiscalAssistantChat = onCall(FISCAL_ASSISTANT_FUNCTION_OPTIONS, async (r
         attempted: true,
         confirmed: false,
         blockers,
+        registrationNote: '',
       };
 
       if (blockers.length === 0) {
@@ -3780,6 +3846,17 @@ exports.fiscalAssistantChat = onCall(FISCAL_ASSISTANT_FUNCTION_OPTIONS, async (r
             targetCollection: confirmation.targetCollection || '',
             targetDocIds: confirmation.targetDocIds || {},
           };
+          autoRegistration.registrationNote = buildAutoRegistrationNote({
+            draft: aiResult?.suggestedDraft || {},
+            autoRegistration,
+            blockers: [],
+          });
+          aiResult = {
+            ...aiResult,
+            reply: autoRegistration.registrationNote,
+            followUpQuestions: [],
+            quickReplies: ['Subir otra factura', 'Corregir este registro'],
+          };
           await inboxRef.set({
             digitizerAutoRegistered: true,
             digitizerAutoRegisteredAt: FieldValue.serverTimestamp(),
@@ -3793,12 +3870,31 @@ exports.fiscalAssistantChat = onCall(FISCAL_ASSISTANT_FUNCTION_OPTIONS, async (r
             attempted: true,
             confirmed: false,
             blockers: [error.message || 'No se pudo confirmar automaticamente'],
+            registrationNote: buildAutoRegistrationNote({
+              draft: aiResult?.suggestedDraft || {},
+              blockers: [error.message || 'No se pudo confirmar automaticamente'],
+            }),
+          };
+          aiResult = {
+            ...aiResult,
+            reply: autoRegistration.registrationNote,
+            quickReplies: ['Corregir dato', 'Adjuntar otra foto'],
           };
           await inboxRef.set({
             digitizerAutoRegisterError: error.message || 'No se pudo confirmar automaticamente',
             updatedAt: FieldValue.serverTimestamp(),
           }, { merge: true });
         }
+      } else {
+        autoRegistration.registrationNote = buildAutoRegistrationNote({
+          draft: aiResult?.suggestedDraft || {},
+          blockers,
+        });
+        aiResult = {
+          ...aiResult,
+          reply: autoRegistration.registrationNote,
+          quickReplies: ['Corregir dato', 'Adjuntar otra foto'],
+        };
       }
     }
   }
@@ -3861,8 +3957,8 @@ function parseTrainingPatchFromMessage(message = '', draft = {}) {
     patch.paymentMethod = 'Efectivo';
   }
 
-  const categoryMatch = normalizeText(message).match(/categor[ií]a\s*[:\-]?\s*([^.;,\n]+)/i);
-  if (categoryMatch?.[1]) patch.category = normalizeText(categoryMatch[1]).slice(0, 120);
+  const categoryMatch = normalizeText(message).match(/categor[ií]a\s*(?:a|por|como|:|\-)?\s*([^.;,\n]+)/i);
+  if (categoryMatch?.[1]) patch.category = normalizeText(categoryMatch[1]).replace(/^a\s+/i, '').slice(0, 120);
   if (!patch.category && patch.kind === 'compra') patch.category = 'Compra';
 
   const noRetention = text.includes('no tiene retencion')
@@ -3892,7 +3988,7 @@ async function rememberAiTrainingMemory({ draft = {}, message = '', actorEmail =
   const supplier = cleanAiText(draft.supplier || draft.payableProvider || '').toUpperCase();
   const supplierKey = normalizeComparableText(supplier);
   if (!supplierKey) {
-    throw new HttpsError('failed-precondition', 'Para entrenar necesito que el borrador tenga proveedor.');
+    throw new HttpsError('failed-precondition', 'Para entrenar necesito que el registro tenga proveedor.');
   }
 
   const patch = parseTrainingPatchFromMessage(message, draft);
@@ -4076,6 +4172,35 @@ function applyLearningProfileToAssistantResult(aiResult = {}, context = {}, mess
   return upgraded;
 }
 
+function applyRegistrationDefaultsToAssistantResult(aiResult = {}, context = {}) {
+  const draft = { ...(aiResult.suggestedDraft || {}) };
+  const targetType = normalizeText(draft.targetType);
+
+  if (targetType.startsWith('compra_') && !cleanAiText(draft.category)) {
+    draft.category = 'Compra';
+  }
+
+  if (targetType.startsWith('gasto_')) {
+    draft.category = pickExpenseCategory(
+      draft.category || draft.description || context?.categories?.fallbackExpenseCategory,
+      context,
+    );
+  }
+
+  if (targetType.endsWith('_contado') && !cleanAiText(draft.paymentMethod)) {
+    draft.paymentMethod = 'Contado';
+  }
+
+  if (targetType.endsWith('_credito') && !cleanAiText(draft.paymentMethod)) {
+    draft.paymentMethod = 'Credito';
+  }
+
+  return {
+    ...aiResult,
+    suggestedDraft: draft,
+  };
+}
+
 function getRetentionIntentText(message = '', conversationHistory = []) {
   return normalizeComparableText([
     message,
@@ -4114,6 +4239,7 @@ function getDigitizerAutoRegisterBlockers({
   const profile = findSupplierProfileForDraft(context, draft);
   const forceRegister = hasRegisterCommand(message);
   const trustedProfile = isTrustedSupplierProfile(profile || {});
+  const digitizerAutonomous = options.mode === 'digitizer' && supportFiles.length > 0;
   const supplierEvidenceCount = normalizeAmount(profile?.evidenceCount);
   const requiredConfidence = supplierEvidenceCount >= 3 ? 0.78 : supplierEvidenceCount >= 1 ? 0.84 : 0.9;
   const learnedNoRetention = profile?.usualRetentionMode === 'none'
@@ -4131,23 +4257,22 @@ function getDigitizerAutoRegisterBlockers({
     || retentionText.includes('retencion');
 
   if (options.mode !== 'digitizer' && !forceRegister) blockers.push('Modo Digitador no esta activo');
-  if (!options.autoRegister && !forceRegister) blockers.push('Auto-registro seguro esta apagado');
   if (!supportFiles.length) blockers.push('No hay foto/PDF de soporte');
   if (!allowedTargets.has(targetType)) blockers.push('La IA no propuso gasto o compra confirmable');
-  if (confidence < requiredConfidence && !trustedProfile && !forceRegister) blockers.push(`Confianza menor a ${Math.round(requiredConfidence * 100)}%`);
-  if ((aiResult.warnings || []).length && !trustedProfile && !forceRegister) blockers.push('Hay alertas pendientes');
-  if ((aiResult.followUpQuestions || []).length && !trustedProfile && !forceRegister) blockers.push('Hay preguntas pendientes');
+  if (confidence < requiredConfidence && !trustedProfile && !forceRegister && !digitizerAutonomous) blockers.push(`Confianza menor a ${Math.round(requiredConfidence * 100)}%`);
+  if ((aiResult.warnings || []).length && !trustedProfile && !forceRegister && !digitizerAutonomous) blockers.push('Hay alertas pendientes');
+  if ((aiResult.followUpQuestions || []).length && !trustedProfile && !forceRegister && !digitizerAutonomous) blockers.push('Hay preguntas pendientes');
   if (!DATE_REGEX.test(date)) blockers.push('Falta fecha valida');
   if (!supplier) blockers.push('Falta proveedor');
   if (!invoiceNumber) blockers.push('Falta numero de factura');
   if (fiscal.total <= 0 || fiscal.subtotal <= 0) blockers.push('Faltan montos validos');
   if (!cleanAiText(draft.paymentMethod) && !targetType.includes('credito')) blockers.push('Falta metodo de pago');
 
-  if (fiscal.retentionTotal <= 0 && !userConfirmedNoRetention && !learnedNoRetention && !hasRetentionSupport && !trustedProfile && !forceRegister) {
+  if (fiscal.retentionTotal <= 0 && !userConfirmedNoRetention && !learnedNoRetention && !hasRetentionSupport && !trustedProfile && !forceRegister && !digitizerAutonomous) {
     blockers.push('Retenciones no confirmadas ni aprendidas');
   }
 
-  if (fiscal.retentionTotal > 0 && !hasRetentionSupport && !hasGenericAttachmentSet && !userConfirmedRetention && !trustedProfile && !forceRegister) {
+  if (fiscal.retentionTotal > 0 && !hasRetentionSupport && !hasGenericAttachmentSet && !userConfirmedRetention && !trustedProfile && !forceRegister && !digitizerAutonomous) {
     blockers.push('La retencion tiene monto, pero falta soporte o confirmacion');
   }
 
@@ -4214,7 +4339,7 @@ async function confirmAiPurchaseOrExpense({ inboxRef, inbox, draftId, draft, act
   const month = date.substring(0, 7);
   const fiscal = buildAiFiscalNumbers(draft);
   if (fiscal.total <= 0) {
-    throw new HttpsError('failed-precondition', 'El borrador no tiene un total valido.');
+    throw new HttpsError('failed-precondition', 'El registro no tiene un total valido.');
   }
 
   const isPurchase = kind === 'compra';
@@ -4488,7 +4613,7 @@ async function confirmFiscalAssistantDraftInternal({ actorEmail, draftId, overri
   const inboxRef = firestore.collection('ai_fiscal_inbox').doc(draftId);
   const inboxSnapshot = await inboxRef.get();
   if (!inboxSnapshot.exists) {
-    throw new HttpsError('not-found', 'El borrador IA no existe.');
+    throw new HttpsError('not-found', 'El registro IA no existe.');
   }
 
   const inbox = { id: draftId, ...inboxSnapshot.data() };
@@ -4502,7 +4627,7 @@ async function confirmFiscalAssistantDraftInternal({ actorEmail, draftId, overri
   }
 
   if (inbox.status === 'rejected') {
-    throw new HttpsError('failed-precondition', 'Este borrador ya fue rechazado.');
+    throw new HttpsError('failed-precondition', 'Este registro ya fue rechazado.');
   }
 
   const draft = {
@@ -4529,11 +4654,184 @@ async function confirmFiscalAssistantDraftInternal({ actorEmail, draftId, overri
 }
 
 exports.confirmFiscalAssistantDraft = onCall(BASE_FUNCTION_OPTIONS, async (request) => {
-  const actorEmail = ensureAdminUser(request.auth, 'confirmar borradores del agente IA');
+  const actorEmail = ensureAdminUser(request.auth, 'confirmar registros del agente IA');
   const draftId = normalizeText(request.data?.draftId);
   const overrides = request.data?.overrides || {};
 
   return confirmFiscalAssistantDraftInternal({ actorEmail, draftId, overrides });
+});
+
+function buildRegistrationCorrectionPayload({ message = '', draft = {}, targetCollection = '' }) {
+  const patch = parseTrainingPatchFromMessage(message, draft);
+  const draftPatch = {};
+  const updatePayload = {
+    aiCorrectionMessage: cleanAiText(message),
+    aiCorrectionAt: FieldValue.serverTimestamp(),
+    updatedAt: FieldValue.serverTimestamp(),
+  };
+  const updatedFields = [];
+  const currentTarget = normalizeText(draft.targetType);
+  const inferredKind = patch.kind || (currentTarget.includes('compra') ? 'compra' : currentTarget.includes('gasto') ? 'gasto' : '');
+  const inferredCredit = typeof patch.credit === 'boolean' ? patch.credit : currentTarget.includes('credito');
+
+  if (patch.kind || typeof patch.credit === 'boolean') {
+    if (inferredKind === 'compra' || inferredKind === 'gasto') {
+      draftPatch.targetType = `${inferredKind}_${inferredCredit ? 'credito' : 'contado'}`;
+      updatedFields.push('tipo');
+    }
+  }
+
+  if (patch.category) {
+    draftPatch.category = patch.category;
+    updatePayload.category = patch.category;
+    updatePayload.categoria = patch.category;
+    updatedFields.push('categoria');
+  }
+
+  if (patch.paymentMethod) {
+    draftPatch.paymentMethod = patch.paymentMethod;
+    updatePayload.paymentType = patch.paymentMethod;
+    updatePayload.paymentMethod = patch.paymentMethod;
+    updatedFields.push('metodo de pago');
+  }
+
+  if (Object.prototype.hasOwnProperty.call(patch, 'retentionIr2')) {
+    draftPatch.retentionIr2 = normalizeAmount(patch.retentionIr2);
+    updatePayload.retentionIr2 = draftPatch.retentionIr2;
+    updatedFields.push('retencion IR 2%');
+  }
+
+  if (Object.prototype.hasOwnProperty.call(patch, 'retentionMunicipal1')) {
+    draftPatch.retentionMunicipal1 = normalizeAmount(patch.retentionMunicipal1);
+    updatePayload.retentionMunicipal1 = draftPatch.retentionMunicipal1;
+    updatedFields.push('retencion municipal 1%');
+  }
+
+  const effectiveDraft = { ...draft, ...draftPatch };
+  if (
+    Object.prototype.hasOwnProperty.call(draftPatch, 'retentionIr2')
+    || Object.prototype.hasOwnProperty.call(draftPatch, 'retentionMunicipal1')
+  ) {
+    const fiscal = buildAiFiscalNumbers(effectiveDraft);
+    updatePayload.retentionIr2 = fiscal.retentionIr2;
+    updatePayload.retentionMunicipal1 = fiscal.retentionMunicipal1;
+    updatePayload.retentionTotal = fiscal.retentionTotal;
+  }
+
+  if (targetCollection === 'facturas_membretadas_ventas' && patch.paymentMethod) {
+    updatePayload.paymentMethod = patch.paymentMethod;
+  }
+
+  return {
+    draftPatch,
+    updatePayload,
+    effectiveDraft,
+    updatedFields: [...new Set(updatedFields)],
+  };
+}
+
+function getAiTargetDocId({ targetCollection = '', targetDocIds = {} }) {
+  if (targetCollection === 'gastos') return targetDocIds.gastoId || '';
+  if (targetCollection === 'compras') return targetDocIds.compraId || '';
+  if (targetCollection === 'facturas_membretadas_ventas') return targetDocIds.facturaMembretadaId || '';
+  if (targetCollection === 'abonos_pagar') return targetDocIds.abonoId || '';
+  return '';
+}
+
+exports.updateFiscalAssistantRegistration = onCall(BASE_FUNCTION_OPTIONS, async (request) => {
+  const actorEmail = ensureAdminUser(request.auth, 'corregir registros del agente IA');
+  const draftId = normalizeText(request.data?.draftId);
+  const message = normalizeText(request.data?.message);
+
+  if (!draftId) throw new HttpsError('invalid-argument', 'Falta draftId.');
+  if (!message) throw new HttpsError('invalid-argument', 'Decime que cambio debo aplicar.');
+
+  const inboxRef = firestore.collection('ai_fiscal_inbox').doc(draftId);
+  const inboxSnapshot = await inboxRef.get();
+  if (!inboxSnapshot.exists) throw new HttpsError('not-found', 'No encontre el registro de MARTIN IA.');
+
+  const inbox = { id: draftId, ...inboxSnapshot.data() };
+  const draft = inbox.suggestedDraft || inbox.aiResult?.suggestedDraft || {};
+  const targetCollection = normalizeText(inbox.targetCollection);
+  const targetDocIds = inbox.targetDocIds || {};
+  const {
+    draftPatch,
+    updatePayload,
+    effectiveDraft,
+    updatedFields,
+  } = buildRegistrationCorrectionPayload({ message, draft, targetCollection });
+
+  if (!Object.keys(draftPatch).length) {
+    try {
+      await rememberAiTrainingMemory({ draft, message, actorEmail, draftId });
+    } catch (error) {
+      logger.warn('No pude guardar aprendizaje de correccion sin campos editables', {
+        draftId,
+        message: error?.message,
+      });
+    }
+    return {
+      ok: true,
+      updated: false,
+      learned: true,
+      message: 'Guarde el aprendizaje, pero no detecte un campo editable para cambiar en el registro.',
+    };
+  }
+
+  const updatedDraft = { ...draft, ...draftPatch };
+  const targetDocId = getAiTargetDocId({ targetCollection, targetDocIds });
+  const batch = firestore.batch();
+
+  if (targetCollection && targetDocId) {
+    batch.set(firestore.collection(targetCollection).doc(targetDocId), {
+      ...updatePayload,
+      correctedBy: actorEmail,
+    }, { merge: true });
+  }
+
+  if (targetDocIds.cuentaPorPagarId) {
+    batch.set(firestore.collection('cuentas_por_pagar').doc(targetDocIds.cuentaPorPagarId), {
+      ...updatePayload,
+      correctedBy: actorEmail,
+    }, { merge: true });
+  }
+
+  batch.update(inboxRef, {
+    suggestedDraft: updatedDraft,
+    'aiResult.suggestedDraft': updatedDraft,
+    lastCorrectionMessage: cleanAiText(message),
+    lastCorrectedBy: actorEmail,
+    lastCorrectedAt: FieldValue.serverTimestamp(),
+    updatedAt: FieldValue.serverTimestamp(),
+  });
+
+  await batch.commit();
+  let learned = null;
+  try {
+    learned = await rememberAiTrainingMemory({
+      draft: effectiveDraft,
+      message,
+      actorEmail,
+      draftId,
+    });
+  } catch (error) {
+    logger.warn('No pude guardar aprendizaje despues de corregir registro IA', {
+      draftId,
+      message: error?.message,
+    });
+  }
+
+  return {
+    ok: true,
+    updated: Boolean(targetCollection && targetDocId),
+    updatedFields,
+    targetCollection,
+    targetDocIds,
+    learned,
+    message: updatedFields.length
+      ? `Aplique el cambio: ${updatedFields.join(', ')}.`
+      : 'Aplique el cambio indicado.',
+  };
 });
 
 exports.trainFiscalAssistantMemory = onCall(BASE_FUNCTION_OPTIONS, async (request) => {
@@ -4560,7 +4858,7 @@ exports.trainFiscalAssistantMemory = onCall(BASE_FUNCTION_OPTIONS, async (reques
 });
 
 exports.rejectFiscalAssistantDraft = onCall(BASE_FUNCTION_OPTIONS, async (request) => {
-  const actorEmail = ensureAdminUser(request.auth, 'rechazar borradores del agente IA');
+  const actorEmail = ensureAdminUser(request.auth, 'rechazar registros del agente IA');
   const draftId = normalizeText(request.data?.draftId);
 
   if (!draftId) {

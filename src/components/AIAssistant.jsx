@@ -50,7 +50,7 @@ const assistantModeOptions = [
     {
         id: 'digitizer',
         label: 'Modo Digitador',
-        description: 'Lee facturas, aprende patrones y prepara registros.',
+        description: 'Lee facturas, aprende patrones y registra automaticamente.',
     },
 ];
 
@@ -84,7 +84,7 @@ const getWorkerRole = (roleId) => (
 const buildWelcomeMessage = () => ({
     id: 'welcome',
     role: 'assistant',
-    text: `Soy ${AGENT_NAME}. Puedo conversar contigo como asistente contable o trabajar en Modo Digitador para leer facturas, aprender proveedores y preparar registros cada vez con menos preguntas.`,
+    text: `Soy ${AGENT_NAME}. Puedo conversar contigo como asistente contable o trabajar en Modo Digitador para leer facturas, aprender proveedores y registrarlas automaticamente con una nota clara.`,
     quickReplies: [
         'Quiero subir una factura',
         'Activar modo digitador',
@@ -117,7 +117,7 @@ const createEmptySupportFilesState = () => SUPPORT_FILE_TYPES.reduce((acc, item)
 }, {});
 
 const targetLabels = {
-    none: 'Sin borrador',
+    none: 'Sin registro',
     gasto_credito: 'Gasto a credito',
     gasto_contado: 'Gasto contado',
     compra_credito: 'Compra a credito',
@@ -170,7 +170,7 @@ const deriveQuickReplies = (message = {}) => {
     }
 
     if (questionText.includes('digitador')) {
-        return ['Activar modo digitador', 'Auto-registro seguro', 'Solo preparar borrador'];
+        return ['Activar modo digitador', 'Registrar automatico', 'Adjuntar otra foto'];
     }
 
     return [];
@@ -194,6 +194,7 @@ const assistantCallable = httpsCallable(functions, 'fiscalAssistantChat');
 const confirmDraftCallable = httpsCallable(functions, 'confirmFiscalAssistantDraft');
 const rejectDraftCallable = httpsCallable(functions, 'rejectFiscalAssistantDraft');
 const trainMemoryCallable = httpsCallable(functions, 'trainFiscalAssistantMemory');
+const updateRegistrationCallable = httpsCallable(functions, 'updateFiscalAssistantRegistration');
 
 const timestampToDate = (value) => {
     if (!value) return '';
@@ -204,14 +205,15 @@ const timestampToDate = (value) => {
 
 const buildAutoRegisterStatusText = (autoRegistration) => {
     if (!autoRegistration) return '';
+    if (autoRegistration.registrationNote) return `\n\n${autoRegistration.registrationNote}`;
     if (autoRegistration.confirmed) {
-        return `\n\nAuto-registro seguro completado en ${autoRegistration.targetCollection || 'el sistema'}.`;
+        return `\n\nNota de registro\nRegistrado automaticamente en ${autoRegistration.targetCollection || 'el sistema'}.`;
     }
 
     const blockers = autoRegistration.blockers || [];
     if (autoRegistration.attempted && blockers.length) {
         const mainBlocker = blockers.find((item) => !String(item).toLowerCase().includes('confianza')) || blockers[0];
-        return `\n\nQuedo como borrador pendiente. ${mainBlocker ? `Motivo: ${mainBlocker}. ` : ''}Si esta correcto, responde "si, registralo".`;
+        return `\n\nNo lo registre todavia. ${mainBlocker ? `Falta: ${mainBlocker}. ` : ''}Decime el cambio directo o adjunta otra foto mas clara.`;
     }
 
     return '';
@@ -510,7 +512,7 @@ export default function AIAssistant({ floating = false }) {
                 {
                     id: `a_${Date.now()}`,
                     role: 'assistant',
-                    text: 'No encontre un borrador pendiente para registrar. Adjunta la factura o vuelve a pedirme que la lea.',
+                    text: 'No encontre un registro reciente para confirmar. Adjunta la factura o vuelve a pedirme que la lea.',
                 },
             ]);
             return;
@@ -557,16 +559,25 @@ export default function AIAssistant({ floating = false }) {
         setLoading(true);
         setError('');
         try {
-            const response = await rememberCorrection(text, draftRecord);
+            const response = await updateRegistrationCallable({
+                draftId: draftRecord.id,
+                message: text,
+            });
             const learned = response?.data?.learned || {};
+            const updatedFields = response?.data?.updatedFields || [];
             setMessages((prev) => [
                 ...prev,
                 { id: `u_${Date.now()}`, role: 'user', text },
                 {
                     id: `a_${Date.now()}`,
                     role: 'assistant',
-                    text: `Aprendido para ${learned.supplier || 'este proveedor'}. La proxima vez usare ese patron${learned.category ? ` con categoria ${learned.category}` : ''}${learned.paymentMethod ? ` y pago ${learned.paymentMethod}` : ''}. Si queres guardarlo ahora, responde "si, registralo".`,
-                    quickReplies: ['Si, registralo', 'Adjuntar otra foto'],
+                    text: [
+                        response?.data?.updated
+                            ? `Cambio aplicado al registro: ${updatedFields.join(', ') || 'dato indicado'}.`
+                            : 'Guarde el aprendizaje para este proveedor.',
+                        `Aprendido para ${learned.supplier || 'este proveedor'}. La proxima vez usare ese patron${learned.category ? ` con categoria ${learned.category}` : ''}${learned.paymentMethod ? ` y pago ${learned.paymentMethod}` : ''}.`,
+                    ].join('\n'),
+                    quickReplies: ['Adjuntar otra foto', 'Corregir otro dato'],
                 },
             ]);
             return true;
@@ -664,16 +675,16 @@ export default function AIAssistant({ floating = false }) {
             const digitizerActive = currentAssistantMode === 'digitizer';
             const messageForAi = [
                 text || (digitizerActive
-                    ? 'MODO DIGITADOR: lee esta factura, extrae los campos y prepara el registro contable.'
-                    : 'Analiza este soporte fiscal. Antes de crear el borrador, confirma si la factura lleva retenciones.'),
+                    ? 'MODO DIGITADOR: lee esta factura, extrae los campos y registra automaticamente si los datos minimos estan completos.'
+                    : 'Analiza este soporte fiscal. Si se puede registrar, prepara una nota de registro.'),
                 digitizerActive
-                    ? 'MODO DIGITADOR ACTIVO: actua como digitador experto. Prioriza OCR fiscal, aprende proveedor, clasifica gasto/compra, completa campos y pregunta solo lo indispensable.'
+                    ? 'MODO DIGITADOR ACTIVO: actua como digitador experto. Prioriza OCR fiscal, aprende proveedor, clasifica gasto/compra, completa campos, registra y deja nota.'
                     : '',
                 digitizerActive && autoRegisterDigitizer
-                    ? 'Auto-registro seguro solicitado: solo registrar automaticamente si todos los campos estan completos, la confianza es muy alta y no hay preguntas pendientes.'
+                    ? 'Auto-registro solicitado: registra automaticamente con los datos minimos completos y dime que cambiar si algo no queda bien.'
                     : '',
                 (hasSelectedSupport || options.reuseLastSupport) && selectedClassification
-                    ? `Clasificacion indicada por el usuario: ${selectedClassification.label}. Si esta clasificacion no coincide con la factura, pregunta antes de crear un borrador definitivo.`
+                    ? `Clasificacion indicada por el usuario: ${selectedClassification.label}. Si esta clasificacion no coincide con la factura, usa la factura y el historial para decidir.`
                     : '',
                 hasSelectedSupport
                     ? 'Lee todos los soportes adjuntos: factura principal y comprobantes de retencion si existen. Usa esos soportes como respaldo del registro.'
@@ -708,7 +719,7 @@ export default function AIAssistant({ floating = false }) {
                 supportFiles: supportFilesForRequest,
                 digitizerOptions: {
                     mode: currentAssistantMode,
-                    autoRegister: digitizerActive && autoRegisterDigitizer,
+                    autoRegister: digitizerActive,
                 },
                 conversationHistory: recentConversation,
                 workerProfile: {
@@ -721,12 +732,14 @@ export default function AIAssistant({ floating = false }) {
             const result = response.data?.result || {};
             const autoRegistration = response.data?.autoRegistration || null;
             const autoRegisterText = buildAutoRegisterStatusText(autoRegistration);
+            const assistantText = autoRegistration?.registrationNote
+                || `${result.reply || 'Listo, procese tu solicitud.'}${autoRegisterText}`;
             setMessages((prev) => [
                 ...prev,
                 {
                     id: `a_${Date.now()}`,
                     role: 'assistant',
-                    text: `${result.reply || 'Listo, procese tu solicitud.'}${autoRegisterText}`,
+                    text: assistantText,
                     draftId: response.data?.draftId || '',
                     draft: result.suggestedDraft || emptyDraft,
                     warnings: result.warnings || [],
@@ -808,16 +821,16 @@ export default function AIAssistant({ floating = false }) {
                 message: [
                     text || 'MODO DIGITADOR: analiza todos los adjuntos fiscales de este mensaje.',
                     `El usuario adjunto ${uploadedSupportFiles.length} imagen(es)/PDF. Determina tu mismo si cada adjunto es factura, retencion IR, retencion municipal, comprobante de pago u otro soporte.`,
-                    'Si los adjuntos pertenecen a la misma factura, arma un solo borrador con factura y retenciones vinculadas.',
+                    'Si los adjuntos pertenecen a la misma factura, arma un solo registro con factura y retenciones vinculadas.',
                     'Si ves varias facturas distintas, procesa la mas completa y preguntame si continuo con las demas.',
-                    'Si esta claro, intenta auto-registro seguro. Si falta algo, pregunta solo lo indispensable.',
+                    'Si los datos minimos estan completos, registra automaticamente y deja nota de registro. Si falta algo, pregunta solo lo indispensable.',
                 ].join('\n'),
                 classificationHint: hintForRequest,
                 support: uploadedSupportFiles[0] || null,
                 supportFiles: uploadedSupportFiles,
                 digitizerOptions: {
                     mode: 'digitizer',
-                    autoRegister: autoRegisterDigitizer,
+                    autoRegister: true,
                 },
                 conversationHistory: recentConversation,
                 workerProfile: {
@@ -830,12 +843,14 @@ export default function AIAssistant({ floating = false }) {
 
             const result = response.data?.result || {};
             const autoRegistration = response.data?.autoRegistration || null;
+            const assistantText = autoRegistration?.registrationNote
+                || `${result.reply || 'Listo, revise los adjuntos.'}${buildAutoRegisterStatusText(autoRegistration)}`;
             setMessages((prev) => [
                 ...prev,
                 {
                     id: `a_${Date.now()}`,
                     role: 'assistant',
-                    text: `${result.reply || 'Listo, revise los adjuntos.'}${buildAutoRegisterStatusText(autoRegistration)}`,
+                    text: assistantText,
                     draftId: response.data?.draftId || '',
                     draft: result.suggestedDraft || emptyDraft,
                     warnings: result.warnings || [],
@@ -864,7 +879,7 @@ export default function AIAssistant({ floating = false }) {
     const handleConfirmDraft = async (draft) => {
         if (!draft?.id || processingDraftId) return;
         const suggested = draft.suggestedDraft || draft.aiResult?.suggestedDraft || emptyDraft;
-        if (!window.confirm(`Confirmar este borrador como "${targetLabels[suggested.targetType] || suggested.targetType}"?`)) return;
+        if (!window.confirm(`Confirmar este registro como "${targetLabels[suggested.targetType] || suggested.targetType}"?`)) return;
 
         setProcessingDraftId(draft.id);
         setActionMessage('');
@@ -875,7 +890,7 @@ export default function AIAssistant({ floating = false }) {
             setActionMessage(`Borrador confirmado y registrado en ${targetCollection}.`);
         } catch (err) {
             console.error(err);
-            setError(err?.message || 'No se pudo confirmar el borrador.');
+            setError(err?.message || 'No se pudo confirmar el registro.');
         } finally {
             setProcessingDraftId('');
         }
@@ -895,7 +910,7 @@ export default function AIAssistant({ floating = false }) {
 
     const handleRejectDraft = async (draft) => {
         if (!draft?.id || processingDraftId) return;
-        if (!window.confirm('Rechazar este borrador IA?')) return;
+        if (!window.confirm('Rechazar este registro IA?')) return;
 
         setProcessingDraftId(draft.id);
         setActionMessage('');
@@ -905,7 +920,7 @@ export default function AIAssistant({ floating = false }) {
             setActionMessage('Borrador rechazado.');
         } catch (err) {
             console.error(err);
-            setError(err?.message || 'No se pudo rechazar el borrador.');
+            setError(err?.message || 'No se pudo rechazar el registro.');
         } finally {
             setProcessingDraftId('');
         }
@@ -1116,15 +1131,15 @@ export default function AIAssistant({ floating = false }) {
                                 <Icon path={Icons.spark} className="h-5 w-5" />
                             </div>
                             <div>
-                                <div className="text-xs font-black uppercase tracking-[0.25em] text-[#b98b2d]">Borradores IA</div>
-                                <div className="text-lg font-black text-[#4b1b1f]">Pendientes de revision</div>
+                                <div className="text-xs font-black uppercase tracking-[0.25em] text-[#b98b2d]">Registros IA</div>
+                                <div className="text-lg font-black text-[#4b1b1f]">Auditoria interna</div>
                             </div>
                         </div>
 
                         {drafts.length === 0 ? (
                             <div className="rounded-3xl border border-dashed border-[#d9b99f] bg-[#fffaf6] p-6 text-center">
                                 <Icon path={Icons.file} className="mx-auto mb-3 h-10 w-10 text-stone-300" />
-                                <p className="text-sm font-black text-stone-500">Todavia no hay borradores IA.</p>
+                                <p className="text-sm font-black text-stone-500">Todavia no hay registros IA.</p>
                                 <p className="mt-1 text-xs font-semibold text-stone-400">Sube una factura o pide un analisis fiscal.</p>
                             </div>
                         ) : (
@@ -1192,7 +1207,7 @@ export default function AIAssistant({ floating = false }) {
                             <p>1. Activa Modo Digitador para facturas.</p>
                             <p>2. Sube factura y retenciones si existen.</p>
                             <p>3. MARTIN IA aprende proveedor, categoria, pago y retenciones.</p>
-                            <p>4. Auto-registro seguro solo corre si todo viene claro.</p>
+                            <p>4. MARTIN registra y deja nota; si algo queda mal, pidele el cambio directo.</p>
                         </div>
                     </div>
                 </aside>
