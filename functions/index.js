@@ -2442,21 +2442,24 @@ function buildSupplierLearningProfiles({ gastos = [], compras = [], cuentasPorPa
       categories: {},
       paymentMethods: {},
       retentionModes: {},
+      trainingCount: 0,
       lastInvoiceNumber: '',
       lastSeenAt: '',
     };
+    const evidenceWeight = Math.max(1, normalizeAmount(patch.evidenceCount || patch.trainingCount || 1));
 
-    if (patch.kind === 'gasto') existing.gastoCount += 1;
-    if (patch.kind === 'compra') existing.compraCount += 1;
-    if (patch.credit === true) existing.creditCount += 1;
-    if (patch.credit === false) existing.contadoCount += 1;
+    if (patch.kind === 'gasto') existing.gastoCount += evidenceWeight;
+    if (patch.kind === 'compra') existing.compraCount += evidenceWeight;
+    if (patch.credit === true) existing.creditCount += evidenceWeight;
+    if (patch.credit === false) existing.contadoCount += evidenceWeight;
+    existing.trainingCount += normalizeAmount(patch.trainingCount);
     if (patch.category) {
       const category = normalizeText(patch.category);
-      existing.categories[category] = (existing.categories[category] || 0) + 1;
+      existing.categories[category] = (existing.categories[category] || 0) + evidenceWeight;
     }
     if (patch.paymentMethod) {
       const paymentMethod = normalizeText(patch.paymentMethod);
-      existing.paymentMethods[paymentMethod] = (existing.paymentMethods[paymentMethod] || 0) + 1;
+      existing.paymentMethods[paymentMethod] = (existing.paymentMethods[paymentMethod] || 0) + evidenceWeight;
     }
     const ir = normalizeAmount(patch.retentionIr2);
     const municipal = normalizeAmount(patch.retentionMunicipal1);
@@ -2467,7 +2470,7 @@ function buildSupplierLearningProfiles({ gastos = [], compras = [], cuentasPorPa
         : municipal > 0
           ? 'municipal1'
           : 'none';
-    existing.retentionModes[retentionMode] = (existing.retentionModes[retentionMode] || 0) + 1;
+    existing.retentionModes[retentionMode] = (existing.retentionModes[retentionMode] || 0) + evidenceWeight;
     if (patch.invoiceNumber) existing.lastInvoiceNumber = normalizeText(patch.invoiceNumber);
     if (patch.lastSeenAt && (!existing.lastSeenAt || patch.lastSeenAt > existing.lastSeenAt)) {
       existing.lastSeenAt = patch.lastSeenAt;
@@ -2485,6 +2488,8 @@ function buildSupplierLearningProfiles({ gastos = [], compras = [], cuentasPorPa
       retentionIr2: profile.retentionIr2,
       retentionMunicipal1: profile.retentionMunicipal1,
       invoiceNumber: profile.lastInvoiceNumber,
+      evidenceCount: profile.evidenceCount,
+      trainingCount: profile.trainingCount,
       lastSeenAt: profile.lastSeenAt,
     });
   });
@@ -2538,6 +2543,7 @@ function buildSupplierLearningProfiles({ gastos = [], compras = [], cuentasPorPa
       retentionConfidence: normalizeAmount((profile.retentionModes[mostUsed(profile.retentionModes)] || 0) / Math.max(profile.compraCount + profile.gastoCount, 1)),
       lastInvoiceNumber: profile.lastInvoiceNumber,
       evidenceCount: profile.compraCount + profile.gastoCount,
+      trainingCount: profile.trainingCount,
       lastSeenAt: profile.lastSeenAt,
     }))
     .sort((left, right) => right.evidenceCount - left.evidenceCount)
@@ -3684,7 +3690,7 @@ exports.fiscalAssistantChat = onCall(FISCAL_ASSISTANT_FUNCTION_OPTIONS, async (r
   }
 
   const context = await buildFiscalAssistantContext();
-  const aiResult = await callOpenAIFiscalAssistant({
+  let aiResult = await callOpenAIFiscalAssistant({
     message,
     support,
     supportFiles,
@@ -3694,6 +3700,7 @@ exports.fiscalAssistantChat = onCall(FISCAL_ASSISTANT_FUNCTION_OPTIONS, async (r
     conversationHistory,
     workerProfile,
   });
+  aiResult = applyLearningProfileToAssistantResult(aiResult, context, message);
 
   const chatRef = await firestore.collection('ai_fiscal_chats').add({
     actorEmail,
@@ -3991,6 +3998,84 @@ function findSupplierProfileForDraft(context = {}, draft = {}) {
   }) || null;
 }
 
+function hasRegisterCommand(value = '') {
+  const text = normalizeComparableText(value);
+  if (!text) return false;
+  return [
+    'registralo',
+    'registrala',
+    'registra',
+    'registrar',
+    'guardalo',
+    'guardala',
+    'guarda',
+    'confirmo',
+    'confirmado',
+    'si registr',
+    'ya puede registrar',
+    'puede registrar',
+    'agregalo',
+    'agregala',
+    'agrega',
+  ].some((phrase) => text.includes(phrase));
+}
+
+function isTrustedSupplierProfile(profile = {}) {
+  const evidence = normalizeAmount(profile.evidenceCount);
+  const training = normalizeAmount(profile.trainingCount);
+  const typeConfidence = normalizeAmount(profile.confidence);
+  return training >= 1 || evidence >= 3 || (evidence >= 2 && typeConfidence >= 0.75);
+}
+
+function applyLearningProfileToAssistantResult(aiResult = {}, context = {}, message = '') {
+  const draft = { ...(aiResult.suggestedDraft || {}) };
+  const profile = findSupplierProfileForDraft(context, draft);
+  if (!profile || !isTrustedSupplierProfile(profile)) return aiResult;
+
+  const registerIntent = hasRegisterCommand(message);
+  const learnedType = normalizeText(profile.usualType);
+  const learnedCredit = Boolean(profile.usualCredit);
+  const learnedTarget = learnedType
+    ? `${learnedType}_${learnedCredit ? 'credito' : 'contado'}`
+    : '';
+
+  if ((!draft.targetType || draft.targetType === 'none' || registerIntent) && learnedTarget) {
+    draft.targetType = learnedTarget;
+  }
+
+  if ((!draft.category || draft.category === 'Otros gastos (no categorizado)' || registerIntent) && profile.usualCategory) {
+    draft.category = profile.usualCategory;
+  }
+
+  if ((!draft.paymentMethod || registerIntent) && profile.usualPaymentMethod) {
+    draft.paymentMethod = profile.usualPaymentMethod;
+  }
+
+  if (profile.usualRetentionMode === 'none') {
+    draft.retentionIr2 = 0;
+    draft.retentionMunicipal1 = 0;
+  }
+
+  const upgraded = {
+    ...aiResult,
+    confidence: Math.max(Number(aiResult.confidence || 0), registerIntent ? 0.95 : 0.9),
+    suggestedDraft: draft,
+  };
+
+  if (registerIntent) {
+    upgraded.warnings = (upgraded.warnings || []).filter((warning) => {
+      const text = normalizeComparableText(warning);
+      return !text.includes('confianza') && !text.includes('confirm') && !text.includes('retencion');
+    });
+    upgraded.followUpQuestions = (upgraded.followUpQuestions || []).filter((question) => {
+      const text = normalizeComparableText(question);
+      return !text.includes('confirm') && !text.includes('retencion') && !text.includes('credito') && !text.includes('contado');
+    });
+  }
+
+  return upgraded;
+}
+
 function getRetentionIntentText(message = '', conversationHistory = []) {
   return normalizeComparableText([
     message,
@@ -4027,6 +4112,8 @@ function getDigitizerAutoRegisterBlockers({
   const hasRetentionSupport = retentionFlags.hasIr2 || retentionFlags.hasMunicipal1;
   const hasGenericAttachmentSet = supportFiles.length > 1 && supportFiles.some((file) => normalizeComparableText(file.type) === 'attachment');
   const profile = findSupplierProfileForDraft(context, draft);
+  const forceRegister = hasRegisterCommand(message);
+  const trustedProfile = isTrustedSupplierProfile(profile || {});
   const supplierEvidenceCount = normalizeAmount(profile?.evidenceCount);
   const requiredConfidence = supplierEvidenceCount >= 3 ? 0.78 : supplierEvidenceCount >= 1 ? 0.84 : 0.9;
   const learnedNoRetention = profile?.usualRetentionMode === 'none'
@@ -4043,24 +4130,24 @@ function getDigitizerAutoRegisterBlockers({
     || compactRetentionText.includes('ambasretenciones')
     || retentionText.includes('retencion');
 
-  if (options.mode !== 'digitizer') blockers.push('Modo Digitador no esta activo');
-  if (!options.autoRegister) blockers.push('Auto-registro seguro esta apagado');
+  if (options.mode !== 'digitizer' && !forceRegister) blockers.push('Modo Digitador no esta activo');
+  if (!options.autoRegister && !forceRegister) blockers.push('Auto-registro seguro esta apagado');
   if (!supportFiles.length) blockers.push('No hay foto/PDF de soporte');
   if (!allowedTargets.has(targetType)) blockers.push('La IA no propuso gasto o compra confirmable');
-  if (confidence < requiredConfidence) blockers.push(`Confianza menor a ${Math.round(requiredConfidence * 100)}%`);
-  if ((aiResult.warnings || []).length) blockers.push('Hay alertas pendientes');
-  if ((aiResult.followUpQuestions || []).length) blockers.push('Hay preguntas pendientes');
+  if (confidence < requiredConfidence && !trustedProfile && !forceRegister) blockers.push(`Confianza menor a ${Math.round(requiredConfidence * 100)}%`);
+  if ((aiResult.warnings || []).length && !trustedProfile && !forceRegister) blockers.push('Hay alertas pendientes');
+  if ((aiResult.followUpQuestions || []).length && !trustedProfile && !forceRegister) blockers.push('Hay preguntas pendientes');
   if (!DATE_REGEX.test(date)) blockers.push('Falta fecha valida');
   if (!supplier) blockers.push('Falta proveedor');
   if (!invoiceNumber) blockers.push('Falta numero de factura');
   if (fiscal.total <= 0 || fiscal.subtotal <= 0) blockers.push('Faltan montos validos');
   if (!cleanAiText(draft.paymentMethod) && !targetType.includes('credito')) blockers.push('Falta metodo de pago');
 
-  if (fiscal.retentionTotal <= 0 && !userConfirmedNoRetention && !learnedNoRetention && !hasRetentionSupport) {
+  if (fiscal.retentionTotal <= 0 && !userConfirmedNoRetention && !learnedNoRetention && !hasRetentionSupport && !trustedProfile && !forceRegister) {
     blockers.push('Retenciones no confirmadas ni aprendidas');
   }
 
-  if (fiscal.retentionTotal > 0 && !hasRetentionSupport && !hasGenericAttachmentSet && !userConfirmedRetention) {
+  if (fiscal.retentionTotal > 0 && !hasRetentionSupport && !hasGenericAttachmentSet && !userConfirmedRetention && !trustedProfile && !forceRegister) {
     blockers.push('La retencion tiene monto, pero falta soporte o confirmacion');
   }
 
