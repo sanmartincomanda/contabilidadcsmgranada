@@ -161,6 +161,13 @@ function normalizeComparableText(value) {
     .replace(/[\u0300-\u036f]/g, '');
 }
 
+function normalizeAiLearningDocId(value) {
+  return normalizeComparableText(value)
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, 180) || 'sin_proveedor';
+}
+
 function normalizeDate(value) {
   if (!value) return '';
   if (value?.toDate && typeof value.toDate === 'function') {
@@ -3987,6 +3994,7 @@ function parseTrainingPatchFromMessage(message = '', draft = {}) {
 async function rememberAiTrainingMemory({ draft = {}, message = '', actorEmail = '', draftId = '' }) {
   const supplier = cleanAiText(draft.supplier || draft.payableProvider || '').toUpperCase();
   const supplierKey = normalizeComparableText(supplier);
+  const supplierDocId = normalizeAiLearningDocId(supplier);
   if (!supplierKey) {
     throw new HttpsError('failed-precondition', 'Para entrenar necesito que el registro tenga proveedor.');
   }
@@ -4002,9 +4010,10 @@ async function rememberAiTrainingMemory({ draft = {}, message = '', actorEmail =
     ? normalizeAmount(patch.retentionMunicipal1)
     : normalizeAmount(draft.retentionMunicipal1);
 
-  await firestore.collection('ai_fiscal_learning').doc(supplierKey).set({
+  await firestore.collection('ai_fiscal_learning').doc(supplierDocId).set({
     supplier,
     supplierKey,
+    supplierDocId,
     kind: inferredKind,
     credit: inferredCredit,
     targetCollection: inferredKind === 'compra' ? 'compras' : inferredKind === 'gasto' ? 'gastos' : '',
@@ -4282,11 +4291,13 @@ function getDigitizerAutoRegisterBlockers({
 async function rememberAiFiscalLearning({ draft, kind, credit, targetCollection, targetDocIds, actorEmail }) {
   const supplier = cleanAiText(draft.supplier || draft.payableProvider || '').toUpperCase();
   const supplierKey = normalizeComparableText(supplier);
+  const supplierDocId = normalizeAiLearningDocId(supplier);
   if (!supplierKey) return;
 
-  await firestore.collection('ai_fiscal_learning').doc(supplierKey).set({
+  await firestore.collection('ai_fiscal_learning').doc(supplierDocId).set({
     supplier,
     supplierKey,
+    supplierDocId,
     kind,
     credit,
     targetCollection,
@@ -4442,14 +4453,22 @@ async function confirmAiPurchaseOrExpense({ inboxRef, inbox, draftId, draft, act
     cuentaPorPagarId: payableRef?.id || null,
   };
 
-  await rememberAiFiscalLearning({
-    draft,
-    kind,
-    credit,
-    targetCollection,
-    targetDocIds,
-    actorEmail,
-  });
+  try {
+    await rememberAiFiscalLearning({
+      draft,
+      kind,
+      credit,
+      targetCollection,
+      targetDocIds,
+      actorEmail,
+    });
+  } catch (error) {
+    logger.warn('Registro IA creado, pero no pude guardar aprendizaje automatico', {
+      targetCollection,
+      targetDocIds,
+      message: error?.message,
+    });
+  }
 
   return {
     targetCollection,
@@ -4738,6 +4757,73 @@ function getAiTargetDocId({ targetCollection = '', targetDocIds = {} }) {
   return '';
 }
 
+function getAiPurchaseExpenseCollection(targetType = '') {
+  const normalized = normalizeText(targetType);
+  if (normalized.startsWith('compra_')) return 'compras';
+  if (normalized.startsWith('gasto_')) return 'gastos';
+  return '';
+}
+
+function buildAiPurchaseExpensePayloadForCorrection({
+  inbox,
+  draftId,
+  draft,
+  actorEmail,
+  targetCollection,
+  payableId = null,
+  correctionMessage = '',
+  replacedFrom = null,
+}) {
+  const date = getAiDraftDate(draft);
+  const month = date.substring(0, 7);
+  const fiscal = buildAiFiscalNumbers(draft);
+  const isPurchase = targetCollection === 'compras';
+  const isCredit = normalizeText(draft.targetType).endsWith('_credito');
+  const supportPayload = buildAiSupportPayload({ ...inbox, id: draftId });
+  const commonPayload = buildAiCommonPayload({ inbox, draftId, actorEmail });
+  const supplier = cleanAiText(draft.supplier || draft.payableProvider || 'SIN PROVEEDOR').toUpperCase();
+  const invoiceNumber = cleanAiText(draft.invoiceNumber || draft.payableInvoiceNumber);
+  const description = cleanAiText(draft.description || draft.category || 'REGISTRO IA FISCAL').toUpperCase();
+  const paymentType = isCredit ? 'credito' : cleanAiText(draft.paymentMethod || 'Contado');
+  const basePayload = {
+    date,
+    month,
+    supplier,
+    invoiceNumber,
+    description,
+    paymentType,
+    paymentReference: cleanAiText(draft.paymentReference).toUpperCase(),
+    branch: getBranchId(),
+    branchName: getBranchName(),
+    linkedPayableId: payableId || null,
+    ...fiscal,
+    ...supportPayload,
+    ...commonPayload,
+    aiCorrectedFrom: replacedFrom,
+    aiCorrectionMessage: cleanAiText(correctionMessage),
+    correctedBy: actorEmail,
+    correctedAt: FieldValue.serverTimestamp(),
+    timestamp: FieldValue.serverTimestamp(),
+  };
+
+  if (isPurchase) {
+    return {
+      ...basePayload,
+      category: cleanAiText(draft.category || 'Compra'),
+      isInventoryCost: true,
+      sourceFacturaId: payableId || null,
+    };
+  }
+
+  return {
+    ...basePayload,
+    proveedor: supplier,
+    factura: invoiceNumber,
+    category: cleanAiText(draft.category || 'Otros gastos (no categorizado)'),
+    categoria: cleanAiText(draft.category || 'Otros gastos (no categorizado)'),
+  };
+}
+
 exports.updateFiscalAssistantRegistration = onCall(BASE_FUNCTION_OPTIONS, async (request) => {
   const actorEmail = ensureAdminUser(request.auth, 'corregir registros del agente IA');
   const draftId = normalizeText(request.data?.draftId);
@@ -4780,9 +4866,43 @@ exports.updateFiscalAssistantRegistration = onCall(BASE_FUNCTION_OPTIONS, async 
 
   const updatedDraft = { ...draft, ...draftPatch };
   const targetDocId = getAiTargetDocId({ targetCollection, targetDocIds });
+  const desiredTargetCollection = getAiPurchaseExpenseCollection(updatedDraft.targetType) || targetCollection;
+  const canMovePurchaseExpense = ['compras', 'gastos'].includes(targetCollection)
+    && ['compras', 'gastos'].includes(desiredTargetCollection)
+    && targetCollection !== desiredTargetCollection
+    && Boolean(targetDocId);
+  let nextTargetCollection = targetCollection;
+  let nextTargetDocIds = { ...targetDocIds };
   const batch = firestore.batch();
 
-  if (targetCollection && targetDocId) {
+  if (canMovePurchaseExpense) {
+    const newTargetRef = firestore.collection(desiredTargetCollection).doc();
+    const isCredit = normalizeText(updatedDraft.targetType).endsWith('_credito');
+    const payableId = isCredit ? targetDocIds.cuentaPorPagarId || null : null;
+    batch.set(newTargetRef, buildAiPurchaseExpensePayloadForCorrection({
+      inbox,
+      draftId,
+      draft: updatedDraft,
+      actorEmail,
+      targetCollection: desiredTargetCollection,
+      payableId,
+      correctionMessage: message,
+      replacedFrom: {
+        collection: targetCollection,
+        docId: targetDocId,
+      },
+    }));
+    batch.delete(firestore.collection(targetCollection).doc(targetDocId));
+    nextTargetCollection = desiredTargetCollection;
+    nextTargetDocIds = {
+      compraId: desiredTargetCollection === 'compras' ? newTargetRef.id : null,
+      gastoId: desiredTargetCollection === 'gastos' ? newTargetRef.id : null,
+      cuentaPorPagarId: payableId,
+    };
+    updatedFields.push(`movido a ${desiredTargetCollection}`);
+    updatePayload.aiMovedFromCollection = targetCollection;
+    updatePayload.aiMovedFromDocId = targetDocId;
+  } else if (targetCollection && targetDocId) {
     batch.set(firestore.collection(targetCollection).doc(targetDocId), {
       ...updatePayload,
       correctedBy: actorEmail,
@@ -4792,6 +4912,9 @@ exports.updateFiscalAssistantRegistration = onCall(BASE_FUNCTION_OPTIONS, async 
   if (targetDocIds.cuentaPorPagarId) {
     batch.set(firestore.collection('cuentas_por_pagar').doc(targetDocIds.cuentaPorPagarId), {
       ...updatePayload,
+      isInventoryCost: desiredTargetCollection === 'compras',
+      mirroredPurchaseId: nextTargetDocIds.compraId || null,
+      mirroredExpenseId: nextTargetDocIds.gastoId || null,
       correctedBy: actorEmail,
     }, { merge: true });
   }
@@ -4799,6 +4922,8 @@ exports.updateFiscalAssistantRegistration = onCall(BASE_FUNCTION_OPTIONS, async 
   batch.update(inboxRef, {
     suggestedDraft: updatedDraft,
     'aiResult.suggestedDraft': updatedDraft,
+    targetCollection: nextTargetCollection,
+    targetDocIds: nextTargetDocIds,
     lastCorrectionMessage: cleanAiText(message),
     lastCorrectedBy: actorEmail,
     lastCorrectedAt: FieldValue.serverTimestamp(),
@@ -4825,8 +4950,8 @@ exports.updateFiscalAssistantRegistration = onCall(BASE_FUNCTION_OPTIONS, async 
     ok: true,
     updated: Boolean(targetCollection && targetDocId),
     updatedFields,
-    targetCollection,
-    targetDocIds,
+    targetCollection: nextTargetCollection,
+    targetDocIds: nextTargetDocIds,
     learned,
     message: updatedFields.length
       ? `Aplique el cambio: ${updatedFields.join(', ')}.`

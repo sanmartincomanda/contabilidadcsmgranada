@@ -252,6 +252,14 @@ const isTrainingCorrectionIntent = (value = '') => {
     return [
         'aprende',
         'entrena',
+        'corrige',
+        'corregi',
+        'cambia',
+        'cambialo',
+        'arregla',
+        'borra',
+        'elimina',
+        'quita',
         'esta factura es',
         'esto es',
         'es gasto',
@@ -485,8 +493,7 @@ export default function AIAssistant({ floating = false }) {
         }
 
         return drafts.find((draft) => (
-            draft.status !== 'confirmed'
-            && draft.status !== 'rejected'
+            draft.status !== 'rejected'
             && (draft.suggestedDraft?.targetType || draft.aiResult?.suggestedDraft?.targetType)
             && (draft.suggestedDraft?.targetType || draft.aiResult?.suggestedDraft?.targetType) !== 'none'
         )) || null;
@@ -593,17 +600,17 @@ export default function AIAssistant({ floating = false }) {
     const handleSend = async (overrideText = '', options = {}) => {
         if (loading) return;
         const text = (overrideText || input).trim();
-        if (text && !hasSelectedSupport && !hasBatchInvoices && isRegisterConfirmationIntent(text)) {
-            await handleConfirmLatestDraft(text);
-            setInput('');
-            return;
-        }
         if (text && !hasSelectedSupport && !hasBatchInvoices && isTrainingCorrectionIntent(text)) {
             const learned = await handleTrainingCorrection(text);
             if (learned) {
                 setInput('');
                 return;
             }
+        }
+        if (text && !hasSelectedSupport && !hasBatchInvoices && isRegisterConfirmationIntent(text)) {
+            await handleConfirmLatestDraft(text);
+            setInput('');
+            return;
         }
         if (!text && !hasSelectedSupport && !hasBatchInvoices) return;
 
