@@ -89,6 +89,13 @@ function cleanText(value) {
   return String(value || '').trim();
 }
 
+function normalizeComparableText(value) {
+  return cleanText(value)
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '');
+}
+
 function meaningfulText(value) {
   const cleaned = cleanText(value);
   if (!cleaned) return '';
@@ -100,6 +107,49 @@ function buildInvoiceNumber(row) {
   const series = meaningfulText(row.serieFolio);
   const folio = meaningfulText(row.folio);
   return [series, folio].filter(Boolean).join('-');
+}
+
+function resolvePaymentFromSicar(row) {
+  const ids = cleanText(row.paymentTypeIds)
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean);
+  const names = normalizeComparableText(row.paymentTypeNames);
+  const hasCreditRecord = Boolean(row.creditDueDate || Number(row.creditTotal || 0) > 0);
+
+  if (ids.includes('3') || names.includes('credito') || names.includes('crédito') || hasCreditRecord) {
+    return {
+      paymentMethod: 'credito',
+      paymentRoute: 'credito',
+      paymentType: 'Credito',
+    };
+  }
+
+  if (ids.includes('1') || names.includes('efectivo') || names.includes('cash')) {
+    return {
+      paymentMethod: 'efectivo',
+      paymentRoute: 'efectivo',
+      paymentType: 'Efectivo',
+    };
+  }
+
+  return {
+    paymentMethod: names || 'transferencia',
+    paymentRoute: 'otro',
+    paymentType: 'Transferencia',
+  };
+}
+
+function buildPurchaseDescription(entry) {
+  return [
+    entry.supplier || 'COMPRA SICAR',
+    entry.invoiceNumber ? `FACTURA ${entry.invoiceNumber}` : 'SIN FACTURA',
+    entry.description,
+  ].filter(Boolean).join(' / ');
+}
+
+function buildRawSourcePath(rawId) {
+  return `integraciones_privadas/sicar/compras_raw/${rawId}`;
 }
 
 function getMysqlConfig() {
@@ -145,14 +195,35 @@ async function fetchPurchases(connection, startDate, endExclusive) {
       c.status,
       c.can_caj_id,
       c.can_rcc_id,
-      p.nombre AS proveedor
+      p.nombre AS proveedor,
+      GROUP_CONCAT(DISTINCT ctp.tpa_id ORDER BY ctp.tpa_id SEPARATOR ',') AS paymentTypeIds,
+      GROUP_CONCAT(DISTINCT tp.nombre ORDER BY tp.tpa_id SEPARATOR ', ') AS paymentTypeNames,
+      SUM(IFNULL(ctp.total, 0)) AS paymentTypeTotal,
+      MAX(cp.fechaLimite) AS creditDueDate,
+      SUM(IFNULL(cp.total, 0)) AS creditTotal
     FROM compra c
     LEFT JOIN proveedor p ON p.pro_id = c.pro_id
+    LEFT JOIN compratipopago ctp ON ctp.com_id = c.com_id
+    LEFT JOIN tipopago tp ON tp.tpa_id = ctp.tpa_id
+    LEFT JOIN creditoproveedor cp ON cp.com_id = c.com_id AND IFNULL(cp.status, 0) >= 0
     WHERE c.fecha >= ?
       AND c.fecha < ?
       AND IFNULL(c.status, 0) >= 0
       AND c.can_caj_id IS NULL
       AND c.can_rcc_id IS NULL
+    GROUP BY
+      c.com_id,
+      c.fecha,
+      c.folio,
+      c.serieFolio,
+      c.subtotal,
+      c.subtotal0,
+      c.total,
+      c.comentario,
+      c.status,
+      c.can_caj_id,
+      c.can_rcc_id,
+      p.nombre
     ORDER BY c.fecha, c.com_id
   `, [startDate, endExclusive]);
 
@@ -165,6 +236,7 @@ async function fetchPurchases(connection, startDate, endExclusive) {
     const iva = money(row.iva);
     const total = money(row.total);
     const supplier = cleanText(row.proveedor).toUpperCase() || 'PROVEEDOR NO IDENTIFICADO';
+    const payment = resolvePaymentFromSicar(row);
 
     return {
       rawId,
@@ -179,15 +251,19 @@ async function fetchPurchases(connection, startDate, endExclusive) {
       purchaseFolio: meaningfulText(row.folio),
       purchaseSeries: meaningfulText(row.serieFolio),
       description: cleanText(row.comentario).toUpperCase(),
+      dueDate: toDateString(row.creditDueDate),
       amount: subtotal,
       subtotal,
       subtotalExento,
       subtotalGravado: money(row.subtotalGravado),
       iva,
       total,
-      paymentMethod: 'transferencia',
-      paymentRoute: 'otro',
-      paymentType: 'Transferencia',
+      paymentMethod: payment.paymentMethod,
+      paymentRoute: payment.paymentRoute,
+      paymentType: payment.paymentType,
+      paymentTypeIds: cleanText(row.paymentTypeIds),
+      paymentTypeNames: cleanText(row.paymentTypeNames),
+      paymentTypeTotal: money(row.paymentTypeTotal),
       rawPayload: {
         ...row,
         fecha: row.fecha instanceof Date ? row.fecha.toISOString() : row.fecha,
@@ -200,7 +276,17 @@ async function writePurchase(db, entry, options) {
   const FieldValue = admin.firestore.FieldValue;
   const rawRef = db.collection('integraciones_privadas').doc('sicar').collection('compras_raw').doc(entry.rawId);
   const purchaseRef = db.collection('compras').doc(entry.compraId);
+  const gastoDiarioRef = db.collection('gastosDiarios').doc(entry.gastoDiarioId);
+  const cuentaPorPagarRef = db.collection('cuentas_por_pagar').doc(entry.cuentaPorPagarId);
   const batch = db.batch();
+  const sourceCollection = buildRawSourcePath(entry.rawId);
+  const description = buildPurchaseDescription(entry).toUpperCase();
+  const route = entry.paymentRoute;
+  const targetDocIds = {
+    compraId: entry.compraId,
+    gastoDiarioId: route === 'efectivo' ? entry.gastoDiarioId : null,
+    cuentaPorPagarId: route === 'credito' ? entry.cuentaPorPagarId : null,
+  };
 
   batch.set(rawRef, {
     sourceSystem: 'SICAR',
@@ -225,15 +311,17 @@ async function writePurchase(db, entry, options) {
       description: entry.description,
       paymentMethod: entry.paymentMethod,
       paymentRoute: entry.paymentRoute,
+      paymentType: entry.paymentType,
+      paymentTypeIds: entry.paymentTypeIds,
+      paymentTypeNames: entry.paymentTypeNames,
+      paymentTypeTotal: entry.paymentTypeTotal,
+      dueDate: entry.dueDate || '',
       sourceRecordId: entry.sourceRecordId,
       isCancelled: false,
     },
     rawPayload: entry.rawPayload,
-    targetDocIds: {
-      compraId: entry.compraId,
-      gastoDiarioId: null,
-      cuentaPorPagarId: null,
-    },
+    targetDocIds,
+    resolvedRoute: route,
     status: options.stageOnly ? 'pending' : 'processed',
     receivedAt: FieldValue.serverTimestamp(),
     lastSeenAt: FieldValue.serverTimestamp(),
@@ -245,16 +333,24 @@ async function writePurchase(db, entry, options) {
   }, { merge: true });
 
   if (!options.stageOnly) {
-    batch.delete(db.collection('cuentas_por_pagar').doc(entry.cuentaPorPagarId));
-    batch.delete(db.collection('gastosDiarios').doc(entry.gastoDiarioId));
-    batch.set(purchaseRef, {
+    const existingPayableSnapshot = route === 'credito'
+      ? await cuentaPorPagarRef.get()
+      : null;
+    const existingPayable = existingPayableSnapshot?.exists ? existingPayableSnapshot.data() : null;
+    const previousPayableTotal = money(existingPayable?.total ?? existingPayable?.monto);
+    const previousPayableSaldo = money(existingPayable?.saldo ?? entry.total);
+    const payableSaldo = existingPayable
+      ? money(Math.max(previousPayableSaldo + (entry.total - previousPayableTotal), 0))
+      : entry.total;
+
+    const basePurchasePayload = {
       date: entry.date,
       month: entry.month,
       supplier: entry.supplier,
       invoiceNumber: entry.invoiceNumber,
       purchaseFolio: entry.purchaseFolio,
       purchaseSeries: entry.purchaseSeries,
-      description: entry.description,
+      description,
       amount: entry.amount,
       subtotal: entry.subtotal,
       subtotalExento: entry.subtotalExento,
@@ -263,22 +359,113 @@ async function writePurchase(db, entry, options) {
       total: entry.total,
       branch: BRANCH_ID,
       branchName: BRANCH_NAME,
-      paymentType: 'Transferencia',
-      paymentMethodOriginal: 'transferencia',
-      paymentRoute: 'otro',
       isInventoryCost: true,
-      sourceCollection: `integraciones_privadas/sicar/compras_raw/${entry.rawId}`,
+      sourceCollection,
       sourceRawId: entry.rawId,
       sourceSystem: 'SICAR',
       sourceMode: 'local-worker',
       sourceRecordId: entry.sourceRecordId,
-      sourceGastoDiarioId: null,
-      sourceFacturaId: null,
-      linkedPayableId: null,
-      timestamp: FieldValue.serverTimestamp(),
+      paymentMethodOriginal: entry.paymentMethod,
+      paymentRoute: route,
       syncedAt: FieldValue.serverTimestamp(),
       lastSyncedAt: FieldValue.serverTimestamp(),
-    }, { merge: true });
+      timestamp: FieldValue.serverTimestamp(),
+    };
+
+    if (route === 'credito') {
+      batch.delete(gastoDiarioRef);
+      batch.set(cuentaPorPagarRef, {
+        fecha: entry.date,
+        month: entry.month,
+        proveedor: entry.supplier,
+        sucursal: BRANCH_NAME,
+        branch: BRANCH_ID,
+        branchName: BRANCH_NAME,
+        numero: entry.invoiceNumber,
+        factura: entry.invoiceNumber,
+        purchaseFolio: entry.purchaseFolio,
+        purchaseSeries: entry.purchaseSeries,
+        vencimiento: entry.dueDate || '',
+        descripcion: description,
+        monto: entry.total,
+        saldo: payableSaldo,
+        amount: entry.amount,
+        subtotal: entry.subtotal,
+        subtotalExento: entry.subtotalExento,
+        subtotalGravado: entry.subtotalGravado,
+        iva: entry.iva,
+        total: entry.total,
+        estado: payableSaldo <= 0 ? 'pagado' : payableSaldo < entry.total ? 'parcial' : 'pendiente',
+        paymentType: 'credito',
+        paymentMethodOriginal: 'credito',
+        isInventoryCost: true,
+        mirroredToCompras: true,
+        mirroredPurchaseId: entry.compraId,
+        sourceCollection,
+        sourceRawId: entry.rawId,
+        sourceSystem: 'SICAR',
+        sourceMode: 'local-worker',
+        sourceRecordId: entry.sourceRecordId,
+        syncedAt: FieldValue.serverTimestamp(),
+        lastSyncedAt: FieldValue.serverTimestamp(),
+        timestamp: FieldValue.serverTimestamp(),
+      }, { merge: true });
+      batch.set(purchaseRef, {
+        ...basePurchasePayload,
+        paymentType: 'credito',
+        sourceFacturaId: entry.cuentaPorPagarId,
+        linkedPayableId: entry.cuentaPorPagarId,
+        sourceGastoDiarioId: null,
+      }, { merge: true });
+    } else if (route === 'efectivo') {
+      batch.delete(cuentaPorPagarRef);
+      batch.set(gastoDiarioRef, {
+        fecha: entry.date,
+        caja: process.env.SICAR_CASHBOX_NAME || 'CAJA 2',
+        descripcion: description,
+        monto: entry.total,
+        amount: entry.amount,
+        subtotal: entry.subtotal,
+        subtotalExento: entry.subtotalExento,
+        subtotalGravado: entry.subtotalGravado,
+        iva: entry.iva,
+        total: entry.total,
+        tipo: 'Compra',
+        categoria: 'Compra',
+        sucursal: BRANCH_ID,
+        branch: BRANCH_ID,
+        branchName: BRANCH_NAME,
+        linkedExpenseId: null,
+        linkedPurchaseId: entry.compraId,
+        paymentMethod: 'efectivo',
+        sourceCollection,
+        sourceRawId: entry.rawId,
+        sourceSystem: 'SICAR',
+        sourceMode: 'local-worker',
+        sourceRecordId: entry.sourceRecordId,
+        syncedAt: FieldValue.serverTimestamp(),
+        lastSyncedAt: FieldValue.serverTimestamp(),
+        timestamp: FieldValue.serverTimestamp(),
+      }, { merge: true });
+      batch.set(purchaseRef, {
+        ...basePurchasePayload,
+        paymentType: 'contado',
+        sourceGastoDiarioId: entry.gastoDiarioId,
+        sourceFacturaId: null,
+        linkedPayableId: null,
+      }, { merge: true });
+    } else {
+      batch.delete(cuentaPorPagarRef);
+      batch.delete(gastoDiarioRef);
+      batch.set(purchaseRef, {
+        ...basePurchasePayload,
+        paymentType: 'Transferencia',
+        paymentMethodOriginal: entry.paymentMethod || 'transferencia',
+        sourceGastoDiarioId: null,
+        sourceFacturaId: null,
+        linkedPayableId: null,
+      }, { merge: true });
+    }
   }
 
   await batch.commit();
@@ -302,6 +489,10 @@ async function main() {
 
   try {
     const entries = await fetchPurchases(connection, startDate, addDays(endDate, 1));
+    const routes = entries.reduce((acc, entry) => {
+      acc[entry.paymentRoute] = (acc[entry.paymentRoute] || 0) + 1;
+      return acc;
+    }, {});
 
     if (args.preview) {
       console.log(JSON.stringify({
@@ -313,6 +504,7 @@ async function main() {
         subtotal: money(entries.reduce((sum, entry) => sum + entry.subtotal, 0)),
         iva: money(entries.reduce((sum, entry) => sum + entry.iva, 0)),
         total: money(entries.reduce((sum, entry) => sum + entry.total, 0)),
+        routes,
         firstEntries: entries.slice(0, 10).map((entry) => ({
           rawId: entry.rawId,
           date: entry.date,
@@ -322,6 +514,8 @@ async function main() {
           iva: entry.iva,
           total: entry.total,
           paymentType: entry.paymentType,
+          paymentRoute: entry.paymentRoute,
+          paymentTypeNames: entry.paymentTypeNames,
         })),
       }, null, 2));
       return;
@@ -342,7 +536,7 @@ async function main() {
       subtotal: money(entries.reduce((sum, entry) => sum + entry.subtotal, 0)),
       iva: money(entries.reduce((sum, entry) => sum + entry.iva, 0)),
       total: money(entries.reduce((sum, entry) => sum + entry.total, 0)),
-      forcedPaymentType: 'Transferencia',
+      routes,
       stageOnly: args.stageOnly,
       status: 'ok',
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -358,7 +552,7 @@ async function main() {
       subtotal: money(entries.reduce((sum, entry) => sum + entry.subtotal, 0)),
       iva: money(entries.reduce((sum, entry) => sum + entry.iva, 0)),
       total: money(entries.reduce((sum, entry) => sum + entry.total, 0)),
-      paymentType: 'Transferencia',
+      routes,
     }, null, 2));
   } finally {
     await connection.end();

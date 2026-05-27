@@ -1667,8 +1667,17 @@ async function createCashPurchase(rawId, normalized, rawData) {
 async function createCreditPurchase(rawId, normalized, rawData) {
   const { compraId, cuentaPorPagarId } = getPurchaseTargetIds(rawId);
   const batch = firestore.batch();
+  const cuentaPorPagarRef = firestore.collection('cuentas_por_pagar').doc(cuentaPorPagarId);
+  const existingPayableSnapshot = await cuentaPorPagarRef.get();
+  const existingPayable = existingPayableSnapshot.exists ? existingPayableSnapshot.data() : null;
+  const newTotal = normalizeAmount(normalized.total ?? normalized.amount);
+  const previousTotal = normalizeAmount(existingPayable?.total ?? existingPayable?.monto);
+  const previousSaldo = normalizeAmount(existingPayable?.saldo ?? newTotal);
+  const saldo = existingPayable
+    ? normalizeAmount(Math.max(previousSaldo + (newTotal - previousTotal), 0))
+    : newTotal;
 
-  batch.set(firestore.collection('cuentas_por_pagar').doc(cuentaPorPagarId), {
+  batch.set(cuentaPorPagarRef, {
     fecha: normalized.date,
     month: normalized.month,
     proveedor: normalized.supplier,
@@ -1679,15 +1688,15 @@ async function createCreditPurchase(rawId, normalized, rawData) {
     purchaseFolio: normalized.purchaseFolio || '',
     purchaseSeries: normalized.purchaseSeries || '',
     vencimiento: normalized.dueDate || '',
-    monto: normalizeAmount(normalized.total ?? normalized.amount),
-    saldo: normalizeAmount(normalized.total ?? normalized.amount),
+    monto: newTotal,
+    saldo,
     amount: normalized.amount,
     subtotal: normalized.subtotal,
     subtotalExento: normalized.subtotalExento,
     subtotalGravado: normalized.subtotalGravado,
     iva: normalized.iva,
     total: normalized.total,
-    estado: 'pendiente',
+    estado: saldo <= 0 ? 'pagado' : saldo < newTotal ? 'parcial' : 'pendiente',
     paymentType: 'credito',
     paymentMethodOriginal: 'credito',
     isInventoryCost: true,
@@ -1758,7 +1767,7 @@ async function createOtherPurchase(rawId, normalized, rawData) {
     total: normalized.total,
     branch: getBranchId(),
     branchName: getBranchName(),
-    paymentType: 'contado',
+    paymentType: 'Transferencia',
     paymentMethodOriginal: normalized.paymentMethod || 'otro',
     isInventoryCost: true,
     description: buildPurchaseDescription(normalized),
