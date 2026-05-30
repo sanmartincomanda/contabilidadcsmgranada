@@ -1,5 +1,6 @@
 const fs = require('node:fs');
 const path = require('node:path');
+const { createHash } = require('node:crypto');
 const admin = require('firebase-admin');
 const mysql = require('mysql2/promise');
 
@@ -80,9 +81,15 @@ function addDays(dateString, days) {
   return date.toISOString().substring(0, 10);
 }
 
+function formatLocalDate(value) {
+  const month = String(value.getMonth() + 1).padStart(2, '0');
+  const day = String(value.getDate()).padStart(2, '0');
+  return `${value.getFullYear()}-${month}-${day}`;
+}
+
 function toDateString(value) {
   if (!value) return '';
-  if (value instanceof Date) return value.toISOString().substring(0, 10);
+  if (value instanceof Date) return formatLocalDate(value);
   return String(value).substring(0, 10);
 }
 
@@ -157,6 +164,27 @@ function buildPurchaseDescription(entry) {
 
 function buildRawSourcePath(rawId) {
   return `integraciones_privadas/sicar/compras_raw/${rawId}`;
+}
+
+function buildSyncFingerprint(entry) {
+  return createHash('sha1')
+    .update(JSON.stringify({
+      date: entry.date,
+      supplier: entry.supplier,
+      invoiceNumber: entry.invoiceNumber,
+      subtotal: entry.subtotal,
+      subtotalExento: entry.subtotalExento,
+      subtotalGravado: entry.subtotalGravado,
+      iva: entry.iva,
+      total: entry.total,
+      paymentRoute: entry.paymentRoute,
+      paymentType: entry.paymentType,
+      paymentTypeIds: entry.paymentTypeIds,
+      paymentTypeNames: entry.paymentTypeNames,
+      dueDate: entry.dueDate || '',
+      status: 'active',
+    }))
+    .digest('hex');
 }
 
 function getMysqlConfig() {
@@ -285,15 +313,31 @@ async function writePurchase(db, entry, options) {
   const purchaseRef = db.collection('compras').doc(entry.compraId);
   const gastoDiarioRef = db.collection('gastosDiarios').doc(entry.gastoDiarioId);
   const cuentaPorPagarRef = db.collection('cuentas_por_pagar').doc(entry.cuentaPorPagarId);
-  const batch = db.batch();
   const sourceCollection = buildRawSourcePath(entry.rawId);
   const description = buildPurchaseDescription(entry).toUpperCase();
   const route = entry.paymentRoute;
+  const syncFingerprint = buildSyncFingerprint(entry);
   const targetDocIds = {
     compraId: entry.compraId,
     gastoDiarioId: route === 'efectivo' ? entry.gastoDiarioId : null,
     cuentaPorPagarId: route === 'credito' ? entry.cuentaPorPagarId : null,
   };
+
+  if (!options.stageOnly) {
+    const existingRawSnapshot = await rawRef.get();
+    if (existingRawSnapshot.exists && existingRawSnapshot.data()?.syncFingerprint === syncFingerprint) {
+      const targetSnapshots = await Promise.all([
+        purchaseRef.get(),
+        route === 'credito' ? cuentaPorPagarRef.get() : Promise.resolve({ exists: true }),
+        route === 'efectivo' ? gastoDiarioRef.get() : Promise.resolve({ exists: true }),
+      ]);
+      if (targetSnapshots.every((snapshot) => snapshot.exists)) {
+        return { rawId: entry.rawId, skipped: true, route };
+      }
+    }
+  }
+
+  const batch = db.batch();
 
   batch.set(rawRef, {
     sourceSystem: 'SICAR',
@@ -329,6 +373,7 @@ async function writePurchase(db, entry, options) {
     rawPayload: entry.rawPayload,
     targetDocIds,
     resolvedRoute: route,
+    syncFingerprint,
     status: options.stageOnly ? 'pending' : 'processed',
     receivedAt: FieldValue.serverTimestamp(),
     lastSeenAt: FieldValue.serverTimestamp(),
@@ -476,6 +521,7 @@ async function writePurchase(db, entry, options) {
   }
 
   await batch.commit();
+  return { rawId: entry.rawId, skipped: false, route };
 }
 
 async function main() {
@@ -485,7 +531,7 @@ async function main() {
   loadEnvFile(path.join(functionsDir, '.env.local'));
 
   const args = parseArgs(process.argv.slice(2));
-  const defaultClosingDate = getDefaultClosingDate();
+  const defaultClosingDate = getManaguaNowParts().date;
   const lookbackDays = normalizeLookbackDays(args.lookbackDays);
   const startDate = args.startDate || args.date || addDays(defaultClosingDate, -lookbackDays);
   const endDate = args.endDate || args.date || defaultClosingDate;
@@ -530,9 +576,12 @@ async function main() {
       return;
     }
 
+    const writeResults = [];
     for (const entry of entries) {
-      await writePurchase(db, entry, { stageOnly: args.stageOnly });
+      writeResults.push(await writePurchase(db, entry, { stageOnly: args.stageOnly }));
     }
+    const skippedUnchanged = writeResults.filter((result) => result?.skipped).length;
+    const writtenCount = writeResults.length - skippedUnchanged;
 
     await db.collection('sicar_sync_logs').add({
       syncType: 'compras',
@@ -546,6 +595,8 @@ async function main() {
       iva: money(entries.reduce((sum, entry) => sum + entry.iva, 0)),
       total: money(entries.reduce((sum, entry) => sum + entry.total, 0)),
       routes,
+      writtenCount,
+      skippedUnchanged,
       stageOnly: args.stageOnly,
       status: 'ok',
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -562,6 +613,8 @@ async function main() {
       iva: money(entries.reduce((sum, entry) => sum + entry.iva, 0)),
       total: money(entries.reduce((sum, entry) => sum + entry.total, 0)),
       routes,
+      writtenCount,
+      skippedUnchanged,
     }, null, 2));
   } finally {
     await connection.end();
