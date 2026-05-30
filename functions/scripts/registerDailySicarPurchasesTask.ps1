@@ -24,7 +24,7 @@ Register-ScheduledTask `
     -Action $taskAction `
     -Trigger $taskTrigger `
     -Settings $taskSettings `
-    -Description 'Sincroniza compras SICAR como transferencia de contado hacia Firebase.' `
+    -Description 'Sincroniza compras SICAR hacia Firebase: credito a CxP+compras, efectivo a gastos+compras, otros a compras.' `
     -Force | Out-Null
 
 Write-Host "Tarea '$TaskName' creada correctamente para correr diario a las $StartTime."

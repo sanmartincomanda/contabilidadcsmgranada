@@ -77,7 +77,7 @@ function normalizePurchasePaymentMethod(value) {
   if (!comparable) return 'otro';
   if (comparable.includes('credito') || comparable.includes('cuenta por pagar') || comparable.includes('por pagar')) return 'credito';
   if (comparable.includes('efectivo') || comparable.includes('cash') || comparable.includes('caja')) return 'efectivo';
-  if (comparable.includes('contado')) return 'efectivo';
+  if (comparable.includes('contado')) return 'transferencia';
   if (comparable.includes('transfer')) return 'transferencia';
   if (comparable.includes('cheque')) return 'cheque';
   if (comparable.includes('debito')) return 'debito';
@@ -215,16 +215,34 @@ function extractNormalizedPurchase(rawData) {
     ])
   );
 
-  const amount = normalizeAmount(
+  const subtotal = normalizeAmount(
     pickFirstValue(source, [
+      'subtotal',
+      'subTotal',
       'amount',
-      'monto',
+      'purchase_subtotal',
+      'purchaseSubtotal',
+    ])
+  );
+  const total = normalizeAmount(
+    pickFirstValue(source, [
       'total',
+      'monto',
       'importe',
       'purchase_total',
       'purchaseTotal',
     ])
   );
+  const subtotalExento = normalizeAmount(pickFirstValue(source, ['subtotalExento', 'subtotal0', 'subtotal_exento']));
+  const subtotalGravado = normalizeAmount(
+    pickFirstValue(source, ['subtotalGravado', 'subtotal_gravado']) ||
+    Math.max(subtotal - subtotalExento, 0)
+  );
+  const iva = normalizeAmount(
+    pickFirstValue(source, ['iva', 'tax', 'impuesto']) ??
+    Math.max(total - subtotal, 0)
+  );
+  const amount = subtotal || total;
 
   const paymentMethod = normalizePurchasePaymentMethod(
     pickFirstValue(source, [
@@ -263,6 +281,11 @@ function extractNormalizedPurchase(rawData) {
     date,
     month: date ? date.substring(0, 7) : '',
     amount,
+    subtotal: subtotal || amount,
+    subtotalExento,
+    subtotalGravado,
+    iva,
+    total: total || amount,
     supplier: normalizeUpperText(
       pickFirstValue(source, [
         'supplier',
@@ -432,7 +455,13 @@ async function processPurchaseDocument(docSnapshot) {
         fecha: normalized.date,
         caja: CASHBOX_NAME,
         descripcion: description,
-        monto: normalized.amount,
+        monto: normalized.total,
+        amount: normalized.amount,
+        subtotal: normalized.subtotal,
+        subtotalExento: normalized.subtotalExento,
+        subtotalGravado: normalized.subtotalGravado,
+        iva: normalized.iva,
+        total: normalized.total,
         tipo: 'Compra',
         categoria: 'Compra',
         sucursal: BRANCH_ID,
@@ -450,7 +479,16 @@ async function processPurchaseDocument(docSnapshot) {
     }
 
     if (normalized.paymentRoute === 'credito') {
-      batch.set(db.collection('cuentas_por_pagar').doc(targetDocIds.cuentaPorPagarId), {
+      const cuentaPorPagarRef = db.collection('cuentas_por_pagar').doc(targetDocIds.cuentaPorPagarId);
+      const existingPayableSnapshot = await cuentaPorPagarRef.get();
+      const existingPayable = existingPayableSnapshot.exists ? existingPayableSnapshot.data() : null;
+      const previousTotal = normalizeAmount(existingPayable?.total ?? existingPayable?.monto);
+      const previousSaldo = normalizeAmount(existingPayable?.saldo ?? normalized.total);
+      const saldo = existingPayable
+        ? normalizeAmount(Math.max(previousSaldo + (normalized.total - previousTotal), 0))
+        : normalized.total;
+
+      batch.set(cuentaPorPagarRef, {
         fecha: normalized.date,
         month: normalized.month,
         proveedor: normalized.supplier,
@@ -458,12 +496,20 @@ async function processPurchaseDocument(docSnapshot) {
         branch: BRANCH_ID,
         branchName: BRANCH_NAME,
         numero: normalized.invoiceNumber,
+        factura: normalized.invoiceNumber,
         purchaseFolio: normalized.purchaseFolio || '',
         purchaseSeries: normalized.purchaseSeries || '',
         vencimiento: normalized.dueDate || '',
-        monto: normalized.amount,
-        saldo: normalized.amount,
-        estado: 'pendiente',
+        descripcion: description,
+        monto: normalized.total,
+        saldo,
+        amount: normalized.amount,
+        subtotal: normalized.subtotal,
+        subtotalExento: normalized.subtotalExento,
+        subtotalGravado: normalized.subtotalGravado,
+        iva: normalized.iva,
+        total: normalized.total,
+        estado: saldo <= 0 ? 'pagado' : saldo < normalized.total ? 'parcial' : 'pendiente',
         paymentType: 'credito',
         paymentMethodOriginal: 'credito',
         isInventoryCost: true,
@@ -486,9 +532,14 @@ async function processPurchaseDocument(docSnapshot) {
       purchaseFolio: normalized.purchaseFolio || '',
       purchaseSeries: normalized.purchaseSeries || '',
       amount: normalized.amount,
+      subtotal: normalized.subtotal,
+      subtotalExento: normalized.subtotalExento,
+      subtotalGravado: normalized.subtotalGravado,
+      iva: normalized.iva,
+      total: normalized.total,
       branch: BRANCH_ID,
       branchName: BRANCH_NAME,
-      paymentType: normalized.paymentRoute === 'credito' ? 'credito' : 'contado',
+      paymentType: normalized.paymentRoute === 'credito' ? 'credito' : normalized.paymentRoute === 'efectivo' ? 'contado' : 'Transferencia',
       paymentMethodOriginal: normalized.paymentMethod || normalized.paymentRoute,
       isInventoryCost: true,
       description,

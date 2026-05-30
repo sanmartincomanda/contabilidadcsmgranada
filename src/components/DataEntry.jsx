@@ -9,7 +9,7 @@ import Papa from 'papaparse';
 import { APP_BRAND_NAME, DEFAULT_BRANCH_ID, DEFAULT_BRANCH_NAME, fmt, branchName } from '../constants';
 import { resolveIncomeEntries } from '../services/incomeAggregation';
 import { syncSicarDailyIncome } from '../services/sicarIncomeSync';
-import { deletePurchaseTransaction } from '../services/linkedTransactions';
+import { deletePurchaseTransaction, updatePurchaseTransaction } from '../services/linkedTransactions';
 import {
     PAYMENT_METHODS,
     PURCHASE_PAYMENT_METHODS,
@@ -470,18 +470,22 @@ const EditRecordModal = ({ item, collectionName, fields, onClose, onSaved }) => 
 
             dataToSave.updatedAt = Timestamp.now();
 
-            const batch = writeBatch(db);
-            batch.set(doc(collection(db, 'historial_ediciones')), {
-                action: 'update',
-                collectionName,
-                recordId: item.id,
-                previousData: cleanForFirestore(item),
-                newData: cleanForFirestore({ ...item, ...dataToSave }),
-                changedFields: Object.keys(dataToSave),
-                changedAt: Timestamp.now(),
-            });
-            batch.update(doc(db, collectionName, item.id), cleanForFirestore(dataToSave));
-            await batch.commit();
+            if (collectionName === 'compras') {
+                await updatePurchaseTransaction(item.id, dataToSave, { previousData: item });
+            } else {
+                const batch = writeBatch(db);
+                batch.set(doc(collection(db, 'historial_ediciones')), {
+                    action: 'update',
+                    collectionName,
+                    recordId: item.id,
+                    previousData: cleanForFirestore(item),
+                    newData: cleanForFirestore({ ...item, ...dataToSave }),
+                    changedFields: Object.keys(dataToSave),
+                    changedAt: Timestamp.now(),
+                });
+                batch.update(doc(db, collectionName, item.id), cleanForFirestore(dataToSave));
+                await batch.commit();
+            }
 
             onSaved(item.id, dataToSave);
             onClose();
@@ -594,7 +598,11 @@ const EditableRow = ({ item, collectionName, fields, onUpdate, onDelete }) => {
                     dataToSave[key] = editData[key];
                 }
             }
-            await updateDoc(doc(db, collectionName, item.id), dataToSave);
+            if (collectionName === 'compras') {
+                await updatePurchaseTransaction(item.id, dataToSave, { previousData: item });
+            } else {
+                await updateDoc(doc(db, collectionName, item.id), dataToSave);
+            }
             setIsEditing(false);
             onUpdate(item.id, dataToSave);
         } catch (error) {

@@ -4,6 +4,7 @@ import {
     getDoc,
     getDocs,
     query,
+    serverTimestamp,
     where,
     writeBatch,
 } from 'firebase/firestore';
@@ -22,6 +23,89 @@ const addExistingRef = async (refs, collectionName, id) => {
     if (recordSnap.exists()) {
         refs.push(recordRef);
     }
+};
+
+const cleanForFirestore = (value) => {
+    if (value === undefined) return null;
+    if (value === null) return null;
+    if (Array.isArray(value)) return value.map(cleanForFirestore);
+    if (typeof value === 'object' && !(value instanceof Date)) {
+        if (typeof value.toDate === 'function') return value;
+        return Object.entries(value).reduce((acc, [key, entry]) => {
+            if (entry !== undefined) acc[key] = cleanForFirestore(entry);
+            return acc;
+        }, {});
+    }
+    return value;
+};
+
+const normalizeAmount = (value) => {
+    const parsed = Number(value ?? 0);
+    if (!Number.isFinite(parsed)) return 0;
+    return Math.round(parsed * 100) / 100;
+};
+
+const firstDefined = (...values) => values.find((value) => value !== undefined && value !== null);
+
+const buildPayableMirrorPayload = (purchaseData, updateData, payableData = {}) => {
+    const merged = { ...purchaseData, ...updateData };
+    const newTotal = normalizeAmount(firstDefined(merged.total, merged.monto, merged.amount));
+    const previousTotal = normalizeAmount(firstDefined(payableData.total, payableData.monto, purchaseData.total, purchaseData.amount));
+    const previousSaldo = normalizeAmount(firstDefined(payableData.saldo, newTotal));
+    const saldo = normalizeAmount(Math.max(previousSaldo + (newTotal - previousTotal), 0));
+
+    return cleanForFirestore({
+        fecha: firstDefined(merged.date, merged.fecha),
+        month: merged.month || String(firstDefined(merged.date, merged.fecha) || '').substring(0, 7),
+        proveedor: firstDefined(merged.supplier, merged.proveedor),
+        numero: firstDefined(merged.invoiceNumber, merged.numero, merged.factura),
+        factura: firstDefined(merged.invoiceNumber, merged.numero, merged.factura),
+        purchaseFolio: merged.purchaseFolio || '',
+        purchaseSeries: merged.purchaseSeries || '',
+        descripcion: firstDefined(merged.description, merged.descripcion),
+        monto: newTotal,
+        saldo,
+        amount: normalizeAmount(firstDefined(merged.amount, merged.subtotal, newTotal)),
+        subtotal: normalizeAmount(firstDefined(merged.subtotal, merged.amount, newTotal)),
+        subtotalExento: normalizeAmount(merged.subtotalExento),
+        subtotalGravado: normalizeAmount(merged.subtotalGravado),
+        iva: normalizeAmount(merged.iva),
+        total: newTotal,
+        retentionIr2: normalizeAmount(merged.retentionIr2),
+        retentionMunicipal1: normalizeAmount(merged.retentionMunicipal1),
+        retencionIr2: normalizeAmount(merged.retencionIr2 ?? merged.retentionIr2),
+        retencionMunicipal1: normalizeAmount(merged.retencionMunicipal1 ?? merged.retentionMunicipal1),
+        estado: saldo <= 0 ? 'pagado' : saldo < newTotal ? 'parcial' : 'pendiente',
+        isInventoryCost: merged.isInventoryCost ?? true,
+        mirroredToCompras: true,
+    });
+};
+
+const buildGastoMirrorPayload = (purchaseData, updateData) => {
+    const merged = { ...purchaseData, ...updateData };
+    const total = normalizeAmount(firstDefined(merged.total, merged.monto, merged.amount));
+    const date = firstDefined(merged.date, merged.fecha);
+
+    return cleanForFirestore({
+        fecha: date,
+        month: merged.month || String(date || '').substring(0, 7),
+        proveedor: firstDefined(merged.supplier, merged.proveedor),
+        factura: firstDefined(merged.invoiceNumber, merged.numero, merged.factura),
+        descripcion: firstDefined(merged.description, merged.descripcion),
+        monto: total,
+        amount: normalizeAmount(firstDefined(merged.amount, merged.subtotal, total)),
+        subtotal: normalizeAmount(firstDefined(merged.subtotal, merged.amount, total)),
+        subtotalExento: normalizeAmount(merged.subtotalExento),
+        subtotalGravado: normalizeAmount(merged.subtotalGravado),
+        iva: normalizeAmount(merged.iva),
+        total,
+        retentionIr2: normalizeAmount(merged.retentionIr2),
+        retentionMunicipal1: normalizeAmount(merged.retentionMunicipal1),
+        retencionIr2: normalizeAmount(merged.retencionIr2 ?? merged.retentionIr2),
+        retencionMunicipal1: normalizeAmount(merged.retencionMunicipal1 ?? merged.retentionMunicipal1),
+        categoria: firstDefined(merged.category, merged.categoria, 'Compra'),
+        tipo: 'Compra',
+    });
 };
 
 const getBlockingAbonos = async (facturaIds) => {
@@ -85,6 +169,63 @@ const findGastoRefsForPurchase = async (purchaseId, purchaseData) => {
 
     return uniqueRefs(gastoRefs);
 };
+
+export async function updatePurchaseTransaction(purchaseId, updateData, options = {}) {
+    const purchaseRef = doc(db, 'compras', purchaseId);
+    const purchaseSnap = await getDoc(purchaseRef);
+
+    if (!purchaseSnap.exists()) {
+        return { updated: false, missing: true };
+    }
+
+    const purchaseData = purchaseSnap.data();
+    const cleanUpdate = cleanForFirestore(updateData);
+    const payableRefs = await findPayableRefsForPurchase(purchaseId, purchaseData);
+    const gastoRefs = await findGastoRefsForPurchase(purchaseId, purchaseData);
+
+    const batch = writeBatch(db);
+
+    if (options?.previousData) {
+        batch.set(doc(collection(db, 'historial_ediciones')), {
+            action: 'update',
+            collectionName: 'compras',
+            recordId: purchaseId,
+            previousData: cleanForFirestore(options.previousData),
+            newData: cleanForFirestore({ ...options.previousData, ...cleanUpdate }),
+            changedFields: Object.keys(cleanUpdate),
+            changedAt: serverTimestamp(),
+        });
+    }
+
+    batch.update(purchaseRef, {
+        ...cleanUpdate,
+        updatedAt: serverTimestamp(),
+    });
+
+    for (const payableRef of payableRefs) {
+        const payableSnap = await getDoc(payableRef);
+        const payableData = payableSnap.exists() ? payableSnap.data() : {};
+        batch.update(payableRef, {
+            ...buildPayableMirrorPayload(purchaseData, cleanUpdate, payableData),
+            updatedAt: serverTimestamp(),
+        });
+    }
+
+    for (const gastoRef of gastoRefs) {
+        batch.update(gastoRef, {
+            ...buildGastoMirrorPayload(purchaseData, cleanUpdate),
+            updatedAt: serverTimestamp(),
+        });
+    }
+
+    await batch.commit();
+
+    return {
+        updated: true,
+        linkedPayableIds: payableRefs.map((payableRef) => payableRef.id),
+        linkedGastoDiarioIds: gastoRefs.map((gastoRef) => gastoRef.id),
+    };
+}
 
 export async function deletePayableTransaction(payableId) {
     const payableRef = doc(db, 'cuentas_por_pagar', payableId);
