@@ -2361,7 +2361,7 @@ exports.whatsappWebhook = onRequest(WHATSAPP_WEBHOOK_FUNCTION_OPTIONS, async (re
     const token = request.query['hub.verify_token'];
     const challenge = request.query['hub.challenge'];
 
-    if (mode === 'subscribe' && token && token === WHATSAPP_VERIFY_TOKEN.value()) {
+    if (mode === 'subscribe' && normalizeText(token) === normalizeText(WHATSAPP_VERIFY_TOKEN.value())) {
       response.status(200).send(challenge || '');
       return;
     }
