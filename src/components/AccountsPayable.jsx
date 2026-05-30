@@ -327,7 +327,7 @@ const SupportPreviewModal = ({ record, type, onClose, onAttach }) => {
                         <div className="flex min-h-[420px] flex-col items-center justify-center rounded-2xl border-2 border-dashed border-stone-300 bg-white text-center">
                             <Icon path={Icons.paperClip} className="mb-3 h-12 w-12 text-stone-300" />
                             <div className="text-sm font-black text-stone-500">Sin soporte adjunto</div>
-                            <p className="mt-1 max-w-xs text-xs font-semibold text-stone-400">Adjunta una foto/PDF o usa una imagen recibida por WhatsApp en el flujo IA.</p>
+                            <p className="mt-1 max-w-xs text-xs font-semibold text-stone-400">Adjunta una foto/PDF de soporte fiscal para esta transaccion.</p>
                         </div>
                     )}
                 </div>

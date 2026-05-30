@@ -13,7 +13,6 @@ import { BankReconciliation } from './components/BankReconciliation';
 import Reports from './components/Reports';
 import CategoryManager from './components/CategoryManager';
 import { AccountsPayable } from './components/AccountsPayable';
-import AIAssistant from './components/AIAssistant';
 import { APP_BRAND_LOGO, APP_BRAND_NAME, fmt } from './constants';
 import { resolveReportIncomeEntries } from './services/incomeAggregation';
 
@@ -804,13 +803,11 @@ function AppContent() {
                     <Route path="/gastos-diarios" element={<PrivateRoute element={<GastosDiarios categories={categoriesList} />} />} />
                     <Route path="/conciliacion" element={<PrivateRoute element={isAdmin ? <BankReconciliation /> : <Navigate to="/cuentas-pagar" />} />} />
                     <Route path="/cuentas-pagar" element={<PrivateRoute element={accountsPayableLoading ? <AppLoadingState /> : accountsPayableError ? <AppErrorState error={accountsPayableError} /> : <AccountsPayable data={accountsPayableData} />} />} />
-                    <Route path="/agente-ia" element={<PrivateRoute element={isAdmin ? <AIAssistant /> : <Navigate to="/cuentas-pagar" />} />} />
                     <Route path="/reportes" element={<PrivateRoute element={isAdmin ? (reportsLoading ? <AppLoadingState /> : reportsError ? <AppErrorState error={reportsError} /> : <Reports data={reportsData} />) : <Navigate to="/cuentas-pagar" />} />} />
                     <Route path="/maestros/categorias" element={<PrivateRoute element={isAdmin ? <CategoryManager categories={categoriesList} /> : <Navigate to="/cuentas-pagar" />} />} />
                     <Route path="*" element={<Navigate to="/" />} />
                 </Routes>
             </main>
-            {isAdmin && currentPath !== '/agente-ia' && <AIAssistant floating />}
         </>
     );
 }
