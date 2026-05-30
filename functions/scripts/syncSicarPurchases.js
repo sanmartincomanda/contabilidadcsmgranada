@@ -33,8 +33,15 @@ function parseArgs(argv) {
     else if (arg.startsWith('--date=')) acc.date = arg.slice('--date='.length);
     else if (arg.startsWith('--startDate=')) acc.startDate = arg.slice('--startDate='.length);
     else if (arg.startsWith('--endDate=')) acc.endDate = arg.slice('--endDate='.length);
+    else if (arg.startsWith('--lookbackDays=')) acc.lookbackDays = arg.slice('--lookbackDays='.length);
     return acc;
   }, { preview: false, stageOnly: false });
+}
+
+function normalizeLookbackDays(value) {
+  const parsed = Number(value ?? process.env.SICAR_PURCHASE_SYNC_LOOKBACK_DAYS ?? 7);
+  if (!Number.isFinite(parsed) || parsed < 0) return 7;
+  return Math.min(Math.floor(parsed), 14);
 }
 
 function getManaguaNowParts() {
@@ -478,8 +485,10 @@ async function main() {
   loadEnvFile(path.join(functionsDir, '.env.local'));
 
   const args = parseArgs(process.argv.slice(2));
-  const startDate = args.startDate || args.date || getDefaultClosingDate();
-  const endDate = args.endDate || args.date || startDate;
+  const defaultClosingDate = getDefaultClosingDate();
+  const lookbackDays = normalizeLookbackDays(args.lookbackDays);
+  const startDate = args.startDate || args.date || addDays(defaultClosingDate, -lookbackDays);
+  const endDate = args.endDate || args.date || defaultClosingDate;
   assertDate(startDate, 'startDate');
   assertDate(endDate, 'endDate');
   if (endDate < startDate) throw new Error('endDate no puede ser menor que startDate.');

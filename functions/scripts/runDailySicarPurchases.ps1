@@ -2,6 +2,7 @@ param(
     [string]$Date = '',
     [string]$StartDate = '',
     [string]$EndDate = '',
+    [int]$LookbackDays = 7,
     [switch]$Preview,
     [switch]$StageOnly
 )
@@ -56,6 +57,7 @@ $argsList = @('.\scripts\syncSicarPurchases.js')
 if ($Date) { $argsList += "--date=$Date" }
 if ($StartDate) { $argsList += "--startDate=$StartDate" }
 if ($EndDate) { $argsList += "--endDate=$EndDate" }
+if (-not $Date -and -not $StartDate -and -not $EndDate) { $argsList += "--lookbackDays=$LookbackDays" }
 if ($Preview) { $argsList += '--preview' }
 if ($StageOnly) { $argsList += '--stage-only' }
 
