@@ -1,6 +1,7 @@
 import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import React, { useState, useEffect, useRef } from 'react';
+import { AnimatePresence, motion } from 'framer-motion';
 import { APP_BRAND_LOGO, APP_BRAND_NAME, APP_BRAND_WORDMARK_BOTTOM, APP_BRAND_WORDMARK_TOP } from '../constants';
 
 const BRAND_LOGO = APP_BRAND_LOGO;
@@ -29,6 +30,8 @@ const Icon = ({ path, className = 'w-5 h-5' }) => (
         <path strokeLinecap="round" strokeLinejoin="round" d={path} />
     </svg>
 );
+
+const MotionLink = motion(Link);
 
 const dropdownBase =
     'rounded-2xl border border-[#efd8c8] bg-white/95 shadow-2xl shadow-[#7f1218]/10 ring-1 ring-[#7f1218]/5 backdrop-blur';
@@ -80,18 +83,22 @@ export default function Header() {
     };
 
     const NavLink = ({ to, children, icon, active = false, onClick }) => (
-        <Link
+        <MotionLink
             to={to}
             onClick={onClick}
-            className={`flex items-center gap-2 rounded-xl px-4 py-2.5 text-sm font-bold transition-all duration-200 ${
+            whileHover={{ y: -2, scale: 1.025 }}
+            whileTap={{ scale: 0.97 }}
+            transition={{ type: 'spring', stiffness: 420, damping: 28 }}
+            className={`motion-button relative flex items-center gap-2 rounded-xl px-4 py-2.5 text-sm font-bold transition-all duration-200 ${
                 active
                     ? 'bg-[#a81d24] text-white shadow-lg shadow-[#a81d24]/30'
                     : 'text-[#f8ece2] hover:bg-white/10 hover:text-white'
             }`}
         >
-            {icon && <Icon path={Icons[icon]} className="w-4 h-4" />}
-            {children}
-        </Link>
+            {active && <span className="pointer-events-none absolute inset-0 rounded-xl bg-gradient-to-r from-white/0 via-white/15 to-white/0 opacity-70" />}
+            {icon && <Icon path={Icons[icon]} className="motion-icon-bounce relative w-4 h-4" />}
+            <span className="relative">{children}</span>
+        </MotionLink>
     );
 
     const DataEntryButton = () => {
@@ -99,21 +106,31 @@ export default function Header() {
 
         return (
             <div className="relative" ref={dropdownRef}>
-                <button
+                <motion.button
                     onClick={() => setIsMenuOpen((prev) => !prev)}
-                    className={`flex items-center gap-2 rounded-xl px-4 py-2.5 text-sm font-bold transition-all duration-200 ${
+                    whileHover={{ y: -2, scale: 1.025 }}
+                    whileTap={{ scale: 0.97 }}
+                    transition={{ type: 'spring', stiffness: 420, damping: 28 }}
+                    className={`motion-button flex items-center gap-2 rounded-xl px-4 py-2.5 text-sm font-bold transition-all duration-200 ${
                         isMenuOpen || location.pathname === '/ingresar'
                             ? 'bg-[#f2b635] text-[#651317] shadow-lg shadow-[#f2b635]/25'
                             : 'text-[#f8ece2] hover:bg-white/10 hover:text-white'
                     }`}
                 >
-                    <Icon path={Icons.plus} className="w-4 h-4" />
+                    <Icon path={Icons.plus} className="motion-icon-bounce w-4 h-4" />
                     Ingresar Datos
                     <Icon path={Icons.chevronDown} className={`w-3 h-3 transition-transform ${isMenuOpen ? 'rotate-180' : ''}`} />
-                </button>
+                </motion.button>
 
-                {isMenuOpen && (
-                    <div className={`absolute left-0 top-full z-50 mt-3 w-64 overflow-hidden ${dropdownBase}`}>
+                <AnimatePresence>
+                    {isMenuOpen && (
+                    <motion.div
+                        initial={{ opacity: 0, y: 10, scale: 0.96 }}
+                        animate={{ opacity: 1, y: 0, scale: 1 }}
+                        exit={{ opacity: 0, y: 8, scale: 0.96 }}
+                        transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
+                        className={`absolute left-0 top-full z-50 mt-3 w-64 overflow-hidden ${dropdownBase}`}
+                    >
                         <div className="border-b border-[#f1dfd1] bg-[#fff8f2] px-4 py-3">
                             <div className="text-xs font-bold uppercase tracking-[0.3em] text-[#b98b2d]">{APP_BRAND_NAME}</div>
                             <div className="mt-1 text-sm font-black text-[#7f1218]">Registro operativo</div>
@@ -121,10 +138,10 @@ export default function Header() {
                         <div className="p-2">
                             <button
                                 onClick={() => handleDataEntryClick('Ingresos')}
-                                className="flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left text-sm text-[#5d413d] transition hover:bg-[#edf8f0] hover:text-[#166534]"
+                                className="motion-button flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left text-sm text-[#5d413d] transition hover:bg-[#edf8f0] hover:text-[#166534]"
                             >
                                 <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-[#e3f7e8] text-[#1e7a44]">
-                                    <Icon path={Icons.trendingUp} className="w-4 h-4" />
+                                    <Icon path={Icons.trendingUp} className="motion-icon-bounce w-4 h-4" />
                                 </div>
                                 <div>
                                     <div className="font-black">Ingresos</div>
@@ -133,10 +150,10 @@ export default function Header() {
                             </button>
                             <button
                                 onClick={() => handleDataEntryClick('Gastos')}
-                                className="flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left text-sm text-[#5d413d] transition hover:bg-[#fff0ef] hover:text-[#8a141b]"
+                                className="motion-button flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left text-sm text-[#5d413d] transition hover:bg-[#fff0ef] hover:text-[#8a141b]"
                             >
                                 <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-[#fde2de] text-[#a81d24]">
-                                    <Icon path={Icons.trendingDown} className="w-4 h-4" />
+                                    <Icon path={Icons.trendingDown} className="motion-icon-bounce w-4 h-4" />
                                 </div>
                                 <div>
                                     <div className="font-black">Gastos</div>
@@ -145,10 +162,10 @@ export default function Header() {
                             </button>
                             <button
                                 onClick={() => handleDataEntryClick('Inventario')}
-                                className="flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left text-sm text-[#5d413d] transition hover:bg-[#fff7e7] hover:text-[#8a5a11]"
+                                className="motion-button flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left text-sm text-[#5d413d] transition hover:bg-[#fff7e7] hover:text-[#8a5a11]"
                             >
                                 <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-[#fff0c8] text-[#b67812]">
-                                    <Icon path={Icons.wallet} className="w-4 h-4" />
+                                    <Icon path={Icons.wallet} className="motion-icon-bounce w-4 h-4" />
                                 </div>
                                 <div>
                                     <div className="font-black">Inventario</div>
@@ -157,10 +174,10 @@ export default function Header() {
                             </button>
                             <button
                                 onClick={() => handleDataEntryClick('Presupuesto')}
-                                className="flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left text-sm text-[#5d413d] transition hover:bg-[#fff5ee] hover:text-[#9a4a0e]"
+                                className="motion-button flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left text-sm text-[#5d413d] transition hover:bg-[#fff5ee] hover:text-[#9a4a0e]"
                             >
                                 <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-[#ffe8d5] text-[#bb5d1f]">
-                                    <Icon path={Icons.chart} className="w-4 h-4" />
+                                    <Icon path={Icons.chart} className="motion-icon-bounce w-4 h-4" />
                                 </div>
                                 <div>
                                     <div className="font-black">Presupuesto</div>
@@ -168,8 +185,9 @@ export default function Header() {
                                 </div>
                             </button>
                         </div>
-                    </div>
-                )}
+                    </motion.div>
+                    )}
+                </AnimatePresence>
             </div>
         );
     };
@@ -184,7 +202,10 @@ export default function Header() {
                 .animate-fade-in { animation: fade-in 0.2s ease-out; }
             `}</style>
 
-            <nav
+            <motion.nav
+                initial={{ y: -18, opacity: 0 }}
+                animate={{ y: 0, opacity: 1 }}
+                transition={{ duration: 0.55, ease: [0.22, 1, 0.36, 1] }}
                 className={`fixed left-0 right-0 top-0 z-50 transition-all duration-300 ${
                     isScrolled
                         ? 'bg-gradient-to-r from-[#2b1113]/95 via-[#5e1318]/95 to-[#8a141b]/95 shadow-2xl shadow-[#2b1113]/30 backdrop-blur-xl'
@@ -193,7 +214,13 @@ export default function Header() {
             >
                 <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
                     <div className="flex h-20 items-center justify-between">
-                        <Link to="/" className="group flex items-center gap-4">
+                        <MotionLink
+                            to="/"
+                            className="group flex items-center gap-4"
+                            whileHover={{ scale: 1.012 }}
+                            whileTap={{ scale: 0.985 }}
+                            transition={{ type: 'spring', stiffness: 360, damping: 28 }}
+                        >
                             <div className="rounded-[1.4rem] border border-white/20 bg-[#fff7ef] p-1.5 shadow-lg shadow-black/10 transition group-hover:scale-[1.02]">
                                 <img
                                     src={BRAND_LOGO}
@@ -208,7 +235,7 @@ export default function Header() {
                                     Centro contable
                                 </div>
                             </div>
-                        </Link>
+                        </MotionLink>
 
                         {user && (
                             <div className="hidden items-center gap-1 md:flex">
@@ -249,9 +276,9 @@ export default function Header() {
                                     </div>
                                     <button
                                         onClick={handleLogout}
-                                        className="flex items-center gap-2 rounded-xl border border-[#f2b635]/35 bg-[#f2b635]/12 px-4 py-2.5 text-sm font-bold text-[#ffe9b3] transition hover:bg-[#f2b635] hover:text-[#651317] hover:shadow-lg hover:shadow-[#f2b635]/20"
+                                        className="motion-button flex items-center gap-2 rounded-xl border border-[#f2b635]/35 bg-[#f2b635]/12 px-4 py-2.5 text-sm font-bold text-[#ffe9b3] transition hover:bg-[#f2b635] hover:text-[#651317] hover:shadow-lg hover:shadow-[#f2b635]/20"
                                     >
-                                        <Icon path={Icons.logout} className="w-4 h-4" />
+                                        <Icon path={Icons.logout} className="motion-icon-bounce w-4 h-4" />
                                         <span className="hidden sm:inline">Salir</span>
                                     </button>
                                 </div>
@@ -262,27 +289,37 @@ export default function Header() {
                             <div className="md:hidden">
                                 <button
                                     onClick={() => setIsMobileMenuOpen((prev) => !prev)}
-                                    className="rounded-xl border border-white/15 bg-white/5 p-2 text-[#f8ece2] transition hover:bg-white/10 hover:text-white"
+                                    className="motion-button rounded-xl border border-white/15 bg-white/5 p-2 text-[#f8ece2] transition hover:bg-white/10 hover:text-white"
                                 >
-                                    <Icon path={isMobileMenuOpen ? Icons.x : Icons.menu} className="w-6 h-6" />
+                                    <Icon path={isMobileMenuOpen ? Icons.x : Icons.menu} className="motion-icon-bounce w-6 h-6" />
                                 </button>
                             </div>
                         )}
 
                         {!user && (
-                            <Link
+                            <MotionLink
                                 to="/login"
-                                className="flex items-center gap-2 rounded-xl bg-[#f2b635] px-5 py-2.5 text-sm font-black uppercase tracking-[0.2em] text-[#651317] shadow-lg shadow-[#f2b635]/25 transition hover:bg-[#f6c24a]"
+                                whileHover={{ y: -2, scale: 1.02 }}
+                                whileTap={{ scale: 0.97 }}
+                                transition={{ type: 'spring', stiffness: 420, damping: 28 }}
+                                className="motion-button flex items-center gap-2 rounded-xl bg-[#f2b635] px-5 py-2.5 text-sm font-black uppercase tracking-[0.2em] text-[#651317] shadow-lg shadow-[#f2b635]/25 transition hover:bg-[#f6c24a]"
                             >
-                                <Icon path={Icons.user} className="w-4 h-4" />
+                                <Icon path={Icons.user} className="motion-icon-bounce w-4 h-4" />
                                 Entrar
-                            </Link>
+                            </MotionLink>
                         )}
                     </div>
                 </div>
 
+                <AnimatePresence>
                 {isMobileMenuOpen && user && (
-                    <div className="animate-fade-in border-t border-white/10 bg-gradient-to-b from-[#531418]/95 to-[#2b1113]/95 backdrop-blur-xl md:hidden">
+                    <motion.div
+                        initial={{ opacity: 0, y: -8, height: 0 }}
+                        animate={{ opacity: 1, y: 0, height: 'auto' }}
+                        exit={{ opacity: 0, y: -8, height: 0 }}
+                        transition={{ duration: 0.24, ease: [0.22, 1, 0.36, 1] }}
+                        className="overflow-hidden border-t border-white/10 bg-gradient-to-b from-[#531418]/95 to-[#2b1113]/95 backdrop-blur-xl md:hidden"
+                    >
                         <div className="space-y-1 px-4 pb-4 pt-3">
                             <div className="mb-2 rounded-2xl border border-white/10 bg-white/5 p-4">
                                 <div className="flex items-center gap-3">
@@ -311,30 +348,30 @@ export default function Header() {
                                     </div>
                                     <button
                                         onClick={() => handleDataEntryClick('Ingresos')}
-                                        className="flex w-full items-center gap-3 rounded-xl px-4 py-3 text-left text-sm font-bold text-[#f8ece2] transition hover:bg-white/10 hover:text-white"
+                                        className="motion-button flex w-full items-center gap-3 rounded-xl px-4 py-3 text-left text-sm font-bold text-[#f8ece2] transition hover:bg-white/10 hover:text-white"
                                     >
-                                        <Icon path={Icons.trendingUp} className="w-5 h-5 text-[#6bd18f]" />
+                                        <Icon path={Icons.trendingUp} className="motion-icon-bounce w-5 h-5 text-[#6bd18f]" />
                                         Ingresos
                                     </button>
                                     <button
                                         onClick={() => handleDataEntryClick('Gastos')}
-                                        className="flex w-full items-center gap-3 rounded-xl px-4 py-3 text-left text-sm font-bold text-[#f8ece2] transition hover:bg-white/10 hover:text-white"
+                                        className="motion-button flex w-full items-center gap-3 rounded-xl px-4 py-3 text-left text-sm font-bold text-[#f8ece2] transition hover:bg-white/10 hover:text-white"
                                     >
-                                        <Icon path={Icons.trendingDown} className="w-5 h-5 text-[#f2968f]" />
+                                        <Icon path={Icons.trendingDown} className="motion-icon-bounce w-5 h-5 text-[#f2968f]" />
                                         Gastos
                                     </button>
                                     <button
                                         onClick={() => handleDataEntryClick('Inventario')}
-                                        className="flex w-full items-center gap-3 rounded-xl px-4 py-3 text-left text-sm font-bold text-[#f8ece2] transition hover:bg-white/10 hover:text-white"
+                                        className="motion-button flex w-full items-center gap-3 rounded-xl px-4 py-3 text-left text-sm font-bold text-[#f8ece2] transition hover:bg-white/10 hover:text-white"
                                     >
-                                        <Icon path={Icons.wallet} className="w-5 h-5 text-[#f2b635]" />
+                                        <Icon path={Icons.wallet} className="motion-icon-bounce w-5 h-5 text-[#f2b635]" />
                                         Inventario
                                     </button>
                                     <button
                                         onClick={() => handleDataEntryClick('Presupuesto')}
-                                        className="flex w-full items-center gap-3 rounded-xl px-4 py-3 text-left text-sm font-bold text-[#f8ece2] transition hover:bg-white/10 hover:text-white"
+                                        className="motion-button flex w-full items-center gap-3 rounded-xl px-4 py-3 text-left text-sm font-bold text-[#f8ece2] transition hover:bg-white/10 hover:text-white"
                                     >
-                                        <Icon path={Icons.chart} className="w-5 h-5 text-[#ffdba2]" />
+                                        <Icon path={Icons.chart} className="motion-icon-bounce w-5 h-5 text-[#ffdba2]" />
                                         Presupuesto
                                     </button>
                                 </>
@@ -391,15 +428,16 @@ export default function Header() {
 
                             <button
                                 onClick={handleLogout}
-                                className="mt-3 flex w-full items-center justify-center gap-2 rounded-xl border border-[#f2b635]/35 bg-[#f2b635]/12 px-4 py-3 text-sm font-black uppercase tracking-[0.18em] text-[#ffe9b3] transition hover:bg-[#f2b635] hover:text-[#651317]"
+                                className="motion-button mt-3 flex w-full items-center justify-center gap-2 rounded-xl border border-[#f2b635]/35 bg-[#f2b635]/12 px-4 py-3 text-sm font-black uppercase tracking-[0.18em] text-[#ffe9b3] transition hover:bg-[#f2b635] hover:text-[#651317]"
                             >
-                                <Icon path={Icons.logout} className="w-4 h-4" />
+                                <Icon path={Icons.logout} className="motion-icon-bounce w-4 h-4" />
                                 Cerrar sesion
                             </button>
                         </div>
-                    </div>
+                    </motion.div>
                 )}
-            </nav>
+                </AnimatePresence>
+            </motion.nav>
 
             <div className="h-20" />
         </>

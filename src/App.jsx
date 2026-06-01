@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate, useLocation } from 'react-router-dom';
+import { AnimatePresence, motion } from 'framer-motion';
 import { db } from './firebase';
 import { collection, query, onSnapshot, getDocs, doc, setDoc, updateDoc, where } from 'firebase/firestore';
 
@@ -37,6 +38,13 @@ const DEFAULT_REMINDERS = [
 ];
 
 const CONFIG_DOC_PATH = 'configuracion/dashboard';
+
+const pageMotion = {
+    initial: { opacity: 0, y: 18, scale: 0.992, filter: 'blur(6px)' },
+    animate: { opacity: 1, y: 0, scale: 1, filter: 'blur(0px)' },
+    exit: { opacity: 0, y: -12, scale: 0.996, filter: 'blur(4px)' },
+    transition: { duration: 0.38, ease: [0.22, 1, 0.36, 1] },
+};
 
 const getMonthOffset = (monthsBack = 0) => {
     const date = new Date();
@@ -795,19 +803,28 @@ function AppContent() {
     return (
         <>
             <Header />
-            <main className="p-4 md:p-6">
-                <Routes>
-                    <Route path="/login" element={<Navigate to="/" replace />} />
-                    <Route path="/" element={<PrivateRoute element={isAdmin ? (dashboardLoading ? <AppLoadingState /> : dashboardError ? <AppErrorState error={dashboardError} /> : <Dashboard data={dashboardData} />) : <Navigate to="/cuentas-pagar" />} />} />
-                    <Route path="/ingresar" element={<PrivateRoute element={isAdmin ? (dataEntryLoading ? <AppLoadingState /> : dataEntryError ? <AppErrorState error={dataEntryError} /> : <DataEntry data={dataEntryData} categories={categoriesList} />) : <Navigate to="/cuentas-pagar" />} />} />
-                    <Route path="/gastos-diarios" element={<PrivateRoute element={<GastosDiarios categories={categoriesList} />} />} />
-                    <Route path="/conciliacion" element={<PrivateRoute element={isAdmin ? <BankReconciliation /> : <Navigate to="/cuentas-pagar" />} />} />
-                    <Route path="/cuentas-pagar" element={<PrivateRoute element={accountsPayableLoading ? <AppLoadingState /> : accountsPayableError ? <AppErrorState error={accountsPayableError} /> : <AccountsPayable data={accountsPayableData} />} />} />
-                    <Route path="/reportes" element={<PrivateRoute element={isAdmin ? (reportsLoading ? <AppLoadingState /> : reportsError ? <AppErrorState error={reportsError} /> : <Reports data={reportsData} />) : <Navigate to="/cuentas-pagar" />} />} />
-                    <Route path="/maestros/categorias" element={<PrivateRoute element={isAdmin ? <CategoryManager categories={categoriesList} /> : <Navigate to="/cuentas-pagar" />} />} />
-                    <Route path="*" element={<Navigate to="/" />} />
-                </Routes>
-            </main>
+            <AnimatePresence mode="wait" initial={false}>
+                <motion.main
+                    key={`${location.pathname}${location.search}`}
+                    className="app-route-shell p-4 md:p-6"
+                    initial={pageMotion.initial}
+                    animate={pageMotion.animate}
+                    exit={pageMotion.exit}
+                    transition={pageMotion.transition}
+                >
+                    <Routes location={location}>
+                        <Route path="/login" element={<Navigate to="/" replace />} />
+                        <Route path="/" element={<PrivateRoute element={isAdmin ? (dashboardLoading ? <AppLoadingState /> : dashboardError ? <AppErrorState error={dashboardError} /> : <Dashboard data={dashboardData} />) : <Navigate to="/cuentas-pagar" />} />} />
+                        <Route path="/ingresar" element={<PrivateRoute element={isAdmin ? (dataEntryLoading ? <AppLoadingState /> : dataEntryError ? <AppErrorState error={dataEntryError} /> : <DataEntry data={dataEntryData} categories={categoriesList} />) : <Navigate to="/cuentas-pagar" />} />} />
+                        <Route path="/gastos-diarios" element={<PrivateRoute element={<GastosDiarios categories={categoriesList} />} />} />
+                        <Route path="/conciliacion" element={<PrivateRoute element={isAdmin ? <BankReconciliation /> : <Navigate to="/cuentas-pagar" />} />} />
+                        <Route path="/cuentas-pagar" element={<PrivateRoute element={accountsPayableLoading ? <AppLoadingState /> : accountsPayableError ? <AppErrorState error={accountsPayableError} /> : <AccountsPayable data={accountsPayableData} />} />} />
+                        <Route path="/reportes" element={<PrivateRoute element={isAdmin ? (reportsLoading ? <AppLoadingState /> : reportsError ? <AppErrorState error={reportsError} /> : <Reports data={reportsData} />) : <Navigate to="/cuentas-pagar" />} />} />
+                        <Route path="/maestros/categorias" element={<PrivateRoute element={isAdmin ? <CategoryManager categories={categoriesList} /> : <Navigate to="/cuentas-pagar" />} />} />
+                        <Route path="*" element={<Navigate to="/" />} />
+                    </Routes>
+                </motion.main>
+            </AnimatePresence>
         </>
     );
 }
