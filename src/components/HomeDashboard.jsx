@@ -189,6 +189,13 @@ export default function HomeDashboard({
     mesCompras = [],
 }) {
     const totalOutflow = totalGastos + totalCompras;
+    const utilidadBruta = totalIngresos - totalCompras;
+    const utilidadOperativa = utilidadBruta - totalGastos;
+    const impuestoMunicipalEstimado = totalIngresos > 0 ? totalIngresos * 0.01 : 0;
+    const baseIrEstimada = utilidadOperativa - impuestoMunicipalEstimado;
+    const impuestoIrEstimado = baseIrEstimada > 0 ? baseIrEstimada * 0.30 : 0;
+    const impuestosEstimados = impuestoMunicipalEstimado + impuestoIrEstimado;
+    const utilidadNetaEstimada = utilidadOperativa - impuestosEstimados;
     const maxMetric = Math.max(totalIngresos, totalGastos, totalCompras, totalPendiente, Math.abs(utilidad), 1);
     const reminderProgress = allReminders.length > 0 ? (doneCount / allReminders.length) * 100 : 100;
     const payableRisk = totalOutflow > 0 ? Math.min(100, (totalPendiente / totalOutflow) * 100) : (totalPendiente > 0 ? 100 : 0);
@@ -248,14 +255,36 @@ export default function HomeDashboard({
             <div className="grid grid-cols-1 gap-5 xl:grid-cols-[1.65fr_0.75fr]">
                 <ExecutiveFlowDiagram
                     eyebrow="Enterprise income flow"
-                    title="Flujo financiero ejecutivo"
-                    subtitle="Ventas, costo, gastos y resultado neto del mes"
+                    title="Estado de resultado ejecutivo"
+                    subtitle="Ingresos brutos, costos, gastos operativos, impuestos y utilidad neta"
                     period={currentMonth}
-                    source={{ label: 'Ventas subtotal', value: totalIngresos, subtitle: 'Base contable sin IVA' }}
-                    center={{ label: 'Resultado operativo', value: utilidad, subtitle: 'despues de costo y gasto' }}
-                    top={{ label: 'Costo subtotal', value: totalCompras, subtitle: 'Compras registradas' }}
-                    middle={{ label: 'Gastos operativos', value: totalGastos, subtitle: 'Egresos del periodo' }}
-                    bottom={{ label: 'Utilidad neta', value: utilidad, subtitle: utilidad >= 0 ? 'Operacion saludable' : 'Requiere accion' }}
+                    source={{ label: 'Ingresos bruto', value: totalIngresos, subtitle: 'Ventas base sin IVA' }}
+                    stages={[
+                        {
+                            id: 'gross-profit',
+                            up: { label: 'Costos', value: totalCompras, subtitle: 'Compras / costo fiscal', tone: 'cost' },
+                            down: { label: 'Utilidad bruta', value: utilidadBruta, subtitle: 'ingresos - costos', tone: utilidadBruta >= 0 ? 'gross' : 'danger' },
+                        },
+                        {
+                            id: 'operating-profit',
+                            up: { label: 'Gastos operativos', value: totalGastos, subtitle: 'operacion del mes', tone: 'expense' },
+                            down: { label: 'Utilidades operativas', value: utilidadOperativa, subtitle: 'utilidad bruta - gastos', tone: utilidadOperativa >= 0 ? 'operating' : 'danger' },
+                        },
+                        {
+                            id: 'net-profit',
+                            up: {
+                                label: 'Impuestos',
+                                value: impuestosEstimados,
+                                subtitle: 'IMI 1% + IR 30%',
+                                tone: 'tax',
+                                lines: [
+                                    { label: 'IMI', value: impuestoMunicipalEstimado },
+                                    { label: 'IR', value: impuestoIrEstimado },
+                                ],
+                            },
+                            down: { label: 'Utilidad neta', value: utilidadNetaEstimada, subtitle: 'resultado final estimado', tone: utilidadNetaEstimada >= 0 ? 'profit' : 'danger' },
+                        },
+                    ]}
                 />
 
                 <div className="space-y-5">

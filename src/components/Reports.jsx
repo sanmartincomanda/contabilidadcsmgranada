@@ -496,9 +496,12 @@ const buildTaxReport = (data, selectedMonth) => {
     const ivaBought = sumBy(purchaseRows, 'iva');
     const salesSubtotal = sumBy(incomeRows, 'subtotal');
     const purchaseSubtotal = (data.compras || []).filter(inMonth).reduce((sum, item) => sum + accountingAmount(item), 0);
+    const operatingExpenseSubtotal = (data.gastos || []).filter(inMonth).reduce((sum, item) => sum + accountingAmount(item), 0);
     const stampedInvoiceTotal = sumBy(stampedInvoiceRows, 'total');
+    const grossProfit = salesSubtotal - purchaseSubtotal;
+    const operatingProfit = grossProfit - operatingExpenseSubtotal;
     const municipalTax = salesSubtotal * 0.01;
-    const profitBeforeTax = salesSubtotal - purchaseSubtotal;
+    const profitBeforeTax = operatingProfit;
     const profitAfterMunicipal = profitBeforeTax - municipalTax;
     const incomeTax30 = profitAfterMunicipal > 0 ? profitAfterMunicipal * 0.30 : 0;
 
@@ -521,6 +524,9 @@ const buildTaxReport = (data, selectedMonth) => {
             stampedInvoiceNet: sumBy(stampedInvoiceRows, 'netTotal'),
             salesSubtotal,
             purchaseSubtotal,
+            operatingExpenseSubtotal,
+            grossProfit,
+            operatingProfit,
             profitBeforeTax,
             municipalTax,
             profitAfterMunicipal,
@@ -913,43 +919,49 @@ const TaxReportsPanel = ({ taxReport, taxTab, setTaxTab, selectedMonth, setSelec
                     <ExecutiveFlowDiagram
                         eyebrow="Income statement flow"
                         title="Estado de resultado tributario"
-                        subtitle="Ventas subtotal, costo, IMI 1%, IR 30% y utilidad neta"
+                        subtitle="Ingresos brutos, costos, gastos operativos, impuestos y utilidad neta"
                         period={selectedMonth || 'Todos'}
-                        source={{
-                            label: 'Ventas subtotal',
-                            value: taxReport.totals.salesSubtotal,
-                            subtitle: 'Base contable sin IVA',
-                        }}
-                        center={{
-                            label: 'Utilidad',
-                            value: taxReport.totals.profitBeforeTax,
-                            subtitle: 'antes de impuesto',
-                        }}
-                        top={{
-                            label: 'Costo subtotal',
-                            value: taxReport.totals.purchaseSubtotal,
-                            subtitle: 'Compras y costo fiscal',
-                        }}
-                        middle={{
-                            label: 'Impuestos',
-                            value: taxReport.totals.municipalTax + taxReport.totals.incomeTax30,
-                            lines: [
-                                { label: 'IMI', value: taxReport.totals.municipalTax },
-                                { label: 'IR', value: taxReport.totals.incomeTax30 },
-                            ],
-                        }}
-                        bottom={{
-                            label: 'Utilidad neta',
-                            value: taxReport.totals.netProfitAfterTax,
-                            subtitle: 'despues de impuestos',
-                        }}
+                        source={{ label: 'Ingresos bruto', value: taxReport.totals.salesSubtotal, subtitle: 'ventas base sin IVA' }}
+                        stages={[
+                            {
+                                id: 'gross-profit',
+                                up: { label: 'Costos', value: taxReport.totals.purchaseSubtotal, subtitle: 'compras / costo fiscal', tone: 'cost' },
+                                down: { label: 'Utilidad bruta', value: taxReport.totals.grossProfit, subtitle: 'ingresos - costos', tone: taxReport.totals.grossProfit >= 0 ? 'gross' : 'danger' },
+                            },
+                            {
+                                id: 'operating-profit',
+                                up: { label: 'Gastos operativos', value: taxReport.totals.operatingExpenseSubtotal, subtitle: 'egresos del periodo', tone: 'expense' },
+                                down: { label: 'Utilidades operativas', value: taxReport.totals.operatingProfit, subtitle: 'utilidad bruta - gastos', tone: taxReport.totals.operatingProfit >= 0 ? 'operating' : 'danger' },
+                            },
+                            {
+                                id: 'net-profit',
+                                up: {
+                                    label: 'Impuestos',
+                                    value: taxReport.totals.municipalTax + taxReport.totals.incomeTax30,
+                                    subtitle: 'IMI 1% + IR 30%',
+                                    tone: 'tax',
+                                    lines: [
+                                        { label: 'IMI', value: taxReport.totals.municipalTax },
+                                        { label: 'IR', value: taxReport.totals.incomeTax30 },
+                                    ],
+                                },
+                                down: {
+                                    label: 'Utilidad neta',
+                                    value: taxReport.totals.netProfitAfterTax,
+                                    subtitle: 'resultado final',
+                                    tone: taxReport.totals.netProfitAfterTax >= 0 ? 'profit' : 'danger',
+                                },
+                            },
+                        ]}
                     />
-                    <Card title="Estado de resultado despues de impuesto" subtitle="Formula fiscal solicitada: ventas - costo, IMI 1%, IR 30%" icon="chart" gradient={true}>
+                    <Card title="Estado de resultado despues de impuesto" subtitle="Formula fiscal: ingresos - costos - gastos operativos - impuestos" icon="chart" gradient={true}>
                         <div className="space-y-3 text-sm">
                             {[
-                                ['Ventas contables (subtotal)', taxReport.totals.salesSubtotal],
-                                ['Costo de ventas (subtotal compras)', taxReport.totals.purchaseSubtotal],
-                                ['Utilidad antes de impuesto', taxReport.totals.profitBeforeTax],
+                                ['Ingresos brutos (ventas subtotal)', taxReport.totals.salesSubtotal],
+                                ['Costos (compras subtotal)', -taxReport.totals.purchaseSubtotal],
+                                ['Utilidad bruta', taxReport.totals.grossProfit],
+                                ['Gastos operativos', -taxReport.totals.operatingExpenseSubtotal],
+                                ['Utilidades operativas', taxReport.totals.operatingProfit],
                                 ['Impuesto municipal 1% sobre ventas', -taxReport.totals.municipalTax],
                                 ['Utilidad despues de IMI', taxReport.totals.profitAfterMunicipal],
                                 ['IR 30% sobre utilidad despues de IMI', -taxReport.totals.incomeTax30],
