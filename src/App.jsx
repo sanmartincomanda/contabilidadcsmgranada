@@ -368,6 +368,60 @@ const Dashboard = ({ data = {} }) => {
         { label: 'Por Pagar', value: totalPendiente, count: facturasPendientes.length, icon: ICON.wallet, color: 'amber', bg: 'from-amber-500/10 to-amber-500/5', accent: 'text-amber-700', ring: 'ring-amber-500/20', alert: vencidas.length > 0 },
     ];
 
+    const dailyActivity = useMemo(() => {
+        const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+        const buckets = Array.from({ length: daysInMonth }, (_, index) => ({
+            day: index + 1,
+            income: 0,
+            expense: 0,
+            purchase: 0,
+        }));
+
+        const addToBucket = (item, key) => {
+            const date = item.date || item.fecha || item.saleDate || '';
+            const day = Number(String(date).substring(8, 10));
+            if (!day || !buckets[day - 1]) return;
+            buckets[day - 1][key] += Number(item.subtotal ?? item.amount ?? item.monto ?? item.total) || 0;
+        };
+
+        mesIngresos.forEach((item) => addToBucket(item, 'income'));
+        mesGastos.forEach((item) => addToBucket(item, 'expense'));
+        mesCompras.forEach((item) => addToBucket(item, 'purchase'));
+
+        return buckets;
+    }, [mesCompras, mesGastos, mesIngresos, now]);
+
+    const maxDailyActivity = Math.max(1, ...dailyActivity.map((day) => Math.max(day.income, day.expense + day.purchase)));
+    const flowBase = Math.max(totalIngresos, totalGastos + totalCompras, Math.abs(utilidad), 1);
+    const profitMargin = totalIngresos > 0 ? (utilidad / totalIngresos) * 100 : 0;
+    const operatingRatio = totalIngresos > 0 ? ((totalGastos + totalCompras) / totalIngresos) * 100 : 0;
+    const recentMovements = useMemo(() => ([
+        ...mesIngresos.map((item) => ({
+            id: `ingreso-${item.id || item.reference || item.date}`,
+            type: 'Ingreso',
+            title: item.description || item.detalle || item.reference || 'Venta diaria',
+            amount: Number(item.subtotal ?? item.amount ?? item.total ?? 0) || 0,
+            date: item.date || item.fecha || '',
+            accent: 'emerald',
+        })),
+        ...mesCompras.map((item) => ({
+            id: `compra-${item.id || item.invoiceNumber || item.date}`,
+            type: 'Compra',
+            title: item.supplier || item.proveedor || item.invoiceNumber || 'Compra registrada',
+            amount: Number(item.subtotal ?? item.amount ?? item.total ?? 0) || 0,
+            date: item.date || item.fecha || '',
+            accent: 'amber',
+        })),
+        ...mesGastos.map((item) => ({
+            id: `gasto-${item.id || item.invoiceNumber || item.date}`,
+            type: 'Gasto',
+            title: item.category || item.description || item.supplier || 'Gasto operativo',
+            amount: Number(item.subtotal ?? item.amount ?? item.total ?? 0) || 0,
+            date: item.date || item.fecha || '',
+            accent: 'rose',
+        })),
+    ].sort((a, b) => String(b.date).localeCompare(String(a.date))).slice(0, 7)), [mesCompras, mesGastos, mesIngresos]);
+
     return (
         <div className="space-y-5 dash-dots min-h-[70vh]">
             <style>{DASHBOARD_STYLES}</style>
@@ -410,6 +464,130 @@ const Dashboard = ({ data = {} }) => {
                                 </svg>
                             </button>
                         </div>
+                    </div>
+                </div>
+            </div>
+
+            {/* ========= ERP COCKPIT ========= */}
+            <div className="dash-up dash-up-1 grid grid-cols-1 gap-4 xl:grid-cols-[1.5fr_0.9fr]">
+                <div className="relative overflow-hidden rounded-3xl border border-[#d9c5b6] bg-[#f9fbfc] shadow-xl shadow-[#2b1113]/5">
+                    <div className="border-b border-slate-200 bg-white/90 px-5 py-4">
+                        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                            <div>
+                                <div className="text-[10px] font-black uppercase tracking-[0.35em] text-slate-400">Financial cockpit</div>
+                                <h2 className="mt-1 text-xl font-black text-slate-900">Estado operativo del mes</h2>
+                            </div>
+                            <div className="flex flex-wrap gap-2">
+                                <span className="rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-[11px] font-black uppercase tracking-wider text-emerald-700">
+                                    Margen {profitMargin.toFixed(1)}%
+                                </span>
+                                <span className="rounded-full border border-amber-200 bg-amber-50 px-3 py-1 text-[11px] font-black uppercase tracking-wider text-amber-700">
+                                    Costo/Gasto {operatingRatio.toFixed(1)}%
+                                </span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 gap-5 p-5 lg:grid-cols-[0.9fr_1.1fr]">
+                        <div className="space-y-3">
+                            {[
+                                ['Ventas contables', totalIngresos, 'bg-sky-500', ICON.trending_up],
+                                ['Compras / costo', totalCompras, 'bg-amber-500', ICON.cart],
+                                ['Gastos operativos', totalGastos, 'bg-rose-500', ICON.trending_down],
+                                ['Resultado neto', utilidad, utilidad >= 0 ? 'bg-emerald-600' : 'bg-rose-700', ICON.wallet],
+                            ].map(([label, value, color, icon]) => {
+                                const width = Math.max(6, Math.min(100, (Math.abs(value) / flowBase) * 100));
+                                return (
+                                    <div key={label} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                                        <div className="mb-3 flex items-center justify-between gap-3">
+                                            <div className="flex items-center gap-2">
+                                                <span className={`flex h-8 w-8 items-center justify-center rounded-xl ${color} text-white`}>
+                                                    <Icon d={icon} className="h-4 w-4" />
+                                                </span>
+                                                <div className="text-xs font-black uppercase tracking-wider text-slate-500">{label}</div>
+                                            </div>
+                                            <div className={`font-mono text-sm font-black ${value < 0 ? 'text-rose-700' : 'text-slate-900'}`}>{fmt(value)}</div>
+                                        </div>
+                                        <div className="h-2.5 overflow-hidden rounded-full bg-slate-100">
+                                            <div className={`h-full rounded-full ${color} transition-all duration-700`} style={{ width: `${width}%` }} />
+                                        </div>
+                                    </div>
+                                );
+                            })}
+                        </div>
+
+                        <div className="relative min-h-[310px] overflow-hidden rounded-3xl border border-slate-200 bg-gradient-to-br from-white via-[#f7fbff] to-[#fff8ef] p-5">
+                            <div className="absolute inset-0 opacity-60" style={{ backgroundImage: 'linear-gradient(#e5edf4 1px, transparent 1px), linear-gradient(90deg, #e5edf4 1px, transparent 1px)', backgroundSize: '28px 28px' }} />
+                            <div className="relative">
+                                <div className="mb-6 flex items-center justify-between">
+                                    <div>
+                                        <div className="text-[10px] font-black uppercase tracking-[0.32em] text-slate-400">Flujo ejecutivo</div>
+                                        <div className="mt-1 text-sm font-bold text-slate-600">Ventas a utilidad final</div>
+                                    </div>
+                                    <div className={`rounded-full px-3 py-1 text-xs font-black ${utilidad >= 0 ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'}`}>
+                                        {utilidad >= 0 ? 'Rentable' : 'Ajustar'}
+                                    </div>
+                                </div>
+
+                                <div className="grid grid-cols-3 items-center gap-3">
+                                    <div className="rounded-2xl bg-sky-500 p-4 text-white shadow-lg shadow-sky-500/20">
+                                        <div className="text-[10px] font-black uppercase tracking-wider text-white/70">Ventas</div>
+                                        <div className="mt-2 font-mono text-xl font-black">{fmt(totalIngresos)}</div>
+                                    </div>
+                                    <div className="space-y-3">
+                                        <div className="h-8 rounded-full bg-gradient-to-r from-sky-300 via-sky-200 to-amber-200 shadow-inner" />
+                                        <div className="h-8 rounded-full bg-gradient-to-r from-sky-200 via-rose-200 to-rose-300 shadow-inner" />
+                                        <div className="h-10 rounded-full bg-gradient-to-r from-sky-300 via-emerald-200 to-emerald-400 shadow-inner" />
+                                    </div>
+                                    <div className="space-y-3">
+                                        <div className="rounded-2xl border border-amber-200 bg-amber-50 p-3">
+                                            <div className="text-[10px] font-black uppercase tracking-wider text-amber-700">Costo</div>
+                                            <div className="font-mono text-sm font-black text-amber-800">{fmt(totalCompras)}</div>
+                                        </div>
+                                        <div className="rounded-2xl border border-rose-200 bg-rose-50 p-3">
+                                            <div className="text-[10px] font-black uppercase tracking-wider text-rose-700">Gastos</div>
+                                            <div className="font-mono text-sm font-black text-rose-800">{fmt(totalGastos)}</div>
+                                        </div>
+                                        <div className={`rounded-2xl p-3 text-white ${utilidad >= 0 ? 'bg-emerald-600' : 'bg-rose-700'}`}>
+                                            <div className="text-[10px] font-black uppercase tracking-wider text-white/70">Utilidad</div>
+                                            <div className="font-mono text-sm font-black">{fmt(utilidad)}</div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div className="rounded-3xl border border-[#d9c5b6] bg-white p-5 shadow-xl shadow-[#2b1113]/5">
+                    <div className="mb-4 flex items-center justify-between">
+                        <div>
+                            <div className="text-[10px] font-black uppercase tracking-[0.32em] text-slate-400">Actividad diaria</div>
+                            <div className="mt-1 text-lg font-black text-slate-900">Movimiento del mes</div>
+                        </div>
+                        <span className="rounded-full bg-[#fff4df] px-3 py-1 text-[11px] font-black uppercase tracking-wider text-[#8a5a11]">{currentMonth}</span>
+                    </div>
+
+                    <div className="flex h-56 items-end gap-1 rounded-2xl border border-slate-200 bg-slate-50 px-3 py-4">
+                        {dailyActivity.map((day) => {
+                            const inflowHeight = Math.max(3, (day.income / maxDailyActivity) * 100);
+                            const outflowHeight = Math.max(3, ((day.expense + day.purchase) / maxDailyActivity) * 100);
+                            const isToday = day.day === dayOfMonth;
+                            return (
+                                <div key={day.day} className="group flex flex-1 flex-col items-center justify-end gap-1">
+                                    <div className="relative flex h-44 w-full items-end justify-center gap-0.5">
+                                        <div className="w-1.5 rounded-t-full bg-emerald-500 transition-all group-hover:bg-emerald-600" style={{ height: `${inflowHeight}%` }} />
+                                        <div className="w-1.5 rounded-t-full bg-rose-400 transition-all group-hover:bg-rose-500" style={{ height: `${outflowHeight}%` }} />
+                                    </div>
+                                    <div className={`text-[9px] font-black ${isToday ? 'text-[#a81d24]' : 'text-slate-400'}`}>{day.day}</div>
+                                </div>
+                            );
+                        })}
+                    </div>
+
+                    <div className="mt-4 grid grid-cols-2 gap-2 text-xs font-bold text-slate-500">
+                        <div className="flex items-center gap-2"><span className="h-2.5 w-2.5 rounded-full bg-emerald-500" /> Entradas</div>
+                        <div className="flex items-center gap-2"><span className="h-2.5 w-2.5 rounded-full bg-rose-400" /> Salidas</div>
                     </div>
                 </div>
             </div>
@@ -463,7 +641,7 @@ const Dashboard = ({ data = {} }) => {
             </div>
 
             {/* ========= BOTTOM GRID: Reminders + Alerts ========= */}
-            <div className="dash-up dash-up-6 grid grid-cols-1 lg:grid-cols-2 gap-4 md:gap-5">
+            <div className="dash-up dash-up-6 grid grid-cols-1 gap-4 md:gap-5 xl:grid-cols-3">
                 {/* --- REMINDERS --- */}
                 <div className="rounded-2xl border border-[#e6c9b8] bg-white overflow-hidden shadow-sm">
                     <div className="flex items-center justify-between px-5 py-3 border-b border-[#ead5c5] bg-gradient-to-r from-stone-50 to-white">
@@ -599,6 +777,43 @@ const Dashboard = ({ data = {} }) => {
                                 </div>
                             ))
                         )}
+                    </div>
+                </div>
+
+                {/* --- ACTIVIDAD RECIENTE --- */}
+                <div className="rounded-2xl border border-[#e6c9b8] bg-white overflow-hidden shadow-sm">
+                    <div className="flex items-center gap-2.5 px-5 py-3 border-b border-[#ead5c5] bg-gradient-to-r from-stone-50 to-white">
+                        <div className="p-1.5 rounded-lg bg-sky-100">
+                            <Icon d={ICON.clock} className="w-4 h-4 text-sky-700" />
+                        </div>
+                        <div>
+                            <div className="text-xs font-bold uppercase tracking-wider text-[#5f1a1f]">Bitacora ejecutiva</div>
+                            <div className="text-[10px] text-stone-400 font-medium">Ultimos movimientos del mes</div>
+                        </div>
+                    </div>
+
+                    <div className="p-4 space-y-2 max-h-72 overflow-y-auto">
+                        {recentMovements.length === 0 ? (
+                            <div className="py-8 text-center text-xs font-semibold text-stone-400">Aun no hay movimientos recientes.</div>
+                        ) : recentMovements.map((movement) => {
+                            const accentClass = movement.accent === 'emerald'
+                                ? 'bg-emerald-100 text-emerald-700'
+                                : movement.accent === 'amber'
+                                    ? 'bg-amber-100 text-amber-700'
+                                    : 'bg-rose-100 text-rose-700';
+                            return (
+                                <div key={movement.id} className="group rounded-xl border border-stone-100 bg-white px-3.5 py-3 transition hover:border-[#e6c9b8] hover:bg-[#fffaf7]">
+                                    <div className="flex items-start justify-between gap-3">
+                                        <div className="min-w-0">
+                                            <span className={`rounded-full px-2 py-0.5 text-[10px] font-black uppercase tracking-wider ${accentClass}`}>{movement.type}</span>
+                                            <div className="mt-1 truncate text-sm font-black text-stone-800">{movement.title}</div>
+                                            <div className="text-[10px] font-semibold text-stone-400">{movement.date || 'Sin fecha'}</div>
+                                        </div>
+                                        <div className="font-mono text-xs font-black text-[#7f1218]">{fmt(movement.amount)}</div>
+                                    </div>
+                                </div>
+                            );
+                        })}
                     </div>
                 </div>
             </div>

@@ -850,26 +850,30 @@ const EditableList = ({
     const activeAdvancedCount = Object.entries(advancedFilters || {})
         .filter(([key, value]) => !['dateFrom', 'dateTo'].includes(key) && value)
         .length;
+    const averageTicket = filteredData.length ? filteredTotal / filteredData.length : 0;
+    const supportCoverage = filteredData.length ? (supportCount / filteredData.length) * 100 : 0;
+    const topRecords = filteredData.slice(0, 3);
 
     return (
         <div className="mt-4 space-y-4">
             {onFilterChange && (
-                <div className="rounded-2xl border border-[#e6c9b8] bg-gradient-to-br from-white to-[#fff8f5] p-4 shadow-sm">
-                    <div className="mb-4 flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+                <div className="overflow-hidden rounded-[1.75rem] border border-slate-200 bg-[#f7f9fb] shadow-xl shadow-slate-900/5">
+                    <div className="border-b border-slate-200 bg-white px-5 py-4">
+                    <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
                         <div>
-                            <div className="text-xs font-black uppercase tracking-[0.28em] text-[#7f1218]">Centro de revision</div>
+                            <div className="text-[10px] font-black uppercase tracking-[0.35em] text-slate-400">Centro de revision ERP</div>
                             <div className="mt-1 text-sm font-semibold text-stone-500">
                                 {filteredData.length} registros filtrados · {supportCount} con soporte · Total {fmt(filteredTotal)}
                             </div>
                         </div>
                         <div className="flex flex-wrap items-end gap-3">
                             <div className="space-y-1">
-                                <label className="text-xs font-bold text-stone-500 uppercase tracking-wider">{filterLabel}</label>
+                                <label className="text-xs font-bold text-slate-500 uppercase tracking-wider">{filterLabel}</label>
                                 <input
                                     type={filterType}
                                     value={filterValue}
                                     onChange={(e) => onFilterChange(e.target.value)}
-                                    className="min-w-[170px] bg-white border border-stone-200 rounded-xl px-3 py-2 text-sm font-semibold text-stone-700 focus:border-[#a81d24] focus:ring-2 focus:ring-[#a81d24]/15 outline-none"
+                                    className="min-w-[170px] bg-white border border-slate-200 rounded-xl px-3 py-2 text-sm font-semibold text-slate-700 focus:border-[#a81d24] focus:ring-2 focus:ring-[#a81d24]/15 outline-none"
                                 />
                             </div>
                             {(filterValue || activeAdvancedCount > 0 || advancedFilters.dateFrom || advancedFilters.dateTo) && (
@@ -882,12 +886,28 @@ const EditableList = ({
                             )}
                         </div>
                     </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 gap-3 border-b border-slate-200 p-4 sm:grid-cols-2 xl:grid-cols-4">
+                        {[
+                            ['Registros', filteredData.length, 'Documentos filtrados'],
+                            ['Total', fmt(filteredTotal), 'Monto fiscal / contable'],
+                            ['Ticket promedio', fmt(averageTicket), 'Promedio por registro'],
+                            ['Soportes', `${supportCoverage.toFixed(0)}%`, `${supportCount} con archivo`],
+                        ].map(([title, value, subtitle]) => (
+                            <div key={title} className="rounded-2xl border border-slate-200 bg-white px-4 py-3 shadow-sm">
+                                <div className="text-[10px] font-black uppercase tracking-[0.24em] text-slate-400">{title}</div>
+                                <div className="mt-1 font-mono text-lg font-black text-slate-900">{value}</div>
+                                <div className="text-[11px] font-semibold text-slate-500">{subtitle}</div>
+                            </div>
+                        ))}
+                    </div>
 
                     {advancedFilterConfig.length > 0 && onAdvancedFiltersChange && (
-                        <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
+                        <div className="grid grid-cols-1 gap-3 p-4 md:grid-cols-2 xl:grid-cols-4">
                             {advancedFilterConfig.map((filterField) => (
                                 <div key={filterField.key} className="space-y-1">
-                                    <label className="text-xs font-bold uppercase tracking-wider text-stone-500">
+                                    <label className="text-xs font-bold uppercase tracking-wider text-slate-500">
                                         {filterField.label}
                                     </label>
                                     <input
@@ -895,7 +915,7 @@ const EditableList = ({
                                         value={advancedFilters[filterField.key] || ''}
                                         placeholder={filterField.placeholder || ''}
                                         onChange={(e) => onAdvancedFiltersChange(filterField.key, e.target.value)}
-                                        className="w-full bg-white border border-stone-200 rounded-xl px-3 py-2 text-sm font-semibold text-stone-700 focus:border-[#a81d24] focus:ring-2 focus:ring-[#a81d24]/15 outline-none"
+                                        className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-sm font-semibold text-slate-700 focus:border-[#a81d24] focus:ring-2 focus:ring-[#a81d24]/15 outline-none"
                                     />
                                 </div>
                             ))}
@@ -912,19 +932,53 @@ const EditableList = ({
                     </p>
                 </div>
             ) : (
-                <div className="overflow-hidden rounded-2xl border border-stone-200 bg-white shadow-sm">
+                <div className="overflow-hidden rounded-[1.75rem] border border-slate-200 bg-white shadow-xl shadow-slate-900/5">
+                    {topRecords.length > 0 && (
+                        <div className="grid grid-cols-1 gap-3 border-b border-slate-200 bg-[#f8fafc] p-4 xl:grid-cols-3">
+                            {topRecords.map((item) => (
+                                <div key={`top-${item.id || getRecordTitle(item, fields)}`} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                                    <div className="flex items-start justify-between gap-3">
+                                        <div className="min-w-0">
+                                            <div className="truncate text-sm font-black text-slate-900">{getRecordTitle(item, fields)}</div>
+                                            <div className="mt-1 text-[11px] font-bold uppercase tracking-wider text-slate-400">{getRecordDate(item) || 'Sin fecha'}</div>
+                                        </div>
+                                        <Badge variant={hasSupport(item) ? 'success' : 'default'}>{hasSupport(item) ? 'Soporte' : 'Pendiente'}</Badge>
+                                    </div>
+                                    <div className="mt-4 flex items-end justify-between">
+                                        <div>
+                                            <div className="text-[10px] font-black uppercase tracking-[0.22em] text-slate-400">Total</div>
+                                            <div className="font-mono text-lg font-black text-[#7f1218]">{fmt(Number(item.total ?? item.amount ?? item.monto ?? item.subtotal) || 0)}</div>
+                                        </div>
+                                        <div className="text-right text-[11px] font-semibold text-slate-500">
+                                            IVA {fmt(Number(item.iva ?? 0) || 0)}
+                                        </div>
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    )}
+                    <div className="flex flex-col gap-2 border-b border-slate-200 bg-white px-4 py-3 md:flex-row md:items-center md:justify-between">
+                        <div>
+                            <div className="text-[10px] font-black uppercase tracking-[0.32em] text-slate-400">Matriz de documentos</div>
+                            <div className="text-sm font-bold text-slate-700">Vista detallada editable con acciones por registro</div>
+                        </div>
+                        <div className="flex flex-wrap gap-2 text-[10px] font-black uppercase tracking-wider text-slate-500">
+                            <span className="rounded-full bg-slate-100 px-3 py-1">{filteredData.length} filas</span>
+                            <span className="rounded-full bg-emerald-100 px-3 py-1 text-emerald-700">{supportCount} soportes</span>
+                        </div>
+                    </div>
                     <div className="overflow-x-auto">
                     <table className="w-full text-sm">
                         <thead className="sticky top-0 z-10">
-                            <tr className="text-left bg-[#f8efe8] border-b border-[#ead5c5]">
+                            <tr className="text-left bg-slate-900 border-b border-slate-800">
                                 {Object.values(fields).map(field => (
-                                    <th key={field.label} className="py-3 px-3 font-black text-[#5f1a1f] text-xs uppercase tracking-wider">{field.label}</th>
+                                    <th key={field.label} className="py-3 px-3 font-black text-white/80 text-xs uppercase tracking-wider">{field.label}</th>
                                 ))}
-                                <th className="py-3 px-3 font-black text-[#5f1a1f] text-xs uppercase tracking-wider">Soporte</th>
-                                <th className="py-3 px-3 font-black text-[#5f1a1f] text-xs uppercase tracking-wider">Acciones</th>
+                                <th className="py-3 px-3 font-black text-white/80 text-xs uppercase tracking-wider">Soporte</th>
+                                <th className="py-3 px-3 font-black text-white/80 text-xs uppercase tracking-wider">Acciones</th>
                             </tr>
                         </thead>
-                        <tbody className="divide-y divide-stone-100">
+                        <tbody className="divide-y divide-slate-100">
                             {filteredData.map(item => (
                                 <EditableRow
                                     key={item.id}

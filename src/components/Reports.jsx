@@ -543,6 +543,87 @@ const downloadCsv = (filename, rows) => {
     URL.revokeObjectURL(url);
 };
 
+const TaxIncomeFlowDiagram = ({ totals, selectedMonth }) => {
+    const maxValue = Math.max(
+        Math.abs(totals.salesSubtotal || 0),
+        Math.abs(totals.purchaseSubtotal || 0),
+        Math.abs(totals.profitBeforeTax || 0),
+        Math.abs(totals.netProfitAfterTax || 0),
+        1
+    );
+    const ribbon = (value, min = 10, max = 58) => Math.max(min, Math.min(max, (Math.abs(value) / maxValue) * max));
+    const margin = totals.salesSubtotal > 0 ? (totals.netProfitAfterTax / totals.salesSubtotal) * 100 : 0;
+    const profitColor = totals.netProfitAfterTax >= 0 ? '#16a34a' : '#dc2626';
+
+    return (
+        <div className="overflow-hidden rounded-[2rem] border border-slate-200 bg-[#f7f9fb] shadow-xl shadow-slate-900/5">
+            <div className="border-b border-slate-200 bg-white px-5 py-4">
+                <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                    <div>
+                        <div className="text-[10px] font-black uppercase tracking-[0.35em] text-slate-400">Income statement flow</div>
+                        <h3 className="mt-1 text-2xl font-black text-slate-900">Estado de resultado tributario</h3>
+                        <p className="text-xs font-semibold text-slate-500">Periodo {selectedMonth || 'Todos'} · ventas subtotal, IMI 1% e IR 30%</p>
+                    </div>
+                    <div className={`rounded-full px-4 py-2 text-xs font-black uppercase tracking-wider ${totals.netProfitAfterTax >= 0 ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'}`}>
+                        Margen neto {margin.toFixed(1)}%
+                    </div>
+                </div>
+            </div>
+
+            <div className="relative min-h-[430px] overflow-hidden bg-gradient-to-br from-white via-[#f8fbff] to-[#fff5ec] p-4 md:p-6">
+                <div className="absolute inset-0 opacity-70" style={{ backgroundImage: 'linear-gradient(#e8eef5 1px, transparent 1px), linear-gradient(90deg, #e8eef5 1px, transparent 1px)', backgroundSize: '30px 30px' }} />
+                <svg className="relative h-[390px] w-full" viewBox="0 0 1100 390" role="img" aria-label="Diagrama de estado de resultado tributario">
+                    <defs>
+                        <filter id="flowShadow" x="-20%" y="-20%" width="140%" height="140%">
+                            <feDropShadow dx="0" dy="8" stdDeviation="8" floodColor="#0f172a" floodOpacity="0.16" />
+                        </filter>
+                        <linearGradient id="salesRibbon" x1="0%" y1="0%" x2="100%" y2="0%">
+                            <stop offset="0%" stopColor="#38bdf8" stopOpacity="0.86" />
+                            <stop offset="100%" stopColor="#0ea5e9" stopOpacity="0.48" />
+                        </linearGradient>
+                        <linearGradient id="profitRibbon" x1="0%" y1="0%" x2="100%" y2="0%">
+                            <stop offset="0%" stopColor="#86efac" stopOpacity="0.78" />
+                            <stop offset="100%" stopColor={profitColor} stopOpacity="0.64" />
+                        </linearGradient>
+                        <linearGradient id="costRibbon" x1="0%" y1="0%" x2="100%" y2="0%">
+                            <stop offset="0%" stopColor="#fbbf24" stopOpacity="0.72" />
+                            <stop offset="100%" stopColor="#ef4444" stopOpacity="0.62" />
+                        </linearGradient>
+                    </defs>
+
+                    <path d="M135 174 C250 118, 325 118, 445 170" fill="none" stroke="url(#salesRibbon)" strokeWidth={ribbon(totals.salesSubtotal, 38, 78)} strokeLinecap="round" filter="url(#flowShadow)" />
+                    <path d="M470 184 C585 120, 645 90, 770 86" fill="none" stroke="url(#costRibbon)" strokeWidth={ribbon(totals.purchaseSubtotal, 18, 54)} strokeLinecap="round" opacity="0.9" />
+                    <path d="M470 202 C600 202, 662 210, 790 218" fill="none" stroke="#ef4444" strokeWidth={ribbon(totals.municipalTax + totals.incomeTax30, 8, 28)} strokeLinecap="round" opacity="0.72" />
+                    <path d="M470 230 C604 300, 730 316, 902 282" fill="none" stroke="url(#profitRibbon)" strokeWidth={ribbon(totals.netProfitAfterTax, 18, 60)} strokeLinecap="round" filter="url(#flowShadow)" />
+
+                    <rect x="44" y="115" width="190" height="120" rx="18" fill="#0ea5e9" filter="url(#flowShadow)" />
+                    <text x="72" y="152" fill="white" fontSize="15" fontWeight="800" letterSpacing="1.5">VENTAS SUBTOTAL</text>
+                    <text x="72" y="188" fill="white" fontSize="27" fontWeight="900">{fmt(totals.salesSubtotal)}</text>
+                    <text x="72" y="214" fill="rgba(255,255,255,.78)" fontSize="13" fontWeight="700">Base contable sin IVA</text>
+
+                    <rect x="385" y="142" width="170" height="130" rx="18" fill="#334155" filter="url(#flowShadow)" />
+                    <text x="414" y="178" fill="white" fontSize="14" fontWeight="800" letterSpacing="1.5">UTILIDAD</text>
+                    <text x="414" y="200" fill="rgba(255,255,255,.7)" fontSize="12" fontWeight="700">antes de impuesto</text>
+                    <text x="414" y="236" fill="white" fontSize="25" fontWeight="900">{fmt(totals.profitBeforeTax)}</text>
+
+                    <rect x="770" y="44" width="230" height="84" rx="16" fill="#fff7ed" stroke="#fed7aa" />
+                    <text x="798" y="76" fill="#9a3412" fontSize="13" fontWeight="900" letterSpacing="1.4">COSTO SUBTOTAL</text>
+                    <text x="798" y="105" fill="#9a3412" fontSize="23" fontWeight="900">{fmt(totals.purchaseSubtotal)}</text>
+
+                    <rect x="790" y="176" width="230" height="104" rx="16" fill="#fff1f2" stroke="#fecdd3" />
+                    <text x="818" y="207" fill="#be123c" fontSize="13" fontWeight="900" letterSpacing="1.4">IMPUESTOS</text>
+                    <text x="818" y="232" fill="#be123c" fontSize="18" fontWeight="900">IMI {fmt(totals.municipalTax)}</text>
+                    <text x="818" y="255" fill="#be123c" fontSize="18" fontWeight="900">IR {fmt(totals.incomeTax30)}</text>
+
+                    <rect x="900" y="292" width="184" height="76" rx="18" fill={profitColor} filter="url(#flowShadow)" />
+                    <text x="925" y="322" fill="white" fontSize="13" fontWeight="900" letterSpacing="1.4">UTILIDAD NETA</text>
+                    <text x="925" y="350" fill="white" fontSize="23" fontWeight="900">{fmt(totals.netProfitAfterTax)}</text>
+                </svg>
+            </div>
+        </div>
+    );
+};
+
 const TaxReportsPanel = ({ taxReport, taxTab, setTaxTab, selectedMonth, setSelectedMonth, availableMonths }) => {
     const subTabs = ['IVA', 'Retenciones', 'Facturas membretadas', 'Resultado despues de impuestos'];
     const tableClass = "w-full text-sm";
@@ -828,6 +909,7 @@ const TaxReportsPanel = ({ taxReport, taxTab, setTaxTab, selectedMonth, setSelec
                         <StatCard title="Utilidad Antes Imp." value={fmt(taxReport.totals.profitBeforeTax)} icon="dollar" variant={taxReport.totals.profitBeforeTax >= 0 ? 'wine' : 'danger'} />
                         <StatCard title="Utilidad Neta" value={fmt(taxReport.totals.netProfitAfterTax)} icon="wallet" variant={taxReport.totals.netProfitAfterTax >= 0 ? 'dark' : 'danger'} />
                     </div>
+                    <TaxIncomeFlowDiagram totals={taxReport.totals} selectedMonth={selectedMonth} />
                     <Card title="Estado de resultado despues de impuesto" subtitle="Formula fiscal solicitada: ventas - costo, IMI 1%, IR 30%" icon="chart" gradient={true}>
                         <div className="space-y-3 text-sm">
                             {[
