@@ -760,6 +760,123 @@ const EditableRow = ({ item, collectionName, fields, onUpdate, onDelete }) => {
     );
 };
 
+const EditableMobileCard = ({ item, collectionName, fields, onUpdate, onDelete }) => {
+    const [showEditModal, setShowEditModal] = useState(false);
+    const [showViewModal, setShowViewModal] = useState(false);
+    const [loading, setLoading] = useState(false);
+
+    const fieldEntries = Object.entries(fields).slice(0, 5);
+    const totalValue = Number(item.total ?? item.amount ?? item.monto ?? item.subtotal) || 0;
+    const dateLabel = getRecordDate(item) || 'Sin fecha';
+
+    const buildBlockingMessage = (blockingAbonos = []) => {
+        const details = blockingAbonos
+            .map((abono) => `- ${abono.fecha || 'sin fecha'}: ${fmt(Number(abono.monto) || 0)}`)
+            .join('\n');
+        return `No se puede eliminar esta compra porque tiene abonos registrados.\n\nElimina primero estos abonos en Cuentas por Pagar:\n${details}`;
+    };
+
+    const handleDelete = async () => {
+        if (!item.id) return;
+        if (!window.confirm("Seguro que deseas eliminar este registro?")) return;
+
+        setLoading(true);
+        try {
+            if (collectionName === 'compras') {
+                const result = await deletePurchaseTransaction(item.id);
+                if (result?.blocked) {
+                    alert(buildBlockingMessage(result.blockingAbonos));
+                    return;
+                }
+                await addDoc(collection(db, 'historial_ediciones'), {
+                    action: 'delete',
+                    collectionName,
+                    recordId: item.id,
+                    previousData: cleanForFirestore(item),
+                    changedAt: Timestamp.now(),
+                });
+            } else {
+                const batch = writeBatch(db);
+                batch.set(doc(collection(db, 'historial_ediciones')), {
+                    action: 'delete',
+                    collectionName,
+                    recordId: item.id,
+                    previousData: cleanForFirestore(item),
+                    changedAt: Timestamp.now(),
+                });
+                batch.delete(doc(db, collectionName, item.id));
+                await batch.commit();
+            }
+            onDelete(item.id);
+        } catch (error) {
+            console.error("Error al eliminar:", error);
+            alert("Error al eliminar: " + error.message);
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    return (
+        <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+            <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                    <div className="truncate text-base font-black text-slate-900">{getRecordTitle(item, fields)}</div>
+                    <div className="mt-1 text-[11px] font-bold uppercase tracking-[0.22em] text-slate-400">{dateLabel}</div>
+                </div>
+                <Badge variant={hasSupport(item) ? 'success' : 'default'}>{hasSupport(item) ? 'Soporte' : 'Sin soporte'}</Badge>
+            </div>
+
+            <div className="mt-4 rounded-2xl bg-slate-50 p-3">
+                <div className="text-[10px] font-black uppercase tracking-[0.24em] text-slate-400">Total</div>
+                <div className="font-mono text-2xl font-black text-[#7f1218]">{fmt(totalValue)}</div>
+            </div>
+
+            <div className="mt-3 grid grid-cols-1 gap-2">
+                {fieldEntries.map(([key, field]) => (
+                    <div key={key} className="flex items-start justify-between gap-3 rounded-xl border border-slate-100 px-3 py-2">
+                        <span className="text-[10px] font-black uppercase tracking-[0.18em] text-slate-400">{field.label}</span>
+                        <span className="max-w-[58%] break-words text-right text-xs font-bold text-slate-700">{renderDisplayValue(fields, key, item[key])}</span>
+                    </div>
+                ))}
+            </div>
+
+            <div className="mt-4 grid grid-cols-3 gap-2">
+                <Button onClick={() => setShowViewModal(true)} disabled={!item.id} variant="ghost" size="sm" className="w-full">
+                    Ver
+                </Button>
+                <Button onClick={() => setShowEditModal(true)} disabled={!item.id} variant="warning" size="sm" className="w-full">
+                    Editar
+                </Button>
+                <Button onClick={handleDelete} disabled={loading || !item.id} variant="danger" size="sm" className="w-full">
+                    Eliminar
+                </Button>
+            </div>
+
+            {showEditModal && (
+                <EditRecordModal
+                    item={item}
+                    collectionName={collectionName}
+                    fields={fields}
+                    onClose={() => setShowEditModal(false)}
+                    onSaved={onUpdate}
+                />
+            )}
+            {showViewModal && (
+                <RecordDetailModal
+                    item={item}
+                    collectionName={collectionName}
+                    fields={fields}
+                    onClose={() => setShowViewModal(false)}
+                    onEdit={() => {
+                        setShowViewModal(false);
+                        setShowEditModal(true);
+                    }}
+                />
+            )}
+        </div>
+    );
+};
+
 const EditableList = ({
     data,
     collectionName,
@@ -967,7 +1084,19 @@ const EditableList = ({
                             <span className="rounded-full bg-emerald-100 px-3 py-1 text-emerald-700">{supportCount} soportes</span>
                         </div>
                     </div>
-                    <div className="overflow-x-auto">
+                    <div className="mobile-card-list p-4 md:hidden">
+                        {filteredData.map((item, index) => (
+                            <EditableMobileCard
+                                key={`mobile-${item.id || getRecordTitle(item, fields) || index}`}
+                                item={item}
+                                collectionName={collectionName}
+                                fields={fields}
+                                onUpdate={handleUpdate}
+                                onDelete={handleDelete}
+                            />
+                        ))}
+                    </div>
+                    <div className="hidden overflow-x-auto md:block">
                     <table className="w-full text-sm">
                         <thead className="sticky top-0 z-10">
                             <tr className="text-left bg-slate-900 border-b border-slate-800">

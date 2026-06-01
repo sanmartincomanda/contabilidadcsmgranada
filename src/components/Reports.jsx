@@ -570,9 +570,9 @@ const TaxIncomeFlowDiagram = ({ totals, selectedMonth }) => {
                 </div>
             </div>
 
-            <div className="relative min-h-[430px] overflow-hidden bg-gradient-to-br from-white via-[#f8fbff] to-[#fff5ec] p-4 md:p-6">
+            <div className="relative min-h-[430px] overflow-x-auto overflow-y-hidden bg-gradient-to-br from-white via-[#f8fbff] to-[#fff5ec] p-4 md:p-6">
                 <div className="absolute inset-0 opacity-70" style={{ backgroundImage: 'linear-gradient(#e8eef5 1px, transparent 1px), linear-gradient(90deg, #e8eef5 1px, transparent 1px)', backgroundSize: '30px 30px' }} />
-                <svg className="relative h-[390px] w-full" viewBox="0 0 1100 390" role="img" aria-label="Diagrama de estado de resultado tributario">
+                <svg className="relative h-[390px] min-w-[760px] w-full" viewBox="0 0 1100 390" role="img" aria-label="Diagrama de estado de resultado tributario">
                     <defs>
                         <filter id="flowShadow" x="-20%" y="-20%" width="140%" height="140%">
                             <feDropShadow dx="0" dy="8" stdDeviation="8" floodColor="#0f172a" floodOpacity="0.16" />

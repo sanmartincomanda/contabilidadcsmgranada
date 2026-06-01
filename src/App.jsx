@@ -529,7 +529,7 @@ const Dashboard = ({ data = {} }) => {
                                     </div>
                                 </div>
 
-                                <div className="grid grid-cols-3 items-center gap-3">
+                                <div className="grid grid-cols-1 items-stretch gap-3 sm:grid-cols-3 sm:items-center">
                                     <div className="rounded-2xl bg-sky-500 p-4 text-white shadow-lg shadow-sky-500/20">
                                         <div className="text-[10px] font-black uppercase tracking-wider text-white/70">Ventas</div>
                                         <div className="mt-2 font-mono text-xl font-black">{fmt(totalIngresos)}</div>
