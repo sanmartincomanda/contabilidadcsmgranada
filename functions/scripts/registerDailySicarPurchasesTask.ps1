@@ -4,14 +4,19 @@ param(
 )
 
 $scriptPath = Join-Path $PSScriptRoot 'runDailySicarPurchases.ps1'
+$hiddenRunnerPath = Join-Path $PSScriptRoot 'runSicarPowerShellHidden.vbs'
 
 if (-not (Test-Path -LiteralPath $scriptPath)) {
     throw "No se encontro el script principal en $scriptPath"
 }
 
+if (-not (Test-Path -LiteralPath $hiddenRunnerPath)) {
+    throw "No se encontro el lanzador oculto en $hiddenRunnerPath"
+}
+
 $taskAction = New-ScheduledTaskAction `
-    -Execute 'powershell.exe' `
-    -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$scriptPath`""
+    -Execute 'wscript.exe' `
+    -Argument "`"$hiddenRunnerPath`" `"runDailySicarPurchases.ps1`""
 
 $taskTrigger = New-ScheduledTaskTrigger -Daily -At $StartTime
 $taskSettings = New-ScheduledTaskSettingsSet `

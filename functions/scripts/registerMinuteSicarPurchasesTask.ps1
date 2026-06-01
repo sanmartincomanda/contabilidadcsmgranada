@@ -5,17 +5,22 @@ param(
 )
 
 $scriptPath = Join-Path $PSScriptRoot 'runDailySicarPurchases.ps1'
+$hiddenRunnerPath = Join-Path $PSScriptRoot 'runSicarPowerShellHidden.vbs'
 
 if (-not (Test-Path -LiteralPath $scriptPath)) {
     throw "No se encontro el script principal en $scriptPath"
+}
+
+if (-not (Test-Path -LiteralPath $hiddenRunnerPath)) {
+    throw "No se encontro el lanzador oculto en $hiddenRunnerPath"
 }
 
 $safeInterval = [Math]::Max(1, [Math]::Min($IntervalMinutes, 60))
 $safeLookback = [Math]::Max(0, [Math]::Min($LookbackDays, 14))
 
 $taskAction = New-ScheduledTaskAction `
-    -Execute 'powershell.exe' `
-    -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$scriptPath`" -LookbackDays $safeLookback"
+    -Execute 'wscript.exe' `
+    -Argument "`"$hiddenRunnerPath`" `"runDailySicarPurchases.ps1`" -LookbackDays $safeLookback"
 
 $taskTrigger = New-ScheduledTaskTrigger `
     -Once `

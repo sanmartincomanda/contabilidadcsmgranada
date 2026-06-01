@@ -4,9 +4,14 @@ param(
 )
 
 $scriptPath = Join-Path $PSScriptRoot 'runPendingSicarPurchases.ps1'
+$hiddenRunnerPath = Join-Path $PSScriptRoot 'runSicarPowerShellHidden.vbs'
 
 if (-not (Test-Path -LiteralPath $scriptPath)) {
     throw "No se encontro el script principal en $scriptPath"
+}
+
+if (-not (Test-Path -LiteralPath $hiddenRunnerPath)) {
+    throw "No se encontro el lanzador oculto en $hiddenRunnerPath"
 }
 
 $startBoundary = (Get-Date).AddMinutes(1).ToString('s')
@@ -48,7 +53,7 @@ $taskXml = @"
     </IdleSettings>
     <AllowStartOnDemand>true</AllowStartOnDemand>
     <Enabled>true</Enabled>
-    <Hidden>false</Hidden>
+    <Hidden>true</Hidden>
     <RunOnlyIfIdle>false</RunOnlyIfIdle>
     <WakeToRun>false</WakeToRun>
     <ExecutionTimeLimit>PT30M</ExecutionTimeLimit>
@@ -56,8 +61,8 @@ $taskXml = @"
   </Settings>
   <Actions Context="Author">
     <Exec>
-      <Command>powershell.exe</Command>
-      <Arguments>-NoProfile -ExecutionPolicy Bypass -File "$scriptPath" -Limit $Limit</Arguments>
+      <Command>wscript.exe</Command>
+      <Arguments>"$hiddenRunnerPath" "runPendingSicarPurchases.ps1" -Limit $Limit</Arguments>
     </Exec>
   </Actions>
 </Task>

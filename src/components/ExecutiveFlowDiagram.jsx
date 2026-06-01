@@ -61,6 +61,21 @@ const MobileStep = ({ node, tone, connector = true }) => (
     </div>
 );
 
+const flowLabelStyles = {
+    cost: 'border-orange-200 bg-orange-50/90 text-orange-700',
+    tax: 'border-rose-200 bg-rose-50/90 text-rose-700',
+    profit: 'border-emerald-200 bg-emerald-50/90 text-emerald-700',
+};
+
+const FlowPathLabel = ({ node, tone, className = '' }) => {
+    if (!node?.label) return null;
+    return (
+        <div className={`pointer-events-none rounded-full border px-3 py-1 text-[10px] font-black uppercase tracking-[0.24em] shadow-sm backdrop-blur ${flowLabelStyles[tone]} ${className}`}>
+            {node.flowLabel || node.label}
+        </div>
+    );
+};
+
 export default function ExecutiveFlowDiagram({
     eyebrow = 'Financial flow',
     title = 'Estado financiero',
@@ -106,28 +121,34 @@ export default function ExecutiveFlowDiagram({
                                 <feDropShadow dx="0" dy="8" stdDeviation="8" floodColor="#0f172a" floodOpacity="0.16" />
                             </filter>
                             <linearGradient id="executive-sales" x1="0%" y1="0%" x2="100%" y2="0%">
-                                <stop offset="0%" stopColor="#38bdf8" stopOpacity="0.88" />
-                                <stop offset="100%" stopColor="#0ea5e9" stopOpacity="0.52" />
+                                <stop offset="0%" stopColor="#16a9e6" stopOpacity="0.92" />
+                                <stop offset="58%" stopColor="#38c6f4" stopOpacity="0.82" />
+                                <stop offset="100%" stopColor="#0ea5e9" stopOpacity="0.48" />
                             </linearGradient>
                             <linearGradient id="executive-cost" x1="0%" y1="0%" x2="100%" y2="0%">
-                                <stop offset="0%" stopColor="#fdba74" stopOpacity="0.88" />
-                                <stop offset="100%" stopColor="#fb923c" stopOpacity="0.64" />
+                                <stop offset="0%" stopColor="#f97316" stopOpacity="0.18" />
+                                <stop offset="28%" stopColor="#fb923c" stopOpacity="0.7" />
+                                <stop offset="100%" stopColor="#fdba74" stopOpacity="0.92" />
                             </linearGradient>
                             <linearGradient id="executive-tax" x1="0%" y1="0%" x2="100%" y2="0%">
-                                <stop offset="0%" stopColor="#fb7185" stopOpacity="0.74" />
-                                <stop offset="100%" stopColor="#e11d48" stopOpacity="0.55" />
+                                <stop offset="0%" stopColor="#fb7185" stopOpacity="0.82" />
+                                <stop offset="100%" stopColor="#e11d48" stopOpacity="0.64" />
                             </linearGradient>
                             <linearGradient id="executive-profit" x1="0%" y1="0%" x2="100%" y2="0%">
-                                <stop offset="0%" stopColor="#86efac" stopOpacity="0.82" />
-                                <stop offset="100%" stopColor="#16a34a" stopOpacity="0.66" />
+                                <stop offset="0%" stopColor="#22c55e" stopOpacity="0.22" />
+                                <stop offset="36%" stopColor="#86efac" stopOpacity="0.72" />
+                                <stop offset="100%" stopColor="#16a34a" stopOpacity="0.9" />
                             </linearGradient>
                         </defs>
-                        <path d="M160 188 C280 138, 340 152, 462 196" fill="none" stroke="url(#executive-sales)" strokeWidth={ribbon(source?.value, 42, 84)} strokeLinecap="round" filter="url(#executive-flow-shadow)" />
-                        {top && <path d="M540 190 C640 92, 750 64, 905 66" fill="none" stroke="url(#executive-cost)" strokeWidth={ribbon(top.value, 18, 62)} strokeLinecap="round" />}
-                        {middle && <path d="M540 210 C650 214, 760 218, 912 220" fill="none" stroke="url(#executive-tax)" strokeWidth={ribbon(middle.value, 10, 38)} strokeLinecap="round" />}
-                        {bottom && <path d="M540 238 C650 314, 760 334, 930 338" fill="none" stroke="url(#executive-profit)" strokeWidth={ribbon(bottom.value, 18, 66)} strokeLinecap="round" filter="url(#executive-flow-shadow)" />}
+                        {top && <path d="M250 170 C420 120, 610 54, 912 64" fill="none" stroke="url(#executive-cost)" strokeWidth={ribbon(top.value, 22, 66)} strokeLinecap="round" filter="url(#executive-flow-shadow)" />}
+                        <path d="M165 190 C292 190, 386 190, 470 204" fill="none" stroke="url(#executive-sales)" strokeWidth={ribbon(center?.value || source?.value, 34, 72)} strokeLinecap="round" filter="url(#executive-flow-shadow)" />
+                        {middle && <path d="M540 218 C660 218, 770 219, 916 219" fill="none" stroke="url(#executive-tax)" strokeWidth={ribbon(middle.value, 10, 34)} strokeLinecap="round" />}
+                        {bottom && <path d="M540 252 C650 312, 790 334, 934 336" fill="none" stroke="url(#executive-profit)" strokeWidth={ribbon(bottom.value, 20, 66)} strokeLinecap="round" filter="url(#executive-flow-shadow)" />}
                     </svg>
 
+                    {top && <FlowPathLabel node={{ ...top, flowLabel: top.flowLabel || 'Costo' }} tone="cost" className="absolute left-[27%] top-[22%]" />}
+                    {middle && <FlowPathLabel node={middle} tone="tax" className="absolute left-[64%] top-[45%]" />}
+                    {bottom && <FlowPathLabel node={bottom} tone="profit" className="absolute left-[66%] bottom-[24%]" />}
                     <div className="absolute left-[4%] top-[32%]"><FlowNode node={source} tone="source" /></div>
                     <div className="absolute left-[35%] top-[33%]"><FlowNode node={center} tone="center" /></div>
                     {top && <div className="absolute right-[8%] top-[5%]"><FlowNode node={top} tone="cost" /></div>}
