@@ -272,6 +272,21 @@ body::before {
   transform: translateY(-1px);
 }
 
+.app-modal-root {
+  isolation: isolate;
+}
+
+.app-modal-panel,
+.app-modal-panel:hover {
+  transform: none !important;
+}
+
+.app-modal-panel {
+  transition:
+    box-shadow 0.24s var(--motion-ease),
+    border-color 0.24s var(--motion-ease) !important;
+}
+
 ::-webkit-scrollbar {
   width: 10px;
   height: 10px;
@@ -343,7 +358,8 @@ body::before {
     padding: 0.5rem !important;
   }
 
-  :where(.fixed.inset-0 > .relative) {
+  :where(.fixed.inset-0 > .relative),
+  :where(.fixed.inset-0 > .app-modal-panel) {
     max-height: 92vh;
     width: 100% !important;
     border-radius: 1.35rem 1.35rem 0.9rem 0.9rem !important;

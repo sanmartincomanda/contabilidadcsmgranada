@@ -1,5 +1,6 @@
 // src/components/DataEntry.jsx
 import React, { useState, useMemo, useCallback, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { useSearchParams } from 'react-router-dom';
 import { db } from '../firebase';
 import {
@@ -261,6 +262,11 @@ const getRecordTitle = (item, fields) => {
 
 const isPdfSupport = (item) => isPdfSupportRecord(item);
 
+const ModalPortal = ({ children }) => {
+    if (typeof document === 'undefined') return children;
+    return createPortal(children, document.body);
+};
+
 const RecordDetailModal = ({ item, collectionName, fields, onClose, onEdit }) => {
     if (!item) return null;
 
@@ -279,9 +285,10 @@ const RecordDetailModal = ({ item, collectionName, fields, onClose, onEdit }) =>
     ].filter(([, value]) => value);
 
     return (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+        <ModalPortal>
+        <div className="app-modal-root fixed inset-0 z-50 flex items-center justify-center p-4">
             <button className="absolute inset-0 bg-[#2b1113]/55 backdrop-blur-sm" onClick={onClose} aria-label="Cerrar" />
-            <div className="relative grid max-h-[92vh] w-full max-w-6xl overflow-hidden rounded-3xl border border-[#e6c9b8] bg-white shadow-2xl lg:grid-cols-[1.15fr_0.85fr]">
+            <div className="app-modal-panel relative grid max-h-[92vh] w-full max-w-6xl overflow-hidden rounded-3xl border border-[#e6c9b8] bg-white shadow-2xl lg:grid-cols-[1.15fr_0.85fr]">
                 <div className="flex max-h-[92vh] flex-col overflow-hidden">
                     <div className="border-b border-[#ead5c5] bg-gradient-to-br from-[#7f1218] to-[#2b1113] px-6 py-5 text-white">
                         <div className="flex items-start justify-between gap-4">
@@ -394,6 +401,7 @@ const RecordDetailModal = ({ item, collectionName, fields, onClose, onEdit }) =>
                 </div>
             </div>
         </div>
+        </ModalPortal>
     );
 };
 
@@ -498,9 +506,10 @@ const EditRecordModal = ({ item, collectionName, fields, onClose, onSaved }) => 
     };
 
     return (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+        <ModalPortal>
+        <div className="app-modal-root fixed inset-0 z-50 flex items-center justify-center p-4">
             <button className="absolute inset-0 bg-[#2b1113]/50 backdrop-blur-sm" onClick={onClose} aria-label="Cerrar" />
-            <div className="relative max-h-[90vh] w-full max-w-4xl overflow-hidden rounded-2xl border border-[#e6c9b8] bg-white shadow-2xl">
+            <div className="app-modal-panel relative max-h-[90vh] w-full max-w-4xl overflow-hidden rounded-2xl border border-[#e6c9b8] bg-white shadow-2xl">
                 <div className="flex items-start justify-between gap-4 border-b border-[#ead5c5] bg-[#7f1218] px-5 py-4">
                     <div>
                         <div className="text-xs font-bold uppercase tracking-[0.3em] text-[#f2b635]">Edicion detallada</div>
@@ -566,6 +575,7 @@ const EditRecordModal = ({ item, collectionName, fields, onClose, onSaved }) => 
                 </div>
             </div>
         </div>
+        </ModalPortal>
     );
 };
 
