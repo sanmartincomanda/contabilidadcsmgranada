@@ -8,6 +8,7 @@ import { AuthProvider, useAuth } from './context/AuthContext';
 import PrivateRoute from './components/PrivateRoute';
 import Login from './components/Login';
 import Header from './components/Header';
+import HomeDashboard from './components/HomeDashboard';
 import GastosDiarios from './components/GastosDiarios';
 import { DataEntry } from './components/DataEntry';
 import { BankReconciliation } from './components/BankReconciliation';
@@ -422,6 +423,41 @@ const Dashboard = ({ data = {} }) => {
             accent: 'rose',
         })),
     ].sort((a, b) => String(b.date).localeCompare(String(a.date))).slice(0, 7)), [mesCompras, mesGastos, mesIngresos]);
+
+    return (
+        <>
+            <style>{DASHBOARD_STYLES}</style>
+            {showSettings && <SettingsPanel config={config} onClose={() => setShowSettings(false)} onSave={saveSettings} />}
+            <HomeDashboard
+                configLoading={configLoading}
+                currentMonth={currentMonth}
+                dayOfMonth={dayOfMonth}
+                greeting={greeting}
+                mesLabel={mesLabel}
+                insight={insight}
+                totalIngresos={totalIngresos}
+                totalGastos={totalGastos}
+                totalCompras={totalCompras}
+                utilidad={utilidad}
+                facturasPendientes={facturasPendientes}
+                totalPendiente={totalPendiente}
+                vencidas={vencidas}
+                allReminders={allReminders}
+                pendingReminders={pendingReminders}
+                doneCount={doneCount}
+                markAsDone={markAsDone}
+                justCompleted={justCompleted}
+                setShowSettings={setShowSettings}
+                dailyActivity={dailyActivity}
+                maxDailyActivity={maxDailyActivity}
+                profitMargin={profitMargin}
+                operatingRatio={operatingRatio}
+                recentMovements={recentMovements}
+                mesGastos={mesGastos}
+                mesCompras={mesCompras}
+            />
+        </>
+    );
 
     return (
         <div className="space-y-5 dash-dots min-h-[70vh]">
