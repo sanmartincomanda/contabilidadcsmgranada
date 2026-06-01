@@ -983,6 +983,7 @@ function AppContent() {
         collectionConfig('presupuestos', [where('month', '>=', dataEntryStartMonth)]),
         collectionConfig('cuentasPorCobrar', [where('date', '>=', `${dataEntryStartMonth}-01`)]),
         collectionConfig('patrimonio', [where('date', '>=', `${dataEntryStartMonth}-01`)]),
+        'proveedores',
     ], [dataEntryStartMonth]);
 
     const reportCollections = useMemo(() => [

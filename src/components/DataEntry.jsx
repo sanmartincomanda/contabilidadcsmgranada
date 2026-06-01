@@ -10,7 +10,14 @@ import Papa from 'papaparse';
 import { APP_BRAND_NAME, DEFAULT_BRANCH_ID, DEFAULT_BRANCH_NAME, fmt, branchName } from '../constants';
 import { resolveIncomeEntries } from '../services/incomeAggregation';
 import { syncSicarDailyIncome } from '../services/sicarIncomeSync';
-import { deletePurchaseTransaction, updatePurchaseTransaction } from '../services/linkedTransactions';
+import { deleteExpenseTransaction, deletePurchaseTransaction, updateExpenseTransaction, updatePurchaseTransaction } from '../services/linkedTransactions';
+import {
+    getProviderCode,
+    getProviderDisplayName,
+    migrateProvidersFromAccountingRecords,
+    normalizeProviderName,
+    upsertProviderByName,
+} from '../services/providers';
 import {
     PAYMENT_METHODS,
     PURCHASE_PAYMENT_METHODS,
@@ -480,6 +487,8 @@ const EditRecordModal = ({ item, collectionName, fields, onClose, onSaved }) => 
 
             if (collectionName === 'compras') {
                 await updatePurchaseTransaction(item.id, dataToSave, { previousData: item });
+            } else if (collectionName === 'gastos') {
+                await updateExpenseTransaction(item.id, dataToSave, { previousData: item });
             } else {
                 const batch = writeBatch(db);
                 batch.set(doc(collection(db, 'historial_ediciones')), {
@@ -610,6 +619,8 @@ const EditableRow = ({ item, collectionName, fields, onUpdate, onDelete }) => {
             }
             if (collectionName === 'compras') {
                 await updatePurchaseTransaction(item.id, dataToSave, { previousData: item });
+            } else if (collectionName === 'gastos') {
+                await updateExpenseTransaction(item.id, dataToSave, { previousData: item });
             } else {
                 await updateDoc(doc(db, collectionName, item.id), dataToSave);
             }
@@ -629,6 +640,19 @@ const EditableRow = ({ item, collectionName, fields, onUpdate, onDelete }) => {
         try {
             if (collectionName === 'compras') {
                 const result = await deletePurchaseTransaction(item.id);
+                if (result?.blocked) {
+                    alert(buildBlockingMessage(result.blockingAbonos));
+                    return;
+                }
+                await addDoc(collection(db, 'historial_ediciones'), {
+                    action: 'delete',
+                    collectionName,
+                    recordId: item.id,
+                    previousData: cleanForFirestore(item),
+                    changedAt: Timestamp.now(),
+                });
+            } else if (collectionName === 'gastos') {
+                const result = await deleteExpenseTransaction(item.id);
                 if (result?.blocked) {
                     alert(buildBlockingMessage(result.blockingAbonos));
                     return;
@@ -794,6 +818,19 @@ const EditableMobileCard = ({ item, collectionName, fields, onUpdate, onDelete }
         try {
             if (collectionName === 'compras') {
                 const result = await deletePurchaseTransaction(item.id);
+                if (result?.blocked) {
+                    alert(buildBlockingMessage(result.blockingAbonos));
+                    return;
+                }
+                await addDoc(collection(db, 'historial_ediciones'), {
+                    action: 'delete',
+                    collectionName,
+                    recordId: item.id,
+                    previousData: cleanForFirestore(item),
+                    changedAt: Timestamp.now(),
+                });
+            } else if (collectionName === 'gastos') {
+                const result = await deleteExpenseTransaction(item.id);
                 if (result?.blocked) {
                     alert(buildBlockingMessage(result.blockingAbonos));
                     return;
@@ -1366,9 +1403,11 @@ const paymentOptions = (methods) => (
     </>
 );
 
-const FiscalExpenseForm = ({ categories, loading, setLoading, onSuccess }) => {
+const FiscalExpenseForm = ({ categories, providers = [], loading, setLoading, onSuccess }) => {
     const [date, setDate] = useState(new Date().toISOString().substring(0, 10));
+    const [dueDate, setDueDate] = useState(new Date().toISOString().substring(0, 10));
     const [supplier, setSupplier] = useState('');
+    const [newSupplier, setNewSupplier] = useState('');
     const [invoiceNumber, setInvoiceNumber] = useState('');
     const [description, setDescription] = useState('');
     const [categoryId, setCategoryId] = useState('');
@@ -1383,6 +1422,8 @@ const FiscalExpenseForm = ({ categories, loading, setLoading, onSuccess }) => {
 
     const resetForm = () => {
         setSupplier('');
+        setNewSupplier('');
+        setDueDate(new Date().toISOString().substring(0, 10));
         setInvoiceNumber('');
         setDescription('');
         setCategoryId('');
@@ -1400,18 +1441,26 @@ const FiscalExpenseForm = ({ categories, loading, setLoading, onSuccess }) => {
         e.preventDefault();
         const selectedCategoryName = categories.find(c => c.id === categoryId)?.name;
         const fiscal = buildFiscalPayload({ subtotal, iva, total, retentionIr2, retentionMunicipal1 });
-        if (!description.trim() || !supplier.trim() || !selectedCategoryName || fiscal.total <= 0) {
+        const cleanSupplier = normalizeProviderName(supplier === '__new__' ? newSupplier : supplier);
+        if (!description.trim() || !cleanSupplier || !selectedCategoryName || fiscal.total <= 0) {
             return alert('Complete proveedor, categoria, descripcion y montos fiscales.');
         }
 
         setLoading(true);
         try {
+            const provider = await upsertProviderByName(cleanSupplier, { source: 'gastos' });
+            const batch = writeBatch(db);
             const gastoRef = doc(collection(db, 'gastos'));
             const photoPayload = await uploadFiscalSupportFiles(supportFiles, 'facturas/gastos', gastoRef.id);
-            await setDoc(gastoRef, {
+            const expensePayload = {
                 date,
                 month: date.substring(0, 7),
-                supplier: supplier.trim().toUpperCase(),
+                supplier: provider.nombre,
+                proveedor: provider.nombre,
+                providerId: provider.id,
+                proveedorId: provider.id,
+                providerCode: provider.code,
+                codigoProveedor: provider.code,
                 invoiceNumber: invoiceNumber.trim(),
                 description: description.trim().toUpperCase(),
                 category: selectedCategoryName,
@@ -1423,7 +1472,57 @@ const FiscalExpenseForm = ({ categories, loading, setLoading, onSuccess }) => {
                 branchName: DEFAULT_BRANCH_NAME,
                 timestamp: Timestamp.now(),
                 is_conciled: false,
-            });
+            };
+
+            if (paymentType === 'Credito') {
+                const payableRef = doc(collection(db, 'cuentas_por_pagar'));
+                const linkedPayload = {
+                    ...expensePayload,
+                    linkedPayableId: payableRef.id,
+                    sourceFacturaId: payableRef.id,
+                    payableType: 'gasto',
+                };
+
+                batch.set(gastoRef, linkedPayload);
+                batch.set(payableRef, {
+                    fecha: date,
+                    month: date.substring(0, 7),
+                    proveedor: provider.nombre,
+                    proveedorId: provider.id,
+                    providerCode: provider.code,
+                    codigoProveedor: provider.code,
+                    numero: invoiceNumber.trim(),
+                    factura: invoiceNumber.trim(),
+                    vencimiento: dueDate || date,
+                    descripcion: description.trim().toUpperCase(),
+                    category: selectedCategoryName,
+                    expenseCategory: selectedCategoryName,
+                    monto: fiscal.total,
+                    saldo: fiscal.total,
+                    amount: fiscal.subtotal,
+                    estado: 'pendiente',
+                    paymentType: 'credito',
+                    paymentReference: paymentReference.trim().toUpperCase(),
+                    isInventoryCost: false,
+                    isOperatingExpense: true,
+                    mirroredToGastos: true,
+                    mirroredExpenseId: gastoRef.id,
+                    linkedExpenseId: gastoRef.id,
+                    sourceCollection: 'gastos',
+                    sourceFacturaId: gastoRef.id,
+                    ...fiscal,
+                    ...photoPayload,
+                    branch: DEFAULT_BRANCH_ID,
+                    branchName: DEFAULT_BRANCH_NAME,
+                    createdAt: Timestamp.now(),
+                    updatedAt: Timestamp.now(),
+                    timestamp: Timestamp.now(),
+                });
+            } else {
+                batch.set(gastoRef, expensePayload);
+            }
+
+            await batch.commit();
             resetForm();
             onSuccess?.();
         } catch (error) {
@@ -1440,12 +1539,32 @@ const FiscalExpenseForm = ({ categories, loading, setLoading, onSuccess }) => {
                 Todo se registra en {DEFAULT_BRANCH_NAME}.
             </div>
             <Input label="Fecha" type="date" icon="calendar" value={date} onChange={e => setDate(e.target.value)} required />
+            {paymentType === 'Credito' && <Input label="Vencimiento" type="date" icon="calendar" value={dueDate} onChange={e => setDueDate(e.target.value)} required />}
             <Input label="Numero de factura" icon="receipt" placeholder="Dejar vacio si no aplica" value={invoiceNumber} onChange={e => setInvoiceNumber(e.target.value)} />
-            <Input label="Proveedor" icon="users" placeholder="Nombre del proveedor" value={supplier} onChange={e => setSupplier(e.target.value)} required />
+            <Select
+                label="Proveedor"
+                icon="users"
+                value={supplier}
+                onChange={e => setSupplier(e.target.value)}
+                required
+                options={
+                    <>
+                        <option value="">Seleccionar proveedor...</option>
+                        {providers.map((provider) => {
+                            const name = getProviderDisplayName(provider);
+                            return <option key={provider.id || name} value={name}>{provider.code || provider.codigo || getProviderCode(name)} - {name}</option>;
+                        })}
+                        <option value="__new__">+ Crear proveedor nuevo</option>
+                    </>
+                }
+            />
+            {supplier === '__new__' && (
+                <Input label="Nuevo proveedor" icon="users" placeholder="Nombre del proveedor" value={newSupplier} onChange={e => setNewSupplier(e.target.value)} required />
+            )}
             <Input label="Descripcion" icon="fileText" placeholder="Ej: Pago de servicios..." value={description} onChange={e => setDescription(e.target.value)} required />
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                 <Select label="Categoria" icon="tag" value={categoryId} onChange={e => setCategoryId(e.target.value)} required options={<><option value="">Seleccionar...</option>{categories.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</>} />
-                <Select label="Tipo de pago" icon="cash" value={paymentType} onChange={e => setPaymentType(e.target.value)} required options={paymentOptions(PURCHASE_PAYMENT_METHODS.filter(method => method !== 'Credito'))} />
+                <Select label="Tipo de pago" icon="cash" value={paymentType} onChange={e => setPaymentType(e.target.value)} required options={paymentOptions(PURCHASE_PAYMENT_METHODS)} />
             </div>
             <Input label="Referencia de pago" icon="fileText" placeholder="Cheque, transferencia, POS..." value={paymentReference} onChange={e => setPaymentReference(e.target.value)} />
             <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
@@ -1474,10 +1593,11 @@ const FiscalExpenseForm = ({ categories, loading, setLoading, onSuccess }) => {
     );
 };
 
-const FiscalPurchasesForm = ({ categories, loading, setLoading, onSuccess }) => {
+const FiscalPurchasesForm = ({ categories, providers = [], loading, setLoading, onSuccess }) => {
     const [date, setDate] = useState(new Date().toISOString().substring(0, 10));
     const [dueDate, setDueDate] = useState(new Date().toISOString().substring(0, 10));
     const [supplier, setSupplier] = useState('');
+    const [newSupplier, setNewSupplier] = useState('');
     const [invoiceNumber, setInvoiceNumber] = useState('');
     const [description, setDescription] = useState('');
     const [categoryId, setCategoryId] = useState('');
@@ -1492,6 +1612,8 @@ const FiscalPurchasesForm = ({ categories, loading, setLoading, onSuccess }) => 
 
     const resetForm = () => {
         setSupplier('');
+        setNewSupplier('');
+        setDueDate(new Date().toISOString().substring(0, 10));
         setInvoiceNumber('');
         setDescription('');
         setCategoryId('');
@@ -1509,20 +1631,26 @@ const FiscalPurchasesForm = ({ categories, loading, setLoading, onSuccess }) => 
         e.preventDefault();
         const fiscal = buildFiscalPayload({ subtotal, iva, total, retentionIr2, retentionMunicipal1 });
         const categoryName = categories.find(c => c.id === categoryId)?.name || 'Compra de mercancia';
-        const cleanSupplier = supplier.trim().toUpperCase();
+        const cleanSupplier = normalizeProviderName(supplier === '__new__' ? newSupplier : supplier);
         if (!cleanSupplier || fiscal.total <= 0 || !paymentType) {
             return alert('Complete proveedor, tipo de pago y montos fiscales.');
         }
 
         setLoading(true);
         try {
+            const provider = await upsertProviderByName(cleanSupplier, { source: 'compras' });
             const batch = writeBatch(db);
             const purchaseRef = doc(collection(db, 'compras'));
             const photoPayload = await uploadFiscalSupportFiles(supportFiles, 'facturas/compras', purchaseRef.id);
             const purchasePayload = {
                 date,
                 month: date.substring(0, 7),
-                supplier: cleanSupplier,
+                supplier: provider.nombre,
+                proveedor: provider.nombre,
+                providerId: provider.id,
+                proveedorId: provider.id,
+                providerCode: provider.code,
+                codigoProveedor: provider.code,
                 invoiceNumber: invoiceNumber.trim(),
                 description: description.trim().toUpperCase(),
                 category: categoryName,
@@ -1540,7 +1668,10 @@ const FiscalPurchasesForm = ({ categories, loading, setLoading, onSuccess }) => 
             if (paymentType === 'Credito') {
                 const payableRef = doc(collection(db, 'cuentas_por_pagar'));
                 batch.set(payableRef, {
-                    proveedor: cleanSupplier,
+                    proveedor: provider.nombre,
+                    proveedorId: provider.id,
+                    providerCode: provider.code,
+                    codigoProveedor: provider.code,
                     factura: invoiceNumber.trim(),
                     numero: invoiceNumber.trim(),
                     fecha: date,
@@ -1569,9 +1700,13 @@ const FiscalPurchasesForm = ({ categories, loading, setLoading, onSuccess }) => 
                     fecha: date,
                     date,
                     tipo: 'Compra',
-                    descripcion: description.trim().toUpperCase() || `Compra ${cleanSupplier}`,
-                    proveedor: cleanSupplier,
-                    supplier: cleanSupplier,
+                    descripcion: description.trim().toUpperCase() || `Compra ${provider.nombre}`,
+                    proveedor: provider.nombre,
+                    supplier: provider.nombre,
+                    providerId: provider.id,
+                    proveedorId: provider.id,
+                    providerCode: provider.code,
+                    codigoProveedor: provider.code,
                     factura: invoiceNumber.trim(),
                     invoiceNumber: invoiceNumber.trim(),
                     monto: fiscal.total,
@@ -1613,7 +1748,26 @@ const FiscalPurchasesForm = ({ categories, loading, setLoading, onSuccess }) => 
             <Input label="Fecha" type="date" icon="calendar" value={date} onChange={e => setDate(e.target.value)} required />
             {paymentType === 'Credito' && <Input label="Vencimiento" type="date" icon="calendar" value={dueDate} onChange={e => setDueDate(e.target.value)} required />}
             <Input label="Numero de factura" icon="fileText" placeholder="Dejar vacio si SICAR/proveedor no manda folio" value={invoiceNumber} onChange={e => setInvoiceNumber(e.target.value)} />
-            <Input label="Proveedor" icon="users" placeholder="Nombre del proveedor" value={supplier} onChange={e => setSupplier(e.target.value)} required />
+            <Select
+                label="Proveedor"
+                icon="users"
+                value={supplier}
+                onChange={e => setSupplier(e.target.value)}
+                required
+                options={
+                    <>
+                        <option value="">Seleccionar proveedor...</option>
+                        {providers.map((provider) => {
+                            const name = getProviderDisplayName(provider);
+                            return <option key={provider.id || name} value={name}>{provider.code || provider.codigo || getProviderCode(name)} - {name}</option>;
+                        })}
+                        <option value="__new__">+ Crear proveedor nuevo</option>
+                    </>
+                }
+            />
+            {supplier === '__new__' && (
+                <Input label="Nuevo proveedor" icon="users" placeholder="Nombre del proveedor" value={newSupplier} onChange={e => setNewSupplier(e.target.value)} required />
+            )}
             <Input label="Descripcion" icon="fileText" placeholder="Detalle de la compra" value={description} onChange={e => setDescription(e.target.value)} />
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                 <Select label="Categoria" icon="tag" value={categoryId} onChange={e => setCategoryId(e.target.value)} options={<><option value="">Compra de mercancia</option>{categories.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</>} />
@@ -1941,12 +2095,34 @@ export function DataEntry({ categories, data }) {
     });
     const [loading, setLoading] = useState(false);
     const [refreshKey, setRefreshKey] = useState(0);
+    const providers = useMemo(() => (
+        [...(data.proveedores || [])]
+            .map((provider) => ({
+                ...provider,
+                nombre: getProviderDisplayName(provider),
+                code: provider.code || provider.codigo || getProviderCode(getProviderDisplayName(provider)),
+            }))
+            .filter((provider) => provider.nombre)
+            .sort((a, b) => a.nombre.localeCompare(b.nombre, 'es'))
+    ), [data.proveedores]);
 
     useEffect(() => {
         if (urlTab && VALID_TABS.includes(urlTab)) {
             setActiveTab(urlTab);
         }
     }, [urlTab]);
+
+    useEffect(() => {
+        const sessionKey = 'csm-provider-migration-v1';
+        if (sessionStorage.getItem(sessionKey)) return;
+        sessionStorage.setItem(sessionKey, 'running');
+        migrateProvidersFromAccountingRecords()
+            .then(() => sessionStorage.setItem(sessionKey, 'done'))
+            .catch((error) => {
+                sessionStorage.removeItem(sessionKey);
+                console.warn('No se pudo migrar proveedores historicos:', error);
+            });
+    }, []);
 
     const [filterMonth, setFilterMonth] = useState({
         Ingresos: new Date().toISOString().substring(0, 10),
@@ -2029,6 +2205,7 @@ export function DataEntry({ categories, data }) {
         },
         Gastos: {
             date: { label: 'Fecha', type: 'date' },
+            providerCode: { label: 'Codigo', type: 'text', readonly: true },
             supplier: { label: 'Proveedor', type: 'text' },
             invoiceNumber: { label: 'Factura', type: 'text' },
             paymentType: { label: 'Tipo Pago', type: 'text' },
@@ -2049,6 +2226,7 @@ export function DataEntry({ categories, data }) {
         Compras: {
             date: { label: 'Fecha', type: 'date' },
             month: { label: 'Mes', type: 'month' },
+            providerCode: { label: 'Codigo', type: 'text', readonly: true },
             supplier: { label: 'Proveedor', type: 'text' },
             invoiceNumber: { label: 'Factura', type: 'text' },
             paymentType: { label: 'Tipo', type: 'text' },
@@ -2146,10 +2324,28 @@ export function DataEntry({ categories, data }) {
                 date: item.date || item.fecha || '',
                 month: item.month || ((item.date || item.fecha) ? (item.date || item.fecha).substring(0, 7) : ''),
                 supplier: item.supplier || item.proveedor || 'REGISTRO LEGACY',
+                providerCode: item.providerCode || item.codigoProveedor || getProviderCode(item.supplier || item.proveedor || ''),
                 invoiceNumber: item.invoiceNumber || item.numero || '',
                 branch: item.branch || DEFAULT_BRANCH_ID,
                 branchName: item.branchName || DEFAULT_BRANCH_NAME,
                 paymentType: item.paymentType || (item.sourceFacturaId || item.linkedPayableId ? 'credito' : ((item.date || item.fecha) ? 'contado' : 'legacy')),
+                subtotal: Number(item.subtotal ?? item.amount ?? item.monto ?? 0) || 0,
+                iva: Number(item.iva ?? 0) || 0,
+                total: Number(item.total ?? item.amount ?? item.monto ?? 0) || 0,
+                retentionIr2: Number(item.retentionIr2 ?? 0) || 0,
+                retentionMunicipal1: Number(item.retentionMunicipal1 ?? 0) || 0,
+            }));
+        }
+
+        if (activeTab === 'Gastos') {
+            return (data.gastos || []).map((item) => ({
+                ...item,
+                date: item.date || item.fecha || '',
+                month: item.month || ((item.date || item.fecha) ? (item.date || item.fecha).substring(0, 7) : ''),
+                supplier: item.supplier || item.proveedor || 'REGISTRO LEGACY',
+                providerCode: item.providerCode || item.codigoProveedor || getProviderCode(item.supplier || item.proveedor || ''),
+                invoiceNumber: item.invoiceNumber || item.numero || item.factura || '',
+                paymentType: item.paymentType || (item.linkedPayableId || item.sourceFacturaId ? 'Credito' : 'Contado'),
                 subtotal: Number(item.subtotal ?? item.amount ?? item.monto ?? 0) || 0,
                 iva: Number(item.iva ?? 0) || 0,
                 total: Number(item.total ?? item.amount ?? item.monto ?? 0) || 0,
@@ -2221,9 +2417,9 @@ export function DataEntry({ categories, data }) {
                     <Card title={`Nuevo — ${tabsConfig[activeTab].label}`} icon={tabsConfig[activeTab].icon} gradient={true}>
                         {activeTab === 'Ingresos' && <IncomeForm loading={loading} setLoading={setLoading} onSuccess={handleSuccess} />}
                         {activeTab === 'Facturas Membretadas' && <StampedSalesInvoiceForm data={data} loading={loading} setLoading={setLoading} onSuccess={handleSuccess} />}
-                        {activeTab === 'Gastos' && <FiscalExpenseForm categories={categories} loading={loading} setLoading={setLoading} onSuccess={handleSuccess} />}
+                        {activeTab === 'Gastos' && <FiscalExpenseForm categories={categories} providers={providers} loading={loading} setLoading={setLoading} onSuccess={handleSuccess} />}
                         {activeTab === 'Inventario' && <InventoryForm loading={loading} setLoading={setLoading} onSuccess={handleSuccess} />}
-                        {activeTab === 'Compras' && <FiscalPurchasesForm categories={categories} loading={loading} setLoading={setLoading} onSuccess={handleSuccess} />}
+                        {activeTab === 'Compras' && <FiscalPurchasesForm categories={categories} providers={providers} loading={loading} setLoading={setLoading} onSuccess={handleSuccess} />}
                         {activeTab === 'Presupuesto' && <BudgetForm categories={categories} loading={loading} setLoading={setLoading} onSuccess={handleSuccess} />}
                         {activeTab === 'Cuentas por Cobrar' && <ReceivableForm loading={loading} setLoading={setLoading} onSuccess={handleSuccess} />}
                         {activeTab === 'Patrimonio' && <EquityForm loading={loading} setLoading={setLoading} onSuccess={handleSuccess} />}

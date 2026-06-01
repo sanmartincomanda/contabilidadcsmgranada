@@ -2,7 +2,7 @@
 import React, { useState, useMemo, useCallback, useEffect, useRef } from 'react';
 import { db } from '../firebase';
 import {
-    collection, addDoc, doc, Timestamp, runTransaction, writeBatch,
+    collection, doc, Timestamp, runTransaction, writeBatch,
     query, orderBy, limit, getDocs, deleteDoc
 } from 'firebase/firestore';
 import { APP_BRAND_NAME, DEFAULT_BRANCH_ID, DEFAULT_BRANCH_NAME, DEFAULT_CASHBOX_NAME, fmt } from '../constants';
@@ -18,6 +18,7 @@ import {
     uploadFiscalSupportFiles,
     uploadInvoicePhoto,
 } from '../services/fiscalUtils';
+import { getProviderCode, getProviderDisplayName, upsertProviderByName } from '../services/providers';
 
 // --- ICONOS SVG INLINE ---
 const Icon = ({ path, className = "w-5 h-5" }) => (
@@ -409,7 +410,16 @@ export function AccountsPayable({ data }) {
     }, [data.cuentas_por_pagar]);
 
     const abonos = data.abonos_pagar || [];
-    const listaProveedores = data.proveedores || [];
+    const listaProveedores = useMemo(() => (
+        [...(data.proveedores || [])]
+            .map((provider) => ({
+                ...provider,
+                nombre: getProviderDisplayName(provider),
+                code: provider.code || provider.codigo || getProviderCode(getProviderDisplayName(provider)),
+            }))
+            .filter((provider) => provider.nombre)
+            .sort((a, b) => a.nombre.localeCompare(b.nombre, 'es'))
+    ), [data.proveedores]);
 
     const [facturaForm, setFacturaForm] = useState({
         fecha: new Date().toISOString().substring(0, 10),
@@ -477,6 +487,7 @@ export function AccountsPayable({ data }) {
 
         setLoading(true);
         try {
+            const provider = await upsertProviderByName(facturaForm.proveedor, { source: 'cuentas_por_pagar' });
             const facturaRef = doc(collection(db, 'cuentas_por_pagar'));
             const compraRef = doc(collection(db, 'compras'), `credito_${facturaRef.id}`);
             const batch = writeBatch(db);
@@ -485,7 +496,10 @@ export function AccountsPayable({ data }) {
             batch.set(facturaRef, {
                 fecha: facturaForm.fecha,
                 month: facturaForm.fecha.substring(0, 7),
-                proveedor: facturaForm.proveedor,
+                proveedor: provider.nombre,
+                proveedorId: provider.id,
+                providerCode: provider.code,
+                codigoProveedor: provider.code,
                 sucursal: DEFAULT_BRANCH_NAME,
                 branch: DEFAULT_BRANCH_ID,
                 branchName: DEFAULT_BRANCH_NAME,
@@ -510,7 +524,12 @@ export function AccountsPayable({ data }) {
             batch.set(compraRef, {
                 date: facturaForm.fecha,
                 month: facturaForm.fecha.substring(0, 7),
-                supplier: facturaForm.proveedor,
+                supplier: provider.nombre,
+                proveedor: provider.nombre,
+                providerId: provider.id,
+                proveedorId: provider.id,
+                providerCode: provider.code,
+                codigoProveedor: provider.code,
                 invoiceNumber: facturaForm.numero?.trim() || "",
                 description: facturaForm.descripcion?.trim().toUpperCase() || "",
                 amount: fiscal.subtotal,
@@ -763,6 +782,10 @@ export function AccountsPayable({ data }) {
                 batch.set(doc(db, 'compras', target.record.mirroredPurchaseId), sharedPayload, { merge: true });
             }
 
+            if (!isAbono && (target.record.mirroredExpenseId || target.record.linkedExpenseId)) {
+                batch.set(doc(db, 'gastos', target.record.mirroredExpenseId || target.record.linkedExpenseId), sharedPayload, { merge: true });
+            }
+
             if (isAbono && target.record.linkedGastoDiarioId) {
                 batch.set(doc(db, 'gastosDiarios', target.record.linkedGastoDiarioId), sharedPayload, { merge: true });
             }
@@ -787,7 +810,7 @@ export function AccountsPayable({ data }) {
         if (!nuevoProveedor.trim()) return;
         setLoading(true);
         try {
-            await addDoc(collection(db, 'proveedores'), { nombre: nuevoProveedor.trim().toUpperCase() });
+            await upsertProviderByName(nuevoProveedor, { source: 'cuentas_por_pagar' });
             setNuevoProveedor('');
         } catch (e) {
             console.error(e);
@@ -940,8 +963,7 @@ export function AccountsPayable({ data }) {
                                             <>
                                                 <option value="">Seleccionar proveedor...</option>
                                                 {listaProveedores
-                                                    .sort((a, b) => a.nombre.localeCompare(b.nombre))
-                                                    .map(p => <option key={p.id} value={p.nombre}>{p.nombre}</option>)
+                                                    .map(p => <option key={p.id} value={p.nombre}>{p.code} - {p.nombre}</option>)
                                                 }
                                             </>
                                         }
@@ -1278,7 +1300,6 @@ export function AccountsPayable({ data }) {
 
                                 <div className="space-y-2">
                                     {listaProveedores
-                                        .sort((a, b) => a.nombre.localeCompare(b.nombre))
                                         .map((p, idx) => (
                                             <FadeIn key={p.id} delay={idx * 25}>
                                                 <div className="flex items-center justify-between px-4 py-3 bg-stone-50 rounded-lg border border-stone-200 hover:border-[#a81d24]/30 hover:shadow-sm transition-all group">
@@ -1286,7 +1307,10 @@ export function AccountsPayable({ data }) {
                                                         <div className="w-8 h-8 bg-[#a81d24] rounded-lg flex items-center justify-center text-white font-bold text-xs">
                                                             {p.nombre.charAt(0)}
                                                         </div>
-                                                        <span className="font-semibold text-slate-700 text-sm">{p.nombre}</span>
+                                                        <div>
+                                                            <span className="font-semibold text-slate-700 text-sm">{p.nombre}</span>
+                                                            <div className="font-mono text-[10px] font-black uppercase tracking-wider text-slate-400">{p.code}</div>
+                                                        </div>
                                                     </div>
                                                     <button
                                                         onClick={() => deleteDoc(doc(db, 'proveedores', p.id))}

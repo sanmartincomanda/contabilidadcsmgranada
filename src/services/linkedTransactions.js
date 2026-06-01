@@ -81,6 +81,43 @@ const buildPayableMirrorPayload = (purchaseData, updateData, payableData = {}) =
     });
 };
 
+const buildExpensePayableMirrorPayload = (expenseData, updateData, payableData = {}) => {
+    const merged = { ...expenseData, ...updateData };
+    const newTotal = normalizeAmount(firstDefined(merged.total, merged.monto, merged.amount));
+    const previousTotal = normalizeAmount(firstDefined(payableData.total, payableData.monto, expenseData.total, expenseData.amount));
+    const previousSaldo = normalizeAmount(firstDefined(payableData.saldo, newTotal));
+    const saldo = normalizeAmount(Math.max(previousSaldo + (newTotal - previousTotal), 0));
+    const date = firstDefined(merged.date, merged.fecha);
+
+    return cleanForFirestore({
+        fecha: date,
+        month: merged.month || String(date || '').substring(0, 7),
+        proveedor: firstDefined(merged.supplier, merged.proveedor),
+        proveedorId: merged.providerId || merged.proveedorId || '',
+        providerCode: merged.providerCode || merged.codigoProveedor || '',
+        codigoProveedor: merged.codigoProveedor || merged.providerCode || '',
+        numero: firstDefined(merged.invoiceNumber, merged.numero, merged.factura),
+        factura: firstDefined(merged.invoiceNumber, merged.numero, merged.factura),
+        descripcion: firstDefined(merged.description, merged.descripcion),
+        category: firstDefined(merged.category, merged.categoria, 'Gasto operativo'),
+        expenseCategory: firstDefined(merged.category, merged.categoria, 'Gasto operativo'),
+        monto: newTotal,
+        saldo,
+        amount: normalizeAmount(firstDefined(merged.amount, merged.subtotal, newTotal)),
+        subtotal: normalizeAmount(firstDefined(merged.subtotal, merged.amount, newTotal)),
+        iva: normalizeAmount(merged.iva),
+        total: newTotal,
+        retentionIr2: normalizeAmount(merged.retentionIr2),
+        retentionMunicipal1: normalizeAmount(merged.retentionMunicipal1),
+        retencionIr2: normalizeAmount(merged.retencionIr2 ?? merged.retentionIr2),
+        retencionMunicipal1: normalizeAmount(merged.retencionMunicipal1 ?? merged.retentionMunicipal1),
+        estado: saldo <= 0 ? 'pagado' : saldo < newTotal ? 'parcial' : 'pendiente',
+        isInventoryCost: false,
+        isOperatingExpense: true,
+        mirroredToGastos: true,
+    });
+};
+
 const buildGastoMirrorPayload = (purchaseData, updateData) => {
     const merged = { ...purchaseData, ...updateData };
     const total = normalizeAmount(firstDefined(merged.total, merged.monto, merged.amount));
@@ -147,6 +184,43 @@ const findPayableRefsForPurchase = async (purchaseId, purchaseData) => {
 
     const linkedQueries = [
         query(collection(db, 'cuentas_por_pagar'), where('mirroredPurchaseId', '==', purchaseId)),
+    ];
+
+    for (const linkedQuery of linkedQueries) {
+        const payableSnap = await getDocs(linkedQuery);
+        payableSnap.docs.forEach((payableDoc) => payableRefs.push(payableDoc.ref));
+    }
+
+    return uniqueRefs(payableRefs);
+};
+
+const findExpenseRefsForPayable = async (payableId, mirroredExpenseId) => {
+    const expenseRefs = [];
+
+    await addExistingRef(expenseRefs, 'gastos', mirroredExpenseId);
+
+    const linkedQueries = [
+        query(collection(db, 'gastos'), where('linkedPayableId', '==', payableId)),
+        query(collection(db, 'gastos'), where('sourceFacturaId', '==', payableId)),
+    ];
+
+    for (const linkedQuery of linkedQueries) {
+        const expenseSnap = await getDocs(linkedQuery);
+        expenseSnap.docs.forEach((expenseDoc) => expenseRefs.push(expenseDoc.ref));
+    }
+
+    return uniqueRefs(expenseRefs);
+};
+
+const findPayableRefsForExpense = async (expenseId, expenseData) => {
+    const payableRefs = [];
+
+    await addExistingRef(payableRefs, 'cuentas_por_pagar', expenseData?.linkedPayableId);
+    await addExistingRef(payableRefs, 'cuentas_por_pagar', expenseData?.sourceFacturaId);
+
+    const linkedQueries = [
+        query(collection(db, 'cuentas_por_pagar'), where('linkedExpenseId', '==', expenseId)),
+        query(collection(db, 'cuentas_por_pagar'), where('mirroredExpenseId', '==', expenseId)),
     ];
 
     for (const linkedQuery of linkedQueries) {
@@ -227,6 +301,53 @@ export async function updatePurchaseTransaction(purchaseId, updateData, options 
     };
 }
 
+export async function updateExpenseTransaction(expenseId, updateData, options = {}) {
+    const expenseRef = doc(db, 'gastos', expenseId);
+    const expenseSnap = await getDoc(expenseRef);
+
+    if (!expenseSnap.exists()) {
+        return { updated: false, missing: true };
+    }
+
+    const expenseData = expenseSnap.data();
+    const cleanUpdate = cleanForFirestore(updateData);
+    const payableRefs = await findPayableRefsForExpense(expenseId, expenseData);
+    const batch = writeBatch(db);
+
+    if (options?.previousData) {
+        batch.set(doc(collection(db, 'historial_ediciones')), {
+            action: 'update',
+            collectionName: 'gastos',
+            recordId: expenseId,
+            previousData: cleanForFirestore(options.previousData),
+            newData: cleanForFirestore({ ...options.previousData, ...cleanUpdate }),
+            changedFields: Object.keys(cleanUpdate),
+            changedAt: serverTimestamp(),
+        });
+    }
+
+    batch.update(expenseRef, {
+        ...cleanUpdate,
+        updatedAt: serverTimestamp(),
+    });
+
+    for (const payableRef of payableRefs) {
+        const payableSnap = await getDoc(payableRef);
+        const payableData = payableSnap.exists() ? payableSnap.data() : {};
+        batch.update(payableRef, {
+            ...buildExpensePayableMirrorPayload(expenseData, cleanUpdate, payableData),
+            updatedAt: serverTimestamp(),
+        });
+    }
+
+    await batch.commit();
+
+    return {
+        updated: true,
+        linkedPayableIds: payableRefs.map((payableRef) => payableRef.id),
+    };
+}
+
 export async function deletePayableTransaction(payableId) {
     const payableRef = doc(db, 'cuentas_por_pagar', payableId);
     const payableSnap = await getDoc(payableRef);
@@ -250,15 +371,52 @@ export async function deletePayableTransaction(payableId) {
         payableId,
         payableData?.mirroredPurchaseId
     );
+    const expenseRefs = await findExpenseRefsForPayable(
+        payableId,
+        payableData?.mirroredExpenseId || payableData?.linkedExpenseId
+    );
 
     const batch = writeBatch(db);
     batch.delete(payableRef);
     purchaseRefs.forEach((purchaseRef) => batch.delete(purchaseRef));
+    expenseRefs.forEach((expenseRef) => batch.delete(expenseRef));
     await batch.commit();
 
     return {
         deleted: true,
         linkedPurchaseIds: purchaseRefs.map((purchaseRef) => purchaseRef.id),
+        linkedExpenseIds: expenseRefs.map((expenseRef) => expenseRef.id),
+    };
+}
+
+export async function deleteExpenseTransaction(expenseId) {
+    const expenseRef = doc(db, 'gastos', expenseId);
+    const expenseSnap = await getDoc(expenseRef);
+
+    if (!expenseSnap.exists()) {
+        return { deleted: false, missing: true };
+    }
+
+    const expenseData = expenseSnap.data();
+    const payableRefs = await findPayableRefsForExpense(expenseId, expenseData);
+    const blockingAbonos = await getBlockingAbonos(payableRefs.map((payableRef) => payableRef.id));
+
+    if (blockingAbonos.length) {
+        return {
+            deleted: false,
+            blocked: true,
+            blockingAbonos,
+        };
+    }
+
+    const batch = writeBatch(db);
+    batch.delete(expenseRef);
+    payableRefs.forEach((payableRef) => batch.delete(payableRef));
+    await batch.commit();
+
+    return {
+        deleted: true,
+        linkedPayableIds: payableRefs.map((payableRef) => payableRef.id),
     };
 }
 
