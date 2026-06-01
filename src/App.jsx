@@ -14,6 +14,7 @@ import { BankReconciliation } from './components/BankReconciliation';
 import Reports from './components/Reports';
 import CategoryManager from './components/CategoryManager';
 import { AccountsPayable } from './components/AccountsPayable';
+import ExecutiveFlowDiagram from './components/ExecutiveFlowDiagram';
 import { APP_BRAND_LOGO, APP_BRAND_NAME, fmt } from './constants';
 import { resolveReportIncomeEntries } from './services/incomeAggregation';
 
@@ -488,8 +489,8 @@ const Dashboard = ({ data = {} }) => {
                         </div>
                     </div>
 
-                    <div className="grid grid-cols-1 gap-5 p-5 lg:grid-cols-[0.9fr_1.1fr]">
-                        <div className="space-y-3">
+                    <div className="grid grid-cols-1 gap-5 p-5">
+                        <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
                             {[
                                 ['Ventas contables', totalIngresos, 'bg-sky-500', ICON.trending_up],
                                 ['Compras / costo', totalCompras, 'bg-amber-500', ICON.cart],
@@ -516,46 +517,14 @@ const Dashboard = ({ data = {} }) => {
                             })}
                         </div>
 
-                        <div className="relative min-h-[310px] overflow-hidden rounded-3xl border border-slate-200 bg-gradient-to-br from-white via-[#f7fbff] to-[#fff8ef] p-5">
-                            <div className="absolute inset-0 opacity-60" style={{ backgroundImage: 'linear-gradient(#e5edf4 1px, transparent 1px), linear-gradient(90deg, #e5edf4 1px, transparent 1px)', backgroundSize: '28px 28px' }} />
-                            <div className="relative">
-                                <div className="mb-6 flex items-center justify-between">
-                                    <div>
-                                        <div className="text-[10px] font-black uppercase tracking-[0.32em] text-slate-400">Flujo ejecutivo</div>
-                                        <div className="mt-1 text-sm font-bold text-slate-600">Ventas a utilidad final</div>
-                                    </div>
-                                    <div className={`rounded-full px-3 py-1 text-xs font-black ${utilidad >= 0 ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'}`}>
-                                        {utilidad >= 0 ? 'Rentable' : 'Ajustar'}
-                                    </div>
-                                </div>
-
-                                <div className="grid grid-cols-1 items-stretch gap-3 sm:grid-cols-3 sm:items-center">
-                                    <div className="rounded-2xl bg-sky-500 p-4 text-white shadow-lg shadow-sky-500/20">
-                                        <div className="text-[10px] font-black uppercase tracking-wider text-white/70">Ventas</div>
-                                        <div className="mt-2 font-mono text-xl font-black">{fmt(totalIngresos)}</div>
-                                    </div>
-                                    <div className="space-y-3">
-                                        <div className="h-8 rounded-full bg-gradient-to-r from-sky-300 via-sky-200 to-amber-200 shadow-inner" />
-                                        <div className="h-8 rounded-full bg-gradient-to-r from-sky-200 via-rose-200 to-rose-300 shadow-inner" />
-                                        <div className="h-10 rounded-full bg-gradient-to-r from-sky-300 via-emerald-200 to-emerald-400 shadow-inner" />
-                                    </div>
-                                    <div className="space-y-3">
-                                        <div className="rounded-2xl border border-amber-200 bg-amber-50 p-3">
-                                            <div className="text-[10px] font-black uppercase tracking-wider text-amber-700">Costo</div>
-                                            <div className="font-mono text-sm font-black text-amber-800">{fmt(totalCompras)}</div>
-                                        </div>
-                                        <div className="rounded-2xl border border-rose-200 bg-rose-50 p-3">
-                                            <div className="text-[10px] font-black uppercase tracking-wider text-rose-700">Gastos</div>
-                                            <div className="font-mono text-sm font-black text-rose-800">{fmt(totalGastos)}</div>
-                                        </div>
-                                        <div className={`rounded-2xl p-3 text-white ${utilidad >= 0 ? 'bg-emerald-600' : 'bg-rose-700'}`}>
-                                            <div className="text-[10px] font-black uppercase tracking-wider text-white/70">Utilidad</div>
-                                            <div className="font-mono text-sm font-black">{fmt(utilidad)}</div>
-                                        </div>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
+                        <ExecutiveFlowDiagram
+                            embedded
+                            source={{ label: 'Ventas subtotal', value: totalIngresos, subtitle: 'Ingreso contable del mes' }}
+                            center={{ label: 'Utilidad', value: utilidad, subtitle: 'despues de costo y gasto' }}
+                            top={{ label: 'Compras / costo', value: totalCompras, subtitle: 'Costo registrado' }}
+                            middle={{ label: 'Gastos', value: totalGastos, subtitle: 'Operacion mensual' }}
+                            bottom={{ label: 'Resultado neto', value: utilidad, subtitle: utilidad >= 0 ? 'Rentable' : 'Requiere ajuste' }}
+                        />
                     </div>
                 </div>
 

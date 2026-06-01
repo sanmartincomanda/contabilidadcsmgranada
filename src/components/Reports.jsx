@@ -3,6 +3,7 @@ import React, { useMemo, useState, useCallback } from 'react';
 import { APP_BRAND_LOGO, APP_BRAND_NAME, fmt, peso, branchName, resolveBranchId } from '../constants';
 import BalanceSheet from './BalanceSheet';
 import DashboardGeneral from './DashboardGeneral';
+import ExecutiveFlowDiagram from './ExecutiveFlowDiagram';
 import { resolveReportIncomeEntries } from '../services/incomeAggregation';
 
 // --- ICONOS SVG INLINE ---
@@ -909,7 +910,40 @@ const TaxReportsPanel = ({ taxReport, taxTab, setTaxTab, selectedMonth, setSelec
                         <StatCard title="Utilidad Antes Imp." value={fmt(taxReport.totals.profitBeforeTax)} icon="dollar" variant={taxReport.totals.profitBeforeTax >= 0 ? 'wine' : 'danger'} />
                         <StatCard title="Utilidad Neta" value={fmt(taxReport.totals.netProfitAfterTax)} icon="wallet" variant={taxReport.totals.netProfitAfterTax >= 0 ? 'dark' : 'danger'} />
                     </div>
-                    <TaxIncomeFlowDiagram totals={taxReport.totals} selectedMonth={selectedMonth} />
+                    <ExecutiveFlowDiagram
+                        eyebrow="Income statement flow"
+                        title="Estado de resultado tributario"
+                        subtitle="Ventas subtotal, costo, IMI 1%, IR 30% y utilidad neta"
+                        period={selectedMonth || 'Todos'}
+                        source={{
+                            label: 'Ventas subtotal',
+                            value: taxReport.totals.salesSubtotal,
+                            subtitle: 'Base contable sin IVA',
+                        }}
+                        center={{
+                            label: 'Utilidad',
+                            value: taxReport.totals.profitBeforeTax,
+                            subtitle: 'antes de impuesto',
+                        }}
+                        top={{
+                            label: 'Costo subtotal',
+                            value: taxReport.totals.purchaseSubtotal,
+                            subtitle: 'Compras y costo fiscal',
+                        }}
+                        middle={{
+                            label: 'Impuestos',
+                            value: taxReport.totals.municipalTax + taxReport.totals.incomeTax30,
+                            lines: [
+                                { label: 'IMI', value: taxReport.totals.municipalTax },
+                                { label: 'IR', value: taxReport.totals.incomeTax30 },
+                            ],
+                        }}
+                        bottom={{
+                            label: 'Utilidad neta',
+                            value: taxReport.totals.netProfitAfterTax,
+                            subtitle: 'despues de impuestos',
+                        }}
+                    />
                     <Card title="Estado de resultado despues de impuesto" subtitle="Formula fiscal solicitada: ventas - costo, IMI 1%, IR 30%" icon="chart" gradient={true}>
                         <div className="space-y-3 text-sm">
                             {[
