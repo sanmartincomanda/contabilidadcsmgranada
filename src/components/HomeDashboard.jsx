@@ -187,6 +187,8 @@ export default function HomeDashboard({
     recentMovements,
     mesGastos = [],
     mesCompras = [],
+    themeMode = 'dark',
+    onThemeToggle,
 }) {
     const totalOutflow = totalGastos + totalCompras;
     const utilidadBruta = totalIngresos - totalCompras;
@@ -234,6 +236,34 @@ export default function HomeDashboard({
                             <span className="rounded-full border border-white/12 bg-white/8 px-3 py-1.5 text-xs font-black uppercase tracking-wider text-white/70">{mesLabel}</span>
                             <span className="rounded-full border border-white/12 bg-white/8 px-3 py-1.5 text-xs font-black uppercase tracking-wider text-white/70">Cierre {monthProgress.toFixed(0)}%</span>
                         </div>
+                        {onThemeToggle && (
+                            <div className="mt-5 inline-flex rounded-full border border-white/12 bg-white/8 p-1 shadow-lg shadow-black/10 backdrop-blur">
+                                <button
+                                    type="button"
+                                    onClick={themeMode === 'dark' ? undefined : onThemeToggle}
+                                    className={`rounded-full px-4 py-2 text-[11px] font-black uppercase tracking-[0.22em] transition ${
+                                        themeMode === 'dark'
+                                            ? 'bg-white text-slate-950 shadow-sm'
+                                            : 'text-white/60 hover:text-white'
+                                    }`}
+                                    aria-pressed={themeMode === 'dark'}
+                                >
+                                    Oscuro
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={themeMode === 'light' ? undefined : onThemeToggle}
+                                    className={`rounded-full px-4 py-2 text-[11px] font-black uppercase tracking-[0.22em] transition ${
+                                        themeMode === 'light'
+                                            ? 'bg-white text-slate-950 shadow-sm'
+                                            : 'text-white/60 hover:text-white'
+                                    }`}
+                                    aria-pressed={themeMode === 'light'}
+                                >
+                                    Claro
+                                </button>
+                            </div>
+                        )}
                     </div>
 
                     <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">

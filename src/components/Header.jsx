@@ -206,7 +206,7 @@ export default function Header() {
                 initial={{ y: -18, opacity: 0 }}
                 animate={{ y: 0, opacity: 1 }}
                 transition={{ duration: 0.55, ease: [0.22, 1, 0.36, 1] }}
-                className={`fixed left-0 right-0 top-0 z-50 transition-all duration-300 ${
+                className={`command-header fixed left-0 right-0 top-0 z-50 transition-all duration-300 ${
                     isScrolled
                         ? 'bg-gradient-to-r from-[#111827]/95 via-[#5c0f14]/95 to-[#9f111a]/95 shadow-2xl shadow-[#111827]/30 backdrop-blur-xl'
                         : 'bg-gradient-to-r from-[#111827] via-[#5c0f14] to-[#9f111a]'

@@ -360,6 +360,242 @@ body::before {
   }
 }
 
+/* Command Center theme system
+   Keeps the ERP dark look readable while preserving status colors. */
+html[data-theme='dark'] {
+  --csm-bg: #050914;
+  --csm-bg-2: #08111f;
+  --csm-panel: rgba(12, 20, 34, 0.92);
+  --csm-panel-solid: #0d1626;
+  --csm-panel-muted: rgba(17, 27, 44, 0.86);
+  --csm-card: rgba(15, 23, 42, 0.88);
+  --csm-text: #f8fafc;
+  --csm-text-2: #dbe5f1;
+  --csm-text-muted: #91a0b4;
+  --csm-line: rgba(148, 163, 184, 0.24);
+  --csm-line-strong: rgba(226, 232, 240, 0.2);
+  --surface-shadow: 0 24px 70px -42px rgba(0, 0, 0, 0.78);
+  color-scheme: dark;
+}
+
+html[data-theme='light'] {
+  --csm-bg: #f4f7fb;
+  --csm-bg-2: #e9eef6;
+  --csm-panel: rgba(255, 255, 255, 0.96);
+  --csm-panel-solid: #ffffff;
+  --csm-panel-muted: #f8fafc;
+  --csm-card: #ffffff;
+  --csm-text: #0f172a;
+  --csm-text-2: #1e293b;
+  --csm-text-muted: #64748b;
+  --csm-line: rgba(203, 213, 225, 0.92);
+  --csm-line-strong: rgba(148, 163, 184, 0.4);
+  --surface-shadow: 0 18px 48px -34px rgba(17, 24, 39, 0.42);
+  color-scheme: light;
+}
+
+html[data-theme='dark'] body {
+  background:
+    linear-gradient(rgba(148, 163, 184, 0.075) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(148, 163, 184, 0.075) 1px, transparent 1px),
+    radial-gradient(circle at 13% 8%, rgba(14, 165, 233, 0.22), transparent 28rem),
+    radial-gradient(circle at 86% 5%, rgba(227, 6, 19, 0.2), transparent 24rem),
+    radial-gradient(circle at 70% 82%, rgba(245, 181, 27, 0.08), transparent 26rem),
+    linear-gradient(135deg, #050914 0%, #061426 48%, #110914 100%);
+  background-size: 30px 30px, 30px 30px, auto, auto, auto, auto;
+  color: var(--csm-text);
+}
+
+html[data-theme='light'] body {
+  background:
+    linear-gradient(rgba(15, 23, 42, 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(15, 23, 42, 0.035) 1px, transparent 1px),
+    radial-gradient(circle at 12% -8%, rgba(227, 6, 19, 0.13), transparent 28rem),
+    radial-gradient(circle at 92% 10%, rgba(15, 23, 42, 0.08), transparent 24rem),
+    linear-gradient(180deg, #f8fafc 0%, var(--csm-bg) 46%, var(--csm-bg-2) 100%);
+  background-size: 28px 28px, 28px 28px, auto, auto, auto;
+  color: var(--csm-text);
+}
+
+html[data-theme='dark'] body::before {
+  background:
+    linear-gradient(120deg, rgba(2, 6, 23, 0.28), rgba(2, 6, 23, 0.08)),
+    radial-gradient(circle at 26% 18%, rgba(227, 6, 19, 0.08), transparent 20rem);
+}
+
+html[data-theme='dark'] .app-route-shell::before {
+  border-color: var(--csm-line);
+  background:
+    linear-gradient(135deg, rgba(15, 23, 42, 0.7), rgba(2, 6, 23, 0.34)),
+    radial-gradient(circle at 14% 20%, rgba(14, 165, 233, 0.08), transparent 19rem);
+}
+
+.command-header {
+  background:
+    linear-gradient(rgba(148, 163, 184, 0.07) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(148, 163, 184, 0.07) 1px, transparent 1px),
+    radial-gradient(circle at 9% 0%, rgba(14, 165, 233, 0.16), transparent 22rem),
+    radial-gradient(circle at 88% 0%, rgba(227, 6, 19, 0.16), transparent 20rem),
+    linear-gradient(135deg, rgba(2, 6, 23, 0.98) 0%, rgba(8, 18, 32, 0.98) 58%, rgba(24, 9, 17, 0.98) 100%) !important;
+  background-size: 28px 28px, 28px 28px, auto, auto, auto !important;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.16);
+}
+
+html[data-theme='light'] .command-header {
+  background:
+    linear-gradient(rgba(15, 23, 42, 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(15, 23, 42, 0.035) 1px, transparent 1px),
+    radial-gradient(circle at 8% 0%, rgba(14, 165, 233, 0.12), transparent 18rem),
+    radial-gradient(circle at 88% 0%, rgba(227, 6, 19, 0.12), transparent 18rem),
+    linear-gradient(135deg, rgba(15, 23, 42, 0.98) 0%, rgba(31, 41, 55, 0.98) 58%, rgba(63, 18, 24, 0.98) 100%) !important;
+  background-size: 28px 28px, 28px 28px, auto, auto, auto !important;
+}
+
+.login-shell {
+  background:
+    linear-gradient(rgba(148, 163, 184, 0.07) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(148, 163, 184, 0.07) 1px, transparent 1px),
+    radial-gradient(circle at 16% 10%, rgba(14, 165, 233, 0.18), transparent 24rem),
+    radial-gradient(circle at 84% 12%, rgba(227, 6, 19, 0.17), transparent 24rem),
+    linear-gradient(135deg, #050914 0%, #081426 54%, #160a14 100%) !important;
+  background-size: 30px 30px, 30px 30px, auto, auto, auto !important;
+}
+
+html[data-theme='light'] .login-shell {
+  background:
+    linear-gradient(rgba(15, 23, 42, 0.04) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(15, 23, 42, 0.04) 1px, transparent 1px),
+    radial-gradient(circle at 16% 10%, rgba(14, 165, 233, 0.11), transparent 24rem),
+    radial-gradient(circle at 84% 12%, rgba(227, 6, 19, 0.11), transparent 24rem),
+    linear-gradient(135deg, #f8fafc 0%, #eef4fb 62%, #fff7f7 100%) !important;
+  background-size: 30px 30px, 30px 30px, auto, auto, auto !important;
+}
+
+html[data-theme='dark'] :where(.login-aside, .login-panel, .login-mini-card) {
+  border-color: var(--csm-line) !important;
+  background-color: rgba(15, 23, 42, 0.82) !important;
+  color: var(--csm-text) !important;
+}
+
+html[data-theme='dark'] .login-shell :where([class~='text-slate-950'], [class~='text-slate-900'], [class~='text-slate-800'], [class~='text-slate-700']) {
+  color: var(--csm-text) !important;
+}
+
+html[data-theme='dark'] .login-shell :where([class~='text-slate-500']) {
+  color: var(--csm-text-muted) !important;
+}
+
+html[data-theme='light'] .app-route-shell::before {
+  border-color: rgba(217, 225, 232, 0.72);
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.74), rgba(248, 250, 252, 0.18)),
+    radial-gradient(circle at 14% 20%, rgba(227, 6, 19, 0.05), transparent 19rem);
+}
+
+html[data-theme='dark'] .app-route-shell :where([class~='bg-white']),
+html[data-theme='dark'] :where(.app-modal-panel[class~='bg-white']),
+html[data-theme='dark'] :where(.fixed.inset-0) :where([class~='bg-white']) {
+  background-color: var(--csm-panel) !important;
+}
+
+html[data-theme='dark'] .app-route-shell :where([class~='bg-stone-50'], [class~='bg-slate-50'], [class~='bg-stone-100'], [class~='bg-slate-100']) {
+  background-color: var(--csm-panel-muted) !important;
+}
+
+html[data-theme='dark'] :where(.app-route-shell, .app-modal-root, .fixed.inset-0) :where([class~='bg-[#f8fafc]'], [class~='bg-[#fff8f8]'], [class~='bg-[#fff1f2]'], [class~='bg-[#fff4df]'], [class~='bg-[#fff5f5]']) {
+  background-color: rgba(15, 23, 42, 0.82) !important;
+}
+
+html[data-theme='dark'] .app-route-shell :where([class~='border-stone-100'], [class~='border-stone-200'], [class~='border-stone-300'], [class~='border-slate-100'], [class~='border-slate-200'], [class~='border-slate-300']) {
+  border-color: var(--csm-line) !important;
+}
+
+html[data-theme='dark'] :where(.app-route-shell, .app-modal-root, .fixed.inset-0) :where([class~='text-stone-900'], [class~='text-slate-900'], [class~='text-stone-800'], [class~='text-slate-800'], [class~='text-stone-700'], [class~='text-slate-700']) {
+  color: var(--csm-text) !important;
+}
+
+html[data-theme='dark'] :where(.app-route-shell, .app-modal-root, .fixed.inset-0) :where([class~='text-stone-600'], [class~='text-slate-600'], [class~='text-stone-500'], [class~='text-slate-500']) {
+  color: var(--csm-text-2) !important;
+}
+
+html[data-theme='dark'] :where(.app-route-shell, .app-modal-root, .fixed.inset-0) :where([class~='text-stone-400'], [class~='text-slate-400'], [class~='text-stone-300'], [class~='text-slate-300']) {
+  color: var(--csm-text-muted) !important;
+}
+
+html[data-theme='dark'] .app-route-shell :where(.from-stone-50, .from-slate-50) {
+  --tw-gradient-from: rgba(15, 23, 42, 0.92) var(--tw-gradient-from-position) !important;
+  --tw-gradient-to: rgba(15, 23, 42, 0) var(--tw-gradient-to-position) !important;
+  --tw-gradient-stops: var(--tw-gradient-from), var(--tw-gradient-to) !important;
+}
+
+html[data-theme='dark'] .app-route-shell :where(.via-white) {
+  --tw-gradient-stops: var(--tw-gradient-from), rgba(15, 23, 42, 0.9) var(--tw-gradient-via-position), var(--tw-gradient-to) !important;
+}
+
+html[data-theme='dark'] .app-route-shell :where(.to-white) {
+  --tw-gradient-to: rgba(15, 23, 42, 0.88) var(--tw-gradient-to-position) !important;
+}
+
+html[data-theme='dark'] .app-route-shell :where(table) {
+  background: var(--csm-panel);
+}
+
+html[data-theme='dark'] .app-route-shell :where(thead, tfoot) {
+  background: rgba(2, 6, 23, 0.72) !important;
+}
+
+html[data-theme='dark'] .app-route-shell :where(th) {
+  color: rgba(226, 232, 240, 0.72) !important;
+}
+
+html[data-theme='dark'] .app-route-shell :where(td) {
+  color: var(--csm-text-2);
+  border-color: var(--csm-line);
+}
+
+html[data-theme='dark'] .app-route-shell :where(tbody tr):hover {
+  background-color: rgba(30, 41, 59, 0.58) !important;
+  box-shadow: inset 3px 0 0 rgba(245, 181, 27, 0.65);
+}
+
+html[data-theme='dark'] :where(input:not([type='checkbox']):not([type='radio']), select, textarea) {
+  border-color: rgba(148, 163, 184, 0.28) !important;
+  background-color: rgba(15, 23, 42, 0.88) !important;
+  color: #f8fafc !important;
+}
+
+html[data-theme='dark'] :where(input:not([type='checkbox']):not([type='radio']), select, textarea)::placeholder {
+  color: rgba(148, 163, 184, 0.72) !important;
+}
+
+html[data-theme='dark'] :where(input[type='file']) {
+  color: var(--csm-text-muted) !important;
+}
+
+html[data-theme='dark'] :where(label) {
+  color: var(--csm-text-muted);
+}
+
+html[data-theme='dark'] :where(.corporate-surface, [class*='rounded-xl'][class*='border'], [class*='rounded-2xl'][class*='border'], [class*='rounded-3xl'][class*='border']) {
+  border-color: var(--csm-line);
+  box-shadow: var(--surface-shadow);
+}
+
+html[data-theme='dark'] .motion-card:hover,
+html[data-theme='dark'] :where([class*='rounded-xl'][class*='bg-white'], [class*='rounded-2xl'][class*='bg-white'], [class*='rounded-3xl'][class*='bg-white']):hover {
+  border-color: rgba(245, 181, 27, 0.32);
+  box-shadow: 0 28px 72px -42px rgba(0, 0, 0, 0.82);
+}
+
+html[data-theme='dark'] ::-webkit-scrollbar-track {
+  background: rgba(2, 6, 23, 0.92);
+}
+
+html[data-theme='dark'] ::-webkit-scrollbar-thumb {
+  border-color: rgba(2, 6, 23, 0.92);
+  background: linear-gradient(180deg, rgba(14, 165, 233, 0.55), rgba(245, 181, 27, 0.62));
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

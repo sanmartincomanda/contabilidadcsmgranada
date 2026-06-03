@@ -36,11 +36,11 @@ export default function Login() {
     };
 
     return (
-        <div className="relative min-h-screen overflow-hidden bg-slate-100">
+        <div className="login-shell relative min-h-screen overflow-hidden bg-slate-100">
             <div className="absolute inset-0 bg-[linear-gradient(rgba(15,23,42,0.05)_1px,transparent_1px),linear-gradient(90deg,rgba(15,23,42,0.05)_1px,transparent_1px)] bg-[size:28px_28px]" />
             <div className="absolute inset-x-0 top-0 h-1 bg-gradient-to-r from-[#111827] via-[#e30613] to-[#111827]" />
             <div className="relative mx-auto grid min-h-screen max-w-7xl grid-cols-1 lg:grid-cols-[0.92fr_1.08fr]">
-                <aside className="hidden border-r border-slate-200 bg-white/72 px-10 py-10 backdrop-blur-xl lg:flex lg:flex-col">
+                <aside className="login-aside hidden border-r border-slate-200 bg-white/72 px-10 py-10 backdrop-blur-xl lg:flex lg:flex-col">
                     <div className="flex items-center gap-4">
                         <img src={BRAND_LOGO} alt={APP_BRAND_NAME} className="h-16 w-16 rounded-2xl border border-slate-200 bg-white object-contain p-2 shadow-sm" />
                         <div>
@@ -50,7 +50,7 @@ export default function Login() {
                     </div>
                     <div className="mt-auto grid gap-3">
                         {['Ingresos', 'Compras', 'Cuentas por pagar', 'Reportes fiscales'].map((item) => (
-                            <div key={item} className="flex items-center justify-between rounded-2xl border border-slate-200 bg-white px-4 py-3 shadow-sm">
+                            <div key={item} className="login-mini-card flex items-center justify-between rounded-2xl border border-slate-200 bg-white px-4 py-3 shadow-sm">
                                 <span className="text-sm font-bold text-slate-700">{item}</span>
                                 <span className="h-2 w-2 rounded-full bg-[#e30613]" />
                             </div>
@@ -68,7 +68,7 @@ export default function Login() {
                             </div>
                         </div>
 
-                        <section className="overflow-hidden rounded-[1.75rem] border border-slate-200 bg-white shadow-2xl shadow-slate-950/10">
+                        <section className="login-panel overflow-hidden rounded-[1.75rem] border border-slate-200 bg-white shadow-2xl shadow-slate-950/10">
                             <div className="border-b border-slate-200 bg-slate-950 px-6 py-5 text-white">
                                 <p className="text-[10px] font-black uppercase tracking-[0.34em] text-red-200">Acceso seguro</p>
                                 <h2 className="mt-2 text-2xl font-black">Iniciar sesión</h2>

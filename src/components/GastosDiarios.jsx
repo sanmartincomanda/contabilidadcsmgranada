@@ -180,8 +180,8 @@ export default function GastosDiarios({ categories = [] }) {
         e.preventDefault();
         const numMonto = Number(monto);
         if (isNaN(numMonto) || numMonto <= 0) return alert('Monto inv?lido.');
-        if (!descripcion) return alert('Ingrese una descripci?n.');
-        if (tipo === 'Gasto' && !categoriaId) return alert('Categor?a requerida para gastos.');
+        if (!descripcion) return alert('Ingrese una descripcion.');
+        if (tipo === 'Gasto' && !categoriaId) return alert('Categoria requerida para gastos.');
 
         setLoading(true);
         try {
@@ -497,7 +497,7 @@ export default function GastosDiarios({ categories = [] }) {
                             </div>
 
                             <Input
-                                label="Descripci?n"
+                                label="Descripcion"
                                 icon="fileText"
                                 placeholder={tipo === 'Compra' ? 'Ej: Proveedor / mercancia...' : 'Ej: Pago de servicio, suministros...'}
                                 value={descripcion}
@@ -573,14 +573,14 @@ export default function GastosDiarios({ categories = [] }) {
 
                             {tipo === 'Gasto' && (
                                 <Select
-                                    label="Categor?a"
+                                    label="Categoria"
                                     icon="tag"
                                     value={categoriaId}
                                     onChange={e => setCategoriaId(e.target.value)}
                                     required
                                     options={
                                         <>
-                                            <option value="">Seleccionar categor?a...</option>
+                                            <option value="">Seleccionar categoria...</option>
                                             {categories.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
                                         </>
                                     }
@@ -647,7 +647,7 @@ export default function GastosDiarios({ categories = [] }) {
                                     <div className="text-xl font-black text-amber-700 mt-1">{fmt(totalAbonos)}</div>
                                 </div>
                                 <div className="rounded-xl border border-[#5c0f14] bg-[#9f111a] p-4 text-center">
-                                    <div className="text-xs font-bold uppercase tracking-wider text-[#f5b51b]">Total del D?a</div>
+                                    <div className="text-xs font-bold uppercase tracking-wider text-[#f5b51b]">Total del Dia</div>
                                     <div className="text-xl font-black text-white mt-1">{fmt(totalGeneral)}</div>
                                 </div>
                             </div>
@@ -658,11 +658,11 @@ export default function GastosDiarios({ categories = [] }) {
                                     <thead className="bg-stone-100 border-b border-stone-200">
                                         <tr>
                                             <th className="px-4 py-2.5 text-left text-xs font-bold uppercase tracking-wider text-stone-600">Hora</th>
-                                            <th className="px-4 py-2.5 text-left text-xs font-bold uppercase tracking-wider text-stone-600">Descripci?n</th>
+                                            <th className="px-4 py-2.5 text-left text-xs font-bold uppercase tracking-wider text-stone-600">Descripcion</th>
                                             <th className="px-4 py-2.5 text-left text-xs font-bold uppercase tracking-wider text-stone-600">Tipo</th>
-                                            <th className="px-4 py-2.5 text-left text-xs font-bold uppercase tracking-wider text-stone-600">Categor?a</th>
+                                            <th className="px-4 py-2.5 text-left text-xs font-bold uppercase tracking-wider text-stone-600">Categoria</th>
                                             <th className="px-4 py-2.5 text-right text-xs font-bold uppercase tracking-wider text-stone-600">Monto</th>
-                                            <th className="px-4 py-2.5 text-center text-xs font-bold uppercase tracking-wider text-stone-600 no-print">Acci?n</th>
+                                            <th className="px-4 py-2.5 text-center text-xs font-bold uppercase tracking-wider text-stone-600 no-print">Accion</th>
                                         </tr>
                                     </thead>
                                     <tbody className="divide-y divide-stone-100">
@@ -702,7 +702,7 @@ export default function GastosDiarios({ categories = [] }) {
                                     </tbody>
                                     <tfoot className="border-t-2 border-stone-200 bg-stone-100">
                                         <tr>
-                                            <td colSpan="4" className="px-4 py-3 font-bold text-stone-800 uppercase text-xs tracking-wider">Total del D?a</td>
+                                            <td colSpan="4" className="px-4 py-3 font-bold text-stone-800 uppercase text-xs tracking-wider">Total del Dia</td>
                                             <td className="px-4 py-3 text-right font-black text-lg text-[#9f111a]">{fmt(totalGeneral)}</td>
                                             <td className="no-print"></td>
                                         </tr>

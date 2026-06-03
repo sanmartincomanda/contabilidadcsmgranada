@@ -403,7 +403,7 @@ export function AccountsPayable({ data }) {
     const [loading, setLoading] = useState(false);
     const [nuevoProveedor, setNuevoProveedor] = useState('');
 
-    // Ref para bloquear doble-submit en cualquier operaci?n cr?tica
+    // Ref para bloquear doble-submit en cualquier operacion critica
     const isProcessingRef = useRef(false);
 
     const facturas = useMemo(() => {
@@ -613,7 +613,7 @@ export function AccountsPayable({ data }) {
         setMontoAbono(montoPrevisualizado.toFixed(2));
     };
 
-    // Guard ref: previene doble-submit antes de que React deshabilite el bot?n via estado
+    // Guard ref: previene doble-submit antes de que React deshabilite el boton via estado
     const handleRealizarAbono = useCallback(async () => {
         if (isProcessingRef.current) return;
 
@@ -835,7 +835,7 @@ export function AccountsPayable({ data }) {
         if (diffDays < 0) return { text: `${Math.abs(diffDays)}d vencida`, variant: 'danger' };
         if (diffDays === 0) return { text: 'Vence hoy', variant: 'warning' };
         if (diffDays <= 3) return { text: `${diffDays}d por vencer`, variant: 'warning' };
-        return { text: `${diffDays} d?as`, variant: 'success' };
+        return { text: `${diffDays} dias`, variant: 'success' };
     };
 
     const tabs = [
@@ -909,7 +909,7 @@ export function AccountsPayable({ data }) {
                             </div>
                         </div>
                         <div className="text-2xl font-bold text-red-600">{fmt(stats.vencidas)}</div>
-                        <div className="text-slate-400 text-xs mt-1.5">Requieren atenci?n inmediata</div>
+                        <div className="text-slate-400 text-xs mt-1.5">Requieren atencion inmediata</div>
                     </FadeIn>
 
                     <FadeIn delay={180} className="bg-white rounded-xl p-5 border border-stone-200 shadow-sm">
@@ -973,7 +973,7 @@ export function AccountsPayable({ data }) {
 
                                     <div className="grid grid-cols-2 gap-4">
                                         <Input
-                                            label="Fecha Emisi?n"
+                                            label="Fecha Emision"
                                             type="date"
                                             icon="calendar"
                                             value={facturaForm.fecha}
@@ -1231,7 +1231,7 @@ export function AccountsPayable({ data }) {
                                     <div className="w-14 h-14 bg-emerald-50 rounded-full flex items-center justify-center mx-auto mb-3">
                                         <Icon path={Icons.checkCircle} className="w-7 h-7 text-emerald-500" />
                                     </div>
-                                    <h3 className="text-base font-bold text-slate-700">Todo al d?a</h3>
+                                    <h3 className="text-base font-bold text-slate-700">Todo al dia</h3>
                                     <p className="text-sm text-slate-400 mt-1">No hay facturas pendientes por pagar</p>
                                 </div>
                             )}
@@ -1389,7 +1389,7 @@ export function AccountsPayable({ data }) {
                                     </button>
                                 </div>
 
-                                {/* Resumen de selecci?n */}
+                                {/* Resumen de seleccion */}
                                 <div className="bg-stone-50 rounded-lg border border-stone-200 p-4 mb-4">
                                     <div className="flex items-center justify-between mb-3">
                                         <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Facturas a incluir</span>
@@ -1453,7 +1453,7 @@ export function AccountsPayable({ data }) {
                                             />
                                             <div className="flex-1 min-w-0">
                                                 <div className="font-semibold text-slate-800 text-xs">Factura #{f.numero}</div>
-                                                <div className="text-[10px] text-slate-400">Emisi?n: {f.fecha}</div>
+                                                <div className="text-[10px] text-slate-400">Emision: {f.fecha}</div>
                                             </div>
                                             <div className="text-right ml-3">
                                                 <div className="font-bold text-[#e30613] text-sm">{fmt(f.saldo)}</div>
@@ -1517,7 +1517,7 @@ export function AccountsPayable({ data }) {
                                     </p>
                                 </div>
 
-                                {/* Botones de acci?n */}
+                                {/* Botones de accion */}
                                 <div className="mb-5 rounded-xl border border-stone-200 bg-stone-50 p-4">
                                     <div className="flex items-start justify-between gap-3">
                                         <div>

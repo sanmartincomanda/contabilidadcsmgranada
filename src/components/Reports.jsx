@@ -1225,11 +1225,11 @@ export default function Reports({ data }) {
                                         <div className="px-3 py-2 bg-stone-50 border-b border-stone-200">
                                             <div className="text-xs font-bold uppercase tracking-wide text-stone-500">Costo de Venta</div>
                                         </div>
-                                        {/* Compra de Mercanc?a */}
+                                        {/* Compra de Mercancia */}
                                         <div className="flex items-center justify-between px-3 py-2.5 border-b border-stone-100">
                                             <div className="flex items-center gap-2">
                                                 <div className="w-1.5 h-1.5 rounded-full bg-stone-400" />
-                                                <div className="text-xs font-semibold text-stone-600">Compra de Mercanc?a</div>
+                                                <div className="text-xs font-semibold text-stone-600">Compra de Mercancia</div>
                                             </div>
                                             <div className="text-sm font-bold text-stone-700">{fmt(totalPurchasesOnly)}</div>
                                         </div>
@@ -1313,14 +1313,14 @@ export default function Reports({ data }) {
                         <div className="lg:col-span-2">
                             <Card
                                 title="Desglose Operativo"
-                                subtitle="Haz clic en una categor?a para ver el detalle"
+                                subtitle="Haz clic en una categoria para ver el detalle"
                                 icon="receipt"
                             >
                                 <div className="overflow-x-auto custom-scrollbar">
                                     <table className="w-full">
                                         <thead>
                                             <tr className="text-left border-b-2 border-[#d8dee6]">
-                                                <th className="pb-3 text-xs font-bold uppercase tracking-wider text-stone-500">Categor?a</th>
+                                                <th className="pb-3 text-xs font-bold uppercase tracking-wider text-stone-500">Categoria</th>
                                                 <th className="pb-3 text-xs font-bold uppercase tracking-wider text-stone-500 text-right">Real</th>
                                                 <th className="pb-3 text-xs font-bold uppercase tracking-wider text-stone-500 text-right">Presupuesto</th>
                                                 <th className="pb-3 text-xs font-bold uppercase tracking-wider text-stone-500 text-right">Ejec.</th>
@@ -1415,7 +1415,7 @@ export default function Reports({ data }) {
                                 {totalBudgetLimit > 0 && (
                                     <div className="mt-5 rounded-xl border border-stone-200 bg-stone-50 p-4">
                                         <div className="flex justify-between items-center mb-2">
-                                            <span className="text-xs font-bold uppercase tracking-wider text-stone-500">Ejecuci?n del Presupuesto Total</span>
+                                            <span className="text-xs font-bold uppercase tracking-wider text-stone-500">Ejecucion del Presupuesto Total</span>
                                             <span className={`text-sm font-black ${totalExecution > 100 ? 'text-rose-600' : 'text-emerald-600'}`}>
                                                 {totalExecution.toFixed(1)}% utilizado
                                             </span>

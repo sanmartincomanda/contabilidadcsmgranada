@@ -173,7 +173,7 @@ const SettingsPanel = ({ config, onClose, onSave }) => {
                 <div className="dash-mesh px-6 py-5 flex items-center justify-between flex-shrink-0">
                     <div>
                         <div className="text-[10px] font-bold uppercase tracking-[0.4em] text-[#f5b51b] mb-1">{APP_BRAND_NAME}</div>
-                        <h2 className="text-lg font-black text-white">Configuraci?n de Inicio</h2>
+                        <h2 className="text-lg font-black text-white">Configuracion de Inicio</h2>
                     </div>
                     <button onClick={onClose} className="p-2 rounded-xl bg-white/10 text-white/80 hover:bg-white/20 hover:text-white transition">
                         <Icon d={ICON.x} className="w-5 h-5" />
@@ -194,7 +194,7 @@ const SettingsPanel = ({ config, onClose, onSave }) => {
                                 <div className="flex-1 min-w-0">
                                     <div className="text-sm font-bold text-stone-800 truncate">{r.texto}</div>
                                     <div className="flex items-center gap-3 mt-2">
-                                        <label className="text-[10px] font-bold uppercase tracking-wider text-stone-400">D?a:</label>
+                                        <label className="text-[10px] font-bold uppercase tracking-wider text-stone-400">Dia:</label>
                                         <input
                                             type="number"
                                             min="1"
@@ -233,7 +233,7 @@ const SettingsPanel = ({ config, onClose, onSave }) => {
                             className="w-full rounded-xl border border-stone-200 px-4 py-2.5 text-sm font-semibold text-stone-700 placeholder:text-stone-300 focus:border-[#e30613] focus:ring-2 focus:ring-[#e30613]/15 outline-none"
                         />
                         <div className="flex items-center gap-3">
-                            <label className="text-[10px] font-bold uppercase tracking-wider text-stone-400">D?a del mes:</label>
+                            <label className="text-[10px] font-bold uppercase tracking-wider text-stone-400">Dia del mes:</label>
                             <input
                                 type="number"
                                 min="1"
@@ -273,7 +273,7 @@ const SettingsPanel = ({ config, onClose, onSave }) => {
 
 // --- DASHBOARD ---
 
-const Dashboard = ({ data = {} }) => {
+const Dashboard = ({ data = {}, themeMode = 'dark', onThemeToggle }) => {
     const [config, setConfig] = useState(null);
     const [configLoading, setConfigLoading] = useState(true);
     const [showSettings, setShowSettings] = useState(false);
@@ -303,7 +303,7 @@ const Dashboard = ({ data = {} }) => {
     const dayOfMonth = now.getDate();
     const hour = now.getHours();
 
-    const greeting = hour < 12 ? 'Buenos d?as' : hour < 18 ? 'Buenas tardes' : 'Buenas noches';
+    const greeting = hour < 12 ? 'Buenos dias' : hour < 18 ? 'Buenas tardes' : 'Buenas noches';
     const greetingIcon = hour < 12 ? ICON.sun : hour < 18 ? ICON.sun : ICON.moon;
     const mesLabel = now.toLocaleDateString('es-ES', { month: 'long', year: 'numeric' });
 
@@ -356,11 +356,11 @@ const Dashboard = ({ data = {} }) => {
 
     // Dynamic insight
     const insight = vencidas.length > 0
-        ? `${vencidas.length} factura(s) vencida(s) - requieren atenci?n`
+        ? `${vencidas.length} factura(s) vencida(s) - requieren atencion`
         : utilidad > 0
             ? `Utilidad positiva de ${fmt(utilidad)} este mes`
             : totalIngresos === 0 && totalGastos === 0
-                ? 'A?n sin movimientos registrados este mes'
+                ? 'Aun sin movimientos registrados este mes'
                 : 'Gastos superan ingresos este periodo';
 
     const kpis = [
@@ -455,6 +455,8 @@ const Dashboard = ({ data = {} }) => {
                 recentMovements={recentMovements}
                 mesGastos={mesGastos}
                 mesCompras={mesCompras}
+                themeMode={themeMode}
+                onThemeToggle={onThemeToggle}
             />
         </>
     );
@@ -493,7 +495,7 @@ const Dashboard = ({ data = {} }) => {
                             <button
                                 onClick={() => setShowSettings(true)}
                                 className="p-2.5 rounded-xl bg-white/8 border border-white/10 text-white/60 hover:bg-white/15 hover:text-[#f5b51b] transition-all group"
-                                title="Configuraci?n"
+                                title="Configuracion"
                             >
                                 <svg className="w-5 h-5 transition-transform group-hover:rotate-90" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth="2">
                                     <path strokeLinecap="round" strokeLinejoin="round" d={ICON.gear} />
@@ -680,7 +682,7 @@ const Dashboard = ({ data = {} }) => {
                             <div className="text-center py-8">
                                 <Icon d={ICON.bell} className="w-8 h-8 text-stone-200 mx-auto mb-2" />
                                 <p className="text-xs text-stone-400">
-                                    {dayOfMonth < 7 ? 'Los recordatorios aparecen a partir del d?a 7' : 'No hay recordatorios configurados'}
+                                    {dayOfMonth < 7 ? 'Los recordatorios aparecen a partir del dia 7' : 'No hay recordatorios configurados'}
                                 </p>
                             </div>
                         ) : pendingReminders.length === 0 ? (
@@ -769,7 +771,7 @@ const Dashboard = ({ data = {} }) => {
                                     <Icon d={ICON.check} className="w-5 h-5 text-emerald-600" />
                                 </div>
                                 <p className="text-sm font-bold text-emerald-700">Sin pendientes</p>
-                                <p className="text-xs text-stone-400 mt-0.5">Todas las cuentas est?n al d?a</p>
+                                <p className="text-xs text-stone-400 mt-0.5">Todas las cuentas estan al dia</p>
                             </div>
                         ) : (
                             facturasPendientes.filter(f => !vencidas.includes(f)).slice(0, 6).map(f => (
@@ -955,6 +957,19 @@ const useFirestoreCollections = (collections = [], enabled = true, live = true) 
 function AppContent() {
     const { user } = useAuth();
     const location = useLocation();
+    const [themeMode, setThemeMode] = useState(() => {
+        if (typeof window === 'undefined') return 'dark';
+        return window.localStorage.getItem('csm-theme-mode') || 'dark';
+    });
+
+    useEffect(() => {
+        document.documentElement.dataset.theme = themeMode;
+        window.localStorage.setItem('csm-theme-mode', themeMode);
+    }, [themeMode]);
+
+    const toggleTheme = useCallback(() => {
+        setThemeMode((current) => (current === 'dark' ? 'light' : 'dark'));
+    }, []);
 
     const isLimitedUser = user?.email === 'adriandiazc95@gmail.com';
     const isAdmin = !isLimitedUser;
@@ -1035,7 +1050,7 @@ function AppContent() {
                 >
                     <Routes location={location}>
                         <Route path="/login" element={<Navigate to="/" replace />} />
-                        <Route path="/" element={<PrivateRoute element={isAdmin ? (dashboardLoading ? <AppLoadingState /> : dashboardError ? <AppErrorState error={dashboardError} /> : <Dashboard data={dashboardData} />) : <Navigate to="/cuentas-pagar" />} />} />
+                        <Route path="/" element={<PrivateRoute element={isAdmin ? (dashboardLoading ? <AppLoadingState /> : dashboardError ? <AppErrorState error={dashboardError} /> : <Dashboard data={dashboardData} themeMode={themeMode} onThemeToggle={toggleTheme} />) : <Navigate to="/cuentas-pagar" />} />} />
                         <Route path="/ingresar" element={<PrivateRoute element={isAdmin ? (dataEntryLoading ? <AppLoadingState /> : dataEntryError ? <AppErrorState error={dataEntryError} /> : <DataEntry data={dataEntryData} categories={categoriesList} />) : <Navigate to="/cuentas-pagar" />} />} />
                         <Route path="/gastos-diarios" element={<PrivateRoute element={<GastosDiarios categories={categoriesList} />} />} />
                         <Route path="/conciliacion" element={<PrivateRoute element={isAdmin ? <BankReconciliation /> : <Navigate to="/cuentas-pagar" />} />} />

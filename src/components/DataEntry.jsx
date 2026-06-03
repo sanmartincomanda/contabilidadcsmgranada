@@ -1317,7 +1317,7 @@ const ExpenseForm = ({ categories, loading, setLoading, onSuccess }) => {
                 if (errors.length) return alert("Error en CSV.");
                 const validData = data.filter(row => row['Monto'] && !isNaN(parseFloat(row['Monto']))).map(row => ({
                     date: row['Fecha'] || new Date().toISOString().substring(0, 10),
-                    description: row['Descripcion'] || 'Sin Descripci?n',
+                    description: row['Descripcion'] || 'Sin Descripcion',
                     amount: parseFloat(row['Monto']),
                     category: row['Categoria'] || 'Otros',
                     branch: DEFAULT_BRANCH_ID,
@@ -1345,10 +1345,10 @@ const ExpenseForm = ({ categories, loading, setLoading, onSuccess }) => {
                     Todo se registra en {DEFAULT_BRANCH_NAME}.
                 </div>
                 <Input label="Fecha" type="date" icon="calendar" value={date} onChange={e => setDate(e.target.value)} required />
-                <Input label="Descripci?n" icon="fileText" placeholder="Ej: Pago de servicios..." value={description} onChange={e => setDescription(e.target.value)} required />
+                <Input label="Descripcion" icon="fileText" placeholder="Ej: Pago de servicios..." value={description} onChange={e => setDescription(e.target.value)} required />
                 <div className="grid grid-cols-2 gap-3">
                     <Input label="Monto" type="number" step="0.01" icon="dollar" placeholder="0.00" className="text-lg font-bold text-rose-600" value={amount} onChange={e => setAmount(e.target.value)} required />
-                    <Select label="Categor?a" icon="tag" value={categoryId} onChange={e => setCategoryId(e.target.value)} required options={<><option value="">Seleccionar...</option>{categories.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</>} />
+                    <Select label="Categoria" icon="tag" value={categoryId} onChange={e => setCategoryId(e.target.value)} required options={<><option value="">Seleccionar...</option>{categories.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</>} />
                 </div>
                 <Button type="submit" variant="danger" disabled={loading} className="w-full">{loading ? 'Guardando...' : 'Registrar Gasto'}</Button>
             </form>
@@ -2027,7 +2027,7 @@ const BudgetForm = ({ categories, loading, setLoading, onSuccess }) => {
     return (
         <form onSubmit={handleSubmit} className="space-y-3">
             <Input label="Mes" type="month" icon="calendar" value={month} onChange={e => setMonth(e.target.value)} required />
-            <Select label="Categor?a" icon="tag" value={categoryId} onChange={e => setCategoryId(e.target.value)} required options={<><option value="">Seleccionar...</option>{categories.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</>} />
+            <Select label="Categoria" icon="tag" value={categoryId} onChange={e => setCategoryId(e.target.value)} required options={<><option value="">Seleccionar...</option>{categories.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</>} />
             <Input label="Monto" type="number" step="0.01" icon="dollar" placeholder="0.00" value={amount} onChange={e => setAmount(e.target.value)} required />
             <Button type="submit" variant="warning" disabled={loading || !categoryId} className="w-full">{loading ? 'Guardando...' : 'Establecer Presupuesto'}</Button>
         </form>
@@ -2077,7 +2077,7 @@ const EquityForm = ({ loading, setLoading, onSuccess }) => {
     return (
         <form onSubmit={handleSubmit} className="space-y-3">
             <Input label="Fecha" type="date" icon="calendar" value={date} onChange={e => setDate(e.target.value)} required />
-            <Input label="Descripci?n" icon="scale" placeholder="Capital, aporte..." value={description} onChange={e => setDescription(e.target.value)} required />
+            <Input label="Descripcion" icon="scale" placeholder="Capital, aporte..." value={description} onChange={e => setDescription(e.target.value)} required />
             <Input label="Monto" type="number" step="0.01" icon="dollar" placeholder="0.00" className="text-lg font-bold text-emerald-600" value={amount} onChange={e => setAmount(e.target.value)} required />
             <Button type="submit" variant="success" disabled={loading} className="w-full">{loading ? 'Guardando...' : 'Registrar Patrimonio'}</Button>
         </form>
@@ -2216,8 +2216,8 @@ export function DataEntry({ categories, data }) {
             total: { label: 'Total', type: 'currency' },
             retentionIr2: { label: 'Ret. IR 2%', type: 'currency' },
             retentionMunicipal1: { label: 'Ret. Municipal 1%', type: 'currency' },
-            description: { label: 'Descripci?n', type: 'text' },
-            category: { label: 'Categor?a', type: 'text' },
+            description: { label: 'Descripcion', type: 'text' },
+            category: { label: 'Categoria', type: 'text' },
             amount: { label: 'Monto', type: 'currency' }
         },
         Inventario: {
@@ -2240,7 +2240,7 @@ export function DataEntry({ categories, data }) {
         },
         Presupuesto: {
             month: { label: 'Mes', type: 'month' },
-            category: { label: 'Categor?a', type: 'text' },
+            category: { label: 'Categoria', type: 'text' },
             amount: { label: 'Presupuesto', type: 'currency' }
         },
         'Cuentas por Cobrar': {
@@ -2250,7 +2250,7 @@ export function DataEntry({ categories, data }) {
         },
         Patrimonio: {
             date: { label: 'Fecha', type: 'date' },
-            description: { label: 'Descripci?n', type: 'text' },
+            description: { label: 'Descripcion', type: 'text' },
             amount: { label: 'Monto', type: 'currency' }
         }
     };
