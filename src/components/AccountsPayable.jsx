@@ -13,7 +13,10 @@ import {
     getSupportPath,
     getSupportUrl,
     hasSupport,
+    isCashPayment,
+    isCreditPayment,
     isPdfSupportRecord,
+    PURCHASE_PAYMENT_METHODS,
     SUPPORT_FILE_TYPES,
     uploadFiscalSupportFiles,
     uploadInvoicePhoto,
@@ -187,10 +190,12 @@ const DetailRow = ({ label, value, accent = false }) => (
 );
 
 const getPaymentLabel = (method) => {
-    if (method === 'efectivo') return 'Efectivo';
-    if (method === 'transferencia') return 'Transferencia';
+    if (isCashPayment(method)) return 'EFECTIVO';
+    if (!method) return 'Sin metodo';
     return method || 'Sin metodo';
 };
+
+const ABONO_PAYMENT_METHODS = PURCHASE_PAYMENT_METHODS.filter((method) => !isCreditPayment(method));
 
 const SupportPreviewModal = ({ record, type, onClose, onAttach }) => {
     if (!record) return null;
@@ -575,7 +580,7 @@ export function AccountsPayable({ data }) {
     const [montoAbono, setMontoAbono] = useState('');
     const [proveedorSeleccionado, setProveedorSeleccionado] = useState('');
     const [montoPrevisualizado, setMontoPrevisualizado] = useState(0);
-    const [paymentMethod, setPaymentMethod] = useState('transferencia');
+    const [paymentMethod, setPaymentMethod] = useState('TRANSFERENCIA');
     const [abonoPhoto, setAbonoPhoto] = useState(null);
     const [detailTarget, setDetailTarget] = useState(null);
     const [supportTarget, setSupportTarget] = useState(null);
@@ -586,7 +591,7 @@ export function AccountsPayable({ data }) {
         setSelectedFacturas([]);
         setMontoAbono('');
         setMontoPrevisualizado(0);
-        setPaymentMethod('transferencia');
+        setPaymentMethod('TRANSFERENCIA');
         setAbonoPhoto(null);
     }, []);
 
@@ -623,7 +628,7 @@ export function AccountsPayable({ data }) {
             const snap = await getDocs(q);
             const nuevaSecuencia = snap.empty ? 1 : (snap.docs[0].data().secuencia + 1);
             const abonoRef = doc(collection(db, 'abonos_pagar'));
-            const gastoDiarioRef = paymentMethod === 'efectivo' ? doc(collection(db, 'gastosDiarios')) : null;
+            const gastoDiarioRef = isCashPayment(paymentMethod) ? doc(collection(db, 'gastosDiarios')) : null;
             const supportPayload = abonoPhoto
                 ? await uploadInvoicePhoto(abonoPhoto, 'facturas/abonos_pagar', abonoRef.id)
                 : {};
@@ -719,7 +724,7 @@ export function AccountsPayable({ data }) {
                         estado: nuevoSaldo >= dataF.monto ? 'pendiente' : 'parcial'
                     });
                 }
-                if (abonoDoc.paymentMethod === 'efectivo' && abonoDoc.linkedGastoDiarioId) {
+                if (isCashPayment(abonoDoc.paymentMethod) && abonoDoc.linkedGastoDiarioId) {
                     transaction.delete(doc(db, 'gastosDiarios', abonoDoc.linkedGastoDiarioId));
                 }
                 transaction.delete(doc(db, 'abonos_pagar', abonoDoc.id));
@@ -1132,7 +1137,7 @@ export function AccountsPayable({ data }) {
                                                             setSelectedFacturas([]);
                                                             setMontoAbono('');
                                                             setMontoPrevisualizado(0);
-                                                            setPaymentMethod('transferencia');
+                                                            setPaymentMethod('TRANSFERENCIA');
                                                             setShowModalAbono(true);
                                                         }}
                                                         className="flex items-center gap-1.5 whitespace-nowrap"
@@ -1247,8 +1252,8 @@ export function AccountsPayable({ data }) {
                                         <table className="w-full text-sm">
                                             <thead className="bg-stone-50 border-b border-stone-200">
                                                 <tr>
-                                                    {['Recibo #', 'Fecha', 'Proveedor', 'M?todo', 'Monto', 'Acci?n'].map(h => (
-                                                        <th key={h} className={`px-4 py-2.5 text-[10px] font-bold text-slate-400 uppercase tracking-wider ${h === 'Monto' ? 'text-right' : h === 'Acci?n' ? 'text-center' : 'text-left'}`}>
+                                                    {['Recibo #', 'Fecha', 'Proveedor', 'Metodo', 'Monto', 'Accion'].map(h => (
+                                                        <th key={h} className={`px-4 py-2.5 text-[10px] font-bold text-slate-400 uppercase tracking-wider ${h === 'Monto' ? 'text-right' : h === 'Accion' ? 'text-center' : 'text-left'}`}>
                                                             {h}
                                                         </th>
                                                     ))}
@@ -1261,8 +1266,8 @@ export function AccountsPayable({ data }) {
                                                         <td className="px-4 py-3 text-xs text-slate-500">{a.fecha}</td>
                                                         <td className="px-4 py-3 font-semibold text-slate-800 text-xs">{a.proveedor}</td>
                                                         <td className="px-4 py-3">
-                                                            <Badge variant={a.paymentMethod === 'efectivo' ? 'warning' : 'info'}>
-                                                                {a.paymentMethod === 'efectivo' ? 'Efectivo' : 'Transferencia'}
+                                                            <Badge variant={isCashPayment(a.paymentMethod) ? 'warning' : 'info'}>
+                                                                {getPaymentLabel(a.paymentMethod)}
                                                             </Badge>
                                                         </td>
                                                         <td className="px-4 py-3 text-right font-bold text-emerald-600">{fmt(a.montoTotal)}</td>
@@ -1491,21 +1496,22 @@ export function AccountsPayable({ data }) {
                                     )}
                                 </div>
 
-                                {/* M?todo de pago */}
+                                {/* Metodo de pago */}
                                 <div className="mb-5">
                                     <Select
-                                        label="M?todo de Pago"
+                                        label="Metodo de Pago"
                                         value={paymentMethod}
                                         onChange={e => setPaymentMethod(e.target.value)}
                                         options={
                                             <>
-                                                <option value="transferencia">Transferencia</option>
-                                                <option value="efectivo">Efectivo</option>
+                                                {ABONO_PAYMENT_METHODS.map((method) => (
+                                                    <option key={method} value={method}>{method}</option>
+                                                ))}
                                             </>
                                         }
                                     />
                                     <p className="text-xs text-slate-400 mt-1.5">
-                                        {paymentMethod === 'efectivo'
+                                        {isCashPayment(paymentMethod)
                                             ? 'Se registrara tambien en Gastos Diarios como salida de caja.'
                                             : 'Solo actualiza el saldo de la cuenta por pagar.'}
                                     </p>
