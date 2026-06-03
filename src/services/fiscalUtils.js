@@ -26,15 +26,28 @@ export const PAYMENT_METHODS = [
 ];
 
 export const PURCHASE_PAYMENT_METHODS = [
-    'Credito',
-    'Transferencia',
-    'Efectivo',
-    'BAC POS',
-    'Banpro POS',
-    'LAFISE POS',
-    'Cheque',
-    'Otro',
+    'EFECTIVO',
+    'TRANSFERENCIA',
+    'TARJETA BLACK MASTERCARD ***4660',
+    'TARJETA AMEX BLACK',
+    'TARJETA AMEX PRICESMART',
+    'TARJETA LA COLONIA BAC',
+    'TARJETA UNO BANPRO',
+    'TARJETA BLACK BANPRO',
+    'CREDITO',
 ];
+
+export const normalizePaymentMethod = (value = '') => (
+    String(value || '')
+        .trim()
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .toUpperCase()
+);
+
+export const isCreditPayment = (value = '') => normalizePaymentMethod(value) === 'CREDITO';
+
+export const isCashPayment = (value = '') => normalizePaymentMethod(value) === 'EFECTIVO';
 
 export const money = (value) => {
     const parsed = Number(value ?? 0);

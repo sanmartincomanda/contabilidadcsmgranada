@@ -5,7 +5,7 @@ import {
     collection, Timestamp, getDocs, doc, deleteDoc, writeBatch, query, where
 } from 'firebase/firestore';
 import { APP_BRAND_NAME, DEFAULT_BRANCH_ID, DEFAULT_BRANCH_NAME, DEFAULT_CASHBOX_NAME, fmt } from '../constants';
-import { buildFiscalPayload, PURCHASE_PAYMENT_METHODS, uploadInvoicePhoto } from '../services/fiscalUtils';
+import { buildFiscalPayload, isCreditPayment, PURCHASE_PAYMENT_METHODS, uploadInvoicePhoto } from '../services/fiscalUtils';
 
 // --- ICONOS SVG INLINE ---
 const Icons = {
@@ -128,7 +128,7 @@ export default function GastosDiarios({ categories = [] }) {
     const [categoriaId, setCategoriaId] = useState('');
     const [proveedor, setProveedor] = useState('');
     const [numeroFactura, setNumeroFactura] = useState('');
-    const [paymentType, setPaymentType] = useState('Efectivo');
+    const [paymentType, setPaymentType] = useState('EFECTIVO');
     const [paymentReference, setPaymentReference] = useState('');
     const [subtotal, setSubtotal] = useState('');
     const [iva, setIva] = useState('');
@@ -346,7 +346,7 @@ export default function GastosDiarios({ categories = [] }) {
             setCategoriaId('');
             setProveedor('');
             setNumeroFactura('');
-            setPaymentType('Efectivo');
+            setPaymentType('EFECTIVO');
             setPaymentReference('');
             setSubtotal('');
             setIva('');
@@ -529,7 +529,7 @@ export default function GastosDiarios({ categories = [] }) {
                                     onChange={e => setPaymentType(e.target.value)}
                                     options={
                                         <>
-                                            {PURCHASE_PAYMENT_METHODS.filter(method => method !== 'Credito').map(method => (
+                                            {PURCHASE_PAYMENT_METHODS.filter(method => !isCreditPayment(method)).map(method => (
                                                 <option key={method} value={method}>{method}</option>
                                             ))}
                                         </>
@@ -538,7 +538,7 @@ export default function GastosDiarios({ categories = [] }) {
                                 <Input
                                     label="Referencia"
                                     icon="fileText"
-                                    placeholder="Transferencia, POS..."
+                                    placeholder="Transferencia, tarjeta..."
                                     value={paymentReference}
                                     onChange={e => setPaymentReference(e.target.value)}
                                 />

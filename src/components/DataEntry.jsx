@@ -28,6 +28,8 @@ import {
     getSupportPath,
     getSupportUrl,
     hasSupport,
+    isCashPayment,
+    isCreditPayment,
     isPdfSupportRecord,
     SUPPORT_FILE_TYPES,
     uploadFiscalSupportFiles,
@@ -1411,7 +1413,7 @@ const FiscalExpenseForm = ({ categories, providers = [], loading, setLoading, on
     const [invoiceNumber, setInvoiceNumber] = useState('');
     const [description, setDescription] = useState('');
     const [categoryId, setCategoryId] = useState('');
-    const [paymentType, setPaymentType] = useState('Efectivo');
+    const [paymentType, setPaymentType] = useState('EFECTIVO');
     const [paymentReference, setPaymentReference] = useState('');
     const [subtotal, setSubtotal] = useState('');
     const [iva, setIva] = useState('');
@@ -1427,7 +1429,7 @@ const FiscalExpenseForm = ({ categories, providers = [], loading, setLoading, on
         setInvoiceNumber('');
         setDescription('');
         setCategoryId('');
-        setPaymentType('Efectivo');
+        setPaymentType('EFECTIVO');
         setPaymentReference('');
         setSubtotal('');
         setIva('');
@@ -1474,7 +1476,7 @@ const FiscalExpenseForm = ({ categories, providers = [], loading, setLoading, on
                 is_conciled: false,
             };
 
-            if (paymentType === 'Credito') {
+            if (isCreditPayment(paymentType)) {
                 const payableRef = doc(collection(db, 'cuentas_por_pagar'));
                 const linkedPayload = {
                     ...expensePayload,
@@ -1539,7 +1541,7 @@ const FiscalExpenseForm = ({ categories, providers = [], loading, setLoading, on
                 Todo se registra en {DEFAULT_BRANCH_NAME}.
             </div>
             <Input label="Fecha" type="date" icon="calendar" value={date} onChange={e => setDate(e.target.value)} required />
-            {paymentType === 'Credito' && <Input label="Vencimiento" type="date" icon="calendar" value={dueDate} onChange={e => setDueDate(e.target.value)} required />}
+            {isCreditPayment(paymentType) && <Input label="Vencimiento" type="date" icon="calendar" value={dueDate} onChange={e => setDueDate(e.target.value)} required />}
             <Input label="Numero de factura" icon="receipt" placeholder="Dejar vacio si no aplica" value={invoiceNumber} onChange={e => setInvoiceNumber(e.target.value)} />
             <Select
                 label="Proveedor"
@@ -1566,7 +1568,7 @@ const FiscalExpenseForm = ({ categories, providers = [], loading, setLoading, on
                 <Select label="Categoria" icon="tag" value={categoryId} onChange={e => setCategoryId(e.target.value)} required options={<><option value="">Seleccionar...</option>{categories.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</>} />
                 <Select label="Tipo de pago" icon="cash" value={paymentType} onChange={e => setPaymentType(e.target.value)} required options={paymentOptions(PURCHASE_PAYMENT_METHODS)} />
             </div>
-            <Input label="Referencia de pago" icon="fileText" placeholder="Cheque, transferencia, POS..." value={paymentReference} onChange={e => setPaymentReference(e.target.value)} />
+            <Input label="Referencia de pago" icon="fileText" placeholder="Referencia bancaria o tarjeta..." value={paymentReference} onChange={e => setPaymentReference(e.target.value)} />
             <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                 <Input label="Subtotal" type="number" step="0.01" icon="dollar" placeholder="0.00" value={subtotal} onChange={e => setSubtotal(e.target.value)} required />
                 <Input label="IVA" type="number" step="0.01" icon="dollar" placeholder="0.00" value={iva} onChange={e => setIva(e.target.value)} />
@@ -1601,7 +1603,7 @@ const FiscalPurchasesForm = ({ categories, providers = [], loading, setLoading, 
     const [invoiceNumber, setInvoiceNumber] = useState('');
     const [description, setDescription] = useState('');
     const [categoryId, setCategoryId] = useState('');
-    const [paymentType, setPaymentType] = useState('Transferencia');
+    const [paymentType, setPaymentType] = useState('TRANSFERENCIA');
     const [paymentReference, setPaymentReference] = useState('');
     const [subtotal, setSubtotal] = useState('');
     const [iva, setIva] = useState('');
@@ -1617,7 +1619,7 @@ const FiscalPurchasesForm = ({ categories, providers = [], loading, setLoading, 
         setInvoiceNumber('');
         setDescription('');
         setCategoryId('');
-        setPaymentType('Transferencia');
+        setPaymentType('TRANSFERENCIA');
         setPaymentReference('');
         setSubtotal('');
         setIva('');
@@ -1665,7 +1667,7 @@ const FiscalPurchasesForm = ({ categories, providers = [], loading, setLoading, 
                 timestamp: Timestamp.now(),
             };
 
-            if (paymentType === 'Credito') {
+            if (isCreditPayment(paymentType)) {
                 const payableRef = doc(collection(db, 'cuentas_por_pagar'));
                 batch.set(payableRef, {
                     proveedor: provider.nombre,
@@ -1694,7 +1696,7 @@ const FiscalPurchasesForm = ({ categories, providers = [], loading, setLoading, 
                     updatedAt: Timestamp.now(),
                 });
                 batch.set(purchaseRef, { ...purchasePayload, linkedPayableId: payableRef.id, sourceFacturaId: payableRef.id });
-            } else if (paymentType === 'Efectivo') {
+            } else if (isCashPayment(paymentType)) {
                 const cashRef = doc(collection(db, 'gastosDiarios'));
                 batch.set(cashRef, {
                     fecha: date,
@@ -1740,13 +1742,13 @@ const FiscalPurchasesForm = ({ categories, providers = [], loading, setLoading, 
     return (
         <form onSubmit={handleSubmit} className="space-y-3">
             <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-2.5 text-xs font-semibold text-emerald-700">
-                Credito crea cuenta por pagar + compra. Efectivo crea gasto diario + compra. Transferencia/POS queda como compra de contado.
+                CREDITO crea cuenta por pagar + compra. EFECTIVO crea gasto diario + compra. Transferencia y tarjetas quedan como compra de contado.
             </div>
             <div className="rounded-lg border border-[#f2c5c5] bg-[#fff8f8] px-4 py-2.5 text-xs font-semibold text-[#9f111a]">
                 Todo se registra en {DEFAULT_BRANCH_NAME}.
             </div>
             <Input label="Fecha" type="date" icon="calendar" value={date} onChange={e => setDate(e.target.value)} required />
-            {paymentType === 'Credito' && <Input label="Vencimiento" type="date" icon="calendar" value={dueDate} onChange={e => setDueDate(e.target.value)} required />}
+            {isCreditPayment(paymentType) && <Input label="Vencimiento" type="date" icon="calendar" value={dueDate} onChange={e => setDueDate(e.target.value)} required />}
             <Input label="Numero de factura" icon="fileText" placeholder="Dejar vacio si SICAR/proveedor no manda folio" value={invoiceNumber} onChange={e => setInvoiceNumber(e.target.value)} />
             <Select
                 label="Proveedor"
@@ -1773,7 +1775,7 @@ const FiscalPurchasesForm = ({ categories, providers = [], loading, setLoading, 
                 <Select label="Categoria" icon="tag" value={categoryId} onChange={e => setCategoryId(e.target.value)} options={<><option value="">Compra de mercancia</option>{categories.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</>} />
                 <Select label="Tipo de pago" icon="cash" value={paymentType} onChange={e => setPaymentType(e.target.value)} required options={paymentOptions(PURCHASE_PAYMENT_METHODS)} />
             </div>
-            <Input label="Referencia de pago" icon="fileText" placeholder="Transferencia, POS, cheque..." value={paymentReference} onChange={e => setPaymentReference(e.target.value)} />
+            <Input label="Referencia de pago" icon="fileText" placeholder="Referencia bancaria o tarjeta..." value={paymentReference} onChange={e => setPaymentReference(e.target.value)} />
             <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                 <Input label="Subtotal" type="number" step="0.01" icon="shoppingCart" placeholder="0.00" value={subtotal} onChange={e => setSubtotal(e.target.value)} required />
                 <Input label="IVA" type="number" step="0.01" icon="dollar" placeholder="0.00" value={iva} onChange={e => setIva(e.target.value)} />
@@ -2345,7 +2347,7 @@ export function DataEntry({ categories, data }) {
                 supplier: item.supplier || item.proveedor || 'REGISTRO LEGACY',
                 providerCode: item.providerCode || item.codigoProveedor || getProviderCode(item.supplier || item.proveedor || ''),
                 invoiceNumber: item.invoiceNumber || item.numero || item.factura || '',
-                paymentType: item.paymentType || (item.linkedPayableId || item.sourceFacturaId ? 'Credito' : 'Contado'),
+                paymentType: item.paymentType || (item.linkedPayableId || item.sourceFacturaId ? 'CREDITO' : 'CONTADO'),
                 subtotal: Number(item.subtotal ?? item.amount ?? item.monto ?? 0) || 0,
                 iva: Number(item.iva ?? 0) || 0,
                 total: Number(item.total ?? item.amount ?? item.monto ?? 0) || 0,
