@@ -1,4 +1,4 @@
-import { Link, useNavigate, useLocation } from 'react-router-dom';
+﻿import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import React, { useState, useEffect, useRef } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
@@ -34,7 +34,7 @@ const Icon = ({ path, className = 'w-5 h-5' }) => (
 const MotionLink = motion(Link);
 
 const dropdownBase =
-    'rounded-2xl border border-[#efd8c8] bg-white/95 shadow-2xl shadow-[#7f1218]/10 ring-1 ring-[#7f1218]/5 backdrop-blur';
+    'rounded-2xl border border-slate-200 bg-white/95 shadow-2xl shadow-slate-950/10 ring-1 ring-slate-950/5 backdrop-blur';
 
 export default function Header() {
     const { user, logout } = useAuth();
@@ -91,8 +91,8 @@ export default function Header() {
             transition={{ type: 'spring', stiffness: 420, damping: 28 }}
             className={`motion-button relative flex items-center gap-2 rounded-xl px-4 py-2.5 text-sm font-bold transition-all duration-200 ${
                 active
-                    ? 'bg-[#a81d24] text-white shadow-lg shadow-[#a81d24]/30'
-                    : 'text-[#f8ece2] hover:bg-white/10 hover:text-white'
+                    ? 'bg-[#e30613] text-white shadow-lg shadow-[#e30613]/30'
+                    : 'text-[#f8fafc] hover:bg-white/10 hover:text-white'
             }`}
         >
             {active && <span className="pointer-events-none absolute inset-0 rounded-xl bg-gradient-to-r from-white/0 via-white/15 to-white/0 opacity-70" />}
@@ -113,8 +113,8 @@ export default function Header() {
                     transition={{ type: 'spring', stiffness: 420, damping: 28 }}
                     className={`motion-button flex items-center gap-2 rounded-xl px-4 py-2.5 text-sm font-bold transition-all duration-200 ${
                         isMenuOpen || location.pathname === '/ingresar'
-                            ? 'bg-[#f2b635] text-[#651317] shadow-lg shadow-[#f2b635]/25'
-                            : 'text-[#f8ece2] hover:bg-white/10 hover:text-white'
+                            ? 'bg-[#f5b51b] text-[#3b0a0e] shadow-lg shadow-[#f5b51b]/25'
+                            : 'text-[#f8fafc] hover:bg-white/10 hover:text-white'
                     }`}
                 >
                     <Icon path={Icons.plus} className="motion-icon-bounce w-4 h-4" />
@@ -131,9 +131,9 @@ export default function Header() {
                         transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
                         className={`absolute left-0 top-full z-50 mt-3 w-64 overflow-hidden ${dropdownBase}`}
                     >
-                        <div className="border-b border-[#f1dfd1] bg-[#fff8f2] px-4 py-3">
-                            <div className="text-xs font-bold uppercase tracking-[0.3em] text-[#b98b2d]">{APP_BRAND_NAME}</div>
-                            <div className="mt-1 text-sm font-black text-[#7f1218]">Registro operativo</div>
+                        <div className="border-b border-[#f1dfd1] bg-[#f8fafc] px-4 py-3">
+                            <div className="text-xs font-bold uppercase tracking-[0.3em] text-[#b7791f]">{APP_BRAND_NAME}</div>
+                            <div className="mt-1 text-sm font-black text-[#9f111a]">Registro operativo</div>
                         </div>
                         <div className="p-2">
                             <button
@@ -150,9 +150,9 @@ export default function Header() {
                             </button>
                             <button
                                 onClick={() => handleDataEntryClick('Gastos')}
-                                className="motion-button flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left text-sm text-[#5d413d] transition hover:bg-[#fff0ef] hover:text-[#8a141b]"
+                                className="motion-button flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left text-sm text-[#5d413d] transition hover:bg-[#fff0ef] hover:text-[#9f111a]"
                             >
-                                <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-[#fde2de] text-[#a81d24]">
+                                <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-[#fde2de] text-[#e30613]">
                                     <Icon path={Icons.trendingDown} className="motion-icon-bounce w-4 h-4" />
                                 </div>
                                 <div>
@@ -208,8 +208,8 @@ export default function Header() {
                 transition={{ duration: 0.55, ease: [0.22, 1, 0.36, 1] }}
                 className={`fixed left-0 right-0 top-0 z-50 transition-all duration-300 ${
                     isScrolled
-                        ? 'bg-gradient-to-r from-[#2b1113]/95 via-[#5e1318]/95 to-[#8a141b]/95 shadow-2xl shadow-[#2b1113]/30 backdrop-blur-xl'
-                        : 'bg-gradient-to-r from-[#2b1113] via-[#5e1318] to-[#8a141b]'
+                        ? 'bg-gradient-to-r from-[#111827]/95 via-[#5c0f14]/95 to-[#9f111a]/95 shadow-2xl shadow-[#111827]/30 backdrop-blur-xl'
+                        : 'bg-gradient-to-r from-[#111827] via-[#5c0f14] to-[#9f111a]'
                 }`}
             >
                 <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
@@ -221,17 +221,17 @@ export default function Header() {
                             whileTap={{ scale: 0.985 }}
                             transition={{ type: 'spring', stiffness: 360, damping: 28 }}
                         >
-                            <div className="rounded-[1.4rem] border border-white/20 bg-[#fff7ef] p-1.5 shadow-lg shadow-black/10 transition group-hover:scale-[1.02]">
+                            <div className="rounded-[1.2rem] border border-white/20 bg-white p-1.5 shadow-lg shadow-black/10 transition group-hover:scale-[1.02]">
                                 <img
                                     src={BRAND_LOGO}
                                     alt={APP_BRAND_NAME}
-                                    className="h-12 w-12 rounded-[1rem] object-cover"
+                                    className="h-12 w-12 rounded-[0.85rem] object-contain"
                                 />
                             </div>
                             <div className="hidden sm:block">
-                                <div className="text-lg font-black uppercase tracking-[0.12em] text-[#f2b635]">{APP_BRAND_WORDMARK_TOP}</div>
-                                <div className="-mt-1 text-2xl font-black text-white">{APP_BRAND_WORDMARK_BOTTOM}</div>
-                                <div className="text-[11px] font-bold uppercase tracking-[0.28em] text-[#f8d8c8]">
+                                <div className="text-sm font-black uppercase tracking-[0.28em] text-red-200">{APP_BRAND_WORDMARK_TOP}</div>
+                                <div className="-mt-0.5 text-xl font-black text-white">{APP_BRAND_WORDMARK_BOTTOM}</div>
+                                <div className="text-[10px] font-bold uppercase tracking-[0.26em] text-white/45">
                                     Centro contable
                                 </div>
                             </div>
@@ -276,7 +276,7 @@ export default function Header() {
                                     </div>
                                     <button
                                         onClick={handleLogout}
-                                        className="motion-button flex items-center gap-2 rounded-xl border border-[#f2b635]/35 bg-[#f2b635]/12 px-4 py-2.5 text-sm font-bold text-[#ffe9b3] transition hover:bg-[#f2b635] hover:text-[#651317] hover:shadow-lg hover:shadow-[#f2b635]/20"
+                                        className="motion-button flex items-center gap-2 rounded-xl border border-[#f5b51b]/35 bg-[#f5b51b]/12 px-4 py-2.5 text-sm font-bold text-[#ffe9b3] transition hover:bg-[#f5b51b] hover:text-[#3b0a0e] hover:shadow-lg hover:shadow-[#f5b51b]/20"
                                     >
                                         <Icon path={Icons.logout} className="motion-icon-bounce w-4 h-4" />
                                         <span className="hidden sm:inline">Salir</span>
@@ -289,7 +289,7 @@ export default function Header() {
                             <div className="md:hidden">
                                 <button
                                     onClick={() => setIsMobileMenuOpen((prev) => !prev)}
-                                    className="motion-button rounded-xl border border-white/15 bg-white/5 p-2 text-[#f8ece2] transition hover:bg-white/10 hover:text-white"
+                                    className="motion-button rounded-xl border border-white/15 bg-white/5 p-2 text-[#f8fafc] transition hover:bg-white/10 hover:text-white"
                                 >
                                     <Icon path={isMobileMenuOpen ? Icons.x : Icons.menu} className="motion-icon-bounce w-6 h-6" />
                                 </button>
@@ -302,7 +302,7 @@ export default function Header() {
                                 whileHover={{ y: -2, scale: 1.02 }}
                                 whileTap={{ scale: 0.97 }}
                                 transition={{ type: 'spring', stiffness: 420, damping: 28 }}
-                                className="motion-button flex items-center gap-2 rounded-xl bg-[#f2b635] px-5 py-2.5 text-sm font-black uppercase tracking-[0.2em] text-[#651317] shadow-lg shadow-[#f2b635]/25 transition hover:bg-[#f6c24a]"
+                                className="motion-button flex items-center gap-2 rounded-xl bg-[#f5b51b] px-5 py-2.5 text-sm font-black uppercase tracking-[0.2em] text-[#3b0a0e] shadow-lg shadow-[#f5b51b]/25 transition hover:bg-[#f6c24a]"
                             >
                                 <Icon path={Icons.user} className="motion-icon-bounce w-4 h-4" />
                                 Entrar
@@ -318,7 +318,7 @@ export default function Header() {
                         animate={{ opacity: 1, y: 0, height: 'auto' }}
                         exit={{ opacity: 0, y: -8, height: 0 }}
                         transition={{ duration: 0.24, ease: [0.22, 1, 0.36, 1] }}
-                        className="overflow-hidden border-t border-white/10 bg-gradient-to-b from-[#531418]/95 to-[#2b1113]/95 backdrop-blur-xl md:hidden"
+                        className="overflow-hidden border-t border-white/10 bg-gradient-to-b from-[#531418]/95 to-[#111827]/95 backdrop-blur-xl md:hidden"
                     >
                         <div className="space-y-1 px-4 pb-4 pt-3">
                             <div className="mb-2 rounded-2xl border border-white/10 bg-white/5 p-4">
@@ -330,7 +330,7 @@ export default function Header() {
                                     />
                                     <div>
                                         <div className="text-sm font-black text-white">{user.email}</div>
-                                        <div className="text-[11px] font-bold uppercase tracking-[0.28em] text-[#f2b635]">
+                                        <div className="text-[11px] font-bold uppercase tracking-[0.28em] text-[#f5b51b]">
                                             {APP_BRAND_NAME}
                                         </div>
                                     </div>
@@ -343,33 +343,33 @@ export default function Header() {
 
                             {isAdmin && (
                                 <>
-                                    <div className="px-4 pb-1 pt-3 text-[11px] font-bold uppercase tracking-[0.32em] text-[#f2b635]">
+                                    <div className="px-4 pb-1 pt-3 text-[11px] font-bold uppercase tracking-[0.32em] text-[#f5b51b]">
                                         Ingresar datos
                                     </div>
                                     <button
                                         onClick={() => handleDataEntryClick('Ingresos')}
-                                        className="motion-button flex w-full items-center gap-3 rounded-xl px-4 py-3 text-left text-sm font-bold text-[#f8ece2] transition hover:bg-white/10 hover:text-white"
+                                        className="motion-button flex w-full items-center gap-3 rounded-xl px-4 py-3 text-left text-sm font-bold text-[#f8fafc] transition hover:bg-white/10 hover:text-white"
                                     >
                                         <Icon path={Icons.trendingUp} className="motion-icon-bounce w-5 h-5 text-[#6bd18f]" />
                                         Ingresos
                                     </button>
                                     <button
                                         onClick={() => handleDataEntryClick('Gastos')}
-                                        className="motion-button flex w-full items-center gap-3 rounded-xl px-4 py-3 text-left text-sm font-bold text-[#f8ece2] transition hover:bg-white/10 hover:text-white"
+                                        className="motion-button flex w-full items-center gap-3 rounded-xl px-4 py-3 text-left text-sm font-bold text-[#f8fafc] transition hover:bg-white/10 hover:text-white"
                                     >
                                         <Icon path={Icons.trendingDown} className="motion-icon-bounce w-5 h-5 text-[#f2968f]" />
                                         Gastos
                                     </button>
                                     <button
                                         onClick={() => handleDataEntryClick('Inventario')}
-                                        className="motion-button flex w-full items-center gap-3 rounded-xl px-4 py-3 text-left text-sm font-bold text-[#f8ece2] transition hover:bg-white/10 hover:text-white"
+                                        className="motion-button flex w-full items-center gap-3 rounded-xl px-4 py-3 text-left text-sm font-bold text-[#f8fafc] transition hover:bg-white/10 hover:text-white"
                                     >
-                                        <Icon path={Icons.wallet} className="motion-icon-bounce w-5 h-5 text-[#f2b635]" />
+                                        <Icon path={Icons.wallet} className="motion-icon-bounce w-5 h-5 text-[#f5b51b]" />
                                         Inventario
                                     </button>
                                     <button
                                         onClick={() => handleDataEntryClick('Presupuesto')}
-                                        className="motion-button flex w-full items-center gap-3 rounded-xl px-4 py-3 text-left text-sm font-bold text-[#f8ece2] transition hover:bg-white/10 hover:text-white"
+                                        className="motion-button flex w-full items-center gap-3 rounded-xl px-4 py-3 text-left text-sm font-bold text-[#f8fafc] transition hover:bg-white/10 hover:text-white"
                                     >
                                         <Icon path={Icons.chart} className="motion-icon-bounce w-5 h-5 text-[#ffdba2]" />
                                         Presupuesto
@@ -428,7 +428,7 @@ export default function Header() {
 
                             <button
                                 onClick={handleLogout}
-                                className="motion-button mt-3 flex w-full items-center justify-center gap-2 rounded-xl border border-[#f2b635]/35 bg-[#f2b635]/12 px-4 py-3 text-sm font-black uppercase tracking-[0.18em] text-[#ffe9b3] transition hover:bg-[#f2b635] hover:text-[#651317]"
+                                className="motion-button mt-3 flex w-full items-center justify-center gap-2 rounded-xl border border-[#f5b51b]/35 bg-[#f5b51b]/12 px-4 py-3 text-sm font-black uppercase tracking-[0.18em] text-[#ffe9b3] transition hover:bg-[#f5b51b] hover:text-[#3b0a0e]"
                             >
                                 <Icon path={Icons.logout} className="motion-icon-bounce w-4 h-4" />
                                 Cerrar sesion

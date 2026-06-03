@@ -74,15 +74,15 @@ const Icon = ({ path, className = "w-5 h-5" }) => (
 // --- COMPONENTES UI ---
 
 const Card = ({ title, children, className = "", right, icon, gradient = false }) => (
-    <div className={`rounded-xl shadow-md border border-[#e6c9b8]/60 bg-white overflow-hidden ${className}`}>
-        <div className={`flex justify-between items-center px-5 py-3 border-b ${gradient ? 'bg-[#7f1218] border-[#5e1318]' : 'bg-stone-50 border-[#ead5c5]'}`}>
+    <div className={`rounded-xl shadow-md border border-[#d9e1e8]/60 bg-white overflow-hidden ${className}`}>
+        <div className={`flex justify-between items-center px-5 py-3 border-b ${gradient ? 'bg-[#9f111a] border-[#5c0f14]' : 'bg-stone-50 border-[#d8dee6]'}`}>
             <div className="flex items-center gap-3">
                 {icon && (
-                    <div className={`p-2 rounded-lg ${gradient ? 'bg-white/10' : 'bg-[#fff0f0]'}`}>
-                        <Icon path={Icons[icon]} className={`w-4 h-4 ${gradient ? 'text-white' : 'text-[#a81d24]'}`} />
+                    <div className={`p-2 rounded-lg ${gradient ? 'bg-white/10' : 'bg-[#fff1f2]'}`}>
+                        <Icon path={Icons[icon]} className={`w-4 h-4 ${gradient ? 'text-white' : 'text-[#e30613]'}`} />
                     </div>
                 )}
-                <h3 className={`text-sm font-bold uppercase tracking-wider ${gradient ? 'text-white' : 'text-[#5f1a1f]'}`}>{title}</h3>
+                <h3 className={`text-sm font-bold uppercase tracking-wider ${gradient ? 'text-white' : 'text-[#1f2937]'}`}>{title}</h3>
             </div>
             {right}
         </div>
@@ -93,14 +93,14 @@ const Card = ({ title, children, className = "", right, icon, gradient = false }
 const Button = ({ children, variant = 'primary', className = '', disabled, size = 'md', ...props }) => {
     const sizes = { sm: 'px-3 py-1.5 text-xs', md: 'px-4 py-2 text-sm', lg: 'px-6 py-3 text-sm' };
     const variants = {
-        primary: 'bg-[#a81d24] hover:bg-[#7f1218] text-white shadow-sm shadow-red-900/20',
+        primary: 'bg-[#e30613] hover:bg-[#9f111a] text-white shadow-sm shadow-red-900/20',
         success: 'bg-emerald-600 hover:bg-emerald-700 text-white',
         danger: 'bg-rose-600 hover:bg-rose-700 text-white',
         warning: 'bg-amber-500 hover:bg-amber-600 text-white',
         purple: 'bg-purple-600 hover:bg-purple-700 text-white',
         sky: 'bg-sky-600 hover:bg-sky-700 text-white',
         ghost: 'bg-transparent hover:bg-stone-100 text-stone-600 border border-stone-200',
-        dark: 'bg-[#2b1113] hover:bg-[#1a0a0b] text-white'
+        dark: 'bg-[#111827] hover:bg-[#1a0a0b] text-white'
     };
 
     return (
@@ -118,10 +118,10 @@ const Input = ({ label, icon, type = "text", className = '', ...props }) => (
     <div className="space-y-1">
         {label && <label className="text-xs font-bold uppercase tracking-wider text-stone-500">{label}</label>}
         <div className="relative group">
-            {icon && <Icon path={Icons[icon]} className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-stone-400 group-focus-within:text-[#a81d24] transition-colors" />}
+            {icon && <Icon path={Icons[icon]} className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-stone-400 group-focus-within:text-[#e30613] transition-colors" />}
             <input
                 type={type}
-                className={`w-full bg-stone-50 border border-stone-200 rounded-lg px-3 py-2 text-sm font-semibold text-stone-700 outline-none transition-all focus:border-[#a81d24] focus:ring-2 focus:ring-[#a81d24]/15 ${icon ? 'pl-10' : ''} ${className}`}
+                className={`w-full bg-stone-50 border border-stone-200 rounded-lg px-3 py-2 text-sm font-semibold text-stone-700 outline-none transition-all focus:border-[#e30613] focus:ring-2 focus:ring-[#e30613]/15 ${icon ? 'pl-10' : ''} ${className}`}
                 {...props}
             />
         </div>
@@ -134,7 +134,7 @@ const Select = ({ label, icon, options, ...props }) => (
         <div className="relative">
             {icon && <Icon path={Icons[icon]} className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-stone-400 pointer-events-none" />}
             <select
-                className={`w-full bg-stone-50 border border-stone-200 rounded-lg px-3 py-2 text-sm font-semibold text-stone-700 outline-none transition-all focus:border-[#a81d24] focus:ring-2 focus:ring-[#a81d24]/15 appearance-none cursor-pointer ${icon ? 'pl-10' : ''}`}
+                className={`w-full bg-stone-50 border border-stone-200 rounded-lg px-3 py-2 text-sm font-semibold text-stone-700 outline-none transition-all focus:border-[#e30613] focus:ring-2 focus:ring-[#e30613]/15 appearance-none cursor-pointer ${icon ? 'pl-10' : ''}`}
                 {...props}
             >
                 {options}
@@ -150,7 +150,7 @@ const Badge = ({ children, variant = 'default' }) => {
         success: 'bg-emerald-100 text-emerald-700',
         danger: 'bg-rose-100 text-rose-700',
         warning: 'bg-amber-100 text-amber-700',
-        info: 'bg-[#fff0f0] text-[#a81d24]',
+        info: 'bg-[#fff1f2] text-[#e30613]',
         purple: 'bg-purple-100 text-purple-700'
     };
     return <span className={`px-2 py-1 rounded-full text-xs font-bold ${variants[variant]}`}>{children}</span>;
@@ -160,7 +160,7 @@ const normalizeFilterText = (value) => (
     String(value ?? '')
         .toLowerCase()
         .normalize('NFD')
-        .replace(/[̀-ͯ]/g, '')
+        .replace(/[\u0300-\u036f]/g, '')
         .trim()
 );
 
@@ -179,13 +179,13 @@ const createEmptySupportFilesState = () => SUPPORT_FILE_TYPES.reduce((acc, item)
 const SupportFilesInput = ({ files, onChange, disabled = false, compact = false }) => (
     <div className={`grid grid-cols-1 gap-3 ${compact ? '' : 'md:grid-cols-3'}`}>
         {SUPPORT_FILE_TYPES.map((type) => (
-            <div key={type.key} className="rounded-xl border border-[#ead5c5] bg-white p-3">
-                <label className="text-[10px] font-black uppercase tracking-[0.18em] text-[#7f1218]">{type.label}</label>
+            <div key={type.key} className="rounded-xl border border-[#d8dee6] bg-white p-3">
+                <label className="text-[10px] font-black uppercase tracking-[0.18em] text-[#9f111a]">{type.label}</label>
                 <input
                     type="file"
                     accept="image/*,.pdf"
                     onChange={(event) => onChange(type.key, event.target.files?.[0] || null)}
-                    className="mt-2 block w-full text-xs text-stone-500 file:mr-2 file:rounded-lg file:border-0 file:bg-[#fff0f0] file:px-3 file:py-2 file:text-xs file:font-semibold file:text-[#a81d24]"
+                    className="mt-2 block w-full text-xs text-stone-500 file:mr-2 file:rounded-lg file:border-0 file:bg-[#fff1f2] file:px-3 file:py-2 file:text-xs file:font-semibold file:text-[#e30613]"
                     disabled={disabled}
                 />
                 {files?.[type.key] && (
@@ -294,13 +294,13 @@ const RecordDetailModal = ({ item, collectionName, fields, onClose, onEdit }) =>
     return (
         <ModalPortal>
         <div className="app-modal-root fixed inset-0 z-50 flex items-center justify-center p-4">
-            <button className="absolute inset-0 bg-[#2b1113]/55 backdrop-blur-sm" onClick={onClose} aria-label="Cerrar" />
-            <div className="app-modal-panel relative grid max-h-[92vh] w-full max-w-6xl overflow-hidden rounded-3xl border border-[#e6c9b8] bg-white shadow-2xl lg:grid-cols-[1.15fr_0.85fr]">
+            <button className="absolute inset-0 bg-[#111827]/55 backdrop-blur-sm" onClick={onClose} aria-label="Cerrar" />
+            <div className="app-modal-panel relative grid max-h-[92vh] w-full max-w-6xl overflow-hidden rounded-3xl border border-[#d9e1e8] bg-white shadow-2xl lg:grid-cols-[1.15fr_0.85fr]">
                 <div className="flex max-h-[92vh] flex-col overflow-hidden">
-                    <div className="border-b border-[#ead5c5] bg-gradient-to-br from-[#7f1218] to-[#2b1113] px-6 py-5 text-white">
+                    <div className="border-b border-[#d8dee6] bg-gradient-to-br from-[#9f111a] to-[#111827] px-6 py-5 text-white">
                         <div className="flex items-start justify-between gap-4">
                             <div>
-                                <div className="text-xs font-bold uppercase tracking-[0.35em] text-[#f2b635]">Vista documental</div>
+                                <div className="text-xs font-bold uppercase tracking-[0.35em] text-[#f5b51b]">Vista documental</div>
                                 <h2 className="mt-2 text-2xl font-black">{getRecordTitle(item, fields)}</h2>
                                 <div className="mt-2 flex flex-wrap gap-2 text-xs font-bold uppercase tracking-wider text-white/70">
                                     <span>{collectionName}</span>
@@ -318,15 +318,15 @@ const RecordDetailModal = ({ item, collectionName, fields, onClose, onEdit }) =>
                         <div className="mb-5 grid grid-cols-1 gap-3 sm:grid-cols-3">
                             <div className="rounded-2xl border border-stone-200 bg-stone-50 p-4">
                                 <div className="text-xs font-bold uppercase tracking-wider text-stone-500">Subtotal</div>
-                                <div className="mt-1 text-xl font-black text-[#7f1218]">{fmt(Number(item.subtotal ?? item.amount ?? 0))}</div>
+                                <div className="mt-1 text-xl font-black text-[#9f111a]">{fmt(Number(item.subtotal ?? item.amount ?? 0))}</div>
                             </div>
                             <div className="rounded-2xl border border-stone-200 bg-stone-50 p-4">
                                 <div className="text-xs font-bold uppercase tracking-wider text-stone-500">IVA</div>
-                                <div className="mt-1 text-xl font-black text-[#7f1218]">{fmt(Number(item.iva ?? 0))}</div>
+                                <div className="mt-1 text-xl font-black text-[#9f111a]">{fmt(Number(item.iva ?? 0))}</div>
                             </div>
                             <div className="rounded-2xl border border-stone-200 bg-stone-50 p-4">
                                 <div className="text-xs font-bold uppercase tracking-wider text-stone-500">Total</div>
-                                <div className="mt-1 text-xl font-black text-[#7f1218]">{fmt(Number(item.total ?? item.amount ?? 0))}</div>
+                                <div className="mt-1 text-xl font-black text-[#9f111a]">{fmt(Number(item.total ?? item.amount ?? 0))}</div>
                             </div>
                         </div>
 
@@ -340,8 +340,8 @@ const RecordDetailModal = ({ item, collectionName, fields, onClose, onEdit }) =>
                         </div>
 
                         {extraRows.length > 0 && (
-                            <div className="mt-5 rounded-2xl border border-[#ead5c5] bg-[#fff8f5] p-4">
-                                <div className="mb-3 text-xs font-black uppercase tracking-[0.25em] text-[#7f1218]">Metadatos</div>
+                            <div className="mt-5 rounded-2xl border border-[#d8dee6] bg-[#f8fafc] p-4">
+                                <div className="mb-3 text-xs font-black uppercase tracking-[0.25em] text-[#9f111a]">Metadatos</div>
                                 <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
                                     {extraRows.map(([label, value]) => (
                                         <div key={label} className="text-xs">
@@ -354,7 +354,7 @@ const RecordDetailModal = ({ item, collectionName, fields, onClose, onEdit }) =>
                         )}
                     </div>
 
-                    <div className="flex flex-wrap justify-end gap-2 border-t border-[#ead5c5] bg-stone-50 px-6 py-4">
+                    <div className="flex flex-wrap justify-end gap-2 border-t border-[#d8dee6] bg-stone-50 px-6 py-4">
                         <Button type="button" variant="ghost" onClick={onClose}>Cerrar</Button>
                         <Button type="button" variant="warning" onClick={onEdit} className="flex items-center gap-2">
                             <Icon path={Icons.edit} className="h-4 w-4" /> Editar
@@ -362,14 +362,14 @@ const RecordDetailModal = ({ item, collectionName, fields, onClose, onEdit }) =>
                     </div>
                 </div>
 
-                <div className="max-h-[92vh] overflow-y-auto border-l border-[#ead5c5] bg-[#fbf6f1] p-5">
+                <div className="max-h-[92vh] overflow-y-auto border-l border-[#d8dee6] bg-[#fbf6f1] p-5">
                     <div className="mb-3 flex items-center justify-between gap-3">
                         <div>
-                            <div className="text-xs font-black uppercase tracking-[0.25em] text-[#7f1218]">Soporte fiscal</div>
+                            <div className="text-xs font-black uppercase tracking-[0.25em] text-[#9f111a]">Soporte fiscal</div>
                             <p className="text-xs font-semibold text-stone-500">Factura y comprobantes de retenciones adjuntos</p>
                         </div>
                         {supportUrl && supportFiles.length === 1 && (
-                            <a href={supportUrl} target="_blank" rel="noreferrer" className="rounded-lg bg-[#a81d24] px-3 py-1.5 text-xs font-bold text-white">
+                            <a href={supportUrl} target="_blank" rel="noreferrer" className="rounded-lg bg-[#e30613] px-3 py-1.5 text-xs font-bold text-white">
                                 Abrir
                             </a>
                         )}
@@ -381,11 +381,11 @@ const RecordDetailModal = ({ item, collectionName, fields, onClose, onEdit }) =>
                                 <div key={`${support.type}-${support.path || support.url}`} className="rounded-2xl border border-stone-200 bg-white p-3 shadow-sm">
                                     <div className="mb-2 flex items-center justify-between gap-3">
                                         <div>
-                                            <div className="text-[10px] font-black uppercase tracking-[0.22em] text-[#7f1218]">{support.label}</div>
+                                            <div className="text-[10px] font-black uppercase tracking-[0.22em] text-[#9f111a]">{support.label}</div>
                                             {support.fileName && <div className="mt-1 text-xs font-semibold text-stone-400">{support.fileName}</div>}
                                         </div>
                                         {support.url && (
-                                            <a href={support.url} target="_blank" rel="noreferrer" className="rounded-lg bg-[#a81d24] px-3 py-1.5 text-xs font-bold text-white">
+                                            <a href={support.url} target="_blank" rel="noreferrer" className="rounded-lg bg-[#e30613] px-3 py-1.5 text-xs font-bold text-white">
                                                 Abrir
                                             </a>
                                         )}
@@ -442,7 +442,7 @@ const EditRecordModal = ({ item, collectionName, fields, onClose, onSaved }) => 
                 <select
                     value={value === null || value === undefined ? '' : String(value)}
                     onChange={(e) => setEditData((prev) => ({ ...prev, [key]: e.target.value }))}
-                    className="w-full rounded-lg border border-stone-200 bg-stone-50 px-3 py-2 text-sm font-semibold text-stone-700 outline-none focus:border-[#a81d24] focus:ring-2 focus:ring-[#a81d24]/15"
+                    className="w-full rounded-lg border border-stone-200 bg-stone-50 px-3 py-2 text-sm font-semibold text-stone-700 outline-none focus:border-[#e30613] focus:ring-2 focus:ring-[#e30613]/15"
                     disabled={loading}
                 >
                     <option value="">Seleccionar...</option>
@@ -467,7 +467,7 @@ const EditRecordModal = ({ item, collectionName, fields, onClose, onSaved }) => 
                 step={inputType === 'number' ? '0.01' : undefined}
                 value={value === null || value === undefined ? '' : String(value)}
                 onChange={(e) => setEditData((prev) => ({ ...prev, [key]: e.target.value }))}
-                className="w-full rounded-lg border border-stone-200 bg-stone-50 px-3 py-2 text-sm font-semibold text-stone-700 outline-none focus:border-[#a81d24] focus:ring-2 focus:ring-[#a81d24]/15"
+                className="w-full rounded-lg border border-stone-200 bg-stone-50 px-3 py-2 text-sm font-semibold text-stone-700 outline-none focus:border-[#e30613] focus:ring-2 focus:ring-[#e30613]/15"
                 disabled={loading}
             />
         );
@@ -517,11 +517,11 @@ const EditRecordModal = ({ item, collectionName, fields, onClose, onSaved }) => 
     return (
         <ModalPortal>
         <div className="app-modal-root fixed inset-0 z-50 flex items-center justify-center p-4">
-            <button className="absolute inset-0 bg-[#2b1113]/50 backdrop-blur-sm" onClick={onClose} aria-label="Cerrar" />
-            <div className="app-modal-panel relative max-h-[90vh] w-full max-w-4xl overflow-hidden rounded-2xl border border-[#e6c9b8] bg-white shadow-2xl">
-                <div className="flex items-start justify-between gap-4 border-b border-[#ead5c5] bg-[#7f1218] px-5 py-4">
+            <button className="absolute inset-0 bg-[#111827]/50 backdrop-blur-sm" onClick={onClose} aria-label="Cerrar" />
+            <div className="app-modal-panel relative max-h-[90vh] w-full max-w-4xl overflow-hidden rounded-2xl border border-[#d9e1e8] bg-white shadow-2xl">
+                <div className="flex items-start justify-between gap-4 border-b border-[#d8dee6] bg-[#9f111a] px-5 py-4">
                     <div>
-                        <div className="text-xs font-bold uppercase tracking-[0.3em] text-[#f2b635]">Edicion detallada</div>
+                        <div className="text-xs font-bold uppercase tracking-[0.3em] text-[#f5b51b]">Edicion detallada</div>
                         <h2 className="mt-1 text-lg font-black text-white">Actualizar registro y respaldo fiscal</h2>
                         <p className="mt-1 text-xs font-semibold text-white/70">Cada guardado conserva copia anterior en historial de ediciones.</p>
                     </div>
@@ -541,10 +541,10 @@ const EditRecordModal = ({ item, collectionName, fields, onClose, onSaved }) => 
                     </div>
 
                     {canAttachPhoto && (
-                        <div className="mt-5 rounded-xl border border-[#ead5c5] bg-[#fff8f5] p-4">
+                        <div className="mt-5 rounded-xl border border-[#d8dee6] bg-[#f8fafc] p-4">
                             <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
                                 <div>
-                                    <div className="text-xs font-black uppercase tracking-[0.2em] text-[#7f1218]">Soportes fiscales</div>
+                                    <div className="text-xs font-black uppercase tracking-[0.2em] text-[#9f111a]">Soportes fiscales</div>
                                     <p className="text-xs font-semibold text-stone-500">Puedes adjuntar factura principal y comprobantes de retenciones.</p>
                                 </div>
                                 <Badge variant={currentSupportFiles.length ? 'success' : 'warning'}>
@@ -559,7 +559,7 @@ const EditRecordModal = ({ item, collectionName, fields, onClose, onSaved }) => 
                                             href={support.url}
                                             target="_blank"
                                             rel="noreferrer"
-                                            className="rounded-lg border border-[#a81d24] px-3 py-1.5 text-xs font-bold text-[#a81d24]"
+                                            className="rounded-lg border border-[#e30613] px-3 py-1.5 text-xs font-bold text-[#e30613]"
                                         >
                                             Ver {support.label}
                                         </a>
@@ -575,7 +575,7 @@ const EditRecordModal = ({ item, collectionName, fields, onClose, onSaved }) => 
                     )}
                 </div>
 
-                <div className="flex flex-wrap items-center justify-end gap-2 border-t border-[#ead5c5] bg-stone-50 px-5 py-4">
+                <div className="flex flex-wrap items-center justify-end gap-2 border-t border-[#d8dee6] bg-stone-50 px-5 py-4">
                     <Button type="button" variant="ghost" onClick={onClose} disabled={loading}>Cancelar</Button>
                     <Button type="button" variant="success" onClick={handleSave} disabled={loading || !item.id} className="flex items-center gap-2">
                         <Icon path={Icons.save} className="h-4 w-4" />
@@ -635,7 +635,7 @@ const EditableRow = ({ item, collectionName, fields, onUpdate, onDelete }) => {
     };
 
     const handleDelete = async () => {
-        if (!window.confirm("¿Eliminar este registro?")) return;
+        if (!window.confirm("?Eliminar este registro?")) return;
         setLoading(true);
         try {
             if (collectionName === 'compras') {
@@ -687,9 +687,9 @@ const EditableRow = ({ item, collectionName, fields, onUpdate, onDelete }) => {
 
     const renderValue = (key, value) => {
         const field = fields[key];
-        if (value === null || value === undefined) return '—';
+        if (value === null || value === undefined) return '-';
         if (typeof value === 'object' && value instanceof Timestamp) {
-            try { return value.toDate().toLocaleString('es-ES'); } catch (e) { return '—'; }
+            try { return value.toDate().toLocaleString('es-ES'); } catch (e) { return '-'; }
         }
         if (field?.type === 'branch') return branchName(value);
         if (field?.type === 'currency') return fmt(Number(value));
@@ -706,7 +706,7 @@ const EditableRow = ({ item, collectionName, fields, onUpdate, onDelete }) => {
                 <select
                     value={value === null || value === undefined ? '' : String(value)}
                     onChange={(e) => setEditData({ ...editData, [key]: e.target.value })}
-                    className="w-full rounded border border-[#a81d24]/40 px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-[#a81d24]/30"
+                    className="w-full rounded border border-[#e30613]/40 px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-[#e30613]/30"
                     disabled={loading}
                 >
                     <option value="">Seleccionar...</option>
@@ -725,7 +725,7 @@ const EditableRow = ({ item, collectionName, fields, onUpdate, onDelete }) => {
                 step={type === 'number' ? '0.01' : undefined}
                 value={value === null || value === undefined ? '' : String(value)}
                 onChange={(e) => setEditData({ ...editData, [key]: e.target.value })}
-                className="w-full rounded border border-[#a81d24]/40 px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-[#a81d24]/30"
+                className="w-full rounded border border-[#e30613]/40 px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-[#e30613]/30"
                 disabled={loading}
             />
         );
@@ -875,7 +875,7 @@ const EditableMobileCard = ({ item, collectionName, fields, onUpdate, onDelete }
 
             <div className="mt-4 rounded-2xl bg-slate-50 p-3">
                 <div className="text-[10px] font-black uppercase tracking-[0.24em] text-slate-400">Total</div>
-                <div className="font-mono text-2xl font-black text-[#7f1218]">{fmt(totalValue)}</div>
+                <div className="font-mono text-2xl font-black text-[#9f111a]">{fmt(totalValue)}</div>
             </div>
 
             <div className="mt-3 grid grid-cols-1 gap-2">
@@ -1037,7 +1037,7 @@ const EditableList = ({
                                     type={filterType}
                                     value={filterValue}
                                     onChange={(e) => onFilterChange(e.target.value)}
-                                    className="min-w-[170px] bg-white border border-slate-200 rounded-xl px-3 py-2 text-sm font-semibold text-slate-700 focus:border-[#a81d24] focus:ring-2 focus:ring-[#a81d24]/15 outline-none"
+                                    className="min-w-[170px] bg-white border border-slate-200 rounded-xl px-3 py-2 text-sm font-semibold text-slate-700 focus:border-[#e30613] focus:ring-2 focus:ring-[#e30613]/15 outline-none"
                                 />
                             </div>
                             {(filterValue || activeAdvancedCount > 0 || advancedFilters.dateFrom || advancedFilters.dateTo) && (
@@ -1079,7 +1079,7 @@ const EditableList = ({
                                         value={advancedFilters[filterField.key] || ''}
                                         placeholder={filterField.placeholder || ''}
                                         onChange={(e) => onAdvancedFiltersChange(filterField.key, e.target.value)}
-                                        className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-sm font-semibold text-slate-700 focus:border-[#a81d24] focus:ring-2 focus:ring-[#a81d24]/15 outline-none"
+                                        className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-sm font-semibold text-slate-700 focus:border-[#e30613] focus:ring-2 focus:ring-[#e30613]/15 outline-none"
                                     />
                                 </div>
                             ))}
@@ -1111,7 +1111,7 @@ const EditableList = ({
                                     <div className="mt-4 flex items-end justify-between">
                                         <div>
                                             <div className="text-[10px] font-black uppercase tracking-[0.22em] text-slate-400">Total</div>
-                                            <div className="font-mono text-lg font-black text-[#7f1218]">{fmt(Number(item.total ?? item.amount ?? item.monto ?? item.subtotal) || 0)}</div>
+                                            <div className="font-mono text-lg font-black text-[#9f111a]">{fmt(Number(item.total ?? item.amount ?? item.monto ?? item.subtotal) || 0)}</div>
                                         </div>
                                         <div className="text-right text-[11px] font-semibold text-slate-500">
                                             IVA {fmt(Number(item.iva ?? 0) || 0)}
@@ -1188,7 +1188,7 @@ const IncomeForm = ({ loading, setLoading, onSuccess }) => {
         e.preventDefault();
         const numAmount = Number(amount);
         if (!description.trim()) return alert('Complete fecha, detalle y monto.');
-        if (isNaN(numAmount) || numAmount <= 0) return alert('Monto inválido.');
+        if (isNaN(numAmount) || numAmount <= 0) return alert('Monto inv?lido.');
 
         setLoading(true);
         try {
@@ -1242,7 +1242,7 @@ const IncomeForm = ({ loading, setLoading, onSuccess }) => {
 
     return (
         <div className="space-y-4">
-            <div className="rounded-lg border border-[#f2c5c5] bg-[#fff8f8] px-4 py-2.5 text-xs font-semibold text-[#7f1218]">
+            <div className="rounded-lg border border-[#f2c5c5] bg-[#fff8f8] px-4 py-2.5 text-xs font-semibold text-[#9f111a]">
                 Todo se registra en {DEFAULT_BRANCH_NAME}.
             </div>
 
@@ -1315,7 +1315,7 @@ const ExpenseForm = ({ categories, loading, setLoading, onSuccess }) => {
                 if (errors.length) return alert("Error en CSV.");
                 const validData = data.filter(row => row['Monto'] && !isNaN(parseFloat(row['Monto']))).map(row => ({
                     date: row['Fecha'] || new Date().toISOString().substring(0, 10),
-                    description: row['Descripcion'] || 'Sin Descripción',
+                    description: row['Descripcion'] || 'Sin Descripci?n',
                     amount: parseFloat(row['Monto']),
                     category: row['Categoria'] || 'Otros',
                     branch: DEFAULT_BRANCH_ID,
@@ -1325,7 +1325,7 @@ const ExpenseForm = ({ categories, loading, setLoading, onSuccess }) => {
                 setLoading(true);
                 try {
                     for (const item of validData) await addDoc(collection(db, 'gastos'), item);
-                    alert(`Éxito: ${validData.length} gastos importados.`);
+                    alert(`?xito: ${validData.length} gastos importados.`);
                     onSuccess?.();
                 } catch (error) {
                     alert('Error al importar');
@@ -1339,14 +1339,14 @@ const ExpenseForm = ({ categories, loading, setLoading, onSuccess }) => {
     return (
         <div className="space-y-4">
             <form onSubmit={handleSubmit} className="space-y-3">
-                <div className="rounded-lg border border-[#f2c5c5] bg-[#fff8f8] px-4 py-2.5 text-xs font-semibold text-[#7f1218]">
+                <div className="rounded-lg border border-[#f2c5c5] bg-[#fff8f8] px-4 py-2.5 text-xs font-semibold text-[#9f111a]">
                     Todo se registra en {DEFAULT_BRANCH_NAME}.
                 </div>
                 <Input label="Fecha" type="date" icon="calendar" value={date} onChange={e => setDate(e.target.value)} required />
-                <Input label="Descripción" icon="fileText" placeholder="Ej: Pago de servicios..." value={description} onChange={e => setDescription(e.target.value)} required />
+                <Input label="Descripci?n" icon="fileText" placeholder="Ej: Pago de servicios..." value={description} onChange={e => setDescription(e.target.value)} required />
                 <div className="grid grid-cols-2 gap-3">
                     <Input label="Monto" type="number" step="0.01" icon="dollar" placeholder="0.00" className="text-lg font-bold text-rose-600" value={amount} onChange={e => setAmount(e.target.value)} required />
-                    <Select label="Categoría" icon="tag" value={categoryId} onChange={e => setCategoryId(e.target.value)} required options={<><option value="">Seleccionar...</option>{categories.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</>} />
+                    <Select label="Categor?a" icon="tag" value={categoryId} onChange={e => setCategoryId(e.target.value)} required options={<><option value="">Seleccionar...</option>{categories.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</>} />
                 </div>
                 <Button type="submit" variant="danger" disabled={loading} className="w-full">{loading ? 'Guardando...' : 'Registrar Gasto'}</Button>
             </form>
@@ -1384,7 +1384,7 @@ const FiscalPreview = ({ subtotal, iva, total, retentionIr2, retentionMunicipal1
             </div>
             <div>
                 <div className="uppercase tracking-wider text-stone-400">Total</div>
-                <div className="text-sm text-[#7f1218]">{fmt(fiscal.total)}</div>
+                <div className="text-sm text-[#9f111a]">{fmt(fiscal.total)}</div>
             </div>
             <div>
                 <div className="uppercase tracking-wider text-stone-400">Retenciones</div>
@@ -1535,7 +1535,7 @@ const FiscalExpenseForm = ({ categories, providers = [], loading, setLoading, on
 
     return (
         <form onSubmit={handleSubmit} className="space-y-3">
-            <div className="rounded-lg border border-[#f2c5c5] bg-[#fff8f8] px-4 py-2.5 text-xs font-semibold text-[#7f1218]">
+            <div className="rounded-lg border border-[#f2c5c5] bg-[#fff8f8] px-4 py-2.5 text-xs font-semibold text-[#9f111a]">
                 Todo se registra en {DEFAULT_BRANCH_NAME}.
             </div>
             <Input label="Fecha" type="date" icon="calendar" value={date} onChange={e => setDate(e.target.value)} required />
@@ -1577,7 +1577,7 @@ const FiscalExpenseForm = ({ categories, providers = [], loading, setLoading, on
                 <Input label="Retencion municipal 1%" type="number" step="0.01" icon="scale" placeholder="0.00" value={retentionMunicipal1} onChange={e => setRetentionMunicipal1(e.target.value)} />
             </div>
             <FiscalPreview subtotal={subtotal} iva={iva} total={total} retentionIr2={retentionIr2} retentionMunicipal1={retentionMunicipal1} />
-            <div className="space-y-2 rounded-xl border border-[#ead5c5] bg-[#fff8f5] p-3">
+            <div className="space-y-2 rounded-xl border border-[#d8dee6] bg-[#f8fafc] p-3">
                 <div>
                     <label className="text-xs font-bold uppercase tracking-wider text-stone-500">Soportes fiscales</label>
                     <p className="mt-1 text-xs font-semibold text-stone-400">Sube factura principal y, si aplica, las dos retenciones.</p>
@@ -1742,7 +1742,7 @@ const FiscalPurchasesForm = ({ categories, providers = [], loading, setLoading, 
             <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-2.5 text-xs font-semibold text-emerald-700">
                 Credito crea cuenta por pagar + compra. Efectivo crea gasto diario + compra. Transferencia/POS queda como compra de contado.
             </div>
-            <div className="rounded-lg border border-[#f2c5c5] bg-[#fff8f8] px-4 py-2.5 text-xs font-semibold text-[#7f1218]">
+            <div className="rounded-lg border border-[#f2c5c5] bg-[#fff8f8] px-4 py-2.5 text-xs font-semibold text-[#9f111a]">
                 Todo se registra en {DEFAULT_BRANCH_NAME}.
             </div>
             <Input label="Fecha" type="date" icon="calendar" value={date} onChange={e => setDate(e.target.value)} required />
@@ -1938,7 +1938,7 @@ const InventoryForm = ({ loading, setLoading, onSuccess }) => {
 
     return (
         <form onSubmit={handleSubmit} className="space-y-3">
-            <div className="rounded-lg border border-[#f2c5c5] bg-[#fff8f8] px-4 py-2.5 text-xs font-semibold text-[#7f1218]">
+            <div className="rounded-lg border border-[#f2c5c5] bg-[#fff8f8] px-4 py-2.5 text-xs font-semibold text-[#9f111a]">
                 Todo se registra en {DEFAULT_BRANCH_NAME}.
             </div>
             <Input label="Mes" type="month" icon="calendar" value={month} onChange={e => setMonth(e.target.value)} required />
@@ -1992,7 +1992,7 @@ const PurchasesForm = ({ loading, setLoading, onSuccess }) => {
             <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-2.5 text-xs font-semibold text-emerald-700">
                 Las compras registradas aqui se contabilizan como costo de contado.
             </div>
-            <div className="rounded-lg border border-[#f2c5c5] bg-[#fff8f8] px-4 py-2.5 text-xs font-semibold text-[#7f1218]">
+            <div className="rounded-lg border border-[#f2c5c5] bg-[#fff8f8] px-4 py-2.5 text-xs font-semibold text-[#9f111a]">
                 Todo se registra en {DEFAULT_BRANCH_NAME}.
             </div>
             <Input label="Fecha" type="date" icon="calendar" value={date} onChange={e => setDate(e.target.value)} required />
@@ -2025,7 +2025,7 @@ const BudgetForm = ({ categories, loading, setLoading, onSuccess }) => {
     return (
         <form onSubmit={handleSubmit} className="space-y-3">
             <Input label="Mes" type="month" icon="calendar" value={month} onChange={e => setMonth(e.target.value)} required />
-            <Select label="Categoría" icon="tag" value={categoryId} onChange={e => setCategoryId(e.target.value)} required options={<><option value="">Seleccionar...</option>{categories.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</>} />
+            <Select label="Categor?a" icon="tag" value={categoryId} onChange={e => setCategoryId(e.target.value)} required options={<><option value="">Seleccionar...</option>{categories.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</>} />
             <Input label="Monto" type="number" step="0.01" icon="dollar" placeholder="0.00" value={amount} onChange={e => setAmount(e.target.value)} required />
             <Button type="submit" variant="warning" disabled={loading || !categoryId} className="w-full">{loading ? 'Guardando...' : 'Establecer Presupuesto'}</Button>
         </form>
@@ -2075,7 +2075,7 @@ const EquityForm = ({ loading, setLoading, onSuccess }) => {
     return (
         <form onSubmit={handleSubmit} className="space-y-3">
             <Input label="Fecha" type="date" icon="calendar" value={date} onChange={e => setDate(e.target.value)} required />
-            <Input label="Descripción" icon="scale" placeholder="Capital, aporte..." value={description} onChange={e => setDescription(e.target.value)} required />
+            <Input label="Descripci?n" icon="scale" placeholder="Capital, aporte..." value={description} onChange={e => setDescription(e.target.value)} required />
             <Input label="Monto" type="number" step="0.01" icon="dollar" placeholder="0.00" className="text-lg font-bold text-emerald-600" value={amount} onChange={e => setAmount(e.target.value)} required />
             <Button type="submit" variant="success" disabled={loading} className="w-full">{loading ? 'Guardando...' : 'Registrar Patrimonio'}</Button>
         </form>
@@ -2214,8 +2214,8 @@ export function DataEntry({ categories, data }) {
             total: { label: 'Total', type: 'currency' },
             retentionIr2: { label: 'Ret. IR 2%', type: 'currency' },
             retentionMunicipal1: { label: 'Ret. Municipal 1%', type: 'currency' },
-            description: { label: 'Descripción', type: 'text' },
-            category: { label: 'Categoría', type: 'text' },
+            description: { label: 'Descripci?n', type: 'text' },
+            category: { label: 'Categor?a', type: 'text' },
             amount: { label: 'Monto', type: 'currency' }
         },
         Inventario: {
@@ -2238,7 +2238,7 @@ export function DataEntry({ categories, data }) {
         },
         Presupuesto: {
             month: { label: 'Mes', type: 'month' },
-            category: { label: 'Categoría', type: 'text' },
+            category: { label: 'Categor?a', type: 'text' },
             amount: { label: 'Presupuesto', type: 'currency' }
         },
         'Cuentas por Cobrar': {
@@ -2248,7 +2248,7 @@ export function DataEntry({ categories, data }) {
         },
         Patrimonio: {
             date: { label: 'Fecha', type: 'date' },
-            description: { label: 'Descripción', type: 'text' },
+            description: { label: 'Descripci?n', type: 'text' },
             amount: { label: 'Monto', type: 'currency' }
         }
     };
@@ -2380,19 +2380,20 @@ export function DataEntry({ categories, data }) {
             `}</style>
 
             {/* Page header */}
-            <div className="overflow-hidden rounded-xl border border-[#e6c9b8] bg-white shadow-sm no-print">
-                <div className="h-1 bg-gradient-to-r from-[#a81d24] via-[#f2b635] to-[#a81d24]" />
-                <div className="px-6 py-4">
-                    <div className="inline-flex items-center gap-2 rounded-full border border-[#f2b635]/40 bg-[#fdf1d6] px-3 py-1 text-xs font-bold uppercase tracking-[0.3em] text-[#8a141b] mb-2">
-                        {APP_BRAND_NAME}
+            <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm no-print">
+                <div className="flex flex-col gap-3 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+                    <div>
+                        <div className="text-[10px] font-black uppercase tracking-[0.34em] text-[#e30613]">{APP_BRAND_NAME}</div>
+                        <h1 className="mt-1 text-xl font-black text-slate-950">Registro operativo</h1>
                     </div>
-                    <h1 className="text-xl font-black text-[#7f1218]">Registro de <span className="text-[#a81d24]">Datos</span></h1>
-                    <p className="text-xs font-medium text-[#8b6a5f] mt-0.5">Ingresos, gastos, inventarios y mas</p>
+                    <div className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-[10px] font-black uppercase tracking-[0.22em] text-slate-500">
+                        {tabsConfig[activeTab].label}
+                    </div>
                 </div>
             </div>
 
             {/* Tabs */}
-            <div className="overflow-hidden rounded-xl border border-[#e6c9b8] bg-white shadow-sm p-2 no-print">
+            <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white p-2 shadow-sm no-print">
                 <div className="flex flex-wrap gap-1.5">
                     {Object.entries(tabsConfig).map(([tab, config]) => (
                         <button
@@ -2400,7 +2401,7 @@ export function DataEntry({ categories, data }) {
                             onClick={() => setActiveTab(tab)}
                             className={`flex items-center gap-2 px-4 py-2.5 rounded-lg font-bold text-xs uppercase tracking-wide transition-all ${
                                 activeTab === tab
-                                    ? 'bg-[#a81d24] text-white shadow-sm shadow-red-900/20'
+                                    ? 'bg-[#e30613] text-white shadow-sm shadow-red-900/20'
                                     : 'text-stone-600 hover:bg-stone-100'
                             }`}
                         >
@@ -2414,7 +2415,7 @@ export function DataEntry({ categories, data }) {
             {/* Main content */}
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
                 <div className="no-print animate-fade-in">
-                    <Card title={`Nuevo — ${tabsConfig[activeTab].label}`} icon={tabsConfig[activeTab].icon} gradient={true}>
+                    <Card title={`Nuevo - ${tabsConfig[activeTab].label}`} icon={tabsConfig[activeTab].icon} gradient={true}>
                         {activeTab === 'Ingresos' && <IncomeForm loading={loading} setLoading={setLoading} onSuccess={handleSuccess} />}
                         {activeTab === 'Facturas Membretadas' && <StampedSalesInvoiceForm data={data} loading={loading} setLoading={setLoading} onSuccess={handleSuccess} />}
                         {activeTab === 'Gastos' && <FiscalExpenseForm categories={categories} providers={providers} loading={loading} setLoading={setLoading} onSuccess={handleSuccess} />}
@@ -2427,7 +2428,7 @@ export function DataEntry({ categories, data }) {
                 </div>
 
                 <div className="animate-fade-in">
-                    <Card title={`Historial — ${tabsConfig[activeTab].label}`} icon="receipt">
+                    <Card title={`Historial - ${tabsConfig[activeTab].label}`} icon="receipt">
                         <EditableList
                             data={getListData()}
                             collectionName={getCollectionName()}

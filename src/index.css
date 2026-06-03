@@ -1,24 +1,32 @@
-@import url('https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=Manrope:wght@400;500;600;700;800&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;600;700;800&display=swap');
 
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
 :root {
-  --brand-wine: #a81d24;
-  --brand-wine-dark: #7f1218;
-  --brand-gold: #f2b635;
-  --brand-cream: #fbf2e8;
-  --brand-cream-deep: #f3e2d1;
-  --brand-ink: #211617;
+  --csm-red: #e30613;
+  --csm-red-dark: #9f111a;
+  --csm-red-soft: #fff1f2;
+  --csm-ink: #111827;
+  --csm-ink-2: #1f2937;
+  --csm-panel: #ffffff;
+  --csm-muted: #64748b;
+  --csm-line: #d9e1e8;
+  --csm-bg: #f3f6f9;
+  --csm-bg-2: #e9eef4;
+  --csm-accent: #f5b51b;
+  --csm-success: #059669;
+  --csm-warning: #d97706;
+  --csm-danger: #dc2626;
   --motion-ease: cubic-bezier(0.22, 1, 0.36, 1);
-  --motion-spring: cubic-bezier(0.2, 0.9, 0.22, 1.15);
-  --surface-shadow: 0 22px 70px -34px rgba(127, 18, 24, 0.42);
+  --motion-spring: cubic-bezier(0.2, 0.9, 0.22, 1.1);
+  --surface-shadow: 0 18px 48px -34px rgba(17, 24, 39, 0.42);
   color-scheme: light;
 }
 
 html {
-  background: linear-gradient(180deg, #fffaf5 0%, #f7ebdd 100%);
+  background: var(--csm-bg);
   scroll-behavior: smooth;
 }
 
@@ -26,26 +34,28 @@ body {
   position: relative;
   min-height: 100vh;
   overflow-x: hidden;
-  @apply text-slate-900 antialiased;
   background:
-    radial-gradient(circle at top left, rgba(242, 182, 53, 0.18), transparent 22rem),
-    radial-gradient(circle at top right, rgba(168, 29, 36, 0.12), transparent 26rem),
-    linear-gradient(180deg, #fffaf5 0%, #f7ebdd 100%);
-  font-family: "Manrope", "Segoe UI", sans-serif;
+    linear-gradient(rgba(15, 23, 42, 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(15, 23, 42, 0.035) 1px, transparent 1px),
+    radial-gradient(circle at 12% -8%, rgba(227, 6, 19, 0.14), transparent 28rem),
+    radial-gradient(circle at 92% 10%, rgba(15, 23, 42, 0.08), transparent 24rem),
+    linear-gradient(180deg, #f8fafc 0%, var(--csm-bg) 46%, var(--csm-bg-2) 100%);
+  background-size: 28px 28px, 28px 28px, auto, auto, auto;
+  color: var(--csm-ink);
+  font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: geometricPrecision;
 }
 
 body::before {
   content: "";
   position: fixed;
-  inset: -18%;
+  inset: 0;
   z-index: -1;
   pointer-events: none;
   background:
-    radial-gradient(circle at 18% 24%, rgba(242, 182, 53, 0.18), transparent 18rem),
-    radial-gradient(circle at 78% 12%, rgba(168, 29, 36, 0.16), transparent 21rem),
-    radial-gradient(circle at 68% 84%, rgba(100, 37, 22, 0.10), transparent 18rem);
-  filter: blur(2px);
-  animation: ambient-pan 18s var(--motion-ease) infinite alternate;
+    linear-gradient(120deg, rgba(255, 255, 255, 0.82), rgba(255, 255, 255, 0.22)),
+    radial-gradient(circle at 26% 18%, rgba(227, 6, 19, 0.075), transparent 20rem);
 }
 
 #root {
@@ -53,23 +63,14 @@ body::before {
 }
 
 ::selection {
-  background: rgba(168, 29, 36, 0.18);
-  color: var(--brand-ink);
-}
-
-@keyframes ambient-pan {
-  from {
-    transform: translate3d(-1.5rem, -1rem, 0) scale(1);
-  }
-  to {
-    transform: translate3d(1.25rem, 1rem, 0) scale(1.035);
-  }
+  background: rgba(227, 6, 19, 0.18);
+  color: var(--csm-ink);
 }
 
 @keyframes corporate-rise {
   from {
     opacity: 0;
-    transform: translateY(18px) scale(0.985);
+    transform: translateY(14px) scale(0.99);
   }
   to {
     opacity: 1;
@@ -77,27 +78,12 @@ body::before {
   }
 }
 
-@keyframes corporate-pop {
-  0% {
-    opacity: 0;
-    transform: scale(0.94);
-  }
-  70% {
-    opacity: 1;
-    transform: scale(1.025);
-  }
-  100% {
-    opacity: 1;
-    transform: scale(1);
-  }
-}
-
 @keyframes corporate-sheen {
   from {
-    transform: translateX(-120%) rotate(10deg);
+    transform: translateX(-130%) rotate(10deg);
   }
   to {
-    transform: translateX(120%) rotate(10deg);
+    transform: translateX(130%) rotate(10deg);
   }
 }
 
@@ -107,10 +93,10 @@ body::before {
     transform: translateY(0) scale(1);
   }
   45% {
-    transform: translateY(1px) scale(0.975);
+    transform: translateY(1px) scale(0.985);
   }
   78% {
-    transform: translateY(-1px) scale(1.01);
+    transform: translateY(-1px) scale(1.006);
   }
 }
 
@@ -125,85 +111,47 @@ body::before {
   position: absolute;
   inset: 0.75rem;
   z-index: -1;
-  border-radius: 2rem;
+  border: 1px solid rgba(217, 225, 232, 0.72);
+  border-radius: 1.8rem;
   background:
-    linear-gradient(135deg, rgba(255, 255, 255, 0.62), rgba(255, 248, 242, 0.18)),
-    radial-gradient(circle at 16% 20%, rgba(242, 182, 53, 0.12), transparent 20rem);
-  opacity: 0.7;
+    linear-gradient(135deg, rgba(255, 255, 255, 0.74), rgba(248, 250, 252, 0.18)),
+    radial-gradient(circle at 14% 20%, rgba(227, 6, 19, 0.05), transparent 19rem);
   pointer-events: none;
 }
 
-.corporate-surface {
-  border: 1px solid rgba(230, 201, 184, 0.86);
-  background: rgba(255, 255, 255, 0.86);
+.corporate-surface,
+:where([class*="rounded-xl"][class*="border"],
+[class*="rounded-2xl"][class*="border"],
+[class*="rounded-3xl"][class*="border"],
+[class*="rounded-[1.75rem]"][class*="border"],
+[class*="rounded-[2rem]"][class*="border"]) {
+  border-color: rgba(217, 225, 232, 0.92);
   box-shadow: var(--surface-shadow);
-  backdrop-filter: blur(18px);
-  -webkit-backdrop-filter: blur(18px);
 }
 
-.motion-soft-enter {
-  animation: corporate-rise 0.52s var(--motion-ease) both;
+.motion-soft-enter,
+.animate-fade-in {
+  animation: corporate-rise 0.42s var(--motion-ease) both;
 }
 
-.motion-pop {
-  animation: corporate-pop 0.42s var(--motion-spring) both;
-}
-
-.motion-card {
-  position: relative;
-  overflow: hidden;
+.motion-card,
+:where([class*="rounded-xl"][class*="bg-white"],
+[class*="rounded-2xl"][class*="bg-white"],
+[class*="rounded-3xl"][class*="bg-white"]) {
   transform: translateZ(0);
   transition:
-    transform 0.36s var(--motion-spring),
-    box-shadow 0.36s var(--motion-ease),
-    border-color 0.36s var(--motion-ease),
-    background-color 0.36s var(--motion-ease);
+    transform 0.28s var(--motion-spring),
+    box-shadow 0.28s var(--motion-ease),
+    border-color 0.28s var(--motion-ease),
+    background-color 0.28s var(--motion-ease);
 }
 
-.motion-card::before {
-  content: "";
-  position: absolute;
-  inset: -60% auto -60% -30%;
-  width: 44%;
-  pointer-events: none;
-  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.48), transparent);
-  opacity: 0;
-}
-
-.motion-card:hover {
-  transform: translateY(-4px) scale(1.006);
-  border-color: rgba(242, 182, 53, 0.48);
-  box-shadow: 0 24px 64px -34px rgba(127, 18, 24, 0.5);
-}
-
-.motion-card:hover::before {
-  opacity: 1;
-  animation: corporate-sheen 1.15s var(--motion-ease);
-}
-
-:where(.rounded-2xl.border, .rounded-3xl.border) {
-  transition:
-    transform 0.32s var(--motion-spring),
-    box-shadow 0.32s var(--motion-ease),
-    border-color 0.32s var(--motion-ease),
-    background-color 0.32s var(--motion-ease);
-}
-
-:where(.rounded-2xl.border, .rounded-3xl.border):hover {
-  border-color: rgba(242, 182, 53, 0.42);
-  box-shadow: 0 18px 52px -36px rgba(127, 18, 24, 0.46);
-}
-
-:where(tbody tr) {
-  transition:
-    background-color 0.22s var(--motion-ease),
-    transform 0.22s var(--motion-spring),
-    box-shadow 0.22s var(--motion-ease);
-}
-
-:where(tbody tr):hover {
-  transform: translateX(2px);
-  box-shadow: inset 3px 0 0 rgba(242, 182, 53, 0.72);
+.motion-card:hover,
+:where([class*="rounded-xl"][class*="bg-white"],
+[class*="rounded-2xl"][class*="bg-white"],
+[class*="rounded-3xl"][class*="bg-white"]):hover {
+  border-color: rgba(227, 6, 19, 0.18);
+  box-shadow: 0 22px 54px -36px rgba(17, 24, 39, 0.5);
 }
 
 .motion-button {
@@ -211,12 +159,12 @@ body::before {
   overflow: hidden;
   transform: translateZ(0);
   transition:
-    transform 0.28s var(--motion-spring),
-    box-shadow 0.28s var(--motion-ease),
-    filter 0.28s var(--motion-ease),
-    background-color 0.28s var(--motion-ease),
-    border-color 0.28s var(--motion-ease),
-    color 0.28s var(--motion-ease);
+    transform 0.24s var(--motion-spring),
+    box-shadow 0.24s var(--motion-ease),
+    filter 0.24s var(--motion-ease),
+    background-color 0.24s var(--motion-ease),
+    border-color 0.24s var(--motion-ease),
+    color 0.24s var(--motion-ease);
 }
 
 .motion-button::after {
@@ -224,52 +172,91 @@ body::before {
   position: absolute;
   inset: -45%;
   pointer-events: none;
-  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.32), transparent);
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.28), transparent);
   opacity: 0;
   transform: translateX(-65%) rotate(10deg);
   transition:
-    opacity 0.28s var(--motion-ease),
-    transform 0.62s var(--motion-ease);
+    opacity 0.22s var(--motion-ease),
+    transform 0.58s var(--motion-ease);
 }
 
 .motion-button:hover {
-  transform: translateY(-2px) scale(1.012);
-  filter: saturate(1.06);
+  transform: translateY(-1px);
+  filter: saturate(1.05);
 }
 
 .motion-button:hover::after {
-  opacity: 0.75;
+  opacity: 0.72;
   transform: translateX(65%) rotate(10deg);
 }
 
 .motion-button:active {
-  animation: button-bounce 0.32s var(--motion-spring);
+  animation: button-bounce 0.28s var(--motion-spring);
 }
 
 .motion-icon-bounce {
-  transition: transform 0.36s var(--motion-spring);
+  transition: transform 0.3s var(--motion-spring);
 }
 
 .motion-button:hover .motion-icon-bounce,
 .group:hover .motion-icon-bounce {
-  transform: translateY(-1px) rotate(-4deg) scale(1.09);
+  transform: translateY(-1px) scale(1.05);
 }
 
 :where(button, a[href]) {
   -webkit-tap-highlight-color: transparent;
 }
 
-:where(input, select, textarea) {
+:where(input:not([type="checkbox"]):not([type="radio"]), select, textarea) {
+  border-color: rgba(203, 213, 225, 0.95) !important;
+  background-color: rgba(255, 255, 255, 0.95) !important;
+  color: #1f2937 !important;
   transition:
-    border-color 0.22s var(--motion-ease),
-    box-shadow 0.22s var(--motion-ease),
-    background-color 0.22s var(--motion-ease),
-    transform 0.22s var(--motion-spring);
+    border-color 0.2s var(--motion-ease),
+    box-shadow 0.2s var(--motion-ease),
+    background-color 0.2s var(--motion-ease),
+    transform 0.2s var(--motion-spring);
 }
 
-:where(input, select, textarea):focus {
-  box-shadow: 0 0 0 4px rgba(168, 29, 36, 0.10);
+:where(input:not([type="checkbox"]):not([type="radio"]), select, textarea):focus {
+  border-color: rgba(227, 6, 19, 0.72) !important;
+  box-shadow: 0 0 0 4px rgba(227, 6, 19, 0.1) !important;
   transform: translateY(-1px);
+}
+
+:where(label) {
+  letter-spacing: 0.08em;
+}
+
+:where(table) {
+  border-collapse: separate;
+  border-spacing: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+:where(th) {
+  letter-spacing: 0.08em;
+}
+
+:where(td, th) {
+  border-color: rgba(226, 232, 240, 0.92);
+}
+
+:where(tbody tr) {
+  transition:
+    background-color 0.18s var(--motion-ease),
+    box-shadow 0.18s var(--motion-ease);
+}
+
+:where(tbody tr):hover {
+  background-color: rgba(248, 250, 252, 0.92);
+  box-shadow: inset 3px 0 0 rgba(227, 6, 19, 0.5);
+}
+
+.font-mono,
+:where([class*="font-mono"]) {
+  font-family: "JetBrains Mono", "IBM Plex Sans", monospace;
+  font-variant-numeric: tabular-nums;
 }
 
 .app-modal-root {
@@ -283,8 +270,8 @@ body::before {
 
 .app-modal-panel {
   transition:
-    box-shadow 0.24s var(--motion-ease),
-    border-color 0.24s var(--motion-ease) !important;
+    box-shadow 0.22s var(--motion-ease),
+    border-color 0.22s var(--motion-ease) !important;
 }
 
 ::-webkit-scrollbar {
@@ -293,29 +280,24 @@ body::before {
 }
 
 ::-webkit-scrollbar-track {
-  background: rgba(251, 242, 232, 0.85);
+  background: rgba(241, 245, 249, 0.9);
 }
 
 ::-webkit-scrollbar-thumb {
-  border: 2px solid rgba(251, 242, 232, 0.85);
+  border: 2px solid rgba(241, 245, 249, 0.9);
   border-radius: 999px;
-  background: linear-gradient(180deg, rgba(168, 29, 36, 0.65), rgba(242, 182, 53, 0.72));
+  background: linear-gradient(180deg, rgba(17, 24, 39, 0.42), rgba(227, 6, 19, 0.62));
 }
 
-@media (max-width: 640px) {
+@media (max-width: 768px) {
   html {
     font-size: 15px;
   }
 
   body {
     background:
-      radial-gradient(circle at top left, rgba(242, 182, 53, 0.12), transparent 18rem),
-      linear-gradient(180deg, #fffaf5 0%, #f7ebdd 100%);
-  }
-
-  body::before {
-    inset: -30%;
-    opacity: 0.65;
+      radial-gradient(circle at top left, rgba(227, 6, 19, 0.08), transparent 18rem),
+      linear-gradient(180deg, #f8fafc 0%, #eef2f7 100%);
   }
 
   .app-route-shell {
@@ -325,18 +307,18 @@ body::before {
 
   .app-route-shell::before {
     inset: 0.2rem;
-    border-radius: 1.25rem;
+    border-radius: 1.15rem;
   }
 
   :where(.rounded-3xl, .rounded-\[2rem\], .rounded-\[1\.75rem\]) {
-    border-radius: 1.25rem !important;
+    border-radius: 1.1rem !important;
   }
 
   :where(.grid.grid-cols-2) {
     grid-template-columns: minmax(0, 1fr) !important;
   }
 
-  :where(input, select, textarea) {
+  :where(input:not([type="checkbox"]):not([type="radio"]), select, textarea) {
     min-height: 2.75rem;
     font-size: 16px !important;
   }
@@ -362,7 +344,7 @@ body::before {
   :where(.fixed.inset-0 > .app-modal-panel) {
     max-height: 92vh;
     width: 100% !important;
-    border-radius: 1.35rem 1.35rem 0.9rem 0.9rem !important;
+    border-radius: 1.15rem 1.15rem 0.75rem 0.75rem !important;
   }
 
   .mobile-card-list {

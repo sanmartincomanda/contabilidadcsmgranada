@@ -69,8 +69,8 @@ const Card = ({ title, children, className = "", right, icon }) => (
         <div className="flex justify-between items-center px-6 py-4 border-b border-stone-100 bg-stone-50">
             <div className="flex items-center gap-3">
                 {icon && (
-                    <div className="p-2 bg-[#fff0f0] rounded-lg">
-                        <Icon path={Icons[icon]} className="w-4 h-4 text-[#a81d24]" />
+                    <div className="p-2 bg-[#fff1f2] rounded-lg">
+                        <Icon path={Icons[icon]} className="w-4 h-4 text-[#e30613]" />
                     </div>
                 )}
                 <h3 className="text-sm font-bold text-slate-800 tracking-tight">{title}</h3>
@@ -83,11 +83,11 @@ const Card = ({ title, children, className = "", right, icon }) => (
 
 const Button = ({ children, variant = 'primary', className = '', disabled, ...props }) => {
     const variants = {
-        primary:   'bg-[#a81d24] hover:bg-[#7f1218] text-white shadow-sm shadow-red-900/20',
+        primary:   'bg-[#e30613] hover:bg-[#9f111a] text-white shadow-sm shadow-red-900/20',
         danger:    'bg-red-600 hover:bg-red-700 text-white shadow-sm shadow-red-500/20',
         success:   'bg-emerald-600 hover:bg-emerald-700 text-white shadow-sm shadow-emerald-500/20',
         ghost:     'bg-transparent hover:bg-stone-100 text-slate-600 border border-stone-300',
-        outline:   'bg-white border-2 border-stone-200 hover:border-[#a81d24] text-slate-700 hover:text-[#a81d24]',
+        outline:   'bg-white border-2 border-stone-200 hover:border-[#e30613] text-slate-700 hover:text-[#e30613]',
         secondary: 'bg-stone-100 hover:bg-stone-200 text-slate-700'
     };
     return (
@@ -105,9 +105,9 @@ const Input = ({ label, icon, className = '', ...props }) => (
     <div className="space-y-1.5">
         {label && <label className="text-xs font-semibold uppercase tracking-wider text-slate-500">{label}</label>}
         <div className="relative group">
-            {icon && <Icon path={Icons[icon]} className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 group-focus-within:text-[#a81d24] transition-colors" />}
+            {icon && <Icon path={Icons[icon]} className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 group-focus-within:text-[#e30613] transition-colors" />}
             <input
-                className={`w-full bg-stone-50 border border-stone-300 rounded-lg px-3.5 py-2.5 text-sm font-medium text-slate-700 outline-none transition-all focus:border-[#a81d24] focus:bg-white focus:shadow-sm ${icon ? 'pl-10' : ''} ${className}`}
+                className={`w-full bg-stone-50 border border-stone-300 rounded-lg px-3.5 py-2.5 text-sm font-medium text-slate-700 outline-none transition-all focus:border-[#e30613] focus:bg-white focus:shadow-sm ${icon ? 'pl-10' : ''} ${className}`}
                 {...props}
             />
         </div>
@@ -119,7 +119,7 @@ const Select = ({ label, options, ...props }) => (
         {label && <label className="text-xs font-semibold uppercase tracking-wider text-slate-500">{label}</label>}
         <div className="relative">
             <select
-                className="w-full bg-stone-50 border border-stone-300 rounded-lg px-3.5 py-2.5 text-sm font-medium text-slate-700 outline-none transition-all focus:border-[#a81d24] focus:bg-white appearance-none cursor-pointer"
+                className="w-full bg-stone-50 border border-stone-300 rounded-lg px-3.5 py-2.5 text-sm font-medium text-slate-700 outline-none transition-all focus:border-[#e30613] focus:bg-white appearance-none cursor-pointer"
                 {...props}
             >
                 {options}
@@ -169,7 +169,7 @@ const SupportFilesInput = ({ files, onChange, disabled = false, single = false }
                         type="file"
                         accept="image/*,.pdf"
                         onChange={(event) => onChange(type.key, event.target.files?.[0] || null)}
-                        className="mt-2 block w-full text-xs text-slate-500 file:mr-3 file:rounded-lg file:border-0 file:bg-[#fff0f0] file:px-3 file:py-2 file:text-xs file:font-semibold file:text-[#a81d24]"
+                        className="mt-2 block w-full text-xs text-slate-500 file:mr-3 file:rounded-lg file:border-0 file:bg-[#fff1f2] file:px-3 file:py-2 file:text-xs file:font-semibold file:text-[#e30613]"
                         disabled={disabled}
                     />
                     {files?.[type.key] && <p className="mt-2 truncate text-xs font-bold text-emerald-700">{files[type.key].name}</p>}
@@ -180,9 +180,9 @@ const SupportFilesInput = ({ files, onChange, disabled = false, single = false }
 };
 
 const DetailRow = ({ label, value, accent = false }) => (
-    <div className={`rounded-xl border px-4 py-3 ${accent ? 'border-[#ead5c5] bg-[#fff8f5]' : 'border-stone-200 bg-white'}`}>
+    <div className={`rounded-xl border px-4 py-3 ${accent ? 'border-[#d8dee6] bg-[#f8fafc]' : 'border-stone-200 bg-white'}`}>
         <div className="text-[10px] font-bold uppercase tracking-[0.18em] text-slate-400">{label}</div>
-        <div className={`mt-1 break-words text-sm font-bold ${accent ? 'text-[#7f1218]' : 'text-slate-800'}`}>{value || '---'}</div>
+        <div className={`mt-1 break-words text-sm font-bold ${accent ? 'text-[#9f111a]' : 'text-slate-800'}`}>{value || '---'}</div>
     </div>
 );
 
@@ -209,13 +209,13 @@ const SupportPreviewModal = ({ record, type, onClose, onAttach }) => {
 
     return (
         <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
-            <button className="absolute inset-0 bg-[#2b1113]/60 backdrop-blur-sm" onClick={onClose} aria-label="Cerrar" />
-            <div className="relative grid max-h-[92vh] w-full max-w-6xl overflow-hidden rounded-3xl border border-[#ead5c5] bg-white shadow-2xl lg:grid-cols-[1.05fr_0.95fr]">
+            <button className="absolute inset-0 bg-[#111827]/60 backdrop-blur-sm" onClick={onClose} aria-label="Cerrar" />
+            <div className="relative grid max-h-[92vh] w-full max-w-6xl overflow-hidden rounded-3xl border border-[#d8dee6] bg-white shadow-2xl lg:grid-cols-[1.05fr_0.95fr]">
                 <div className="flex max-h-[92vh] flex-col overflow-hidden">
-                    <div className="bg-gradient-to-br from-[#7f1218] to-[#2b1113] px-6 py-5 text-white">
+                    <div className="bg-gradient-to-br from-[#9f111a] to-[#111827] px-6 py-5 text-white">
                         <div className="flex items-start justify-between gap-4">
                             <div>
-                                <p className="text-[10px] font-bold uppercase tracking-[0.32em] text-[#f2b635]">Expediente documental</p>
+                                <p className="text-[10px] font-bold uppercase tracking-[0.32em] text-[#f5b51b]">Expediente documental</p>
                                 <h2 className="mt-2 text-2xl font-black">{title}</h2>
                                 <p className="mt-1 text-sm font-semibold text-white/75">{subtitle}</p>
                                 <div className="mt-3 flex flex-wrap gap-2">
@@ -288,14 +288,14 @@ const SupportPreviewModal = ({ record, type, onClose, onAttach }) => {
                     </div>
                 </div>
 
-                <div className="max-h-[92vh] overflow-y-auto border-l border-[#ead5c5] bg-[#fbf6f1] p-5">
+                <div className="max-h-[92vh] overflow-y-auto border-l border-[#d8dee6] bg-[#fbf6f1] p-5">
                     <div className="mb-3 flex items-center justify-between gap-3">
                         <div>
-                            <div className="text-xs font-black uppercase tracking-[0.25em] text-[#7f1218]">Soportes</div>
+                            <div className="text-xs font-black uppercase tracking-[0.25em] text-[#9f111a]">Soportes</div>
                             <p className="text-xs font-semibold text-stone-500">Factura principal y comprobantes de retenciones</p>
                         </div>
                         {supportUrl && supportFiles.length === 1 && (
-                            <a href={supportUrl} target="_blank" rel="noreferrer" className="rounded-lg bg-[#a81d24] px-3 py-1.5 text-xs font-bold text-white">
+                            <a href={supportUrl} target="_blank" rel="noreferrer" className="rounded-lg bg-[#e30613] px-3 py-1.5 text-xs font-bold text-white">
                                 Abrir
                             </a>
                         )}
@@ -307,11 +307,11 @@ const SupportPreviewModal = ({ record, type, onClose, onAttach }) => {
                                 <div key={`${support.type}-${support.path || support.url}`} className="rounded-2xl border border-stone-200 bg-white p-3 shadow-sm">
                                     <div className="mb-2 flex items-center justify-between gap-3">
                                         <div>
-                                            <div className="text-[10px] font-black uppercase tracking-[0.22em] text-[#7f1218]">{support.label}</div>
+                                            <div className="text-[10px] font-black uppercase tracking-[0.22em] text-[#9f111a]">{support.label}</div>
                                             {support.fileName && <div className="mt-1 text-xs font-semibold text-stone-400">{support.fileName}</div>}
                                         </div>
                                         {support.url && (
-                                            <a href={support.url} target="_blank" rel="noreferrer" className="rounded-lg bg-[#a81d24] px-3 py-1.5 text-xs font-bold text-white">
+                                            <a href={support.url} target="_blank" rel="noreferrer" className="rounded-lg bg-[#e30613] px-3 py-1.5 text-xs font-bold text-white">
                                                 Abrir
                                             </a>
                                         )}
@@ -346,12 +346,12 @@ const AttachSupportModal = ({ target, loading, onClose, onSave }) => {
 
     return (
         <div className="fixed inset-0 z-[70] flex items-center justify-center p-4">
-            <button className="absolute inset-0 bg-[#2b1113]/55 backdrop-blur-sm" onClick={onClose} aria-label="Cerrar" />
-            <div className="relative w-full max-w-lg overflow-hidden rounded-2xl border border-[#ead5c5] bg-white shadow-2xl">
-                <div className="bg-[#7f1218] px-6 py-5 text-white">
+            <button className="absolute inset-0 bg-[#111827]/55 backdrop-blur-sm" onClick={onClose} aria-label="Cerrar" />
+            <div className="relative w-full max-w-lg overflow-hidden rounded-2xl border border-[#d8dee6] bg-white shadow-2xl">
+                <div className="bg-[#9f111a] px-6 py-5 text-white">
                     <div className="flex items-start justify-between gap-4">
                         <div>
-                            <p className="text-[10px] font-bold uppercase tracking-[0.28em] text-[#f2b635]">Soporte unico</p>
+                            <p className="text-[10px] font-bold uppercase tracking-[0.28em] text-[#f5b51b]">Soporte unico</p>
                             <h3 className="mt-2 text-xl font-black">{target.type === 'abono' ? 'Adjuntar soporte al abono' : 'Adjuntar soporte a factura'}</h3>
                             <p className="mt-1 text-xs font-semibold text-white/70">
                                 {isAbono ? 'Adjunta el comprobante del abono.' : 'Adjunta factura principal y, si aplica, las dos retenciones.'}
@@ -394,10 +394,11 @@ const AttachSupportModal = ({ target, loading, onClose, onSave }) => {
 // --- COMPONENTE PRINCIPAL ---
 export function AccountsPayable({ data }) {
     const [activeTab, setActiveTab] = useState('Estado de Cuenta');
+    const [expandedProviders, setExpandedProviders] = useState({});
     const [loading, setLoading] = useState(false);
     const [nuevoProveedor, setNuevoProveedor] = useState('');
 
-    // Ref para bloquear doble-submit en cualquier operación crítica
+    // Ref para bloquear doble-submit en cualquier operaci?n cr?tica
     const isProcessingRef = useRef(false);
 
     const facturas = useMemo(() => {
@@ -436,7 +437,7 @@ export function AccountsPayable({ data }) {
     });
     const [facturaSupportFiles, setFacturaSupportFiles] = useState(createEmptySupportFilesState());
 
-    // --- CÁLCULOS MEMOIZADOS ---
+    // --- CALCULOS MEMOIZADOS ---
     const { facturasPorProveedor, saldoTotalGeneral, stats } = useMemo(() => {
         const groups = {};
         let totalGeneral = 0;
@@ -607,7 +608,7 @@ export function AccountsPayable({ data }) {
         setMontoAbono(montoPrevisualizado.toFixed(2));
     };
 
-    // Guard ref: previene doble-submit antes de que React deshabilite el botón via estado
+    // Guard ref: previene doble-submit antes de que React deshabilite el bot?n via estado
     const handleRealizarAbono = useCallback(async () => {
         if (isProcessingRef.current) return;
 
@@ -696,7 +697,7 @@ export function AccountsPayable({ data }) {
 
     const handleDeleteAbono = useCallback(async (abonoDoc) => {
         if (isProcessingRef.current) return;
-        if (!window.confirm(`¿Anular abono #${abonoDoc.secuencia}?`)) return;
+        if (!window.confirm(`?Anular abono #${abonoDoc.secuencia}?`)) return;
 
         isProcessingRef.current = true;
         setLoading(true);
@@ -733,7 +734,7 @@ export function AccountsPayable({ data }) {
 
     const handleDeleteFactura = useCallback(async (factura) => {
         if (isProcessingRef.current) return;
-        if (!window.confirm('¿Eliminar esta factura y su compra vinculada?')) return;
+        if (!window.confirm('?Eliminar esta factura y su compra vinculada?')) return;
 
         isProcessingRef.current = true;
         setLoading(true);
@@ -829,7 +830,7 @@ export function AccountsPayable({ data }) {
         if (diffDays < 0) return { text: `${Math.abs(diffDays)}d vencida`, variant: 'danger' };
         if (diffDays === 0) return { text: 'Vence hoy', variant: 'warning' };
         if (diffDays <= 3) return { text: `${diffDays}d por vencer`, variant: 'warning' };
-        return { text: `${diffDays} días`, variant: 'success' };
+        return { text: `${diffDays} d?as`, variant: 'success' };
     };
 
     const tabs = [
@@ -859,34 +860,30 @@ export function AccountsPayable({ data }) {
 
             <div className="max-w-7xl mx-auto">
 
-                {/* ── ENCABEZADO CORPORATIVO ── */}
+                {/* -- ENCABEZADO CORPORATIVO -- */}
                 <FadeIn className="mb-7">
-                    <div className="bg-white rounded-xl border border-stone-200 shadow-sm overflow-hidden">
-                        <div className="h-1 bg-gradient-to-r from-[#a81d24] via-[#f2b635] to-[#a81d24]" />
-                        <div className="px-7 py-5 flex items-center justify-between">
+                    <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+                        <div className="flex flex-col gap-3 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
                             <div>
-                                <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-[#a81d24] mb-1">
-                                    {APP_BRAND_NAME} - Sistema de Gestion
-                                </p>
-                                <h1 className="text-xl font-bold text-slate-900 tracking-tight">Cuentas por Pagar</h1>
-                                <p className="text-xs text-slate-400 mt-0.5">Gestión de facturas y pagos a proveedores</p>
+                                <p className="text-[10px] font-black uppercase tracking-[0.34em] text-[#e30613]">{APP_BRAND_NAME}</p>
+                                <h1 className="mt-1 text-xl font-black tracking-tight text-slate-950">Cuentas por pagar</h1>
                             </div>
                             <div className="hidden md:flex items-center gap-3">
                                 <div className="text-right">
-                                    <div className="text-[10px] text-slate-400 uppercase tracking-widest font-bold">Total pendiente</div>
-                                    <div className="text-2xl font-bold text-[#a81d24]">{fmt(saldoTotalGeneral)}</div>
+                                    <div className="text-[10px] text-slate-400 uppercase tracking-widest font-black">Total pendiente</div>
+                                    <div className="font-mono text-2xl font-black text-[#e30613]">{fmt(saldoTotalGeneral)}</div>
                                 </div>
-                                <div className="w-11 h-11 bg-[#fff0f0] rounded-xl flex items-center justify-center">
-                                    <Icon path={Icons.trendingDown} className="w-5 h-5 text-[#a81d24]" />
+                                <div className="w-11 h-11 bg-red-50 rounded-xl flex items-center justify-center">
+                                    <Icon path={Icons.trendingDown} className="w-5 h-5 text-[#e30613]" />
                                 </div>
                             </div>
                         </div>
                     </div>
                 </FadeIn>
 
-                {/* ── TARJETAS DE RESUMEN ── */}
+                {/* -- TARJETAS DE RESUMEN -- */}
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
-                    <FadeIn delay={60} className="bg-[#a81d24] rounded-xl p-5 text-white shadow-md shadow-red-900/20">
+                    <FadeIn delay={60} className="bg-[#e30613] rounded-xl p-5 text-white shadow-md shadow-red-900/20">
                         <div className="flex items-center justify-between mb-3">
                             <span className="text-red-200 text-[10px] font-bold uppercase tracking-widest">Saldo Total</span>
                             <div className="w-8 h-8 bg-white/15 rounded-lg flex items-center justify-center">
@@ -907,7 +904,7 @@ export function AccountsPayable({ data }) {
                             </div>
                         </div>
                         <div className="text-2xl font-bold text-red-600">{fmt(stats.vencidas)}</div>
-                        <div className="text-slate-400 text-xs mt-1.5">Requieren atención inmediata</div>
+                        <div className="text-slate-400 text-xs mt-1.5">Requieren atenci?n inmediata</div>
                     </FadeIn>
 
                     <FadeIn delay={180} className="bg-white rounded-xl p-5 border border-stone-200 shadow-sm">
@@ -918,11 +915,11 @@ export function AccountsPayable({ data }) {
                             </div>
                         </div>
                         <div className="text-2xl font-bold text-amber-600">{fmt(stats.porVencer)}</div>
-                        <div className="text-slate-400 text-xs mt-1.5">Próximas a vencer</div>
+                        <div className="text-slate-400 text-xs mt-1.5">Pr?ximas a vencer</div>
                     </FadeIn>
                 </div>
 
-                {/* ── NAVEGACIÓN TABS ── */}
+                {/* -- NAVEGACION TABS -- */}
                 <div className="bg-white rounded-xl border border-stone-200 shadow-sm p-1.5 mb-6">
                     <div className="flex flex-wrap gap-1.5">
                         {tabs.map(tab => (
@@ -931,7 +928,7 @@ export function AccountsPayable({ data }) {
                                 onClick={() => setActiveTab(tab.id)}
                                 className={`flex items-center gap-2 px-4 py-2 rounded-lg font-semibold text-xs transition-all duration-200 ${
                                     activeTab === tab.id
-                                        ? 'bg-[#a81d24] text-white shadow-sm shadow-red-900/20'
+                                        ? 'bg-[#e30613] text-white shadow-sm shadow-red-900/20'
                                         : 'text-slate-500 hover:bg-stone-50 hover:text-slate-700'
                                 }`}
                             >
@@ -942,7 +939,7 @@ export function AccountsPayable({ data }) {
                     </div>
                 </div>
 
-                {/* ── CONTENIDO TABS ── */}
+                {/* -- CONTENIDO TABS -- */}
                 <div>
 
                     {/* TAB: Nueva Factura */}
@@ -951,7 +948,7 @@ export function AccountsPayable({ data }) {
                             <Card title="Registrar Nueva Factura" icon="fileText">
                                 <form onSubmit={handleSaveFactura} className="space-y-5">
                                     <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-xs font-medium text-amber-800">
-                                        Las facturas registradas aquí se contabilizan como costo a crédito en {DEFAULT_BRANCH_NAME}.
+                                        Las facturas registradas aqu? se contabilizan como costo a cr?dito en {DEFAULT_BRANCH_NAME}.
                                     </div>
 
                                     <Select
@@ -971,7 +968,7 @@ export function AccountsPayable({ data }) {
 
                                     <div className="grid grid-cols-2 gap-4">
                                         <Input
-                                            label="Fecha Emisión"
+                                            label="Fecha Emisi?n"
                                             type="date"
                                             icon="calendar"
                                             value={facturaForm.fecha}
@@ -989,7 +986,7 @@ export function AccountsPayable({ data }) {
 
                                     <div className="grid grid-cols-2 gap-4">
                                         <Input
-                                            label="N° Factura"
+                                            label="N? Factura"
                                             icon="fileText"
                                             placeholder="Ej: 001-001-000000001"
                                             value={facturaForm.numero}
@@ -1065,7 +1062,7 @@ export function AccountsPayable({ data }) {
                                         onChange={e => setFacturaForm({ ...facturaForm, paymentReference: e.target.value })}
                                     />
 
-                                    <div className="space-y-2 rounded-xl border border-[#ead5c5] bg-[#fff8f5] p-3">
+                                    <div className="space-y-2 rounded-xl border border-[#d8dee6] bg-[#f8fafc] p-3">
                                         <div>
                                             <label className="text-xs font-semibold uppercase tracking-wider text-slate-500">Soportes fiscales</label>
                                             <p className="mt-1 text-xs font-semibold text-slate-400">Factura principal + retencion IR + retencion municipal.</p>
@@ -1088,117 +1085,148 @@ export function AccountsPayable({ data }) {
                     {/* TAB: Estado de Cuenta */}
                     {activeTab === 'Estado de Cuenta' && (
                         <div className="space-y-5">
-                            {Object.entries(facturasPorProveedor).map(([prov, provData], idx) => (
-                                <FadeIn key={prov} delay={idx * 70}>
-                                    <Card
-                                        title={prov}
-                                        icon="building"
-                                        right={
-                                            <div className="flex items-center gap-3">
-                                                <div className="text-right hidden sm:block">
-                                                    <div className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">
-                                                        {provData.items.length} {provData.items.length === 1 ? 'factura' : 'facturas'}
-                                                    </div>
-                                                    <div className="text-lg font-bold text-[#a81d24]">{fmt(provData.saldoTotal)}</div>
-                                                </div>
-                                                <Button
-                                                    variant="success"
-                                                    disabled={loading}
-                                                    onClick={() => {
-                                                        setProveedorSeleccionado(prov);
-                                                        setSelectedFacturas([]);
-                                                        setMontoAbono('');
-                                                        setMontoPrevisualizado(0);
-                                                        setPaymentMethod('transferencia');
-                                                        setShowModalAbono(true);
-                                                    }}
-                                                    className="flex items-center gap-1.5"
+                            {Object.entries(facturasPorProveedor).map(([prov, provData], idx) => {
+                                const isExpanded = Boolean(expandedProviders[prov]);
+                                const providerCode = provData.items[0]?.codigoProveedor || provData.items[0]?.providerCode || getProviderCode(prov);
+                                const vencidasProveedor = provData.items.filter((f) => getVencimientoInfo(f.vencimiento).variant === 'danger').length;
+
+                                return (
+                                    <FadeIn key={prov} delay={idx * 45}>
+                                        <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+                                            <div className="flex flex-col gap-3 p-4 lg:flex-row lg:items-center lg:justify-between">
+                                                <button
+                                                    type="button"
+                                                    onClick={() => setExpandedProviders((prev) => ({ ...prev, [prov]: !prev[prov] }))}
+                                                    className="group flex min-w-0 flex-1 items-center gap-4 rounded-xl px-2 py-1 text-left transition hover:bg-slate-50"
                                                 >
-                                                    <Icon path={Icons.creditCard} className="w-3.5 h-3.5" />
-                                                    Abonar
-                                                </Button>
+                                                    <div className="grid h-12 w-12 flex-shrink-0 place-items-center rounded-xl bg-slate-950 text-white shadow-sm">
+                                                        <Icon path={Icons.building} className="h-5 w-5" />
+                                                    </div>
+                                                    <div className="min-w-0">
+                                                        <div className="flex flex-wrap items-center gap-2">
+                                                            <h3 className="truncate text-base font-black uppercase tracking-tight text-slate-950">{prov}</h3>
+                                                            <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 font-mono text-[10px] font-black uppercase tracking-wider text-slate-500">{providerCode}</span>
+                                                            {vencidasProveedor > 0 && (
+                                                                <span className="rounded-full border border-red-200 bg-red-50 px-2 py-0.5 text-[10px] font-black uppercase tracking-wider text-red-700">
+                                                                    {vencidasProveedor} vencida{vencidasProveedor === 1 ? '' : 's'}
+                                                                </span>
+                                                            )}
+                                                        </div>
+                                                        <div className="mt-1 text-xs font-semibold text-slate-500">
+                                                            {provData.items.length} {provData.items.length === 1 ? 'factura pendiente' : 'facturas pendientes'} · saldo abierto {fmt(provData.saldoTotal)}
+                                                        </div>
+                                                    </div>
+                                                    <Icon path={Icons.chevronRight} className={`ml-auto h-5 w-5 flex-shrink-0 text-slate-400 transition ${isExpanded ? 'rotate-90 text-[#e30613]' : ''}`} />
+                                                </button>
+
+                                                <div className="flex items-center justify-between gap-3 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 lg:min-w-[290px]">
+                                                    <div>
+                                                        <div className="text-[10px] font-black uppercase tracking-[0.22em] text-slate-400">Saldo proveedor</div>
+                                                        <div className="font-mono text-xl font-black text-[#e30613]">{fmt(provData.saldoTotal)}</div>
+                                                    </div>
+                                                    <Button
+                                                        variant="success"
+                                                        disabled={loading}
+                                                        onClick={() => {
+                                                            setProveedorSeleccionado(prov);
+                                                            setSelectedFacturas([]);
+                                                            setMontoAbono('');
+                                                            setMontoPrevisualizado(0);
+                                                            setPaymentMethod('transferencia');
+                                                            setShowModalAbono(true);
+                                                        }}
+                                                        className="flex items-center gap-1.5 whitespace-nowrap"
+                                                    >
+                                                        <Icon path={Icons.creditCard} className="w-3.5 h-3.5" />
+                                                        Abonar
+                                                    </Button>
+                                                </div>
                                             </div>
-                                        }
-                                    >
-                                        <div className="overflow-x-auto rounded-lg border border-stone-200">
-                                            <table className="w-full text-sm">
-                                                <thead className="bg-stone-50 border-b border-stone-200">
-                                                    <tr>
-                                                        {['N° Factura', 'Emisión', 'Vencimiento', 'Monto', 'Abonado', 'Saldo', 'Estado', ''].map(h => (
-                                                            <th key={h} className={`px-4 py-2.5 text-[10px] font-bold text-slate-400 uppercase tracking-wider ${h === '' || h === 'Monto' || h === 'Abonado' || h === 'Saldo' ? 'text-right' : h === 'Estado' ? 'text-center' : 'text-left'}`}>
-                                                                {h}
-                                                            </th>
-                                                        ))}
-                                                    </tr>
-                                                </thead>
-                                                <tbody className="divide-y divide-stone-100">
-                                                    {provData.items.map(f => {
-                                                        const vencInfo = getVencimientoInfo(f.vencimiento);
-                                                        return (
-                                                            <tr key={f.id} className="hover:bg-stone-50/70 transition-colors group">
-                                                                <td className="px-4 py-3 font-mono text-xs font-semibold text-slate-700">{f.numero}</td>
-                                                                <td className="px-4 py-3 text-xs text-slate-500">{f.fecha}</td>
-                                                                <td className="px-4 py-3">
-                                                                    <Badge variant={vencInfo.variant}>{vencInfo.text}</Badge>
-                                                                </td>
-                                                                <td className="px-4 py-3 text-right text-xs text-slate-500 font-medium">{fmt(f.monto)}</td>
-                                                                <td className="px-4 py-3 text-right text-xs font-semibold text-emerald-600">
-                                                                    {f.yaAbonado > 0 ? fmt(f.yaAbonado) : <span className="text-stone-300">—</span>}
-                                                                </td>
-                                                                <td className="px-4 py-3 text-right font-bold text-[#a81d24]">{fmt(f.saldo)}</td>
-                                                                <td className="px-4 py-3 text-center">
-                                                                    <Badge variant={f.estado === 'parcial' ? 'warning' : 'danger'}>
-                                                                        {f.estado === 'parcial' ? 'Parcial' : 'Pendiente'}
-                                                                    </Badge>
-                                                                </td>
-                                                                <td className="px-4 py-3 text-center">
-                                                                    <div className="flex items-center justify-end gap-1.5">
-                                                                        <button
-                                                                            onClick={() => setDetailTarget({ record: f, type: 'factura' })}
-                                                                            disabled={loading}
-                                                                            className={`inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[10px] font-bold uppercase transition disabled:opacity-20 ${
-                                                                                hasSupport(f)
-                                                                                    ? 'bg-emerald-50 text-emerald-700 hover:bg-emerald-100'
-                                                                                    : 'bg-amber-50 text-amber-700 hover:bg-amber-100'
-                                                                            }`}
-                                                                            title={hasSupport(f) ? 'Ver soporte' : 'Adjuntar soporte'}
-                                                                        >
-                                                                            <Icon path={Icons.eye} className="w-3.5 h-3.5" />
-                                                                            {hasSupport(f) ? 'Ver' : 'Soporte'}
-                                                                        </button>
-                                                                        <button
-                                                                            onClick={() => openAttachSupport(f, 'factura')}
-                                                                            disabled={loading}
-                                                                            className="p-1.5 text-slate-400 hover:text-emerald-600 hover:bg-emerald-50 rounded-lg transition-all disabled:opacity-20"
-                                                                            title="Adjuntar soporte"
-                                                                        >
-                                                                            <Icon path={Icons.upload} className="w-3.5 h-3.5" />
-                                                                        </button>
-                                                                        <button
-                                                                            onClick={() => handleDeleteFactura(f)}
-                                                                            disabled={loading}
-                                                                            className="p-1.5 text-stone-300 hover:text-red-500 hover:bg-red-50 rounded-lg transition-all opacity-0 group-hover:opacity-100 disabled:opacity-20"
-                                                                        >
-                                                                            <Icon path={Icons.trash} className="w-3.5 h-3.5" />
-                                                                        </button>
-                                                                    </div>
-                                                                </td>
-                                                            </tr>
-                                                        );
-                                                    })}
-                                                </tbody>
-                                            </table>
-                                        </div>
-                                    </Card>
-                                </FadeIn>
-                            ))}
+
+                                            {isExpanded && (
+                                                <div className="border-t border-slate-200 bg-slate-50/70 p-3">
+                                                    <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white">
+                                                        <table className="w-full text-sm">
+                                                            <thead className="bg-slate-950">
+                                                                <tr>
+                                                                    {['N° Factura', 'Emisión', 'Vencimiento', 'Monto', 'Abonado', 'Saldo', 'Estado', ''].map(h => (
+                                                                        <th key={h} className={`px-4 py-3 text-[10px] font-black uppercase tracking-wider text-white/70 ${h === '' || h === 'Monto' || h === 'Abonado' || h === 'Saldo' ? 'text-right' : h === 'Estado' ? 'text-center' : 'text-left'}`}>
+                                                                            {h}
+                                                                        </th>
+                                                                    ))}
+                                                                </tr>
+                                                            </thead>
+                                                            <tbody className="divide-y divide-slate-100">
+                                                                {provData.items.map(f => {
+                                                                    const vencInfo = getVencimientoInfo(f.vencimiento);
+                                                                    return (
+                                                                        <tr key={f.id} className="group transition-colors">
+                                                                            <td className="px-4 py-3 font-mono text-xs font-semibold text-slate-700">{f.numero}</td>
+                                                                            <td className="px-4 py-3 text-xs text-slate-500">{f.fecha}</td>
+                                                                            <td className="px-4 py-3">
+                                                                                <Badge variant={vencInfo.variant}>{vencInfo.text}</Badge>
+                                                                            </td>
+                                                                            <td className="px-4 py-3 text-right text-xs font-medium text-slate-500">{fmt(f.monto)}</td>
+                                                                            <td className="px-4 py-3 text-right text-xs font-semibold text-emerald-600">
+                                                                                {f.yaAbonado > 0 ? fmt(f.yaAbonado) : <span className="text-slate-300">---</span>}
+                                                                            </td>
+                                                                            <td className="px-4 py-3 text-right font-mono font-black text-[#e30613]">{fmt(f.saldo)}</td>
+                                                                            <td className="px-4 py-3 text-center">
+                                                                                <Badge variant={f.estado === 'parcial' ? 'warning' : 'danger'}>
+                                                                                    {f.estado === 'parcial' ? 'Parcial' : 'Pendiente'}
+                                                                                </Badge>
+                                                                            </td>
+                                                                            <td className="px-4 py-3 text-center">
+                                                                                <div className="flex items-center justify-end gap-1.5">
+                                                                                    <button
+                                                                                        onClick={() => setDetailTarget({ record: f, type: 'factura' })}
+                                                                                        disabled={loading}
+                                                                                        className={`inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[10px] font-bold uppercase transition disabled:opacity-20 ${
+                                                                                            hasSupport(f)
+                                                                                                ? 'bg-emerald-50 text-emerald-700 hover:bg-emerald-100'
+                                                                                                : 'bg-amber-50 text-amber-700 hover:bg-amber-100'
+                                                                                        }`}
+                                                                                        title={hasSupport(f) ? 'Ver soporte' : 'Adjuntar soporte'}
+                                                                                    >
+                                                                                        <Icon path={Icons.eye} className="w-3.5 h-3.5" />
+                                                                                        {hasSupport(f) ? 'Ver' : 'Soporte'}
+                                                                                    </button>
+                                                                                    <button
+                                                                                        onClick={() => openAttachSupport(f, 'factura')}
+                                                                                        disabled={loading}
+                                                                                        className="p-1.5 text-slate-400 hover:text-emerald-600 hover:bg-emerald-50 rounded-lg transition-all disabled:opacity-20"
+                                                                                        title="Adjuntar soporte"
+                                                                                    >
+                                                                                        <Icon path={Icons.upload} className="w-3.5 h-3.5" />
+                                                                                    </button>
+                                                                                    <button
+                                                                                        onClick={() => handleDeleteFactura(f)}
+                                                                                        disabled={loading}
+                                                                                        className="p-1.5 text-slate-300 hover:text-red-500 hover:bg-red-50 rounded-lg transition-all opacity-0 group-hover:opacity-100 disabled:opacity-20"
+                                                                                    >
+                                                                                        <Icon path={Icons.trash} className="w-3.5 h-3.5" />
+                                                                                    </button>
+                                                                                </div>
+                                                                            </td>
+                                                                        </tr>
+                                                                    );
+                                                                })}
+                                                            </tbody>
+                                                        </table>
+                                                    </div>
+                                                </div>
+                                            )}
+                                        </section>
+                                    </FadeIn>
+                                );
+                            })}
 
                             {Object.keys(facturasPorProveedor).length === 0 && (
                                 <div className="text-center py-16 bg-white rounded-xl border border-dashed border-stone-300">
                                     <div className="w-14 h-14 bg-emerald-50 rounded-full flex items-center justify-center mx-auto mb-3">
                                         <Icon path={Icons.checkCircle} className="w-7 h-7 text-emerald-500" />
                                     </div>
-                                    <h3 className="text-base font-bold text-slate-700">Todo al día</h3>
+                                    <h3 className="text-base font-bold text-slate-700">Todo al d?a</h3>
                                     <p className="text-sm text-slate-400 mt-1">No hay facturas pendientes por pagar</p>
                                 </div>
                             )}
@@ -1219,8 +1247,8 @@ export function AccountsPayable({ data }) {
                                         <table className="w-full text-sm">
                                             <thead className="bg-stone-50 border-b border-stone-200">
                                                 <tr>
-                                                    {['Recibo #', 'Fecha', 'Proveedor', 'Método', 'Monto', 'Acción'].map(h => (
-                                                        <th key={h} className={`px-4 py-2.5 text-[10px] font-bold text-slate-400 uppercase tracking-wider ${h === 'Monto' ? 'text-right' : h === 'Acción' ? 'text-center' : 'text-left'}`}>
+                                                    {['Recibo #', 'Fecha', 'Proveedor', 'M?todo', 'Monto', 'Acci?n'].map(h => (
+                                                        <th key={h} className={`px-4 py-2.5 text-[10px] font-bold text-slate-400 uppercase tracking-wider ${h === 'Monto' ? 'text-right' : h === 'Acci?n' ? 'text-center' : 'text-left'}`}>
                                                             {h}
                                                         </th>
                                                     ))}
@@ -1229,7 +1257,7 @@ export function AccountsPayable({ data }) {
                                             <tbody className="divide-y divide-stone-100">
                                                 {abonos.sort((a, b) => b.secuencia - a.secuencia).map(a => (
                                                     <tr key={a.id} className="hover:bg-stone-50 transition-colors">
-                                                        <td className="px-4 py-3 font-mono font-bold text-[#a81d24]">#{a.secuencia}</td>
+                                                        <td className="px-4 py-3 font-mono font-bold text-[#e30613]">#{a.secuencia}</td>
                                                         <td className="px-4 py-3 text-xs text-slate-500">{a.fecha}</td>
                                                         <td className="px-4 py-3 font-semibold text-slate-800 text-xs">{a.proveedor}</td>
                                                         <td className="px-4 py-3">
@@ -1288,7 +1316,7 @@ export function AccountsPayable({ data }) {
                                     <input
                                         type="text"
                                         placeholder="Nombre del nuevo proveedor..."
-                                        className="flex-1 bg-stone-50 border border-stone-300 rounded-lg px-3.5 py-2.5 text-sm font-medium uppercase outline-none focus:border-[#a81d24] focus:bg-white transition-all"
+                                        className="flex-1 bg-stone-50 border border-stone-300 rounded-lg px-3.5 py-2.5 text-sm font-medium uppercase outline-none focus:border-[#e30613] focus:bg-white transition-all"
                                         value={nuevoProveedor}
                                         onChange={e => setNuevoProveedor(e.target.value)}
                                     />
@@ -1302,9 +1330,9 @@ export function AccountsPayable({ data }) {
                                     {listaProveedores
                                         .map((p, idx) => (
                                             <FadeIn key={p.id} delay={idx * 25}>
-                                                <div className="flex items-center justify-between px-4 py-3 bg-stone-50 rounded-lg border border-stone-200 hover:border-[#a81d24]/30 hover:shadow-sm transition-all group">
+                                                <div className="flex items-center justify-between px-4 py-3 bg-stone-50 rounded-lg border border-stone-200 hover:border-[#e30613]/30 hover:shadow-sm transition-all group">
                                                     <div className="flex items-center gap-3">
-                                                        <div className="w-8 h-8 bg-[#a81d24] rounded-lg flex items-center justify-center text-white font-bold text-xs">
+                                                        <div className="w-8 h-8 bg-[#e30613] rounded-lg flex items-center justify-center text-white font-bold text-xs">
                                                             {p.nombre.charAt(0)}
                                                         </div>
                                                         <div>
@@ -1328,7 +1356,7 @@ export function AccountsPayable({ data }) {
                     )}
                 </div>
 
-                {/* ── MODAL ABONO ── */}
+                {/* -- MODAL ABONO -- */}
                 {showModalAbono && (
                     <div
                         className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center p-4 z-50 animate-fade-in"
@@ -1339,11 +1367,11 @@ export function AccountsPayable({ data }) {
                             onClick={e => e.stopPropagation()}
                         >
                             {/* Modal header con franja de color */}
-                            <div className="h-1 bg-gradient-to-r from-[#a81d24] via-[#f2b635] to-[#a81d24]" />
+                            <div className="h-1 bg-gradient-to-r from-[#e30613] via-[#f5b51b] to-[#e30613]" />
                             <div className="px-6 py-5">
                                 <div className="flex items-start justify-between mb-5">
                                     <div>
-                                        <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-[#a81d24] mb-0.5">Registrar Pago</p>
+                                        <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-[#e30613] mb-0.5">Registrar Pago</p>
                                         <h3 className="text-lg font-bold text-slate-900">Realizar Abono</h3>
                                         <p className="text-sm text-slate-500">{proveedorSeleccionado}</p>
                                     </div>
@@ -1356,13 +1384,13 @@ export function AccountsPayable({ data }) {
                                     </button>
                                 </div>
 
-                                {/* Resumen de selección */}
+                                {/* Resumen de selecci?n */}
                                 <div className="bg-stone-50 rounded-lg border border-stone-200 p-4 mb-4">
                                     <div className="flex items-center justify-between mb-3">
                                         <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Facturas a incluir</span>
                                         <button
                                             onClick={handleSeleccionarTodas}
-                                            className="text-xs font-semibold text-[#a81d24] hover:text-[#7f1218] transition-colors"
+                                            className="text-xs font-semibold text-[#e30613] hover:text-[#9f111a] transition-colors"
                                         >
                                             {selectedFacturas.length === (facturasPorProveedor[proveedorSeleccionado]?.items || []).length
                                                 ? 'Desmarcar todas'
@@ -1379,7 +1407,7 @@ export function AccountsPayable({ data }) {
                                         </div>
                                         <div className="bg-white rounded-lg border border-stone-200 p-3">
                                             <div className="text-[10px] text-slate-400 font-bold uppercase mb-1">Total seleccionado</div>
-                                            <div className="text-xl font-bold text-[#a81d24]">{fmt(montoPrevisualizado)}</div>
+                                            <div className="text-xl font-bold text-[#e30613]">{fmt(montoPrevisualizado)}</div>
                                         </div>
                                     </div>
                                 </div>
@@ -1391,13 +1419,13 @@ export function AccountsPayable({ data }) {
                                             key={f.id}
                                             className={`flex items-center p-3 rounded-lg border cursor-pointer transition-all ${
                                                 selectedFacturas.includes(f.id)
-                                                    ? 'border-[#a81d24] bg-[#fff5f5] shadow-sm'
+                                                    ? 'border-[#e30613] bg-[#fff5f5] shadow-sm'
                                                     : 'border-stone-200 bg-white hover:border-stone-300'
                                             }`}
                                         >
                                             <div className={`w-4 h-4 rounded border-2 flex items-center justify-center mr-3 flex-shrink-0 transition-colors ${
                                                 selectedFacturas.includes(f.id)
-                                                    ? 'bg-[#a81d24] border-[#a81d24]'
+                                                    ? 'bg-[#e30613] border-[#e30613]'
                                                     : 'border-stone-300'
                                             }`}>
                                                 {selectedFacturas.includes(f.id) && (
@@ -1420,10 +1448,10 @@ export function AccountsPayable({ data }) {
                                             />
                                             <div className="flex-1 min-w-0">
                                                 <div className="font-semibold text-slate-800 text-xs">Factura #{f.numero}</div>
-                                                <div className="text-[10px] text-slate-400">Emisión: {f.fecha}</div>
+                                                <div className="text-[10px] text-slate-400">Emisi?n: {f.fecha}</div>
                                             </div>
                                             <div className="text-right ml-3">
-                                                <div className="font-bold text-[#a81d24] text-sm">{fmt(f.saldo)}</div>
+                                                <div className="font-bold text-[#e30613] text-sm">{fmt(f.saldo)}</div>
                                                 <div className="text-[10px] text-slate-400">saldo</div>
                                             </div>
                                         </label>
@@ -1449,7 +1477,7 @@ export function AccountsPayable({ data }) {
                                         <input
                                             type="number"
                                             step="0.01"
-                                            className="w-full bg-stone-50 border-2 border-stone-200 rounded-lg pl-11 pr-4 py-3 text-xl font-bold text-[#a81d24] text-center outline-none focus:border-[#a81d24] focus:bg-white transition-all"
+                                            className="w-full bg-stone-50 border-2 border-stone-200 rounded-lg pl-11 pr-4 py-3 text-xl font-bold text-[#e30613] text-center outline-none focus:border-[#e30613] focus:bg-white transition-all"
                                             value={montoAbono}
                                             onChange={e => setMontoAbono(e.target.value)}
                                             placeholder="0.00"
@@ -1463,10 +1491,10 @@ export function AccountsPayable({ data }) {
                                     )}
                                 </div>
 
-                                {/* Método de pago */}
+                                {/* M?todo de pago */}
                                 <div className="mb-5">
                                     <Select
-                                        label="Método de Pago"
+                                        label="M?todo de Pago"
                                         value={paymentMethod}
                                         onChange={e => setPaymentMethod(e.target.value)}
                                         options={
@@ -1478,12 +1506,12 @@ export function AccountsPayable({ data }) {
                                     />
                                     <p className="text-xs text-slate-400 mt-1.5">
                                         {paymentMethod === 'efectivo'
-                                            ? 'Se registrará también en Gastos Diarios como salida de caja.'
+                                            ? 'Se registrara tambien en Gastos Diarios como salida de caja.'
                                             : 'Solo actualiza el saldo de la cuenta por pagar.'}
                                     </p>
                                 </div>
 
-                                {/* Botones de acción */}
+                                {/* Botones de acci?n */}
                                 <div className="mb-5 rounded-xl border border-stone-200 bg-stone-50 p-4">
                                     <div className="flex items-start justify-between gap-3">
                                         <div>
@@ -1496,7 +1524,7 @@ export function AccountsPayable({ data }) {
                                         type="file"
                                         accept="image/*,.pdf"
                                         onChange={e => setAbonoPhoto(e.target.files?.[0] || null)}
-                                        className="mt-3 block w-full text-xs text-slate-500 file:mr-3 file:rounded-lg file:border-0 file:bg-[#fff0f0] file:px-3 file:py-2 file:text-xs file:font-semibold file:text-[#a81d24]"
+                                        className="mt-3 block w-full text-xs text-slate-500 file:mr-3 file:rounded-lg file:border-0 file:bg-[#fff1f2] file:px-3 file:py-2 file:text-xs file:font-semibold file:text-[#e30613]"
                                     />
                                     {abonoPhoto && <p className="mt-2 text-xs font-bold text-emerald-700">Archivo seleccionado: {abonoPhoto.name}</p>}
                                 </div>

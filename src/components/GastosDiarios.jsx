@@ -32,15 +32,15 @@ const Icon = ({ path, className = "w-5 h-5" }) => (
 // --- COMPONENTES UI ---
 
 const Card = ({ title, children, className = "", right, icon, gradient = false }) => (
-    <div className={`rounded-xl shadow-md border border-[#e6c9b8]/60 bg-white overflow-hidden ${className}`}>
-        <div className={`flex justify-between items-center px-5 py-3 border-b ${gradient ? 'bg-[#7f1218] border-[#5e1318]' : 'bg-stone-50 border-[#ead5c5]'}`}>
+    <div className={`rounded-xl shadow-md border border-[#d9e1e8]/60 bg-white overflow-hidden ${className}`}>
+        <div className={`flex justify-between items-center px-5 py-3 border-b ${gradient ? 'bg-[#9f111a] border-[#5c0f14]' : 'bg-stone-50 border-[#d8dee6]'}`}>
             <div className="flex items-center gap-3">
                 {icon && (
-                    <div className={`p-2 rounded-lg ${gradient ? 'bg-white/10' : 'bg-[#fff0f0]'}`}>
-                        <Icon path={Icons[icon]} className={`w-4 h-4 ${gradient ? 'text-white' : 'text-[#a81d24]'}`} />
+                    <div className={`p-2 rounded-lg ${gradient ? 'bg-white/10' : 'bg-[#fff1f2]'}`}>
+                        <Icon path={Icons[icon]} className={`w-4 h-4 ${gradient ? 'text-white' : 'text-[#e30613]'}`} />
                     </div>
                 )}
-                <h3 className={`text-sm font-bold uppercase tracking-wider ${gradient ? 'text-white' : 'text-[#5f1a1f]'}`}>{title}</h3>
+                <h3 className={`text-sm font-bold uppercase tracking-wider ${gradient ? 'text-white' : 'text-[#1f2937]'}`}>{title}</h3>
             </div>
             {right}
         </div>
@@ -51,12 +51,12 @@ const Card = ({ title, children, className = "", right, icon, gradient = false }
 const Button = ({ children, variant = 'primary', className = '', disabled, size = 'md', ...props }) => {
     const sizes = { sm: 'px-3 py-1.5 text-xs', md: 'px-4 py-2 text-sm', lg: 'px-6 py-3 text-sm' };
     const variants = {
-        primary: 'bg-[#a81d24] hover:bg-[#7f1218] text-white shadow-sm shadow-red-900/20',
+        primary: 'bg-[#e30613] hover:bg-[#9f111a] text-white shadow-sm shadow-red-900/20',
         success: 'bg-emerald-600 hover:bg-emerald-700 text-white',
         danger: 'bg-rose-600 hover:bg-rose-700 text-white',
         warning: 'bg-amber-500 hover:bg-amber-600 text-white',
         ghost: 'bg-transparent hover:bg-stone-100 text-stone-600 border border-stone-200',
-        dark: 'bg-[#2b1113] hover:bg-[#1a0a0b] text-white'
+        dark: 'bg-[#111827] hover:bg-[#1a0a0b] text-white'
     };
 
     return (
@@ -74,10 +74,10 @@ const Input = ({ label, icon, type = "text", className = '', ...props }) => (
     <div className="space-y-1">
         {label && <label className="text-xs font-bold uppercase tracking-wider text-stone-500">{label}</label>}
         <div className="relative group">
-            {icon && <Icon path={Icons[icon]} className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-stone-400 group-focus-within:text-[#a81d24] transition-colors" />}
+            {icon && <Icon path={Icons[icon]} className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-stone-400 group-focus-within:text-[#e30613] transition-colors" />}
             <input
                 type={type}
-                className={`w-full bg-stone-50 border border-stone-200 rounded-lg px-3 py-2 text-sm font-semibold text-stone-700 outline-none transition-all focus:border-[#a81d24] focus:ring-2 focus:ring-[#a81d24]/15 ${icon ? 'pl-10' : ''} ${className}`}
+                className={`w-full bg-stone-50 border border-stone-200 rounded-lg px-3 py-2 text-sm font-semibold text-stone-700 outline-none transition-all focus:border-[#e30613] focus:ring-2 focus:ring-[#e30613]/15 ${icon ? 'pl-10' : ''} ${className}`}
                 {...props}
             />
         </div>
@@ -90,7 +90,7 @@ const Select = ({ label, icon, options, ...props }) => (
         <div className="relative">
             {icon && <Icon path={Icons[icon]} className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-stone-400 pointer-events-none" />}
             <select
-                className={`w-full bg-stone-50 border border-stone-200 rounded-lg px-3 py-2 text-sm font-semibold text-stone-700 outline-none transition-all focus:border-[#a81d24] focus:ring-2 focus:ring-[#a81d24]/15 appearance-none cursor-pointer ${icon ? 'pl-10' : ''}`}
+                className={`w-full bg-stone-50 border border-stone-200 rounded-lg px-3 py-2 text-sm font-semibold text-stone-700 outline-none transition-all focus:border-[#e30613] focus:ring-2 focus:ring-[#e30613]/15 appearance-none cursor-pointer ${icon ? 'pl-10' : ''}`}
                 {...props}
             >
                 {options}
@@ -104,7 +104,7 @@ const Badge = ({ children, variant = 'default' }) => {
     const variants = {
         default: 'bg-stone-100 text-stone-600',
         success: 'bg-emerald-100 text-emerald-700',
-        danger: 'bg-[#fff0f0] text-[#a81d24]',
+        danger: 'bg-[#fff1f2] text-[#e30613]',
         warning: 'bg-amber-100 text-amber-700',
         purple: 'bg-purple-100 text-purple-700'
     };
@@ -179,9 +179,9 @@ export default function GastosDiarios({ categories = [] }) {
     const handleSubmit = async (e) => {
         e.preventDefault();
         const numMonto = Number(monto);
-        if (isNaN(numMonto) || numMonto <= 0) return alert('Monto inválido.');
-        if (!descripcion) return alert('Ingrese una descripción.');
-        if (tipo === 'Gasto' && !categoriaId) return alert('Categoría requerida para gastos.');
+        if (isNaN(numMonto) || numMonto <= 0) return alert('Monto inv?lido.');
+        if (!descripcion) return alert('Ingrese una descripci?n.');
+        if (tipo === 'Gasto' && !categoriaId) return alert('Categor?a requerida para gastos.');
 
         setLoading(true);
         try {
@@ -368,7 +368,7 @@ export default function GastosDiarios({ categories = [] }) {
         if (registro.tipo === 'ABONO' && (registro.origen === 'abonos_pagar' || registro.linkedAbonoId)) {
             return alert('Los abonos en efectivo se anulan desde Cuentas por Pagar.');
         }
-        if (!window.confirm('¿Eliminar este registro?')) return;
+        if (!window.confirm('?Eliminar este registro?')) return;
 
         setLoading(true);
         try {
@@ -425,25 +425,26 @@ export default function GastosDiarios({ categories = [] }) {
             `}</style>
 
             {/* Page header */}
-            <div className="overflow-hidden rounded-xl border border-[#e6c9b8] bg-white shadow-sm no-print">
-                <div className="h-1 bg-gradient-to-r from-[#a81d24] via-[#f2b635] to-[#a81d24]" />
-                <div className="px-6 py-4">
-                    <div className="inline-flex items-center gap-2 rounded-full border border-[#f2b635]/40 bg-[#fdf1d6] px-3 py-1 text-xs font-bold uppercase tracking-[0.3em] text-[#8a141b] mb-2">
-                        {APP_BRAND_NAME}
+            <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm no-print">
+                <div className="flex flex-col gap-3 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+                    <div>
+                        <div className="text-[10px] font-black uppercase tracking-[0.34em] text-[#e30613]">{APP_BRAND_NAME}</div>
+                        <h1 className="mt-1 text-xl font-black text-slate-950">Gastos diarios</h1>
                     </div>
-                    <h1 className="text-xl font-black text-[#7f1218]">Gastos <span className="text-[#a81d24]">Diarios</span></h1>
-                    <p className="text-xs font-medium text-[#8b6a5f] mt-0.5">Registro de caja diaria y compras — {CAJA}</p>
+                    <div className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-[10px] font-black uppercase tracking-[0.22em] text-slate-500">
+                        Caja {CAJA}
+                    </div>
                 </div>
             </div>
 
             {/* Tabs */}
-            <div className="overflow-hidden rounded-xl border border-[#e6c9b8] bg-white shadow-sm p-2 no-print">
+            <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white p-2 shadow-sm no-print">
                 <div className="flex gap-2">
                     <button
                         onClick={() => setActiveTab('registro')}
                         className={`flex items-center gap-2 px-5 py-2.5 rounded-lg font-bold text-xs uppercase tracking-wide transition-all ${
                             activeTab === 'registro'
-                                ? 'bg-[#a81d24] text-white shadow-sm shadow-red-900/20'
+                                ? 'bg-[#e30613] text-white shadow-sm shadow-red-900/20'
                                 : 'text-stone-600 hover:bg-stone-100'
                         }`}
                     >
@@ -454,7 +455,7 @@ export default function GastosDiarios({ categories = [] }) {
                         onClick={() => setActiveTab('historial')}
                         className={`flex items-center gap-2 px-5 py-2.5 rounded-lg font-bold text-xs uppercase tracking-wide transition-all ${
                             activeTab === 'historial'
-                                ? 'bg-[#2b1113] text-white'
+                                ? 'bg-[#111827] text-white'
                                 : 'text-stone-600 hover:bg-stone-100'
                         }`}
                     >
@@ -496,9 +497,9 @@ export default function GastosDiarios({ categories = [] }) {
                             </div>
 
                             <Input
-                                label="Descripción"
+                                label="Descripci?n"
                                 icon="fileText"
-                                placeholder={tipo === 'Compra' ? 'Ej: Proveedor / mercancía...' : 'Ej: Pago de servicio, suministros...'}
+                                placeholder={tipo === 'Compra' ? 'Ej: Proveedor / mercancia...' : 'Ej: Pago de servicio, suministros...'}
                                 value={descripcion}
                                 onChange={e => setDescripcion(e.target.value)}
                                 required
@@ -567,19 +568,19 @@ export default function GastosDiarios({ categories = [] }) {
 
                             <div className="space-y-1">
                                 <label className="text-xs font-bold uppercase tracking-wider text-stone-500">Foto de factura</label>
-                                <input type="file" accept="image/*,.pdf" onChange={e => setInvoicePhoto(e.target.files?.[0] || null)} className="block w-full text-xs text-stone-500 file:mr-2 file:rounded-full file:border-0 file:bg-[#fff0f0] file:px-3 file:py-1 file:text-xs file:font-semibold file:text-[#a81d24]" />
+                                <input type="file" accept="image/*,.pdf" onChange={e => setInvoicePhoto(e.target.files?.[0] || null)} className="block w-full text-xs text-stone-500 file:mr-2 file:rounded-full file:border-0 file:bg-[#fff1f2] file:px-3 file:py-1 file:text-xs file:font-semibold file:text-[#e30613]" />
                             </div>
 
                             {tipo === 'Gasto' && (
                                 <Select
-                                    label="Categoría"
+                                    label="Categor?a"
                                     icon="tag"
                                     value={categoriaId}
                                     onChange={e => setCategoriaId(e.target.value)}
                                     required
                                     options={
                                         <>
-                                            <option value="">Seleccionar categoría...</option>
+                                            <option value="">Seleccionar categor?a...</option>
                                             {categories.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
                                         </>
                                     }
@@ -605,7 +606,7 @@ export default function GastosDiarios({ categories = [] }) {
                         right={
                             <button
                                 onClick={() => window.print()}
-                                className="flex items-center gap-2 rounded-lg bg-[#2b1113] px-3 py-1.5 text-xs font-bold text-white transition hover:bg-[#1a0a0b] no-print"
+                                className="flex items-center gap-2 rounded-lg bg-[#111827] px-3 py-1.5 text-xs font-bold text-white transition hover:bg-[#1a0a0b] no-print"
                             >
                                 <Icon path={Icons.printer} className="w-3.5 h-3.5" /> Imprimir
                             </button>
@@ -633,9 +634,9 @@ export default function GastosDiarios({ categories = [] }) {
 
                             {/* Totales */}
                             <div className="grid grid-cols-2 xl:grid-cols-4 gap-3">
-                                <div className="rounded-xl border border-[#fecaca] bg-[#fff0f0] p-4 text-center">
-                                    <div className="text-xs font-bold uppercase tracking-wider text-[#a81d24]">Gastos</div>
-                                    <div className="text-xl font-black text-[#7f1218] mt-1">{fmt(totalGastos)}</div>
+                                <div className="rounded-xl border border-[#fecaca] bg-[#fff1f2] p-4 text-center">
+                                    <div className="text-xs font-bold uppercase tracking-wider text-[#e30613]">Gastos</div>
+                                    <div className="text-xl font-black text-[#9f111a] mt-1">{fmt(totalGastos)}</div>
                                 </div>
                                 <div className="rounded-xl border border-purple-200 bg-purple-50 p-4 text-center">
                                     <div className="text-xs font-bold uppercase tracking-wider text-purple-600">Compras</div>
@@ -645,8 +646,8 @@ export default function GastosDiarios({ categories = [] }) {
                                     <div className="text-xs font-bold uppercase tracking-wider text-amber-600">Abonos</div>
                                     <div className="text-xl font-black text-amber-700 mt-1">{fmt(totalAbonos)}</div>
                                 </div>
-                                <div className="rounded-xl border border-[#5e1318] bg-[#7f1218] p-4 text-center">
-                                    <div className="text-xs font-bold uppercase tracking-wider text-[#f2b635]">Total del Día</div>
+                                <div className="rounded-xl border border-[#5c0f14] bg-[#9f111a] p-4 text-center">
+                                    <div className="text-xs font-bold uppercase tracking-wider text-[#f5b51b]">Total del D?a</div>
                                     <div className="text-xl font-black text-white mt-1">{fmt(totalGeneral)}</div>
                                 </div>
                             </div>
@@ -657,11 +658,11 @@ export default function GastosDiarios({ categories = [] }) {
                                     <thead className="bg-stone-100 border-b border-stone-200">
                                         <tr>
                                             <th className="px-4 py-2.5 text-left text-xs font-bold uppercase tracking-wider text-stone-600">Hora</th>
-                                            <th className="px-4 py-2.5 text-left text-xs font-bold uppercase tracking-wider text-stone-600">Descripción</th>
+                                            <th className="px-4 py-2.5 text-left text-xs font-bold uppercase tracking-wider text-stone-600">Descripci?n</th>
                                             <th className="px-4 py-2.5 text-left text-xs font-bold uppercase tracking-wider text-stone-600">Tipo</th>
-                                            <th className="px-4 py-2.5 text-left text-xs font-bold uppercase tracking-wider text-stone-600">Categoría</th>
+                                            <th className="px-4 py-2.5 text-left text-xs font-bold uppercase tracking-wider text-stone-600">Categor?a</th>
                                             <th className="px-4 py-2.5 text-right text-xs font-bold uppercase tracking-wider text-stone-600">Monto</th>
-                                            <th className="px-4 py-2.5 text-center text-xs font-bold uppercase tracking-wider text-stone-600 no-print">Acción</th>
+                                            <th className="px-4 py-2.5 text-center text-xs font-bold uppercase tracking-wider text-stone-600 no-print">Acci?n</th>
                                         </tr>
                                     </thead>
                                     <tbody className="divide-y divide-stone-100">
@@ -684,12 +685,12 @@ export default function GastosDiarios({ categories = [] }) {
                                                             {reg.tipo}
                                                         </Badge>
                                                     </td>
-                                                    <td className="px-4 py-3 text-sm text-stone-500">{reg.categoria || '—'}</td>
+                                                    <td className="px-4 py-3 text-sm text-stone-500">{reg.categoria || '-'}</td>
                                                     <td className="px-4 py-3 text-right font-bold text-stone-800">{fmt(reg.monto)}</td>
                                                     <td className="px-4 py-3 text-center no-print">
                                                         <button
                                                             onClick={() => handleEliminar(reg)}
-                                                            className="p-1.5 text-stone-400 hover:text-[#a81d24] hover:bg-[#fff0f0] rounded-lg transition-colors"
+                                                            className="p-1.5 text-stone-400 hover:text-[#e30613] hover:bg-[#fff1f2] rounded-lg transition-colors"
                                                             disabled={loading}
                                                         >
                                                             <Icon path={Icons.trash} className="w-4 h-4" />
@@ -701,8 +702,8 @@ export default function GastosDiarios({ categories = [] }) {
                                     </tbody>
                                     <tfoot className="border-t-2 border-stone-200 bg-stone-100">
                                         <tr>
-                                            <td colSpan="4" className="px-4 py-3 font-bold text-stone-800 uppercase text-xs tracking-wider">Total del Día</td>
-                                            <td className="px-4 py-3 text-right font-black text-lg text-[#7f1218]">{fmt(totalGeneral)}</td>
+                                            <td colSpan="4" className="px-4 py-3 font-bold text-stone-800 uppercase text-xs tracking-wider">Total del D?a</td>
+                                            <td className="px-4 py-3 text-right font-black text-lg text-[#9f111a]">{fmt(totalGeneral)}</td>
                                             <td className="no-print"></td>
                                         </tr>
                                     </tfoot>

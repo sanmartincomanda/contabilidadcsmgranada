@@ -84,7 +84,7 @@ const DASHBOARD_STYLES = `
 .dash-fade{animation:dash-fade .4s ease both}
 .dash-check{animation:dash-check .35s cubic-bezier(.22,1,.36,1) both}
 .dash-pulse{animation:dash-pulse 2s ease-in-out infinite}
-.dash-mesh{background:linear-gradient(135deg,#1a0a0b 0%,#3b1114 25%,#5e1318 50%,#7f1218 75%,#2b1113 100%);background-size:300% 300%;animation:dash-gradient 12s ease infinite}
+.dash-mesh{background:linear-gradient(135deg,#1a0a0b 0%,#3b1114 25%,#5c0f14 50%,#9f111a 75%,#111827 100%);background-size:300% 300%;animation:dash-gradient 12s ease infinite}
 .dash-panel{animation:dash-slide-right .35s cubic-bezier(.22,1,.36,1) both}
 .dash-dots{background-image:radial-gradient(circle,rgba(242,182,53,.07) 1px,transparent 1px);background-size:20px 20px}
 .dash-glass{background:rgba(255,255,255,.82);backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px)}
@@ -166,14 +166,14 @@ const SettingsPanel = ({ config, onClose, onSave }) => {
         <div className="fixed inset-0 z-50 flex justify-end" onClick={onClose}>
             <div className="absolute inset-0 bg-[#1a0a0b]/50 backdrop-blur-sm" />
             <div
-                className="dash-panel relative w-full max-w-md bg-white shadow-2xl shadow-[#7f1218]/20 overflow-hidden flex flex-col"
+                className="dash-panel relative w-full max-w-md bg-white shadow-2xl shadow-[#9f111a]/20 overflow-hidden flex flex-col"
                 onClick={e => e.stopPropagation()}
             >
                 {/* Header */}
                 <div className="dash-mesh px-6 py-5 flex items-center justify-between flex-shrink-0">
                     <div>
-                        <div className="text-[10px] font-bold uppercase tracking-[0.4em] text-[#f2b635] mb-1">{APP_BRAND_NAME}</div>
-                        <h2 className="text-lg font-black text-white">Configuración de Inicio</h2>
+                        <div className="text-[10px] font-bold uppercase tracking-[0.4em] text-[#f5b51b] mb-1">{APP_BRAND_NAME}</div>
+                        <h2 className="text-lg font-black text-white">Configuraci?n de Inicio</h2>
                     </div>
                     <button onClick={onClose} className="p-2 rounded-xl bg-white/10 text-white/80 hover:bg-white/20 hover:text-white transition">
                         <Icon d={ICON.x} className="w-5 h-5" />
@@ -189,23 +189,23 @@ const SettingsPanel = ({ config, onClose, onSave }) => {
                     )}
 
                     {reminders.map(r => (
-                        <div key={r.id} className={`rounded-xl border p-3 transition-all ${r.activo ? 'border-[#e6c9b8] bg-white' : 'border-stone-200 bg-stone-50 opacity-60'}`}>
+                        <div key={r.id} className={`rounded-xl border p-3 transition-all ${r.activo ? 'border-[#d9e1e8] bg-white' : 'border-stone-200 bg-stone-50 opacity-60'}`}>
                             <div className="flex items-start justify-between gap-3">
                                 <div className="flex-1 min-w-0">
                                     <div className="text-sm font-bold text-stone-800 truncate">{r.texto}</div>
                                     <div className="flex items-center gap-3 mt-2">
-                                        <label className="text-[10px] font-bold uppercase tracking-wider text-stone-400">Día:</label>
+                                        <label className="text-[10px] font-bold uppercase tracking-wider text-stone-400">D?a:</label>
                                         <input
                                             type="number"
                                             min="1"
                                             max="28"
                                             value={r.diaDelMes}
                                             onChange={e => updateDay(r.id, e.target.value)}
-                                            className="w-14 rounded-lg border border-stone-200 px-2 py-1 text-xs font-bold text-stone-700 text-center focus:border-[#a81d24] focus:ring-1 focus:ring-[#a81d24]/20 outline-none"
+                                            className="w-14 rounded-lg border border-stone-200 px-2 py-1 text-xs font-bold text-stone-700 text-center focus:border-[#e30613] focus:ring-1 focus:ring-[#e30613]/20 outline-none"
                                         />
                                         <button
                                             onClick={() => toggleReminder(r.id)}
-                                            className={`relative w-9 h-5 rounded-full transition-colors flex-shrink-0 ${r.activo ? 'bg-[#a81d24]' : 'bg-stone-300'}`}
+                                            className={`relative w-9 h-5 rounded-full transition-colors flex-shrink-0 ${r.activo ? 'bg-[#e30613]' : 'bg-stone-300'}`}
                                         >
                                             <div className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${r.activo ? 'left-[18px]' : 'left-0.5'}`} />
                                         </button>
@@ -230,22 +230,22 @@ const SettingsPanel = ({ config, onClose, onSave }) => {
                             value={newText}
                             onChange={e => setNewText(e.target.value)}
                             onKeyDown={e => e.key === 'Enter' && addReminder()}
-                            className="w-full rounded-xl border border-stone-200 px-4 py-2.5 text-sm font-semibold text-stone-700 placeholder:text-stone-300 focus:border-[#a81d24] focus:ring-2 focus:ring-[#a81d24]/15 outline-none"
+                            className="w-full rounded-xl border border-stone-200 px-4 py-2.5 text-sm font-semibold text-stone-700 placeholder:text-stone-300 focus:border-[#e30613] focus:ring-2 focus:ring-[#e30613]/15 outline-none"
                         />
                         <div className="flex items-center gap-3">
-                            <label className="text-[10px] font-bold uppercase tracking-wider text-stone-400">Día del mes:</label>
+                            <label className="text-[10px] font-bold uppercase tracking-wider text-stone-400">D?a del mes:</label>
                             <input
                                 type="number"
                                 min="1"
                                 max="28"
                                 value={newDay}
                                 onChange={e => setNewDay(e.target.value)}
-                                className="w-16 rounded-lg border border-stone-200 px-2 py-1.5 text-sm font-bold text-stone-700 text-center focus:border-[#a81d24] focus:ring-1 focus:ring-[#a81d24]/20 outline-none"
+                                className="w-16 rounded-lg border border-stone-200 px-2 py-1.5 text-sm font-bold text-stone-700 text-center focus:border-[#e30613] focus:ring-1 focus:ring-[#e30613]/20 outline-none"
                             />
                             <button
                                 onClick={addReminder}
                                 disabled={!newText.trim()}
-                                className="ml-auto flex items-center gap-2 rounded-xl bg-[#a81d24] px-4 py-2 text-xs font-bold text-white disabled:opacity-40 hover:bg-[#7f1218] transition"
+                                className="ml-auto flex items-center gap-2 rounded-xl bg-[#e30613] px-4 py-2 text-xs font-bold text-white disabled:opacity-40 hover:bg-[#9f111a] transition"
                             >
                                 <Icon d={ICON.plus} className="w-3.5 h-3.5" /> Agregar
                             </button>
@@ -254,14 +254,14 @@ const SettingsPanel = ({ config, onClose, onSave }) => {
                 </div>
 
                 {/* Footer */}
-                <div className="border-t border-[#ead5c5] bg-stone-50 px-5 py-4 flex items-center justify-between flex-shrink-0">
+                <div className="border-t border-[#d8dee6] bg-stone-50 px-5 py-4 flex items-center justify-between flex-shrink-0">
                     <button onClick={onClose} className="rounded-xl border border-stone-200 px-5 py-2.5 text-xs font-bold text-stone-600 hover:bg-stone-100 transition">
                         Cancelar
                     </button>
                     <button
                         onClick={handleSave}
                         disabled={saving}
-                        className="rounded-xl bg-[#a81d24] px-6 py-2.5 text-xs font-bold text-white shadow-lg shadow-[#a81d24]/25 hover:bg-[#7f1218] disabled:opacity-50 transition"
+                        className="rounded-xl bg-[#e30613] px-6 py-2.5 text-xs font-bold text-white shadow-lg shadow-[#e30613]/25 hover:bg-[#9f111a] disabled:opacity-50 transition"
                     >
                         {saving ? 'Guardando...' : 'Guardar Cambios'}
                     </button>
@@ -303,7 +303,7 @@ const Dashboard = ({ data = {} }) => {
     const dayOfMonth = now.getDate();
     const hour = now.getHours();
 
-    const greeting = hour < 12 ? 'Buenos días' : hour < 18 ? 'Buenas tardes' : 'Buenas noches';
+    const greeting = hour < 12 ? 'Buenos d?as' : hour < 18 ? 'Buenas tardes' : 'Buenas noches';
     const greetingIcon = hour < 12 ? ICON.sun : hour < 18 ? ICON.sun : ICON.moon;
     const mesLabel = now.toLocaleDateString('es-ES', { month: 'long', year: 'numeric' });
 
@@ -356,11 +356,11 @@ const Dashboard = ({ data = {} }) => {
 
     // Dynamic insight
     const insight = vencidas.length > 0
-        ? `${vencidas.length} factura(s) vencida(s) — requieren atención`
+        ? `${vencidas.length} factura(s) vencida(s) - requieren atenci?n`
         : utilidad > 0
             ? `Utilidad positiva de ${fmt(utilidad)} este mes`
             : totalIngresos === 0 && totalGastos === 0
-                ? 'Aún sin movimientos registrados este mes'
+                ? 'A?n sin movimientos registrados este mes'
                 : 'Gastos superan ingresos este periodo';
 
     const kpis = [
@@ -466,16 +466,16 @@ const Dashboard = ({ data = {} }) => {
             {showSettings && <SettingsPanel config={config} onClose={() => setShowSettings(false)} onSave={saveSettings} />}
 
             {/* ========= HERO HEADER ========= */}
-            <div className="dash-up overflow-hidden rounded-2xl shadow-xl shadow-[#7f1218]/12">
+            <div className="dash-up overflow-hidden rounded-2xl shadow-xl shadow-[#9f111a]/12">
                 <div className="dash-mesh relative px-6 py-7 md:px-8 md:py-8 overflow-hidden">
                     {/* Decorative dots overlay */}
-                    <div className="absolute inset-0 opacity-[0.04]" style={{ backgroundImage: 'radial-gradient(circle, #f2b635 1px, transparent 1px)', backgroundSize: '16px 16px' }} />
+                    <div className="absolute inset-0 opacity-[0.04]" style={{ backgroundImage: 'radial-gradient(circle, #f5b51b 1px, transparent 1px)', backgroundSize: '16px 16px' }} />
 
                     <div className="relative flex items-start justify-between gap-4">
                         <div className="space-y-3 flex-1">
                             <div className="flex items-center gap-3">
                                 <div className="p-2 rounded-xl bg-white/10">
-                                    <Icon d={greetingIcon} className="w-5 h-5 text-[#f2b635]" />
+                                    <Icon d={greetingIcon} className="w-5 h-5 text-[#f5b51b]" />
                                 </div>
                                 <div>
                                     <div className="text-sm font-black text-white tracking-wide">{greeting}</div>
@@ -483,7 +483,7 @@ const Dashboard = ({ data = {} }) => {
                                 </div>
                             </div>
 
-                            <div className="border-l-2 border-[#f2b635]/30 pl-4">
+                            <div className="border-l-2 border-[#f5b51b]/30 pl-4">
                                 <p className="text-xs text-white/60 font-medium">{insight}</p>
                             </div>
                         </div>
@@ -492,8 +492,8 @@ const Dashboard = ({ data = {} }) => {
                             <img src={BRAND_LOGO} alt="Logo" className="hidden sm:block h-12 w-12 rounded-2xl border border-white/10 object-cover" />
                             <button
                                 onClick={() => setShowSettings(true)}
-                                className="p-2.5 rounded-xl bg-white/8 border border-white/10 text-white/60 hover:bg-white/15 hover:text-[#f2b635] transition-all group"
-                                title="Configuración"
+                                className="p-2.5 rounded-xl bg-white/8 border border-white/10 text-white/60 hover:bg-white/15 hover:text-[#f5b51b] transition-all group"
+                                title="Configuraci?n"
                             >
                                 <svg className="w-5 h-5 transition-transform group-hover:rotate-90" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth="2">
                                     <path strokeLinecap="round" strokeLinejoin="round" d={ICON.gear} />
@@ -507,7 +507,7 @@ const Dashboard = ({ data = {} }) => {
 
             {/* ========= ERP COCKPIT ========= */}
             <div className="dash-up dash-up-1 grid grid-cols-1 gap-4 xl:grid-cols-[1.5fr_0.9fr]">
-                <div className="relative overflow-hidden rounded-3xl border border-[#d9c5b6] bg-[#f9fbfc] shadow-xl shadow-[#2b1113]/5">
+                <div className="relative overflow-hidden rounded-3xl border border-[#d9c5b6] bg-[#f9fbfc] shadow-xl shadow-[#111827]/5">
                     <div className="border-b border-slate-200 bg-white/90 px-5 py-4">
                         <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
                             <div>
@@ -564,7 +564,7 @@ const Dashboard = ({ data = {} }) => {
                     </div>
                 </div>
 
-                <div className="rounded-3xl border border-[#d9c5b6] bg-white p-5 shadow-xl shadow-[#2b1113]/5">
+                <div className="rounded-3xl border border-[#d9c5b6] bg-white p-5 shadow-xl shadow-[#111827]/5">
                     <div className="mb-4 flex items-center justify-between">
                         <div>
                             <div className="text-[10px] font-black uppercase tracking-[0.32em] text-slate-400">Actividad diaria</div>
@@ -584,7 +584,7 @@ const Dashboard = ({ data = {} }) => {
                                         <div className="w-1.5 rounded-t-full bg-emerald-500 transition-all group-hover:bg-emerald-600" style={{ height: `${inflowHeight}%` }} />
                                         <div className="w-1.5 rounded-t-full bg-rose-400 transition-all group-hover:bg-rose-500" style={{ height: `${outflowHeight}%` }} />
                                     </div>
-                                    <div className={`text-[9px] font-black ${isToday ? 'text-[#a81d24]' : 'text-slate-400'}`}>{day.day}</div>
+                                    <div className={`text-[9px] font-black ${isToday ? 'text-[#e30613]' : 'text-slate-400'}`}>{day.day}</div>
                                 </div>
                             );
                         })}
@@ -629,8 +629,8 @@ const Dashboard = ({ data = {} }) => {
             }`}>
                 <div className="flex items-center justify-between flex-wrap gap-4">
                     <div>
-                        <div className="text-[10px] font-bold uppercase tracking-[0.3em] text-[#b98b2d] mb-1">Resultado del Mes</div>
-                        <div className="text-xs text-stone-400 mb-2">Ingresos − Gastos − Compras</div>
+                        <div className="text-[10px] font-bold uppercase tracking-[0.3em] text-[#b7791f] mb-1">Resultado del Mes</div>
+                        <div className="text-xs text-stone-400 mb-2">Ingresos - Gastos - Compras</div>
                         <div className={`text-3xl md:text-4xl font-black font-mono tracking-tighter ${utilidad >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>
                             {fmt(utilidad)}
                         </div>
@@ -648,14 +648,14 @@ const Dashboard = ({ data = {} }) => {
             {/* ========= BOTTOM GRID: Reminders + Alerts ========= */}
             <div className="dash-up dash-up-6 grid grid-cols-1 gap-4 md:gap-5 xl:grid-cols-3">
                 {/* --- REMINDERS --- */}
-                <div className="rounded-2xl border border-[#e6c9b8] bg-white overflow-hidden shadow-sm">
-                    <div className="flex items-center justify-between px-5 py-3 border-b border-[#ead5c5] bg-gradient-to-r from-stone-50 to-white">
+                <div className="rounded-2xl border border-[#d9e1e8] bg-white overflow-hidden shadow-sm">
+                    <div className="flex items-center justify-between px-5 py-3 border-b border-[#d8dee6] bg-gradient-to-r from-stone-50 to-white">
                         <div className="flex items-center gap-2.5">
-                            <div className="p-1.5 rounded-lg bg-[#fff0f0]">
-                                <Icon d={ICON.bell} className="w-4 h-4 text-[#a81d24]" />
+                            <div className="p-1.5 rounded-lg bg-[#fff1f2]">
+                                <Icon d={ICON.bell} className="w-4 h-4 text-[#e30613]" />
                             </div>
                             <div>
-                                <div className="text-xs font-bold uppercase tracking-wider text-[#5f1a1f]">Recordatorios</div>
+                                <div className="text-xs font-bold uppercase tracking-wider text-[#1f2937]">Recordatorios</div>
                                 {allReminders.length > 0 && (
                                     <div className="text-[10px] text-stone-400 font-medium">{doneCount} de {allReminders.length} completados</div>
                                 )}
@@ -663,7 +663,7 @@ const Dashboard = ({ data = {} }) => {
                         </div>
                         <button
                             onClick={() => setShowSettings(true)}
-                            className="p-1.5 rounded-lg text-stone-400 hover:text-[#a81d24] hover:bg-[#fff0f0] transition"
+                            className="p-1.5 rounded-lg text-stone-400 hover:text-[#e30613] hover:bg-[#fff1f2] transition"
                             title="Configurar"
                         >
                             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth="2">
@@ -680,7 +680,7 @@ const Dashboard = ({ data = {} }) => {
                             <div className="text-center py-8">
                                 <Icon d={ICON.bell} className="w-8 h-8 text-stone-200 mx-auto mb-2" />
                                 <p className="text-xs text-stone-400">
-                                    {dayOfMonth < 7 ? 'Los recordatorios aparecen a partir del día 7' : 'No hay recordatorios configurados'}
+                                    {dayOfMonth < 7 ? 'Los recordatorios aparecen a partir del d?a 7' : 'No hay recordatorios configurados'}
                                 </p>
                             </div>
                         ) : pendingReminders.length === 0 ? (
@@ -697,7 +697,7 @@ const Dashboard = ({ data = {} }) => {
                                     <div className="mb-3">
                                         <div className="h-1.5 rounded-full bg-stone-100 overflow-hidden">
                                             <div
-                                                className="h-full rounded-full bg-gradient-to-r from-[#a81d24] to-[#f2b635] transition-all duration-700"
+                                                className="h-full rounded-full bg-gradient-to-r from-[#e30613] to-[#f5b51b] transition-all duration-700"
                                                 style={{ width: `${allReminders.length > 0 ? (doneCount / allReminders.length) * 100 : 0}%` }}
                                             />
                                         </div>
@@ -706,14 +706,14 @@ const Dashboard = ({ data = {} }) => {
                                 {pendingReminders.map(r => (
                                     <div
                                         key={r.id}
-                                        className={`group flex items-center gap-3 rounded-xl border border-stone-100 px-3.5 py-2.5 transition-all hover:border-[#e6c9b8] hover:bg-[#fffaf7] ${justCompleted === r.id ? 'opacity-40 scale-95' : ''}`}
+                                        className={`group flex items-center gap-3 rounded-xl border border-stone-100 px-3.5 py-2.5 transition-all hover:border-[#d9e1e8] hover:bg-[#fffaf7] ${justCompleted === r.id ? 'opacity-40 scale-95' : ''}`}
                                     >
                                         <button
                                             onClick={() => markAsDone(r.id)}
-                                            className="w-5 h-5 rounded-md border-2 border-stone-300 flex items-center justify-center flex-shrink-0 group-hover:border-[#a81d24] transition-colors"
+                                            className="w-5 h-5 rounded-md border-2 border-stone-300 flex items-center justify-center flex-shrink-0 group-hover:border-[#e30613] transition-colors"
                                         >
                                             {justCompleted === r.id && (
-                                                <Icon d={ICON.check} className="w-3 h-3 text-[#a81d24] dash-check" />
+                                                <Icon d={ICON.check} className="w-3 h-3 text-[#e30613] dash-check" />
                                             )}
                                         </button>
                                         <span className="text-sm font-semibold text-stone-700 flex-1">{r.texto}</span>
@@ -731,15 +731,15 @@ const Dashboard = ({ data = {} }) => {
                 </div>
 
                 {/* --- FACTURAS VENCIDAS / PENDIENTES --- */}
-                <div className="rounded-2xl border border-[#e6c9b8] bg-white overflow-hidden shadow-sm">
-                    <div className="flex items-center gap-2.5 px-5 py-3 border-b border-[#ead5c5] bg-gradient-to-r from-stone-50 to-white">
+                <div className="rounded-2xl border border-[#d9e1e8] bg-white overflow-hidden shadow-sm">
+                    <div className="flex items-center gap-2.5 px-5 py-3 border-b border-[#d8dee6] bg-gradient-to-r from-stone-50 to-white">
                         <div className={`p-1.5 rounded-lg ${vencidas.length > 0 ? 'bg-amber-100' : 'bg-stone-100'}`}>
                             <Icon d={ICON.alert} className={`w-4 h-4 ${vencidas.length > 0 ? 'text-amber-600' : 'text-stone-400'}`} />
                         </div>
                         <div>
-                            <div className="text-xs font-bold uppercase tracking-wider text-[#5f1a1f]">Cuentas por Pagar</div>
+                            <div className="text-xs font-bold uppercase tracking-wider text-[#1f2937]">Cuentas por Pagar</div>
                             <div className="text-[10px] text-stone-400 font-medium">
-                                {facturasPendientes.length} pendientes{vencidas.length > 0 ? ` · ${vencidas.length} vencida(s)` : ''}
+                                {facturasPendientes.length} pendientes{vencidas.length > 0 ? ` ? ${vencidas.length} vencida(s)` : ''}
                             </div>
                         </div>
                     </div>
@@ -755,7 +755,7 @@ const Dashboard = ({ data = {} }) => {
                                     <div key={f.id} className="flex items-center justify-between py-1.5 border-t border-amber-200/50 first:border-0">
                                         <div className="min-w-0 flex-1">
                                             <div className="text-xs font-bold text-stone-800 truncate">{f.proveedor || f.supplier || 'Sin proveedor'}</div>
-                                            <div className="text-[10px] text-amber-600">{f.numero || ''}{f.vencimiento ? ` · Venció ${f.vencimiento}` : ''}</div>
+                                            <div className="text-[10px] text-amber-600">{f.numero || ''}{f.vencimiento ? ` ? Venci? ${f.vencimiento}` : ''}</div>
                                         </div>
                                         <div className="text-xs font-black text-amber-800 flex-shrink-0 ml-3 font-mono">{fmt(f.saldo)}</div>
                                     </div>
@@ -769,14 +769,14 @@ const Dashboard = ({ data = {} }) => {
                                     <Icon d={ICON.check} className="w-5 h-5 text-emerald-600" />
                                 </div>
                                 <p className="text-sm font-bold text-emerald-700">Sin pendientes</p>
-                                <p className="text-xs text-stone-400 mt-0.5">Todas las cuentas están al día</p>
+                                <p className="text-xs text-stone-400 mt-0.5">Todas las cuentas est?n al d?a</p>
                             </div>
                         ) : (
                             facturasPendientes.filter(f => !vencidas.includes(f)).slice(0, 6).map(f => (
                                 <div key={f.id} className="flex items-center justify-between rounded-xl border border-stone-100 px-3.5 py-2.5">
                                     <div className="min-w-0 flex-1">
                                         <div className="text-xs font-bold text-stone-700 truncate">{f.proveedor || f.supplier || 'Sin proveedor'}</div>
-                                        <div className="text-[10px] text-stone-400">{f.numero || ''}{f.vencimiento ? ` · Vence ${f.vencimiento}` : ''}</div>
+                                        <div className="text-[10px] text-stone-400">{f.numero || ''}{f.vencimiento ? ` ? Vence ${f.vencimiento}` : ''}</div>
                                     </div>
                                     <div className="text-xs font-black text-stone-800 flex-shrink-0 ml-3 font-mono">{fmt(f.saldo)}</div>
                                 </div>
@@ -786,13 +786,13 @@ const Dashboard = ({ data = {} }) => {
                 </div>
 
                 {/* --- ACTIVIDAD RECIENTE --- */}
-                <div className="rounded-2xl border border-[#e6c9b8] bg-white overflow-hidden shadow-sm">
-                    <div className="flex items-center gap-2.5 px-5 py-3 border-b border-[#ead5c5] bg-gradient-to-r from-stone-50 to-white">
+                <div className="rounded-2xl border border-[#d9e1e8] bg-white overflow-hidden shadow-sm">
+                    <div className="flex items-center gap-2.5 px-5 py-3 border-b border-[#d8dee6] bg-gradient-to-r from-stone-50 to-white">
                         <div className="p-1.5 rounded-lg bg-sky-100">
                             <Icon d={ICON.clock} className="w-4 h-4 text-sky-700" />
                         </div>
                         <div>
-                            <div className="text-xs font-bold uppercase tracking-wider text-[#5f1a1f]">Bitacora ejecutiva</div>
+                            <div className="text-xs font-bold uppercase tracking-wider text-[#1f2937]">Bitacora ejecutiva</div>
                             <div className="text-[10px] text-stone-400 font-medium">Ultimos movimientos del mes</div>
                         </div>
                     </div>
@@ -807,14 +807,14 @@ const Dashboard = ({ data = {} }) => {
                                     ? 'bg-amber-100 text-amber-700'
                                     : 'bg-rose-100 text-rose-700';
                             return (
-                                <div key={movement.id} className="group rounded-xl border border-stone-100 bg-white px-3.5 py-3 transition hover:border-[#e6c9b8] hover:bg-[#fffaf7]">
+                                <div key={movement.id} className="group rounded-xl border border-stone-100 bg-white px-3.5 py-3 transition hover:border-[#d9e1e8] hover:bg-[#fffaf7]">
                                     <div className="flex items-start justify-between gap-3">
                                         <div className="min-w-0">
                                             <span className={`rounded-full px-2 py-0.5 text-[10px] font-black uppercase tracking-wider ${accentClass}`}>{movement.type}</span>
                                             <div className="mt-1 truncate text-sm font-black text-stone-800">{movement.title}</div>
                                             <div className="text-[10px] font-semibold text-stone-400">{movement.date || 'Sin fecha'}</div>
                                         </div>
-                                        <div className="font-mono text-xs font-black text-[#7f1218]">{fmt(movement.amount)}</div>
+                                        <div className="font-mono text-xs font-black text-[#9f111a]">{fmt(movement.amount)}</div>
                                     </div>
                                 </div>
                             );
@@ -829,10 +829,10 @@ const Dashboard = ({ data = {} }) => {
 // --- LOADING / ERROR ---
 
 const AppLoadingState = () => (
-    <div className="flex min-h-screen flex-col items-center justify-center gap-5 bg-[#fff8f3] px-6 text-center text-[#7f1218]">
-        <img src={APP_BRAND_LOGO} alt={APP_BRAND_NAME} className="h-28 w-28 rounded-[1.75rem] border border-[#edd5c5] bg-white p-2 shadow-xl shadow-[#7f1218]/10" />
+    <div className="flex min-h-screen flex-col items-center justify-center gap-5 bg-[#fff8f3] px-6 text-center text-[#9f111a]">
+        <img src={APP_BRAND_LOGO} alt={APP_BRAND_NAME} className="h-28 w-28 rounded-[1.75rem] border border-[#edd5c5] bg-white p-2 shadow-xl shadow-[#9f111a]/10" />
         <div>
-            <p className="text-xs font-bold uppercase tracking-[0.45em] text-[#b98b2d]">{APP_BRAND_NAME}</p>
+            <p className="text-xs font-bold uppercase tracking-[0.45em] text-[#b7791f]">{APP_BRAND_NAME}</p>
             <p className="mt-3 text-2xl font-black">Cargando informacion contable...</p>
         </div>
     </div>
@@ -854,11 +854,11 @@ const getFirestoreErrorMessage = (error) => {
 
 const AppErrorState = ({ error }) => (
     <div className="flex min-h-screen flex-col items-center justify-center bg-[#fff4f1] p-6 text-center">
-        <img src={APP_BRAND_LOGO} alt={APP_BRAND_NAME} className="mb-6 h-32 w-32 rounded-[2rem] border border-[#f0d3c8] bg-white p-2 shadow-xl shadow-[#7f1218]/10" />
-        <h1 className="text-3xl font-black text-[#8a141b]">Error de conexion</h1>
+        <img src={APP_BRAND_LOGO} alt={APP_BRAND_NAME} className="mb-6 h-32 w-32 rounded-[2rem] border border-[#f0d3c8] bg-white p-2 shadow-xl shadow-[#9f111a]/10" />
+        <h1 className="text-3xl font-black text-[#9f111a]">Error de conexion</h1>
         <p className="mt-3 max-w-md text-sm font-medium text-[#6f4d48]">{getFirestoreErrorMessage(error)}</p>
-        {error?.code && <p className="mt-2 font-mono text-xs font-bold text-[#a81d24]">{error.code}</p>}
-        <button onClick={() => window.location.reload()} className="mt-6 rounded-full bg-[#a81d24] px-6 py-3 text-sm font-bold text-white shadow-lg shadow-[#a81d24]/25 transition hover:bg-[#8c171d]">Reintentar</button>
+        {error?.code && <p className="mt-2 font-mono text-xs font-bold text-[#e30613]">{error.code}</p>}
+        <button onClick={() => window.location.reload()} className="mt-6 rounded-full bg-[#e30613] px-6 py-3 text-sm font-bold text-white shadow-lg shadow-[#e30613]/25 transition hover:bg-[#8c171d]">Reintentar</button>
     </div>
 );
 

@@ -34,16 +34,16 @@ const Icon = ({ path, className = "w-5 h-5" }) => (
 // --- COMPONENTES UI ---
 
 const Card = ({ title, children, className = "", right, subtitle, icon, gradient = false }) => (
-    <div className={`rounded-xl shadow-md border border-[#e6c9b8]/60 bg-white overflow-hidden ${className}`}>
-        <div className={`flex justify-between items-center px-5 py-3 border-b ${gradient ? 'bg-[#7f1218] border-[#5e1318]' : 'bg-stone-50 border-[#ead5c5]'}`}>
+    <div className={`rounded-xl shadow-md border border-[#d9e1e8]/60 bg-white overflow-hidden ${className}`}>
+        <div className={`flex justify-between items-center px-5 py-3 border-b ${gradient ? 'bg-[#9f111a] border-[#5c0f14]' : 'bg-stone-50 border-[#d8dee6]'}`}>
             <div className="flex items-center gap-3">
                 {icon && (
-                    <div className={`p-2 rounded-lg ${gradient ? 'bg-white/10' : 'bg-[#fff0f0]'}`}>
-                        <Icon path={Icons[icon]} className={`w-4 h-4 ${gradient ? 'text-white' : 'text-[#a81d24]'}`} />
+                    <div className={`p-2 rounded-lg ${gradient ? 'bg-white/10' : 'bg-[#fff1f2]'}`}>
+                        <Icon path={Icons[icon]} className={`w-4 h-4 ${gradient ? 'text-white' : 'text-[#e30613]'}`} />
                     </div>
                 )}
                 <div>
-                    <h3 className={`text-sm font-bold uppercase tracking-wider ${gradient ? 'text-white' : 'text-[#5f1a1f]'}`}>{title}</h3>
+                    <h3 className={`text-sm font-bold uppercase tracking-wider ${gradient ? 'text-white' : 'text-[#1f2937]'}`}>{title}</h3>
                     {subtitle && <p className={`text-xs mt-0.5 ${gradient ? 'text-white/60' : 'text-stone-400'}`}>{subtitle}</p>}
                 </div>
             </div>
@@ -61,7 +61,7 @@ const Select = ({ label, icon, value, onChange, options = [] }) => (
             <select
                 value={value}
                 onChange={onChange}
-                className={`w-full bg-stone-50 border border-stone-200 rounded-xl px-4 py-2.5 font-semibold text-stone-700 outline-none transition-all focus:border-[#a81d24] focus:ring-2 focus:ring-[#a81d24]/15 appearance-none cursor-pointer ${icon ? 'pl-10' : ''}`}
+                className={`w-full bg-stone-50 border border-stone-200 rounded-xl px-4 py-2.5 font-semibold text-stone-700 outline-none transition-all focus:border-[#e30613] focus:ring-2 focus:ring-[#e30613]/15 appearance-none cursor-pointer ${icon ? 'pl-10' : ''}`}
             >
                 {options}
             </select>
@@ -72,12 +72,12 @@ const Select = ({ label, icon, value, onChange, options = [] }) => (
 
 const StatCard = ({ title, value, subtitle, icon, variant = 'default', trend }) => {
     const variants = {
-        default: 'bg-white border-[#e6c9b8]',
-        wine: 'bg-[#a81d24] text-white border-[#7f1218]',
+        default: 'bg-white border-[#d9e1e8]',
+        wine: 'bg-[#e30613] text-white border-[#9f111a]',
         success: 'bg-emerald-600 text-white border-emerald-700',
         danger: 'bg-rose-600 text-white border-rose-700',
         warning: 'bg-amber-500 text-white border-amber-600',
-        dark: 'bg-[#2b1113] text-white border-[#1a0a0b]'
+        dark: 'bg-[#111827] text-white border-[#1a0a0b]'
     };
 
     const isColored = variant !== 'default';
@@ -85,8 +85,8 @@ const StatCard = ({ title, value, subtitle, icon, variant = 'default', trend }) 
     return (
         <div className={`rounded-xl p-5 border shadow-sm ${variants[variant]}`}>
             <div className="flex items-start justify-between mb-3">
-                <div className={`p-2.5 rounded-xl ${isColored ? 'bg-white/20' : 'bg-[#fff0f0]'}`}>
-                    <Icon path={Icons[icon]} className={`w-5 h-5 ${isColored ? 'text-white' : 'text-[#a81d24]'}`} />
+                <div className={`p-2.5 rounded-xl ${isColored ? 'bg-white/20' : 'bg-[#fff1f2]'}`}>
+                    <Icon path={Icons[icon]} className={`w-5 h-5 ${isColored ? 'text-white' : 'text-[#e30613]'}`} />
                 </div>
                 {trend !== undefined && (
                     <div className={`flex items-center gap-1 text-xs font-bold ${isColored ? 'text-white/70' : (parseFloat(trend) >= 0 ? 'text-emerald-600' : 'text-rose-600')}`}>
@@ -95,7 +95,7 @@ const StatCard = ({ title, value, subtitle, icon, variant = 'default', trend }) 
                     </div>
                 )}
             </div>
-            <div className={`text-2xl font-black mb-0.5 ${isColored ? 'text-white' : 'text-[#2b1113]'}`}>{value}</div>
+            <div className={`text-2xl font-black mb-0.5 ${isColored ? 'text-white' : 'text-[#111827]'}`}>{value}</div>
             <div className={`text-xs font-bold uppercase tracking-wider ${isColored ? 'text-white/70' : 'text-stone-500'}`}>{title}</div>
             {subtitle && <div className={`text-xs mt-1 ${isColored ? 'text-white/50' : 'text-stone-400'}`}>{subtitle}</div>}
         </div>
@@ -109,15 +109,15 @@ const ExpenseDetailModal = ({ category, expenses, onClose }) => {
 
     return (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4" onClick={onClose}>
-            <div className="absolute inset-0 bg-[#2b1113]/40 backdrop-blur-sm" />
+            <div className="absolute inset-0 bg-[#111827]/40 backdrop-blur-sm" />
             <div
-                className="relative w-full max-w-lg rounded-2xl border border-[#e6c9b8] bg-white shadow-2xl shadow-[#7f1218]/20 overflow-hidden"
+                className="relative w-full max-w-lg rounded-2xl border border-[#d9e1e8] bg-white shadow-2xl shadow-[#9f111a]/20 overflow-hidden"
                 onClick={e => e.stopPropagation()}
             >
                 {/* Modal header */}
-                <div className="bg-[#7f1218] px-5 py-4 flex items-center justify-between">
+                <div className="bg-[#9f111a] px-5 py-4 flex items-center justify-between">
                     <div>
-                        <div className="text-xs font-bold uppercase tracking-[0.3em] text-[#f2b635] mb-0.5">Detalle de transacciones</div>
+                        <div className="text-xs font-bold uppercase tracking-[0.3em] text-[#f5b51b] mb-0.5">Detalle de transacciones</div>
                         <div className="text-base font-black text-white uppercase">{category}</div>
                     </div>
                     <button
@@ -139,23 +139,23 @@ const ExpenseDetailModal = ({ category, expenses, onClose }) => {
                                     <div className="text-xs font-bold text-stone-400">{item.dateStr}</div>
                                     <div className="text-sm font-semibold text-stone-800">{item.description}</div>
                                 </div>
-                                <div className="text-sm font-black text-[#7f1218]">{fmt(peso(item.amount))}</div>
+                                <div className="text-sm font-black text-[#9f111a]">{fmt(peso(item.amount))}</div>
                             </div>
                         ))
                     )}
                 </div>
 
                 {/* Modal footer */}
-                <div className="border-t border-[#ead5c5] bg-stone-50 px-5 py-3 flex items-center justify-between">
+                <div className="border-t border-[#d8dee6] bg-stone-50 px-5 py-3 flex items-center justify-between">
                     <div className="text-xs font-bold uppercase tracking-wider text-stone-500">Total {category}</div>
-                    <div className="text-lg font-black text-[#7f1218]">{fmt(total)}</div>
+                    <div className="text-lg font-black text-[#9f111a]">{fmt(total)}</div>
                 </div>
             </div>
         </div>
     );
 };
 
-// --- LÓGICA DE AGREGACIÓN (preservada exactamente) ---
+// --- LOGICA DE AGREGACION (preservada exactamente) ---
 const aggregateData = (data) => {
     const results = {};
     const { ingresos = [], gastos = [], inventarios = [], compras = [], presupuestos = [], cuentas_por_pagar: facturasCredito = [] } = data;
@@ -569,7 +569,7 @@ const TaxIncomeFlowDiagram = ({ totals, selectedMonth }) => {
                     <div>
                         <div className="text-[10px] font-black uppercase tracking-[0.35em] text-slate-400">Income statement flow</div>
                         <h3 className="mt-1 text-2xl font-black text-slate-900">Estado de resultado tributario</h3>
-                        <p className="text-xs font-semibold text-slate-500">Periodo {selectedMonth || 'Todos'} · ventas subtotal, IMI 1% e IR 30%</p>
+                        <p className="text-xs font-semibold text-slate-500">Periodo {selectedMonth || 'Todos'} ? ventas subtotal, IMI 1% e IR 30%</p>
                     </div>
                     <div className={`rounded-full px-4 py-2 text-xs font-black uppercase tracking-wider ${totals.netProfitAfterTax >= 0 ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'}`}>
                         Margen neto {margin.toFixed(1)}%
@@ -664,7 +664,7 @@ const TaxReportsPanel = ({ taxReport, taxTab, setTaxTab, selectedMonth, setSelec
                         key={tab}
                         onClick={() => setTaxTab(tab)}
                         className={`rounded-lg px-4 py-2 text-xs font-bold uppercase tracking-wide transition ${
-                            taxTab === tab ? 'bg-[#a81d24] text-white' : 'bg-white border border-stone-200 text-stone-600 hover:bg-stone-50'
+                            taxTab === tab ? 'bg-[#e30613] text-white' : 'bg-white border border-stone-200 text-stone-600 hover:bg-stone-50'
                         }`}
                     >
                         {tab}
@@ -683,7 +683,7 @@ const TaxReportsPanel = ({ taxReport, taxTab, setTaxTab, selectedMonth, setSelec
                         title="Detalle de IVA"
                         subtitle="Ventas, compras y gastos del periodo"
                         icon="receipt"
-                        right={<button onClick={() => downloadCsv(`reporte-iva-${selectedMonth}.csv`, taxReport.ivaRows)} className="rounded-lg bg-[#a81d24] px-3 py-1.5 text-xs font-bold text-white">Exportar CSV</button>}
+                        right={<button onClick={() => downloadCsv(`reporte-iva-${selectedMonth}.csv`, taxReport.ivaRows)} className="rounded-lg bg-[#e30613] px-3 py-1.5 text-xs font-bold text-white">Exportar CSV</button>}
                     >
                         <div className="overflow-x-auto">
                             <table className={tableClass}>
@@ -728,11 +728,11 @@ const TaxReportsPanel = ({ taxReport, taxTab, setTaxTab, selectedMonth, setSelec
                         title="Reporte Membretado de Retenciones"
                         subtitle="Detalle fiscal para soporte ante DGI"
                         icon="receipt"
-                        right={<button onClick={() => downloadCsv(`reporte-retenciones-${selectedMonth}.csv`, taxReport.retentionRows)} className="rounded-lg bg-[#a81d24] px-3 py-1.5 text-xs font-bold text-white">Exportar CSV</button>}
+                        right={<button onClick={() => downloadCsv(`reporte-retenciones-${selectedMonth}.csv`, taxReport.retentionRows)} className="rounded-lg bg-[#e30613] px-3 py-1.5 text-xs font-bold text-white">Exportar CSV</button>}
                     >
-                        <div className="mb-4 rounded-xl border border-[#ead5c5] bg-[#fff8f5] p-4">
-                            <div className="text-xs font-bold uppercase tracking-[0.3em] text-[#a81d24]">{APP_BRAND_NAME}</div>
-                            <div className="text-lg font-black text-[#2b1113]">Reporte de retenciones fiscales</div>
+                        <div className="mb-4 rounded-xl border border-[#d8dee6] bg-[#f8fafc] p-4">
+                            <div className="text-xs font-bold uppercase tracking-[0.3em] text-[#e30613]">{APP_BRAND_NAME}</div>
+                            <div className="text-lg font-black text-[#111827]">Reporte de retenciones fiscales</div>
                             <div className="text-xs font-semibold text-stone-500">Periodo: {selectedMonth || 'Todos'}</div>
                         </div>
                         <div className="overflow-x-auto">
@@ -757,7 +757,7 @@ const TaxReportsPanel = ({ taxReport, taxTab, setTaxTab, selectedMonth, setSelec
                                             <td className={tdClass}>{row.source}</td>
                                             <td className={`${tdClass} text-right font-semibold`}>{fmt(row.retentionIr2)}</td>
                                             <td className={`${tdClass} text-right font-semibold`}>{fmt(row.retentionMunicipal1)}</td>
-                                            <td className={`${tdClass} text-right font-black text-[#7f1218]`}>{fmt(row.retentionTotal)}</td>
+                                            <td className={`${tdClass} text-right font-black text-[#9f111a]`}>{fmt(row.retentionTotal)}</td>
                                         </tr>
                                     ))}
                                 </tbody>
@@ -783,29 +783,29 @@ const TaxReportsPanel = ({ taxReport, taxTab, setTaxTab, selectedMonth, setSelec
                         className="stamped-tax-report"
                         right={
                             <div className="no-print flex flex-wrap gap-2">
-                                <button onClick={() => downloadCsv(`resumen-facturas-membretadas-${selectedMonth}.csv`, taxReport.stampedInvoiceDailyRows)} className="rounded-lg border border-[#a81d24] px-3 py-1.5 text-xs font-bold text-[#a81d24]">Exportar resumen</button>
-                                <button onClick={() => downloadCsv(`facturas-membretadas-${selectedMonth}.csv`, taxReport.stampedInvoiceRows)} className="rounded-lg border border-[#a81d24] px-3 py-1.5 text-xs font-bold text-[#a81d24]">Exportar detalle</button>
-                                <button onClick={handlePrintStampedInvoices} className="rounded-lg bg-[#a81d24] px-3 py-1.5 text-xs font-bold text-white">Imprimir membretado</button>
+                                <button onClick={() => downloadCsv(`resumen-facturas-membretadas-${selectedMonth}.csv`, taxReport.stampedInvoiceDailyRows)} className="rounded-lg border border-[#e30613] px-3 py-1.5 text-xs font-bold text-[#e30613]">Exportar resumen</button>
+                                <button onClick={() => downloadCsv(`facturas-membretadas-${selectedMonth}.csv`, taxReport.stampedInvoiceRows)} className="rounded-lg border border-[#e30613] px-3 py-1.5 text-xs font-bold text-[#e30613]">Exportar detalle</button>
+                                <button onClick={handlePrintStampedInvoices} className="rounded-lg bg-[#e30613] px-3 py-1.5 text-xs font-bold text-white">Imprimir membretado</button>
                             </div>
                         }
                     >
-                        <div className="mb-5 rounded-2xl border border-[#d6b8a7] bg-gradient-to-br from-white via-[#fff8f5] to-[#f7e8dc] p-5">
+                        <div className="mb-5 rounded-2xl border border-[#d6b8a7] bg-gradient-to-br from-white via-[#f8fafc] to-[#f7e8dc] p-5">
                             <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
                                 <div className="flex items-center gap-4">
-                                    <img src={APP_BRAND_LOGO} alt={APP_BRAND_NAME} className="h-20 w-20 rounded-2xl border border-[#ead5c5] bg-white object-contain p-2 shadow-sm" />
+                                    <img src={APP_BRAND_LOGO} alt={APP_BRAND_NAME} className="h-20 w-20 rounded-2xl border border-[#d8dee6] bg-white object-contain p-2 shadow-sm" />
                                     <div>
-                                        <div className="text-xs font-black uppercase tracking-[0.35em] text-[#a81d24]">{APP_BRAND_NAME}</div>
-                                        <div className="mt-1 text-2xl font-black uppercase text-[#2b1113]">Reporte de facturas membretadas</div>
+                                        <div className="text-xs font-black uppercase tracking-[0.35em] text-[#e30613]">{APP_BRAND_NAME}</div>
+                                        <div className="mt-1 text-2xl font-black uppercase text-[#111827]">Reporte de facturas membretadas</div>
                                         <div className="text-xs font-semibold uppercase tracking-[0.2em] text-stone-500">Documento de soporte fiscal para agentes fiscales</div>
                                     </div>
                                 </div>
-                                <div className="rounded-xl border border-[#ead5c5] bg-white/80 px-4 py-3 text-left md:text-right">
+                                <div className="rounded-xl border border-[#d8dee6] bg-white/80 px-4 py-3 text-left md:text-right">
                                     <div className="text-xs font-bold uppercase tracking-wider text-stone-500">Periodo fiscal</div>
-                                    <div className="text-xl font-black text-[#7f1218]">{selectedMonth || 'Todos'}</div>
+                                    <div className="text-xl font-black text-[#9f111a]">{selectedMonth || 'Todos'}</div>
                                     <div className="mt-1 text-xs font-semibold text-stone-500">Base: facturas membretadas emitidas</div>
                                 </div>
                             </div>
-                            <div className="mt-4 rounded-xl border border-[#a81d24]/20 bg-white px-4 py-3 text-sm font-semibold text-[#5f1a1f]">
+                            <div className="mt-4 rounded-xl border border-[#e30613]/20 bg-white px-4 py-3 text-sm font-semibold text-[#1f2937]">
                                 Este reporte formaliza unicamente las facturas membretadas registradas. No toma como total la venta diaria SICAR; la venta diaria se muestra solo como referencia de origen.
                             </div>
                         </div>
@@ -813,28 +813,28 @@ const TaxReportsPanel = ({ taxReport, taxTab, setTaxTab, selectedMonth, setSelec
                         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3 mb-5">
                             <div className="rounded-xl border border-stone-200 bg-white px-4 py-3">
                                 <div className="text-xs font-bold uppercase tracking-wider text-stone-500">Subtotal membretado</div>
-                                <div className="mt-1 text-lg font-black text-[#7f1218]">{fmt(taxReport.totals.stampedInvoiceSubtotal)}</div>
+                                <div className="mt-1 text-lg font-black text-[#9f111a]">{fmt(taxReport.totals.stampedInvoiceSubtotal)}</div>
                             </div>
                             <div className="rounded-xl border border-stone-200 bg-white px-4 py-3">
                                 <div className="text-xs font-bold uppercase tracking-wider text-stone-500">IVA membretado</div>
-                                <div className="mt-1 text-lg font-black text-[#7f1218]">{fmt(taxReport.totals.stampedInvoiceIva)}</div>
+                                <div className="mt-1 text-lg font-black text-[#9f111a]">{fmt(taxReport.totals.stampedInvoiceIva)}</div>
                             </div>
                             <div className="rounded-xl border border-stone-200 bg-white px-4 py-3">
                                 <div className="text-xs font-bold uppercase tracking-wider text-stone-500">Total membretado</div>
-                                <div className="mt-1 text-lg font-black text-[#7f1218]">{fmt(taxReport.totals.stampedInvoiceTotal)}</div>
+                                <div className="mt-1 text-lg font-black text-[#9f111a]">{fmt(taxReport.totals.stampedInvoiceTotal)}</div>
                             </div>
                             <div className="rounded-xl border border-stone-200 bg-white px-4 py-3">
                                 <div className="text-xs font-bold uppercase tracking-wider text-stone-500">Retenciones</div>
-                                <div className="mt-1 text-lg font-black text-[#7f1218]">{fmt(taxReport.totals.stampedInvoiceRetentions)}</div>
+                                <div className="mt-1 text-lg font-black text-[#9f111a]">{fmt(taxReport.totals.stampedInvoiceRetentions)}</div>
                             </div>
                             <div className="rounded-xl border border-stone-200 bg-white px-4 py-3">
                                 <div className="text-xs font-bold uppercase tracking-wider text-stone-500">Neto despues de retenciones</div>
-                                <div className="mt-1 text-lg font-black text-[#7f1218]">{fmt(taxReport.totals.stampedInvoiceNet)}</div>
+                                <div className="mt-1 text-lg font-black text-[#9f111a]">{fmt(taxReport.totals.stampedInvoiceNet)}</div>
                             </div>
                         </div>
 
                         <div className="mb-5 overflow-x-auto">
-                            <div className="mb-2 text-xs font-black uppercase tracking-[0.2em] text-[#7f1218]">Resumen por venta diaria</div>
+                            <div className="mb-2 text-xs font-black uppercase tracking-[0.2em] text-[#9f111a]">Resumen por venta diaria</div>
                             <table className={tableClass}>
                                 <thead>
                                     <tr>
@@ -868,7 +868,7 @@ const TaxReportsPanel = ({ taxReport, taxTab, setTaxTab, selectedMonth, setSelec
                         </div>
 
                         <div className="overflow-x-auto">
-                            <div className="mb-2 text-xs font-black uppercase tracking-[0.2em] text-[#7f1218]">Detalle factura por factura</div>
+                            <div className="mb-2 text-xs font-black uppercase tracking-[0.2em] text-[#9f111a]">Detalle factura por factura</div>
                             <table className={tableClass}>
                                 <thead>
                                     <tr>
@@ -898,7 +898,7 @@ const TaxReportsPanel = ({ taxReport, taxTab, setTaxTab, selectedMonth, setSelec
                                             <td className={`${tdClass} text-right font-semibold`}>{fmt(row.total)}</td>
                                             <td className={`${tdClass} text-right font-semibold`}>{fmt(row.retentionIr2)}</td>
                                             <td className={`${tdClass} text-right font-semibold`}>{fmt(row.retentionMunicipal1)}</td>
-                                            <td className={`${tdClass} text-right font-black text-[#7f1218]`}>{fmt(row.netTotal)}</td>
+                                            <td className={`${tdClass} text-right font-black text-[#9f111a]`}>{fmt(row.netTotal)}</td>
                                         </tr>
                                     ))}
                                 </tbody>
@@ -969,7 +969,7 @@ const TaxReportsPanel = ({ taxReport, taxTab, setTaxTab, selectedMonth, setSelec
                             ].map(([label, value]) => (
                                 <div key={label} className="flex items-center justify-between rounded-xl border border-stone-200 bg-white px-4 py-3">
                                     <span className="font-bold text-stone-600">{label}</span>
-                                    <span className={`font-black ${value < 0 ? 'text-rose-700' : 'text-[#7f1218]'}`}>{fmt(value)}</span>
+                                    <span className={`font-black ${value < 0 ? 'text-rose-700' : 'text-[#9f111a]'}`}>{fmt(value)}</span>
                                 </div>
                             ))}
                         </div>
@@ -1096,19 +1096,20 @@ export default function Reports({ data }) {
             />
 
             {/* Page header */}
-            <div className="overflow-hidden rounded-xl border border-[#e6c9b8] bg-white shadow-sm">
-                <div className="h-1 bg-gradient-to-r from-[#a81d24] via-[#f2b635] to-[#a81d24]" />
-                <div className="px-6 py-4">
-                    <div className="inline-flex items-center gap-2 rounded-full border border-[#f2b635]/40 bg-[#fdf1d6] px-3 py-1 text-xs font-bold uppercase tracking-[0.3em] text-[#8a141b] mb-2">
-                        {APP_BRAND_NAME}
+            <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+                <div className="flex flex-col gap-3 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+                    <div>
+                        <div className="text-[10px] font-black uppercase tracking-[0.34em] text-[#e30613]">{APP_BRAND_NAME}</div>
+                        <h1 className="mt-1 text-xl font-black text-slate-950">Reportes financieros</h1>
                     </div>
-                    <h1 className="text-xl font-black text-[#7f1218]">Reportes <span className="text-[#a81d24]">Financieros</span></h1>
-                    <p className="text-xs font-medium text-[#8b6a5f] mt-0.5">Análisis de resultados, balance y métricas</p>
+                    <div className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-[10px] font-black uppercase tracking-[0.22em] text-slate-500">
+                        {activeTab}
+                    </div>
                 </div>
             </div>
 
             {/* Tabs */}
-            <div className="overflow-hidden rounded-xl border border-[#e6c9b8] bg-white shadow-sm p-2">
+            <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white p-2 shadow-sm">
                 <div className="flex flex-wrap gap-1.5">
                     {Object.entries(tabsConfig).map(([tab, config]) => (
                         <button
@@ -1116,7 +1117,7 @@ export default function Reports({ data }) {
                             onClick={() => setActiveTab(tab)}
                             className={`flex items-center gap-2 px-4 py-2.5 rounded-lg font-bold text-xs uppercase tracking-wide transition-all ${
                                 activeTab === tab
-                                    ? 'bg-[#a81d24] text-white shadow-sm shadow-red-900/20'
+                                    ? 'bg-[#e30613] text-white shadow-sm shadow-red-900/20'
                                     : 'text-stone-600 hover:bg-stone-100'
                             }`}
                         >
@@ -1156,7 +1157,7 @@ export default function Reports({ data }) {
                     {/* Filtro de periodo */}
                     <div className="max-w-sm">
                         <Select
-                            label="Periodo de Análisis"
+                            label="Periodo de An?lisis"
                             icon="calendar"
                             value={selectedMonth || ''}
                             onChange={(e) => {
@@ -1224,11 +1225,11 @@ export default function Reports({ data }) {
                                         <div className="px-3 py-2 bg-stone-50 border-b border-stone-200">
                                             <div className="text-xs font-bold uppercase tracking-wide text-stone-500">Costo de Venta</div>
                                         </div>
-                                        {/* Compra de Mercancía */}
+                                        {/* Compra de Mercanc?a */}
                                         <div className="flex items-center justify-between px-3 py-2.5 border-b border-stone-100">
                                             <div className="flex items-center gap-2">
                                                 <div className="w-1.5 h-1.5 rounded-full bg-stone-400" />
-                                                <div className="text-xs font-semibold text-stone-600">Compra de Mercancía</div>
+                                                <div className="text-xs font-semibold text-stone-600">Compra de Mercanc?a</div>
                                             </div>
                                             <div className="text-sm font-bold text-stone-700">{fmt(totalPurchasesOnly)}</div>
                                         </div>
@@ -1236,10 +1237,10 @@ export default function Reports({ data }) {
                                         <div className="flex items-center justify-between px-3 py-2.5 border-b border-stone-100">
                                             <div className="flex items-center gap-2">
                                                 <div className="w-1.5 h-1.5 rounded-full bg-stone-400" />
-                                                <div className="text-xs font-semibold text-stone-600">Ajuste Inv. (Inicial − Final)</div>
+                                                <div className="text-xs font-semibold text-stone-600">Ajuste Inv. (Inicial - Final)</div>
                                             </div>
                                             <div className={`text-sm font-bold ${inventoryAdjustment >= 0 ? 'text-stone-700' : 'text-emerald-700'}`}>
-                                                {inventoryAdjustment >= 0 ? '' : '−'}{fmt(Math.abs(inventoryAdjustment))}
+                                                {inventoryAdjustment >= 0 ? '' : '-'}{fmt(Math.abs(inventoryAdjustment))}
                                             </div>
                                         </div>
                                         {/* Costo con merma */}
@@ -1286,7 +1287,7 @@ export default function Reports({ data }) {
 
                                     {/* Utilidad Neta */}
                                     <div className={`flex items-center justify-between rounded-xl p-3 ${
-                                        totalNetProfit >= 0 ? 'bg-[#7f1218]' : 'bg-rose-600'
+                                        totalNetProfit >= 0 ? 'bg-[#9f111a]' : 'bg-rose-600'
                                     }`}>
                                         <div className="flex items-center gap-3">
                                             <div className="w-9 h-9 rounded-xl bg-white/20 flex items-center justify-center">
@@ -1312,14 +1313,14 @@ export default function Reports({ data }) {
                         <div className="lg:col-span-2">
                             <Card
                                 title="Desglose Operativo"
-                                subtitle="Haz clic en una categoría para ver el detalle"
+                                subtitle="Haz clic en una categor?a para ver el detalle"
                                 icon="receipt"
                             >
                                 <div className="overflow-x-auto custom-scrollbar">
                                     <table className="w-full">
                                         <thead>
-                                            <tr className="text-left border-b-2 border-[#ead5c5]">
-                                                <th className="pb-3 text-xs font-bold uppercase tracking-wider text-stone-500">Categoría</th>
+                                            <tr className="text-left border-b-2 border-[#d8dee6]">
+                                                <th className="pb-3 text-xs font-bold uppercase tracking-wider text-stone-500">Categor?a</th>
                                                 <th className="pb-3 text-xs font-bold uppercase tracking-wider text-stone-500 text-right">Real</th>
                                                 <th className="pb-3 text-xs font-bold uppercase tracking-wider text-stone-500 text-right">Presupuesto</th>
                                                 <th className="pb-3 text-xs font-bold uppercase tracking-wider text-stone-500 text-right">Ejec.</th>
@@ -1334,15 +1335,15 @@ export default function Reports({ data }) {
                                                 return (
                                                     <tr
                                                         key={category}
-                                                        className={`transition-colors ${hasData ? 'cursor-pointer hover:bg-[#fff8f5]' : 'opacity-60'}`}
+                                                        className={`transition-colors ${hasData ? 'cursor-pointer hover:bg-[#f8fafc]' : 'opacity-60'}`}
                                                         onClick={() => hasData && setModalCategory(category)}
                                                     >
                                                         <td className="py-3">
                                                             <div className="flex items-center gap-2">
-                                                                <div className={`w-5 h-5 rounded-md flex items-center justify-center ${hasData ? 'bg-[#fff0f0]' : 'bg-stone-100'}`}>
+                                                                <div className={`w-5 h-5 rounded-md flex items-center justify-center ${hasData ? 'bg-[#fff1f2]' : 'bg-stone-100'}`}>
                                                                     <Icon
                                                                         path={Icons.receipt}
-                                                                        className={`w-3 h-3 ${hasData ? 'text-[#a81d24]' : 'text-stone-400'}`}
+                                                                        className={`w-3 h-3 ${hasData ? 'text-[#e30613]' : 'text-stone-400'}`}
                                                                     />
                                                                 </div>
                                                                 <div>
@@ -1351,7 +1352,7 @@ export default function Reports({ data }) {
                                                                         <span className="text-[10px] bg-stone-100 px-1.5 py-0.5 rounded text-stone-500 font-medium">Sin movimientos</span>
                                                                     )}
                                                                     {hasData && (
-                                                                        <div className="text-[10px] text-[#a81d24] font-semibold">Ver detalle →</div>
+                                                                        <div className="text-[10px] text-[#e30613] font-semibold">Ver detalle &gt;</div>
                                                                     )}
                                                                 </div>
                                                             </div>
@@ -1361,7 +1362,7 @@ export default function Reports({ data }) {
                                                         </td>
                                                         <td className="py-3 text-right">
                                                             <div className="text-stone-500 text-sm font-medium">
-                                                                {budget > 0 ? fmt(budget) : '—'}
+                                                                {budget > 0 ? fmt(budget) : '-'}
                                                             </div>
                                                         </td>
                                                         <td className="py-3 text-right">
@@ -1376,7 +1377,7 @@ export default function Reports({ data }) {
                                                                     {execPercent.toFixed(1)}%
                                                                 </div>
                                                             ) : (
-                                                                <span className="text-stone-400">—</span>
+                                                                <span className="text-stone-400">-</span>
                                                             )}
                                                         </td>
                                                     </tr>
@@ -1384,7 +1385,7 @@ export default function Reports({ data }) {
                                             })}
                                         </tbody>
                                         <tfoot>
-                                            <tr className="border-t-2 border-[#7f1218] bg-stone-50">
+                                            <tr className="border-t-2 border-[#9f111a] bg-stone-50">
                                                 <td className="py-3 pl-2">
                                                     <div className="font-bold text-stone-800 uppercase text-xs tracking-wider">Total Operativo</div>
                                                 </td>
@@ -1414,7 +1415,7 @@ export default function Reports({ data }) {
                                 {totalBudgetLimit > 0 && (
                                     <div className="mt-5 rounded-xl border border-stone-200 bg-stone-50 p-4">
                                         <div className="flex justify-between items-center mb-2">
-                                            <span className="text-xs font-bold uppercase tracking-wider text-stone-500">Ejecución del Presupuesto Total</span>
+                                            <span className="text-xs font-bold uppercase tracking-wider text-stone-500">Ejecuci?n del Presupuesto Total</span>
                                             <span className={`text-sm font-black ${totalExecution > 100 ? 'text-rose-600' : 'text-emerald-600'}`}>
                                                 {totalExecution.toFixed(1)}% utilizado
                                             </span>
@@ -1422,7 +1423,7 @@ export default function Reports({ data }) {
                                         <div className="h-2.5 bg-stone-200 rounded-full overflow-hidden">
                                             <div
                                                 className={`h-full rounded-full transition-all duration-700 ${
-                                                    totalExecution > 100 ? 'bg-rose-500' : totalExecution > 90 ? 'bg-amber-500' : 'bg-[#a81d24]'
+                                                    totalExecution > 100 ? 'bg-rose-500' : totalExecution > 90 ? 'bg-amber-500' : 'bg-[#e30613]'
                                                 }`}
                                                 style={{ width: `${Math.min(totalExecution, 100)}%` }}
                                             />

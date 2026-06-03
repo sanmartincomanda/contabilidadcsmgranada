@@ -1,4 +1,4 @@
-import React, { useMemo } from 'react';
+﻿import React, { useMemo } from 'react';
 import { Link } from 'react-router-dom';
 import ExecutiveFlowDiagram from './ExecutiveFlowDiagram';
 import { APP_BRAND_LOGO, APP_BRAND_NAME, fmt } from '../constants';
@@ -104,7 +104,7 @@ const DailyActivityChart = ({ dailyActivity, maxDailyActivity, dayOfMonth }) => 
                             <div className="w-1.5 rounded-t-full bg-emerald-500 transition-all group-hover:bg-emerald-600" style={{ height: `${inflowHeight}%` }} />
                             <div className="w-1.5 rounded-t-full bg-rose-400 transition-all group-hover:bg-rose-500" style={{ height: `${outflowHeight}%` }} />
                         </div>
-                        <div className={`text-[9px] font-black ${isToday ? 'text-[#a81d24]' : 'text-slate-400'}`}>{day.day}</div>
+                        <div className={`text-[9px] font-black ${isToday ? 'text-[#e30613]' : 'text-slate-400'}`}>{day.day}</div>
                     </div>
                 );
             })}
@@ -127,7 +127,7 @@ const ExpenseStructure = ({ rows }) => {
                 <div key={row.label} className="rounded-2xl border border-slate-200 bg-white p-4">
                     <div className="mb-2 flex items-center justify-between gap-3">
                         <div className="truncate text-sm font-black text-slate-800">{row.label}</div>
-                        <div className="font-mono text-sm font-black text-[#7f1218]">{fmt(row.amount)}</div>
+                        <div className="font-mono text-sm font-black text-[#9f111a]">{fmt(row.amount)}</div>
                     </div>
                     <div className="h-2 overflow-hidden rounded-full bg-slate-100">
                         <div className={`h-full rounded-full ${row.tone === 'purchase' ? 'bg-amber-500' : 'bg-rose-500'}`} style={{ width: `${Math.max(6, (row.amount / max) * 100)}%` }} />
@@ -224,7 +224,7 @@ export default function HomeDashboard({
                         <div className="flex flex-wrap items-center gap-3">
                             <img src={APP_BRAND_LOGO} alt={APP_BRAND_NAME} className="h-14 w-14 rounded-2xl border border-white/12 bg-white object-contain p-1.5" />
                             <div>
-                                <div className="text-[10px] font-black uppercase tracking-[0.38em] text-[#f2b635]">{APP_BRAND_NAME}</div>
+                                <div className="text-[10px] font-black uppercase tracking-[0.38em] text-[#f5b51b]">{APP_BRAND_NAME}</div>
                                 <h1 className="mt-1 text-3xl font-black tracking-tight md:text-5xl">Command Center</h1>
                             </div>
                         </div>
@@ -295,7 +295,7 @@ export default function HomeDashboard({
                             <div className="text-[10px] font-black uppercase tracking-[0.3em] text-slate-400">Gobierno operativo</div>
                             <div className="mt-1 text-sm font-black text-slate-900">Configurar recordatorios</div>
                         </div>
-                        <Icon path={Icons.gear} className="h-5 w-5 text-[#a81d24]" />
+                        <Icon path={Icons.gear} className="h-5 w-5 text-[#e30613]" />
                     </button>
                 </div>
             </div>
@@ -327,7 +327,7 @@ export default function HomeDashboard({
                             </div>
                         ) : pendingReminders.map((item) => (
                             <div key={item.id} className={`flex items-center gap-3 rounded-2xl border border-slate-100 bg-white px-3 py-3 ${justCompleted === item.id ? 'opacity-50' : ''}`}>
-                                <button onClick={() => markAsDone(item.id)} className="grid h-8 w-8 place-items-center rounded-xl border-2 border-slate-200 text-slate-300 hover:border-[#a81d24] hover:text-[#a81d24]">
+                                <button onClick={() => markAsDone(item.id)} className="grid h-8 w-8 place-items-center rounded-xl border-2 border-slate-200 text-slate-300 hover:border-[#e30613] hover:text-[#e30613]">
                                     <Icon path={Icons.check} className="h-4 w-4" />
                                 </button>
                                 <div className="min-w-0 flex-1">
@@ -352,7 +352,7 @@ export default function HomeDashboard({
                                             <div className="truncate text-sm font-black text-slate-800">{item.proveedor || item.supplier || 'Sin proveedor'}</div>
                                             <div className={`text-[10px] font-bold uppercase tracking-wider ${isExpired ? 'text-rose-600' : 'text-slate-400'}`}>{item.vencimiento ? `Vence ${item.vencimiento}` : 'Sin vencimiento'}</div>
                                         </div>
-                                        <div className="font-mono text-xs font-black text-[#7f1218]">{fmt(Number(item.saldo) || 0)}</div>
+                                        <div className="font-mono text-xs font-black text-[#9f111a]">{fmt(Number(item.saldo) || 0)}</div>
                                     </div>
                                 </div>
                             );
@@ -378,7 +378,7 @@ export default function HomeDashboard({
                                             <div className="mt-1 truncate text-sm font-black text-slate-800">{movement.title}</div>
                                             <div className="text-[10px] font-semibold text-slate-400">{movement.date || 'Sin fecha'}</div>
                                         </div>
-                                        <div className="font-mono text-xs font-black text-[#7f1218]">{fmt(movement.amount)}</div>
+                                        <div className="font-mono text-xs font-black text-[#9f111a]">{fmt(movement.amount)}</div>
                                     </div>
                                 </div>
                             );
