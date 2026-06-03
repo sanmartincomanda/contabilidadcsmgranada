@@ -587,6 +587,51 @@ html[data-theme='dark'] :where([class*='rounded-xl'][class*='bg-white'], [class*
   box-shadow: 0 28px 72px -42px rgba(0, 0, 0, 0.82);
 }
 
+html[data-theme='dark'] .ap-provider-card {
+  background: rgba(15, 23, 42, 0.9) !important;
+  border-color: rgba(148, 163, 184, 0.28) !important;
+}
+
+html[data-theme='dark'] .ap-provider-card:hover {
+  border-color: rgba(245, 181, 27, 0.38) !important;
+}
+
+html[data-theme='dark'] .ap-provider-name {
+  color: #f8fafc !important;
+  text-shadow: 0 1px 0 rgba(0, 0, 0, 0.18);
+}
+
+html[data-theme='dark'] .ap-provider-code {
+  background: rgba(248, 250, 252, 0.1) !important;
+  border-color: rgba(248, 250, 252, 0.18) !important;
+  color: #facc15 !important;
+}
+
+html[data-theme='dark'] .ap-provider-meta {
+  color: #cbd5e1 !important;
+}
+
+html[data-theme='dark'] .ap-provider-balance {
+  background: rgba(2, 6, 23, 0.38) !important;
+  border-color: rgba(148, 163, 184, 0.26) !important;
+}
+
+html[data-theme='dark'] .ap-balance-label {
+  color: #94a3b8 !important;
+}
+
+html[data-theme='dark'] .ap-balance-value {
+  color: #fb7185 !important;
+}
+
+html[data-theme='light'] .ap-provider-name {
+  color: #0f172a !important;
+}
+
+html[data-theme='light'] .ap-balance-value {
+  color: #e30613 !important;
+}
+
 html[data-theme='dark'] ::-webkit-scrollbar-track {
   background: rgba(2, 6, 23, 0.92);
 }

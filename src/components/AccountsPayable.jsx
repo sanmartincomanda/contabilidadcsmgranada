@@ -1097,7 +1097,7 @@ export function AccountsPayable({ data }) {
 
                                 return (
                                     <FadeIn key={prov} delay={idx * 45}>
-                                        <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+                                        <section className="ap-provider-card overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
                                             <div className="flex flex-col gap-3 p-4 lg:flex-row lg:items-center lg:justify-between">
                                                 <button
                                                     type="button"
@@ -1109,25 +1109,25 @@ export function AccountsPayable({ data }) {
                                                     </div>
                                                     <div className="min-w-0">
                                                         <div className="flex flex-wrap items-center gap-2">
-                                                            <h3 className="truncate text-base font-black uppercase tracking-tight text-slate-950">{prov}</h3>
-                                                            <span className="rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 font-mono text-[10px] font-black uppercase tracking-wider text-slate-500">{providerCode}</span>
+                                                            <h3 className="ap-provider-name truncate text-base font-black uppercase tracking-tight text-slate-950">{prov}</h3>
+                                                            <span className="ap-provider-code rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 font-mono text-[10px] font-black uppercase tracking-wider text-slate-500">{providerCode}</span>
                                                             {vencidasProveedor > 0 && (
                                                                 <span className="rounded-full border border-red-200 bg-red-50 px-2 py-0.5 text-[10px] font-black uppercase tracking-wider text-red-700">
                                                                     {vencidasProveedor} vencida{vencidasProveedor === 1 ? '' : 's'}
                                                                 </span>
                                                             )}
                                                         </div>
-                                                        <div className="mt-1 text-xs font-semibold text-slate-500">
+                                                        <div className="ap-provider-meta mt-1 text-xs font-semibold text-slate-500">
                                                             {provData.items.length} {provData.items.length === 1 ? 'factura pendiente' : 'facturas pendientes'} · saldo abierto {fmt(provData.saldoTotal)}
                                                         </div>
                                                     </div>
                                                     <Icon path={Icons.chevronRight} className={`ml-auto h-5 w-5 flex-shrink-0 text-slate-400 transition ${isExpanded ? 'rotate-90 text-[#e30613]' : ''}`} />
                                                 </button>
 
-                                                <div className="flex items-center justify-between gap-3 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 lg:min-w-[290px]">
+                                                <div className="ap-provider-balance flex items-center justify-between gap-3 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 lg:min-w-[290px]">
                                                     <div>
-                                                        <div className="text-[10px] font-black uppercase tracking-[0.22em] text-slate-400">Saldo proveedor</div>
-                                                        <div className="font-mono text-xl font-black text-[#e30613]">{fmt(provData.saldoTotal)}</div>
+                                                        <div className="ap-balance-label text-[10px] font-black uppercase tracking-[0.22em] text-slate-400">Saldo proveedor</div>
+                                                        <div className="ap-balance-value font-mono text-xl font-black text-[#e30613]">{fmt(provData.saldoTotal)}</div>
                                                     </div>
                                                     <Button
                                                         variant="success"
