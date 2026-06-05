@@ -8,6 +8,8 @@ const BRANCH_ID = 'granada';
 const BRANCH_NAME = 'CARNES SAN MARTIN GRANADA';
 const TIMEZONE = 'America/Managua';
 const DEFAULT_KEY_PATH = 'C:\\SICAR\\keys\\firebase-adminsdk.json';
+const DEFAULT_EXCLUDED_CLIENT_ID = 7878;
+const DEFAULT_EXCLUDED_CLIENT_NAME = 'CARNES AMPARITO';
 
 function loadEnvFile(filePath) {
   if (!fs.existsSync(filePath)) return;
@@ -120,6 +122,70 @@ function getMysqlConfig() {
   };
 }
 
+function getExcludedSaleClientId() {
+  const parsed = Number(process.env.SICAR_EXCLUDED_SALE_CLIENT_ID || DEFAULT_EXCLUDED_CLIENT_ID);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_EXCLUDED_CLIENT_ID;
+}
+
+function getExcludedSaleClientName() {
+  return String(process.env.SICAR_EXCLUDED_SALE_CLIENT_NAME || DEFAULT_EXCLUDED_CLIENT_NAME)
+    .trim()
+    .toUpperCase() || DEFAULT_EXCLUDED_CLIENT_NAME;
+}
+
+function getExcludedClientFilterSql() {
+  return `
+    AND NOT EXISTS (
+      SELECT 1
+      FROM ticket excluded_ticket
+      WHERE excluded_ticket.tic_id = v.tic_id
+        AND excluded_ticket.cli_id = ?
+    )
+    AND NOT EXISTS (
+      SELECT 1
+      FROM remision excluded_remision
+      WHERE excluded_remision.rem_id = v.rem_id
+        AND excluded_remision.cli_id = ?
+    )
+    AND NOT EXISTS (
+      SELECT 1
+      FROM creditocliente excluded_credit
+      WHERE excluded_credit.ven_id = v.ven_id
+        AND excluded_credit.cli_id = ?
+    )
+  `;
+}
+
+function getExcludedClientLookupSql() {
+  return `
+    (
+      EXISTS (
+        SELECT 1
+        FROM ticket excluded_ticket
+        WHERE excluded_ticket.tic_id = v.tic_id
+          AND excluded_ticket.cli_id = ?
+      )
+      OR EXISTS (
+        SELECT 1
+        FROM remision excluded_remision
+        WHERE excluded_remision.rem_id = v.rem_id
+          AND excluded_remision.cli_id = ?
+      )
+      OR EXISTS (
+        SELECT 1
+        FROM creditocliente excluded_credit
+        WHERE excluded_credit.ven_id = v.ven_id
+          AND excluded_credit.cli_id = ?
+      )
+    )
+  `;
+}
+
+function getExcludedClientParams() {
+  const excludedClientId = getExcludedSaleClientId();
+  return [excludedClientId, excludedClientId, excludedClientId];
+}
+
 function initFirebase() {
   if (!process.env.GOOGLE_APPLICATION_CREDENTIALS && fs.existsSync(DEFAULT_KEY_PATH)) {
     process.env.GOOGLE_APPLICATION_CREDENTIALS = DEFAULT_KEY_PATH;
@@ -137,6 +203,9 @@ function initFirebase() {
 
 async function fetchDailySales(connection, startDate, endExclusive) {
   await connection.query('SET SESSION group_concat_max_len = 1000000');
+  const excludedClientFilterSql = getExcludedClientFilterSql();
+  const excludedClientLookupSql = getExcludedClientLookupSql();
+  const excludedClientParams = getExcludedClientParams();
 
   const activeWhere = `
     v.fecha >= ?
@@ -144,6 +213,7 @@ async function fetchDailySales(connection, startDate, endExclusive) {
     AND IFNULL(v.status, 0) >= 0
     AND v.can_caj_id IS NULL
     AND v.can_rcc_id IS NULL
+    ${excludedClientFilterSql}
   `;
 
   const [totals] = await connection.execute(`
@@ -162,7 +232,7 @@ async function fetchDailySales(connection, startDate, endExclusive) {
     WHERE ${activeWhere}
     GROUP BY DATE(v.fecha)
     ORDER BY DATE(v.fecha)
-  `, [startDate, endExclusive]);
+  `, [startDate, endExclusive, ...excludedClientParams]);
 
   const [payments] = await connection.execute(`
     SELECT
@@ -175,7 +245,7 @@ async function fetchDailySales(connection, startDate, endExclusive) {
     WHERE ${activeWhere}
     GROUP BY DATE(v.fecha), COALESCE(tp.nombre, CONCAT('TIPO ', vtp.tpa_id))
     ORDER BY DATE(v.fecha), method
-  `, [startDate, endExclusive]);
+  `, [startDate, endExclusive, ...excludedClientParams]);
 
   const [cancelled] = await connection.execute(`
     SELECT
@@ -188,16 +258,37 @@ async function fetchDailySales(connection, startDate, endExclusive) {
     WHERE v.fecha >= ?
       AND v.fecha < ?
       AND (IFNULL(v.status, 0) < 0 OR v.can_caj_id IS NOT NULL OR v.can_rcc_id IS NOT NULL)
+      ${excludedClientFilterSql}
     GROUP BY DATE(v.fecha)
     ORDER BY DATE(v.fecha)
-  `, [startDate, endExclusive]);
+  `, [startDate, endExclusive, ...excludedClientParams]);
 
-  return { totals, payments, cancelled };
+  const [excluded] = await connection.execute(`
+    SELECT
+      DATE(v.fecha) AS saleDate,
+      COUNT(v.ven_id) AS excludedCount,
+      GROUP_CONCAT(v.ven_id ORDER BY v.ven_id SEPARATOR ',') AS excludedSicarIds,
+      ROUND(SUM(v.subtotal), 2) AS excludedSubtotal,
+      ROUND(SUM(v.total - v.subtotal), 2) AS excludedIva,
+      ROUND(SUM(v.total), 2) AS excludedTotal
+    FROM venta v
+    WHERE v.fecha >= ?
+      AND v.fecha < ?
+      AND IFNULL(v.status, 0) >= 0
+      AND v.can_caj_id IS NULL
+      AND v.can_rcc_id IS NULL
+      AND ${excludedClientLookupSql}
+    GROUP BY DATE(v.fecha)
+    ORDER BY DATE(v.fecha)
+  `, [startDate, endExclusive, ...excludedClientParams]);
+
+  return { totals, payments, cancelled, excluded };
 }
 
-function buildEntries({ totals, payments, cancelled }) {
+function buildEntries({ totals, payments, cancelled, excluded = [] }) {
   const totalsByDate = new Map(totals.map((row) => [toDateString(row.saleDate), row]));
   const cancelledByDate = new Map(cancelled.map((row) => [toDateString(row.saleDate), row]));
+  const excludedByDate = new Map(excluded.map((row) => [toDateString(row.saleDate), row]));
   const paymentsByDate = new Map();
 
   payments.forEach((row) => {
@@ -210,11 +301,12 @@ function buildEntries({ totals, payments, cancelled }) {
     paymentsByDate.set(date, items);
   });
 
-  const dates = new Set([...totalsByDate.keys(), ...cancelledByDate.keys()]);
+  const dates = new Set([...totalsByDate.keys(), ...cancelledByDate.keys(), ...excludedByDate.keys()]);
 
   return Array.from(dates).sort().map((date) => {
     const totalRow = totalsByDate.get(date) || {};
     const cancelledRow = cancelledByDate.get(date) || {};
+    const excludedRow = excludedByDate.get(date) || {};
     const subtotal = money(totalRow.subtotal);
     const subtotalExento = money(totalRow.subtotalExento);
     const iva = money(totalRow.iva);
@@ -251,6 +343,15 @@ function buildEntries({ totals, payments, cancelled }) {
         cancelledSicarIds: cancelledRow.cancelledSicarIds ? String(cancelledRow.cancelledSicarIds).split(',') : [],
         cancelledSubtotal: money(cancelledRow.cancelledSubtotal),
         cancelledTotal: money(cancelledRow.cancelledTotal),
+      },
+      excludedClientSummary: {
+        excludedClientId: getExcludedSaleClientId(),
+        excludedClientName: getExcludedSaleClientName(),
+        excludedCount: Number(excludedRow.excludedCount || 0),
+        excludedSicarIds: excludedRow.excludedSicarIds ? String(excludedRow.excludedSicarIds).split(',') : [],
+        excludedSubtotal: money(excludedRow.excludedSubtotal),
+        excludedIva: money(excludedRow.excludedIva),
+        excludedTotal: money(excludedRow.excludedTotal),
       },
       firstSaleAt: toDateTimeString(totalRow.firstSaleAt),
       lastSaleAt: toDateTimeString(totalRow.lastSaleAt),
@@ -292,12 +393,14 @@ async function writeEntry(db, entry, options) {
       sicarIds: entry.sicarIds,
       paymentBreakdown: entry.paymentBreakdown,
       cancelledSummary: entry.cancelledSummary,
+      excludedClientSummary: entry.excludedClientSummary,
     },
     rawPayload: {
       ticketCount: entry.ticketCount,
       sicarIds: entry.sicarIds,
       paymentBreakdown: entry.paymentBreakdown,
       cancelledSummary: entry.cancelledSummary,
+      excludedClientSummary: entry.excludedClientSummary,
       firstSaleAt: entry.firstSaleAt,
       lastSaleAt: entry.lastSaleAt,
     },
@@ -340,6 +443,7 @@ async function writeEntry(db, entry, options) {
       sourceRecordId: entry.dailySaleCode,
       sourceRecordIds: entry.sicarIds,
       paymentBreakdown: entry.paymentBreakdown,
+      excludedClientSummary: entry.excludedClientSummary,
       syncKey: `sicar:venta-diaria:${BRANCH_ID}:${entry.date}`,
       syncedBy: 'local-worker',
       syncedAt: FieldValue.serverTimestamp(),
@@ -396,6 +500,11 @@ async function main() {
       subtotal: money(entries.reduce((sum, entry) => sum + entry.subtotal, 0)),
       iva: money(entries.reduce((sum, entry) => sum + entry.iva, 0)),
       total: money(entries.reduce((sum, entry) => sum + entry.total, 0)),
+      excludedClientId: getExcludedSaleClientId(),
+      excludedClientName: getExcludedSaleClientName(),
+      excludedSubtotal: money(entries.reduce((sum, entry) => sum + entry.excludedClientSummary.excludedSubtotal, 0)),
+      excludedIva: money(entries.reduce((sum, entry) => sum + entry.excludedClientSummary.excludedIva, 0)),
+      excludedTotal: money(entries.reduce((sum, entry) => sum + entry.excludedClientSummary.excludedTotal, 0)),
       stageOnly: args.stageOnly,
       status: 'ok',
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -414,6 +523,7 @@ async function main() {
         subtotal: entry.subtotal,
         iva: entry.iva,
         total: entry.total,
+        excludedClientSummary: entry.excludedClientSummary,
       })),
     }, null, 2));
   } finally {
