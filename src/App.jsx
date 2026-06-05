@@ -998,6 +998,7 @@ function AppContent() {
         collectionConfig('presupuestos', [where('month', '>=', dataEntryStartMonth)]),
         collectionConfig('cuentasPorCobrar', [where('date', '>=', `${dataEntryStartMonth}-01`)]),
         collectionConfig('patrimonio', [where('date', '>=', `${dataEntryStartMonth}-01`)]),
+        collectionConfig('bank_statements', [where('is_finalized', '==', false)]),
         'proveedores',
     ], [dataEntryStartMonth]);
 

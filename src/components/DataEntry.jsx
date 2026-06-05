@@ -1176,6 +1176,84 @@ const EditableList = ({
     );
 };
 
+const getPendingBankTransactions = (bankStatements = []) => (
+    bankStatements
+        .flatMap((statement) => (
+            (statement.transactions || [])
+                .filter((tx) => !tx.is_conciled && !tx.app_id)
+                .map((tx, index) => ({
+                    id: tx.id || `${statement.id || statement.reconciliationId || 'bank'}-${index}`,
+                    statementId: statement.id,
+                    reconciliationId: statement.reconciliationId || 'Conciliacion pendiente',
+                    date: tx.date || '',
+                    concept: tx.concept || 'Sin concepto bancario',
+                    amount: Number(tx.amount || 0),
+                }))
+        ))
+        .filter((tx) => tx.amount !== 0)
+        .sort((a, b) => String(b.date).localeCompare(String(a.date)))
+);
+
+const UnregisteredTransactionsPanel = ({ transactions = [] }) => {
+    const incomeTotal = transactions.filter((tx) => tx.amount > 0).reduce((sum, tx) => sum + tx.amount, 0);
+    const outflowTotal = transactions.filter((tx) => tx.amount < 0).reduce((sum, tx) => sum + Math.abs(tx.amount), 0);
+
+    return (
+        <section className="overflow-hidden rounded-[1.75rem] border border-slate-200 bg-white shadow-xl shadow-slate-900/5">
+            <div className="flex flex-col gap-3 border-b border-slate-200 bg-white px-5 py-4 lg:flex-row lg:items-center lg:justify-between">
+                <div>
+                    <div className="text-[10px] font-black uppercase tracking-[0.35em] text-[#e30613]">Revision pendiente</div>
+                    <h3 className="mt-1 text-lg font-black text-slate-900">Transacciones sin registro</h3>
+                    <p className="mt-1 text-xs font-semibold text-slate-500">Movimientos bancarios no conciliados que podrian requerir ingreso, gasto o compra.</p>
+                </div>
+                <div className="grid grid-cols-3 gap-2 text-center text-xs">
+                    <div className="rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2">
+                        <div className="font-mono text-base font-black text-slate-900">{transactions.length}</div>
+                        <div className="text-[10px] font-black uppercase tracking-wider text-slate-400">Pendientes</div>
+                    </div>
+                    <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-3 py-2">
+                        <div className="font-mono text-base font-black text-emerald-700">{fmt(incomeTotal)}</div>
+                        <div className="text-[10px] font-black uppercase tracking-wider text-emerald-700">Entradas</div>
+                    </div>
+                    <div className="rounded-2xl border border-rose-200 bg-rose-50 px-3 py-2">
+                        <div className="font-mono text-base font-black text-rose-700">{fmt(outflowTotal)}</div>
+                        <div className="text-[10px] font-black uppercase tracking-wider text-rose-700">Salidas</div>
+                    </div>
+                </div>
+            </div>
+
+            {transactions.length === 0 ? (
+                <div className="p-8 text-center">
+                    <div className="mx-auto grid h-11 w-11 place-items-center rounded-2xl border border-emerald-200 bg-emerald-50 text-emerald-600">
+                        <Icon path={Icons.checkCircle} className="h-5 w-5" />
+                    </div>
+                    <p className="mt-3 text-sm font-black text-slate-800">Sin transacciones bancarias pendientes</p>
+                    <p className="mt-1 text-xs font-semibold text-slate-500">Cuando exista una conciliacion abierta, los movimientos no registrados apareceran aqui.</p>
+                </div>
+            ) : (
+                <div className="divide-y divide-slate-100">
+                    {transactions.slice(0, 12).map((tx) => {
+                        const isIncome = tx.amount > 0;
+                        return (
+                            <div key={tx.id} className="grid gap-3 px-5 py-3 transition hover:bg-slate-50 md:grid-cols-[120px_1fr_160px_160px] md:items-center">
+                                <div className="font-mono text-xs font-bold text-slate-500">{tx.date || 'Sin fecha'}</div>
+                                <div className="min-w-0">
+                                    <div className="truncate text-sm font-black text-slate-900">{tx.concept}</div>
+                                    <div className="mt-0.5 text-[10px] font-bold uppercase tracking-wider text-slate-400">{tx.reconciliationId}</div>
+                                </div>
+                                <Badge variant={isIncome ? 'success' : 'danger'}>{isIncome ? 'Posible ingreso' : 'Posible egreso'}</Badge>
+                                <div className={`font-mono text-sm font-black md:text-right ${isIncome ? 'text-emerald-700' : 'text-rose-700'}`}>
+                                    {fmt(Math.abs(tx.amount))}
+                                </div>
+                            </div>
+                        );
+                    })}
+                </div>
+            )}
+        </section>
+    );
+};
+
 // --- FORMULARIOS ---
 
 const IncomeForm = ({ loading, setLoading, onSuccess }) => {
@@ -1417,10 +1495,14 @@ const FiscalExpenseForm = ({ categories, providers = [], loading, setLoading, on
     const [paymentReference, setPaymentReference] = useState('');
     const [subtotal, setSubtotal] = useState('');
     const [iva, setIva] = useState('');
-    const [total, setTotal] = useState('');
     const [retentionIr2, setRetentionIr2] = useState('');
     const [retentionMunicipal1, setRetentionMunicipal1] = useState('');
     const [supportFiles, setSupportFiles] = useState(createEmptySupportFilesState());
+    const calculatedTotal = useMemo(() => {
+        const parsedSubtotal = Number(subtotal || 0);
+        const parsedIva = Number(iva || 0);
+        return Number((parsedSubtotal + parsedIva).toFixed(2));
+    }, [iva, subtotal]);
 
     const resetForm = () => {
         setSupplier('');
@@ -1433,7 +1515,6 @@ const FiscalExpenseForm = ({ categories, providers = [], loading, setLoading, on
         setPaymentReference('');
         setSubtotal('');
         setIva('');
-        setTotal('');
         setRetentionIr2('');
         setRetentionMunicipal1('');
         setSupportFiles(createEmptySupportFilesState());
@@ -1442,7 +1523,7 @@ const FiscalExpenseForm = ({ categories, providers = [], loading, setLoading, on
     const handleSubmit = async (e) => {
         e.preventDefault();
         const selectedCategoryName = categories.find(c => c.id === categoryId)?.name;
-        const fiscal = buildFiscalPayload({ subtotal, iva, total, retentionIr2, retentionMunicipal1 });
+        const fiscal = buildFiscalPayload({ subtotal, iva, total: calculatedTotal, retentionIr2, retentionMunicipal1 });
         const cleanSupplier = normalizeProviderName(supplier === '__new__' ? newSupplier : supplier);
         if (!description.trim() || !cleanSupplier || !selectedCategoryName || fiscal.total <= 0) {
             return alert('Complete proveedor, categoria, descripcion y montos fiscales.');
@@ -1572,13 +1653,17 @@ const FiscalExpenseForm = ({ categories, providers = [], loading, setLoading, on
             <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                 <Input label="Subtotal" type="number" step="0.01" icon="dollar" placeholder="0.00" value={subtotal} onChange={e => setSubtotal(e.target.value)} required />
                 <Input label="IVA" type="number" step="0.01" icon="dollar" placeholder="0.00" value={iva} onChange={e => setIva(e.target.value)} />
-                <Input label="Total" type="number" step="0.01" icon="dollar" placeholder="0.00" value={total} onChange={e => setTotal(e.target.value)} />
+                <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+                    <div className="text-xs font-bold uppercase tracking-wider text-stone-500">Total calculado</div>
+                    <div className="mt-1 font-mono text-xl font-black text-[#9f111a]">{fmt(calculatedTotal)}</div>
+                    <div className="mt-0.5 text-[11px] font-semibold text-slate-400">Subtotal + IVA</div>
+                </div>
             </div>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                 <Input label="Retencion anticipo IR 2%" type="number" step="0.01" icon="scale" placeholder="0.00" value={retentionIr2} onChange={e => setRetentionIr2(e.target.value)} />
                 <Input label="Retencion municipal 1%" type="number" step="0.01" icon="scale" placeholder="0.00" value={retentionMunicipal1} onChange={e => setRetentionMunicipal1(e.target.value)} />
             </div>
-            <FiscalPreview subtotal={subtotal} iva={iva} total={total} retentionIr2={retentionIr2} retentionMunicipal1={retentionMunicipal1} />
+            <FiscalPreview subtotal={subtotal} iva={iva} total={calculatedTotal} retentionIr2={retentionIr2} retentionMunicipal1={retentionMunicipal1} />
             <div className="space-y-2 rounded-xl border border-[#d8dee6] bg-[#f8fafc] p-3">
                 <div>
                     <label className="text-xs font-bold uppercase tracking-wider text-stone-500">Soportes fiscales</label>
@@ -2095,6 +2180,7 @@ export function DataEntry({ categories, data }) {
     const [activeTab, setActiveTab] = useState(() => {
         return VALID_TABS.includes(urlTab) ? urlTab : 'Ingresos';
     });
+    const [entryView, setEntryView] = useState('ingresar');
     const [loading, setLoading] = useState(false);
     const [refreshKey, setRefreshKey] = useState(0);
     const providers = useMemo(() => (
@@ -2373,6 +2459,17 @@ export function DataEntry({ categories, data }) {
         return map[activeTab];
     };
 
+    const unregisteredTransactions = useMemo(() => {
+        const pending = getPendingBankTransactions(data.bank_statements || []);
+        if (['Ingresos', 'Facturas Membretadas', 'Cuentas por Cobrar'].includes(activeTab)) {
+            return pending.filter((tx) => tx.amount > 0);
+        }
+        if (['Gastos', 'Compras'].includes(activeTab)) {
+            return pending.filter((tx) => tx.amount < 0);
+        }
+        return pending;
+    }, [activeTab, data.bank_statements]);
+
     return (
         <div className="space-y-5">
             <style>{`
@@ -2381,42 +2478,72 @@ export function DataEntry({ categories, data }) {
                 @media print { .no-print { display: none !important; } }
             `}</style>
 
-            {/* Page header */}
-            <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm no-print">
-                <div className="flex flex-col gap-3 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
-                    <div>
-                        <div className="text-[10px] font-black uppercase tracking-[0.34em] text-[#e30613]">{APP_BRAND_NAME}</div>
-                        <h1 className="mt-1 text-xl font-black text-slate-950">Registro operativo</h1>
-                    </div>
-                    <div className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-[10px] font-black uppercase tracking-[0.22em] text-slate-500">
-                        {tabsConfig[activeTab].label}
+            <section className="no-print overflow-hidden rounded-[2rem] border border-slate-200 bg-white shadow-xl shadow-slate-900/5">
+                <div className="command-register-header px-5 py-5 sm:px-6">
+                    <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+                        <div>
+                            <div className="text-[10px] font-black uppercase tracking-[0.38em] text-[#e30613]">{APP_BRAND_NAME}</div>
+                            <h1 className="mt-1 text-2xl font-black tracking-tight text-slate-950">Registro operativo</h1>
+                            <p className="mt-1 max-w-2xl text-sm font-semibold text-slate-500">
+                                Captura, revision y soporte fiscal por modulo.
+                            </p>
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                            <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5 text-[10px] font-black uppercase tracking-[0.22em] text-slate-500">
+                                {tabsConfig[activeTab].label}
+                            </span>
+                            <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5 text-[10px] font-black uppercase tracking-[0.22em] text-slate-500">
+                                {entryView === 'ingresar' ? 'Captura' : 'Revision'}
+                            </span>
+                        </div>
                     </div>
                 </div>
-            </div>
 
-            {/* Tabs */}
-            <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white p-2 shadow-sm no-print">
-                <div className="flex flex-wrap gap-1.5">
-                    {Object.entries(tabsConfig).map(([tab, config]) => (
+                <div className="border-t border-slate-200 p-3">
+                    <div className="flex flex-wrap gap-1.5">
+                        {Object.entries(tabsConfig).map(([tab, config]) => (
+                            <button
+                                key={tab}
+                                onClick={() => setActiveTab(tab)}
+                                className={`flex items-center gap-2 rounded-xl px-4 py-2.5 text-xs font-black uppercase tracking-wide transition-all ${
+                                    activeTab === tab
+                                        ? 'bg-[#e30613] text-white shadow-sm shadow-red-900/20'
+                                        : 'text-stone-600 hover:bg-stone-100'
+                                }`}
+                            >
+                                <Icon path={Icons[config.icon]} className="h-3.5 w-3.5" />
+                                {config.label}
+                            </button>
+                        ))}
+                    </div>
+                </div>
+            </section>
+
+            <div className="no-print flex justify-center">
+                <div className="inline-flex rounded-2xl border border-slate-200 bg-white p-1 shadow-sm">
+                    {[
+                        ['ingresar', 'Ingresar', tabsConfig[activeTab].icon],
+                        ['historial', 'Historial', 'receipt'],
+                    ].map(([view, label, icon]) => (
                         <button
-                            key={tab}
-                            onClick={() => setActiveTab(tab)}
-                            className={`flex items-center gap-2 px-4 py-2.5 rounded-lg font-bold text-xs uppercase tracking-wide transition-all ${
-                                activeTab === tab
-                                    ? 'bg-[#e30613] text-white shadow-sm shadow-red-900/20'
-                                    : 'text-stone-600 hover:bg-stone-100'
+                            key={view}
+                            type="button"
+                            onClick={() => setEntryView(view)}
+                            className={`flex items-center gap-2 rounded-xl px-5 py-2.5 text-xs font-black uppercase tracking-[0.18em] transition ${
+                                entryView === view
+                                    ? 'bg-slate-950 text-white shadow-lg shadow-slate-950/15'
+                                    : 'text-slate-500 hover:bg-slate-50 hover:text-slate-900'
                             }`}
                         >
-                            <Icon path={Icons[config.icon]} className="w-3.5 h-3.5" />
-                            {config.label}
+                            <Icon path={Icons[icon]} className="h-3.5 w-3.5" />
+                            {label}
                         </button>
                     ))}
                 </div>
             </div>
 
-            {/* Main content */}
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
-                <div className="no-print animate-fade-in">
+            {entryView === 'ingresar' ? (
+                <div className="no-print mx-auto max-w-4xl animate-fade-in">
                     <Card title={`Nuevo - ${tabsConfig[activeTab].label}`} icon={tabsConfig[activeTab].icon} gradient={true}>
                         {activeTab === 'Ingresos' && <IncomeForm loading={loading} setLoading={setLoading} onSuccess={handleSuccess} />}
                         {activeTab === 'Facturas Membretadas' && <StampedSalesInvoiceForm data={data} loading={loading} setLoading={setLoading} onSuccess={handleSuccess} />}
@@ -2428,8 +2555,9 @@ export function DataEntry({ categories, data }) {
                         {activeTab === 'Patrimonio' && <EquityForm loading={loading} setLoading={setLoading} onSuccess={handleSuccess} />}
                     </Card>
                 </div>
-
-                <div className="animate-fade-in">
+            ) : (
+                <div className="animate-fade-in space-y-5">
+                    <UnregisteredTransactionsPanel transactions={unregisteredTransactions} />
                     <Card title={`Historial - ${tabsConfig[activeTab].label}`} icon="receipt">
                         <EditableList
                             data={getListData()}
@@ -2445,7 +2573,7 @@ export function DataEntry({ categories, data }) {
                         />
                     </Card>
                 </div>
-            </div>
+            )}
         </div>
     );
 }
