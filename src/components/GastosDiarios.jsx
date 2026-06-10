@@ -183,7 +183,9 @@ const PettyCashVoucher = ({ voucher }) => {
             <div className="ticket-line" />
             <div className="ticket-approved">
                 <div>___________________</div>
-                <strong>APROBADO POR</strong>
+                <strong>Aprobado por</strong>
+                <div className="ticket-signature-space">___________________</div>
+                <strong>Gestor de compra</strong>
             </div>
         </div>
     );
@@ -762,6 +764,7 @@ export default function GastosDiarios({ categories = [] }) {
                     body.print-petty-cash-voucher .ticket-description { margin-top: 2px; word-break: break-word; }
                     body.print-petty-cash-voucher .ticket-total { margin-top: 7px; font-size: 14px; font-weight: 900; }
                     body.print-petty-cash-voucher .ticket-approved { margin-top: 18px; text-align: center; font-size: 11px; font-weight: 900; }
+                    body.print-petty-cash-voucher .ticket-signature-space { margin-top: 18px; }
                 }
             `}</style>
 
