@@ -27,6 +27,7 @@ import {
     EXPENSE_CATEGORY_TREE,
     buildExpenseCategoryPayload,
 } from '../services/expenseCategories';
+import { buildPettyCashMovementPayload, pettyCashMovementRef } from '../services/pettyCash';
 
 // --- ICONOS SVG INLINE ---
 const Icon = ({ path, className = "w-5 h-5" }) => (
@@ -715,6 +716,25 @@ export function AccountsPayable({ data }) {
                         ...supportPayload,
                         timestamp: Timestamp.now()
                     });
+                    transaction.set(
+                        pettyCashMovementRef('gastosDiarios', gastoDiarioRef.id),
+                        buildPettyCashMovementPayload({
+                            direction: 'salida',
+                            fecha: fechaAbono,
+                            amount: montoTotalAbono,
+                            description: `ABONO A PROVEEDOR ${proveedorSeleccionado}`,
+                            paymentType: paymentMethod,
+                            sourceCollection: 'gastosDiarios',
+                            sourceDocId: gastoDiarioRef.id,
+                            linkedGastoDiarioId: gastoDiarioRef.id,
+                            linkedAbonoId: abonoRef.id,
+                            supplier: proveedorSeleccionado,
+                            category: 'ABONO',
+                            subcategory: 'ABONO',
+                            categoryLabel: 'ABONO',
+                            ...supportPayload,
+                        })
+                    );
                 }
             });
 
@@ -753,6 +773,7 @@ export function AccountsPayable({ data }) {
                 }
                 if (isCashPayment(abonoDoc.paymentMethod) && abonoDoc.linkedGastoDiarioId) {
                     transaction.delete(doc(db, 'gastosDiarios', abonoDoc.linkedGastoDiarioId));
+                    transaction.delete(pettyCashMovementRef('gastosDiarios', abonoDoc.linkedGastoDiarioId));
                 }
                 transaction.delete(doc(db, 'abonos_pagar', abonoDoc.id));
             });
@@ -1546,7 +1567,7 @@ export function AccountsPayable({ data }) {
                                     />
                                     <p className="text-xs text-slate-400 mt-1.5">
                                         {isCashPayment(paymentMethod)
-                                            ? 'Se registrara tambien en Gastos Diarios como salida de caja.'
+                                            ? 'Se registrara tambien en Caja Chica como salida de efectivo.'
                                             : 'Solo actualiza el saldo de la cuenta por pagar.'}
                                     </p>
                                 </div>

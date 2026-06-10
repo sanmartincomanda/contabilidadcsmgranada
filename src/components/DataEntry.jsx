@@ -41,6 +41,7 @@ import {
     buildExpenseCategoryPayload,
     getExpenseCategoryFromRecord,
 } from '../services/expenseCategories';
+import { buildPettyCashMovementPayload, pettyCashMovementRef } from '../services/pettyCash';
 
 // --- ICONOS SVG INLINE ---
 const Icons = {
@@ -1629,6 +1630,56 @@ const FiscalExpenseForm = ({ categories, providers = [], loading, setLoading, on
                     updatedAt: Timestamp.now(),
                     timestamp: Timestamp.now(),
                 });
+            } else if (isCashPayment(paymentType)) {
+                const cashRef = doc(collection(db, 'gastosDiarios'));
+                batch.set(gastoRef, { ...expensePayload, linkedCashExpenseId: cashRef.id });
+                batch.set(cashRef, {
+                    fecha: date,
+                    date,
+                    tipo: 'Gasto',
+                    descripcion: description.trim().toUpperCase(),
+                    proveedor: provider.nombre,
+                    supplier: provider.nombre,
+                    providerId: provider.id,
+                    proveedorId: provider.id,
+                    providerCode: provider.code,
+                    codigoProveedor: provider.code,
+                    factura: invoiceNumber.trim(),
+                    invoiceNumber: invoiceNumber.trim(),
+                    monto: fiscal.total,
+                    amount: fiscal.subtotal,
+                    ...categoryPayload,
+                    paymentType,
+                    paymentReference: paymentReference.trim().toUpperCase(),
+                    ...fiscal,
+                    ...photoPayload,
+                    branch: DEFAULT_BRANCH_ID,
+                    branchName: DEFAULT_BRANCH_NAME,
+                    linkedExpenseId: gastoRef.id,
+                    sourceCollection: 'gastos',
+                    sourceExpenseId: gastoRef.id,
+                    timestamp: Timestamp.now(),
+                    is_conciled: false,
+                });
+                batch.set(
+                    pettyCashMovementRef('gastosDiarios', cashRef.id),
+                    buildPettyCashMovementPayload({
+                        direction: 'salida',
+                        fecha: date,
+                        amount: fiscal.total,
+                        description: description.trim().toUpperCase(),
+                        paymentType,
+                        paymentReference: paymentReference.trim().toUpperCase(),
+                        sourceCollection: 'gastosDiarios',
+                        sourceDocId: cashRef.id,
+                        linkedGastoDiarioId: cashRef.id,
+                        linkedExpenseId: gastoRef.id,
+                        supplier: provider.nombre,
+                        invoiceNumber: invoiceNumber.trim(),
+                        ...categoryPayload,
+                        ...photoPayload,
+                    })
+                );
             } else {
                 batch.set(gastoRef, expensePayload);
             }
@@ -1833,10 +1884,32 @@ const FiscalPurchasesForm = ({ categories, providers = [], loading, setLoading, 
                     ...photoPayload,
                     branch: DEFAULT_BRANCH_ID,
                     branchName: DEFAULT_BRANCH_NAME,
+                    linkedPurchaseId: purchaseRef.id,
+                    sourceCollection: 'compras',
+                    sourcePurchaseId: purchaseRef.id,
                     timestamp: Timestamp.now(),
                     is_conciled: false,
                 });
-                batch.set(purchaseRef, { ...purchasePayload, linkedCashExpenseId: cashRef.id });
+                batch.set(purchaseRef, { ...purchasePayload, linkedCashExpenseId: cashRef.id, sourceGastoDiarioId: cashRef.id });
+                batch.set(
+                    pettyCashMovementRef('gastosDiarios', cashRef.id),
+                    buildPettyCashMovementPayload({
+                        direction: 'salida',
+                        fecha: date,
+                        amount: fiscal.total,
+                        description: description.trim().toUpperCase() || `COMPRA ${provider.nombre}`,
+                        paymentType,
+                        paymentReference: paymentReference.trim().toUpperCase(),
+                        sourceCollection: 'gastosDiarios',
+                        sourceDocId: cashRef.id,
+                        linkedGastoDiarioId: cashRef.id,
+                        linkedPurchaseId: purchaseRef.id,
+                        supplier: provider.nombre,
+                        invoiceNumber: invoiceNumber.trim(),
+                        ...categoryPayload,
+                        ...photoPayload,
+                    })
+                );
             } else {
                 batch.set(purchaseRef, purchasePayload);
             }

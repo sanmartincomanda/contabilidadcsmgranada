@@ -2,10 +2,18 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { db } from '../firebase';
 import {
-    collection, Timestamp, getDocs, doc, deleteDoc, writeBatch, query, where
+    collection, Timestamp, getDocs, doc, writeBatch, query, where
 } from 'firebase/firestore';
 import { APP_BRAND_NAME, DEFAULT_BRANCH_ID, DEFAULT_BRANCH_NAME, DEFAULT_CASHBOX_NAME, fmt } from '../constants';
-import { buildFiscalPayload, isCreditPayment, PURCHASE_PAYMENT_METHODS, uploadInvoicePhoto } from '../services/fiscalUtils';
+import { buildFiscalPayload, isCashPayment, isCreditPayment, PURCHASE_PAYMENT_METHODS, uploadInvoicePhoto } from '../services/fiscalUtils';
+import {
+    PETTY_CASH_ALERT_THRESHOLD,
+    PETTY_CASH_COLLECTION,
+    PETTY_CASH_PIN,
+    buildPettyCashMovementPayload,
+    createPettyCashRef,
+    pettyCashMovementRef,
+} from '../services/pettyCash';
 import {
     DEFAULT_EXPENSE_CATEGORY_ID,
     DEFAULT_PURCHASE_CATEGORY_ID,
@@ -143,6 +151,14 @@ const Badge = ({ children, variant = 'default' }) => {
 // --- COMPONENTE PRINCIPAL ---
 
 const CAJA = DEFAULT_CASHBOX_NAME;
+const getCurrentMonth = () => new Date().toISOString().substring(0, 7);
+const getToday = () => new Date().toISOString().substring(0, 10);
+const knownCashMethods = PURCHASE_PAYMENT_METHODS.filter((method) => !isCreditPayment(method));
+
+const getRecordAmount = (record = {}) => Number(record.monto ?? record.total ?? record.amount ?? 0) || 0;
+const getRecordPaymentMethod = (record = {}) => (
+    record.paymentType || record.paymentMethod || (record.tipo === 'ABONO' ? 'EFECTIVO' : 'SIN METODO')
+);
 
 export default function GastosDiarios({ categories = [] }) {
     const [activeTab, setActiveTab] = useState('registro');
@@ -167,15 +183,30 @@ export default function GastosDiarios({ categories = [] }) {
     const [invoicePhoto, setInvoicePhoto] = useState(null);
 
     // Historial
-    const [filtroFecha, setFiltroFecha] = useState(new Date().toISOString().substring(0, 10));
+    const [filtroPeriodo, setFiltroPeriodo] = useState('mes');
+    const [filtroFecha, setFiltroFecha] = useState(getToday());
+    const [filtroMes, setFiltroMes] = useState(getCurrentMonth());
     const [registros, setRegistros] = useState([]);
+    const [detalleMetodo, setDetalleMetodo] = useState(null);
+
+    // Caja chica
+    const [cashboxUnlocked, setCashboxUnlocked] = useState(false);
+    const [pinInput, setPinInput] = useState('');
+    const [depositAmount, setDepositAmount] = useState('10000');
+    const [depositConfirmPin, setDepositConfirmPin] = useState('');
+    const [cashMovements, setCashMovements] = useState([]);
+    const [cashboxError, setCashboxError] = useState('');
 
     const cargarRegistros = useCallback(async () => {
         setLoading(true);
         try {
-            const registrosQuery = filtroFecha
+            const registrosQuery = filtroPeriodo === 'dia'
                 ? query(collection(db, 'gastosDiarios'), where('fecha', '==', filtroFecha))
-                : collection(db, 'gastosDiarios');
+                : query(
+                    collection(db, 'gastosDiarios'),
+                    where('fecha', '>=', `${filtroMes}-01`),
+                    where('fecha', '<=', `${filtroMes}-31`)
+                );
             const snapshot = await getDocs(registrosQuery);
 
             let docs = snapshot.docs.map(d => ({
@@ -197,13 +228,87 @@ export default function GastosDiarios({ categories = [] }) {
         } finally {
             setLoading(false);
         }
-    }, [filtroFecha]);
+    }, [filtroFecha, filtroMes, filtroPeriodo]);
+
+    const cargarMovimientosCaja = useCallback(async () => {
+        try {
+            const snapshot = await getDocs(collection(db, PETTY_CASH_COLLECTION));
+            const docs = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+            docs.sort((a, b) => {
+                const dateA = a.timestamp?.toMillis?.() || new Date(a.fecha || 0).getTime() || 0;
+                const dateB = b.timestamp?.toMillis?.() || new Date(b.fecha || 0).getTime() || 0;
+                return dateB - dateA;
+            });
+            setCashMovements(docs);
+            setCashboxError('');
+        } catch (error) {
+            console.error('Error cargando caja chica:', error);
+            setCashboxError('No se pudo cargar el saldo de Caja Chica: ' + error.message);
+        }
+    }, []);
 
     useEffect(() => {
         if (activeTab === 'historial') {
             cargarRegistros();
         }
     }, [activeTab, cargarRegistros, refreshKey]);
+
+    useEffect(() => {
+        if (cashboxUnlocked) {
+            cargarMovimientosCaja();
+        }
+    }, [cashboxUnlocked, cargarMovimientosCaja, refreshKey]);
+
+    const handleUnlockCashbox = (e) => {
+        e.preventDefault();
+        if (pinInput !== PETTY_CASH_PIN) {
+            setCashboxError('PIN incorrecto. Caja Chica sigue protegida.');
+            return;
+        }
+        setCashboxUnlocked(true);
+        setPinInput('');
+        setCashboxError('');
+    };
+
+    const handleDeposit = async (e) => {
+        e.preventDefault();
+        const amount = Number(depositAmount);
+        if (!cashboxUnlocked) return;
+        if (depositConfirmPin !== PETTY_CASH_PIN) {
+            setCashboxError('Confirma el deposito repitiendo el PIN correcto.');
+            return;
+        }
+        if (!Number.isFinite(amount) || amount <= 0) {
+            setCashboxError('Ingrese un monto de deposito valido.');
+            return;
+        }
+
+        setLoading(true);
+        try {
+            const depositRef = createPettyCashRef();
+            const batch = writeBatch(db);
+            batch.set(depositRef, buildPettyCashMovementPayload({
+                direction: 'entrada',
+                movementType: 'deposito',
+                fecha: getToday(),
+                amount,
+                description: `DEPOSITO CAJA CHICA ${fmt(amount)}`,
+                paymentType: 'EFECTIVO',
+                sourceCollection: 'caja_chica_depositos',
+                sourceDocId: depositRef.id,
+            }));
+            await batch.commit();
+            setDepositAmount('10000');
+            setDepositConfirmPin('');
+            setCashboxError('');
+            await cargarMovimientosCaja();
+        } catch (error) {
+            console.error('Error depositando caja chica:', error);
+            setCashboxError('No se pudo registrar el deposito: ' + error.message);
+        } finally {
+            setLoading(false);
+        }
+    };
 
     const handleSubmit = async (e) => {
         e.preventDefault();
@@ -271,6 +376,25 @@ export default function GastosDiarios({ categories = [] }) {
                     timestamp
                 });
             }
+
+            batch.set(
+                pettyCashMovementRef('gastosDiarios', gastoDiarioRef.id),
+                buildPettyCashMovementPayload({
+                    direction: 'salida',
+                    fecha,
+                    amount: numMonto,
+                    description: descripcion,
+                    paymentType: 'EFECTIVO',
+                    sourceCollection: 'gastosDiarios',
+                    sourceDocId: gastoDiarioRef.id,
+                    linkedGastoDiarioId: gastoDiarioRef.id,
+                    linkedExpenseId: gastoRef?.id || '',
+                    linkedPurchaseId: compraRef?.id || '',
+                    supplier: descripcion.trim().toUpperCase(),
+                    timestamp,
+                    ...categoryPayload,
+                })
+            );
 
             await batch.commit();
 
@@ -370,6 +494,30 @@ export default function GastosDiarios({ categories = [] }) {
                 });
             }
 
+            if (isCashPayment(paymentType)) {
+                batch.set(
+                    pettyCashMovementRef('gastosDiarios', gastoDiarioRef.id),
+                    buildPettyCashMovementPayload({
+                        direction: 'salida',
+                        fecha,
+                        amount: fiscal.total,
+                        description: descripcion,
+                        paymentType,
+                        paymentReference: paymentReference.trim().toUpperCase(),
+                        sourceCollection: 'gastosDiarios',
+                        sourceDocId: gastoDiarioRef.id,
+                        linkedGastoDiarioId: gastoDiarioRef.id,
+                        linkedExpenseId: gastoRef?.id || '',
+                        linkedPurchaseId: compraRef?.id || '',
+                        supplier: proveedor.trim().toUpperCase(),
+                        invoiceNumber: numeroFactura.trim(),
+                        timestamp,
+                        ...categoryPayload,
+                        ...photoPayload,
+                    })
+                );
+            }
+
             await batch.commit();
 
             setDescripcion('');
@@ -403,37 +551,41 @@ export default function GastosDiarios({ categories = [] }) {
 
         setLoading(true);
         try {
-            await deleteDoc(doc(db, 'gastosDiarios', registro.id));
+            const batch = writeBatch(db);
+            batch.delete(doc(db, 'gastosDiarios', registro.id));
+            batch.delete(pettyCashMovementRef('gastosDiarios', registro.id));
 
             if (registro.tipo === 'Gasto') {
                 if (registro.linkedExpenseId) {
-                    await deleteDoc(doc(db, 'gastos', registro.linkedExpenseId));
+                    batch.delete(doc(db, 'gastos', registro.linkedExpenseId));
                 } else {
                     const gastosSnapshot = await getDocs(collection(db, 'gastos'));
                     const gastosRelacionados = gastosSnapshot.docs.filter(
                         d => d.data().gastoDiarioId === registro.id
                     );
                     for (const gastoDoc of gastosRelacionados) {
-                        await deleteDoc(doc(db, 'gastos', gastoDoc.id));
+                        batch.delete(doc(db, 'gastos', gastoDoc.id));
                     }
                 }
             }
 
             if (registro.tipo === 'Compra') {
                 if (registro.linkedPurchaseId) {
-                    await deleteDoc(doc(db, 'compras', registro.linkedPurchaseId));
+                    batch.delete(doc(db, 'compras', registro.linkedPurchaseId));
                 } else {
                     const comprasSnapshot = await getDocs(collection(db, 'compras'));
                     const comprasRelacionadas = comprasSnapshot.docs.filter(
                         item => item.data().sourceGastoDiarioId === registro.id
                     );
                     for (const compraDoc of comprasRelacionadas) {
-                        await deleteDoc(doc(db, 'compras', compraDoc.id));
+                        batch.delete(doc(db, 'compras', compraDoc.id));
                     }
                 }
             }
 
+            await batch.commit();
             cargarRegistros();
+            if (cashboxUnlocked) cargarMovimientosCaja();
         } catch (error) {
             console.error('Error al eliminar:', error);
             alert('Error al eliminar');
@@ -442,10 +594,23 @@ export default function GastosDiarios({ categories = [] }) {
         }
     };
 
-    const totalGastos = registros.filter(r => r.tipo === 'Gasto').reduce((sum, r) => sum + (r.monto || 0), 0);
-    const totalCompras = registros.filter(r => r.tipo === 'Compra').reduce((sum, r) => sum + (r.monto || 0), 0);
-    const totalAbonos = registros.filter(r => r.tipo === 'ABONO').reduce((sum, r) => sum + (r.monto || 0), 0);
+    const cashboxBalance = cashMovements.reduce((sum, movement) => sum + (Number(movement.signedAmount) || 0), 0);
+    const isLowCashboxBalance = cashboxBalance < PETTY_CASH_ALERT_THRESHOLD;
+    const totalGastos = registros.filter(r => r.tipo === 'Gasto').reduce((sum, r) => sum + getRecordAmount(r), 0);
+    const totalCompras = registros.filter(r => r.tipo === 'Compra').reduce((sum, r) => sum + getRecordAmount(r), 0);
+    const totalAbonos = registros.filter(r => r.tipo === 'ABONO').reduce((sum, r) => sum + getRecordAmount(r), 0);
     const totalGeneral = totalGastos + totalCompras + totalAbonos;
+    const paymentSummary = [...knownCashMethods, 'SIN METODO']
+        .map((method) => {
+            const items = registros.filter((record) => getRecordPaymentMethod(record) === method);
+            return {
+                method,
+                items,
+                total: items.reduce((sum, item) => sum + getRecordAmount(item), 0),
+            };
+        })
+        .filter((item) => item.total > 0 || knownCashMethods.includes(item.method));
+    const periodLabel = filtroPeriodo === 'dia' ? filtroFecha : filtroMes;
 
     return (
         <div className="space-y-5">
@@ -460,10 +625,10 @@ export default function GastosDiarios({ categories = [] }) {
                 <div className="flex flex-col gap-3 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
                     <div>
                         <div className="text-[10px] font-black uppercase tracking-[0.34em] text-[#e30613]">{APP_BRAND_NAME}</div>
-                        <h1 className="mt-1 text-xl font-black text-slate-950">Gastos diarios</h1>
+                        <h1 className="mt-1 text-xl font-black text-slate-950">Caja Chica</h1>
                     </div>
                     <div className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-[10px] font-black uppercase tracking-[0.22em] text-slate-500">
-                        Caja {CAJA}
+                        Saldo protegido con PIN
                     </div>
                 </div>
             </div>
@@ -480,7 +645,7 @@ export default function GastosDiarios({ categories = [] }) {
                         }`}
                     >
                         <Icon path={Icons.receipt} className="w-3.5 h-3.5" />
-                        Nuevo Registro
+                        Ingresar movimiento
                     </button>
                     <button
                         onClick={() => setActiveTab('historial')}
@@ -497,7 +662,69 @@ export default function GastosDiarios({ categories = [] }) {
             </div>
 
             {activeTab === 'registro' ? (
-                <div className="animate-fade-in max-w-lg">
+                <div className="animate-fade-in grid gap-5 xl:grid-cols-[minmax(0,420px)_minmax(0,1fr)]">
+                    <Card title="Saldo Caja Chica" icon="cash" className="xl:sticky xl:top-24 xl:self-start">
+                        {!cashboxUnlocked ? (
+                            <form onSubmit={handleUnlockCashbox} className="space-y-4">
+                                <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm font-semibold text-amber-800">
+                                    El saldo y los depositos solo se muestran con PIN. Los usuarios pueden registrar gastos sin ver el saldo.
+                                </div>
+                                <Input
+                                    label="PIN de Caja Chica"
+                                    type="password"
+                                    icon="cash"
+                                    placeholder="Ingrese PIN"
+                                    value={pinInput}
+                                    onChange={e => setPinInput(e.target.value)}
+                                />
+                                {cashboxError && <div className="text-xs font-bold text-[#e30613]">{cashboxError}</div>}
+                                <Button type="submit" variant="dark" className="w-full">Ver saldo / Depositar</Button>
+                            </form>
+                        ) : (
+                            <div className="space-y-4">
+                                <div className={`rounded-2xl border p-5 ${isLowCashboxBalance ? 'border-amber-300 bg-amber-50' : 'border-emerald-200 bg-emerald-50'}`}>
+                                    <div className="text-xs font-black uppercase tracking-[0.24em] text-slate-500">Saldo disponible</div>
+                                    <div className={`mt-2 text-3xl font-black ${isLowCashboxBalance ? 'text-amber-700' : 'text-emerald-700'}`}>{fmt(cashboxBalance)}</div>
+                                    <div className="mt-1 text-xs font-semibold text-slate-500">Caja {CAJA}</div>
+                                    {isLowCashboxBalance && (
+                                        <div className="mt-3 rounded-xl bg-white px-3 py-2 text-xs font-bold text-amber-700">
+                                            Aviso: saldo menor a {fmt(PETTY_CASH_ALERT_THRESHOLD)}.
+                                        </div>
+                                    )}
+                                </div>
+                                {cashboxError && <div className="rounded-xl border border-[#fecaca] bg-[#fff1f2] px-3 py-2 text-xs font-bold text-[#9f111a]">{cashboxError}</div>}
+                                <form onSubmit={handleDeposit} className="space-y-3 rounded-xl border border-slate-200 bg-slate-50 p-4">
+                                    <div>
+                                        <div className="text-xs font-black uppercase tracking-[0.22em] text-[#9f111a]">Depositar dinero</div>
+                                        <div className="mt-1 text-xs font-semibold text-slate-500">Ejemplo recomendado: C$10,000. Confirma con PIN otra vez.</div>
+                                    </div>
+                                    <Input
+                                        label="Monto"
+                                        type="number"
+                                        step="0.01"
+                                        icon="dollar"
+                                        value={depositAmount}
+                                        onChange={e => setDepositAmount(e.target.value)}
+                                    />
+                                    <Input
+                                        label="Confirmar PIN"
+                                        type="password"
+                                        icon="cash"
+                                        value={depositConfirmPin}
+                                        onChange={e => setDepositConfirmPin(e.target.value)}
+                                    />
+                                    <Button type="submit" variant="success" disabled={loading} className="w-full">
+                                        {loading ? 'Depositando...' : 'Confirmar deposito'}
+                                    </Button>
+                                </form>
+                                <Button type="button" variant="ghost" onClick={() => setCashboxUnlocked(false)} className="w-full">
+                                    Ocultar saldo
+                                </Button>
+                            </div>
+                        )}
+                    </Card>
+
+                    <div className="max-w-lg">
                     <Card title="Nuevo Registro de Caja" icon="receipt" gradient={true}>
                         <form onSubmit={handleSubmitFiscal} className="space-y-4">
                             {/* Fecha + Tipo en la misma fila */}
@@ -623,6 +850,7 @@ export default function GastosDiarios({ categories = [] }) {
                             </Button>
                         </form>
                     </Card>
+                    </div>
                 </div>
             ) : (
                 <div className="animate-fade-in">
@@ -641,13 +869,35 @@ export default function GastosDiarios({ categories = [] }) {
                         <div className="space-y-5">
                             {/* Filtros */}
                             <div className="flex flex-wrap items-end gap-3 rounded-xl border border-stone-200 bg-stone-50 p-4">
-                                <Input
-                                    label="Fecha"
-                                    type="date"
+                                <Select
+                                    label="Periodo"
                                     icon="calendar"
-                                    value={filtroFecha}
-                                    onChange={e => setFiltroFecha(e.target.value)}
+                                    value={filtroPeriodo}
+                                    onChange={e => setFiltroPeriodo(e.target.value)}
+                                    options={
+                                        <>
+                                            <option value="mes">Mes completo</option>
+                                            <option value="dia">Dia especifico</option>
+                                        </>
+                                    }
                                 />
+                                {filtroPeriodo === 'dia' ? (
+                                    <Input
+                                        label="Fecha"
+                                        type="date"
+                                        icon="calendar"
+                                        value={filtroFecha}
+                                        onChange={e => setFiltroFecha(e.target.value)}
+                                    />
+                                ) : (
+                                    <Input
+                                        label="Mes"
+                                        type="month"
+                                        icon="calendar"
+                                        value={filtroMes}
+                                        onChange={e => setFiltroMes(e.target.value)}
+                                    />
+                                )}
                                 <Button
                                     onClick={cargarRegistros}
                                     variant="ghost"
@@ -678,6 +928,33 @@ export default function GastosDiarios({ categories = [] }) {
                                 </div>
                             </div>
 
+                            <div className="rounded-2xl border border-[#d8dee6] bg-white p-4">
+                                <div className="flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
+                                    <div>
+                                        <div className="text-[10px] font-black uppercase tracking-[0.28em] text-[#e30613]">Gastos de Caja Chica</div>
+                                        <div className="mt-1 text-sm font-bold text-slate-600">Resumen por metodo de pago - {periodLabel}</div>
+                                    </div>
+                                    <div className="text-xs font-black uppercase tracking-[0.18em] text-slate-400">Tocar metodo para detalle</div>
+                                </div>
+                                <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                                    {paymentSummary.map((summary) => (
+                                        <button
+                                            type="button"
+                                            key={summary.method}
+                                            onClick={() => setDetalleMetodo(summary)}
+                                            className="group rounded-2xl border border-slate-200 bg-slate-50 p-4 text-left transition hover:-translate-y-0.5 hover:border-[#9f111a]/35 hover:bg-white hover:shadow-lg hover:shadow-slate-900/10"
+                                        >
+                                            <div className="flex items-center justify-between gap-3">
+                                                <div className="text-[10px] font-black uppercase tracking-[0.16em] text-slate-500">{summary.method}</div>
+                                                <span className="rounded-full bg-white px-2 py-0.5 text-[10px] font-black text-slate-400 ring-1 ring-slate-200">{summary.items.length}</span>
+                                            </div>
+                                            <div className="mt-2 text-lg font-black text-slate-950">{fmt(summary.total)}</div>
+                                            <div className="mt-1 text-[11px] font-semibold text-slate-400 group-hover:text-[#9f111a]">Ver movimientos</div>
+                                        </button>
+                                    ))}
+                                </div>
+                            </div>
+
                             {/* Tabla */}
                             <div className="overflow-x-auto rounded-xl border border-stone-200 bg-white">
                                 <table className="w-full text-sm">
@@ -686,6 +963,7 @@ export default function GastosDiarios({ categories = [] }) {
                                             <th className="px-4 py-2.5 text-left text-xs font-bold uppercase tracking-wider text-stone-600">Hora</th>
                                             <th className="px-4 py-2.5 text-left text-xs font-bold uppercase tracking-wider text-stone-600">Descripcion</th>
                                             <th className="px-4 py-2.5 text-left text-xs font-bold uppercase tracking-wider text-stone-600">Tipo</th>
+                                            <th className="px-4 py-2.5 text-left text-xs font-bold uppercase tracking-wider text-stone-600">Pago</th>
                                             <th className="px-4 py-2.5 text-left text-xs font-bold uppercase tracking-wider text-stone-600">Categoria</th>
                                             <th className="px-4 py-2.5 text-right text-xs font-bold uppercase tracking-wider text-stone-600">Monto</th>
                                             <th className="px-4 py-2.5 text-center text-xs font-bold uppercase tracking-wider text-stone-600 no-print">Accion</th>
@@ -694,7 +972,7 @@ export default function GastosDiarios({ categories = [] }) {
                                     <tbody className="divide-y divide-stone-100">
                                         {registros.length === 0 ? (
                                             <tr>
-                                                <td colSpan="6" className="px-4 py-10 text-center text-stone-400">
+                                                <td colSpan="7" className="px-4 py-10 text-center text-stone-400">
                                                     <Icon path={Icons.alertCircle} className="w-10 h-10 mx-auto mb-2 text-stone-300" />
                                                     <p className="text-sm">No hay registros para esta fecha</p>
                                                 </td>
@@ -711,13 +989,14 @@ export default function GastosDiarios({ categories = [] }) {
                                                             {reg.tipo}
                                                         </Badge>
                                                     </td>
+                                                    <td className="px-4 py-3 text-xs font-bold uppercase text-slate-500">{getRecordPaymentMethod(reg)}</td>
                                                     <td className="px-4 py-3 text-sm text-stone-500">
                                                         {(() => {
                                                             const categoryInfo = getExpenseCategoryFromRecord(reg, reg.tipo === 'Compra' ? DEFAULT_PURCHASE_CATEGORY_ID : DEFAULT_EXPENSE_CATEGORY_ID);
                                                             return reg.tipo === 'ABONO' ? 'ABONO' : `${categoryInfo.category} / ${categoryInfo.subcategory}`;
                                                         })()}
                                                     </td>
-                                                    <td className="px-4 py-3 text-right font-bold text-stone-800">{fmt(reg.monto)}</td>
+                                                    <td className="px-4 py-3 text-right font-bold text-stone-800">{fmt(getRecordAmount(reg))}</td>
                                                     <td className="px-4 py-3 text-center no-print">
                                                         <button
                                                             onClick={() => handleEliminar(reg)}
@@ -733,7 +1012,7 @@ export default function GastosDiarios({ categories = [] }) {
                                     </tbody>
                                     <tfoot className="border-t-2 border-stone-200 bg-stone-100">
                                         <tr>
-                                            <td colSpan="4" className="px-4 py-3 font-bold text-stone-800 uppercase text-xs tracking-wider">Total del Dia</td>
+                                            <td colSpan="5" className="px-4 py-3 font-bold text-stone-800 uppercase text-xs tracking-wider">Total del periodo</td>
                                             <td className="px-4 py-3 text-right font-black text-lg text-[#9f111a]">{fmt(totalGeneral)}</td>
                                             <td className="no-print"></td>
                                         </tr>
@@ -742,6 +1021,67 @@ export default function GastosDiarios({ categories = [] }) {
                             </div>
                         </div>
                     </Card>
+                </div>
+            )}
+            {detalleMetodo && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/55 p-4 backdrop-blur-sm no-print" onClick={() => setDetalleMetodo(null)}>
+                    <div className="max-h-[86vh] w-full max-w-3xl overflow-hidden rounded-2xl bg-white shadow-2xl" onClick={e => e.stopPropagation()}>
+                        <div className="flex items-start justify-between gap-4 border-b border-slate-200 bg-[#111827] px-5 py-4 text-white">
+                            <div>
+                                <div className="text-[10px] font-black uppercase tracking-[0.28em] text-[#f5b51b]">Detalle de Caja Chica</div>
+                                <h3 className="mt-1 text-lg font-black">{detalleMetodo.method}</h3>
+                                <p className="text-xs font-semibold text-white/65">{periodLabel} - {detalleMetodo.items.length} movimiento(s)</p>
+                            </div>
+                            <button
+                                type="button"
+                                onClick={() => setDetalleMetodo(null)}
+                                className="rounded-xl bg-white/10 px-3 py-2 text-xs font-black uppercase tracking-wider text-white transition hover:bg-white/20"
+                            >
+                                Cerrar
+                            </button>
+                        </div>
+                        <div className="p-5">
+                            <div className="mb-4 rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                                <div className="text-xs font-black uppercase tracking-[0.22em] text-slate-400">Total</div>
+                                <div className="mt-1 text-2xl font-black text-[#9f111a]">{fmt(detalleMetodo.total)}</div>
+                            </div>
+                            <div className="max-h-[48vh] overflow-auto rounded-xl border border-slate-200">
+                                <table className="w-full text-sm">
+                                    <thead className="sticky top-0 bg-slate-100">
+                                        <tr>
+                                            <th className="px-4 py-2 text-left text-xs font-black uppercase tracking-wider text-slate-500">Fecha</th>
+                                            <th className="px-4 py-2 text-left text-xs font-black uppercase tracking-wider text-slate-500">Tipo</th>
+                                            <th className="px-4 py-2 text-left text-xs font-black uppercase tracking-wider text-slate-500">Detalle</th>
+                                            <th className="px-4 py-2 text-right text-xs font-black uppercase tracking-wider text-slate-500">Monto</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody className="divide-y divide-slate-100">
+                                        {detalleMetodo.items.length === 0 ? (
+                                            <tr>
+                                                <td colSpan="4" className="px-4 py-10 text-center text-sm font-semibold text-slate-400">
+                                                    No hay movimientos para este metodo en el periodo seleccionado.
+                                                </td>
+                                            </tr>
+                                        ) : (
+                                            detalleMetodo.items.map((item) => (
+                                                <tr key={item.id} className="hover:bg-slate-50">
+                                                    <td className="px-4 py-3 text-xs font-bold text-slate-500">{item.fecha || item.date || '--'}</td>
+                                                    <td className="px-4 py-3">
+                                                        <Badge variant={item.tipo === 'Gasto' ? 'danger' : item.tipo === 'ABONO' ? 'warning' : 'purple'}>{item.tipo || 'Movimiento'}</Badge>
+                                                    </td>
+                                                    <td className="px-4 py-3">
+                                                        <div className="font-bold text-slate-800">{item.descripcion || item.description || 'Sin descripcion'}</div>
+                                                        <div className="text-xs font-semibold text-slate-400">{item.proveedor || item.supplier || ''} {item.factura || item.invoiceNumber ? `- Factura ${item.factura || item.invoiceNumber}` : ''}</div>
+                                                    </td>
+                                                    <td className="px-4 py-3 text-right font-black text-slate-900">{fmt(getRecordAmount(item))}</td>
+                                                </tr>
+                                            ))
+                                        )}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
                 </div>
             )}
         </div>

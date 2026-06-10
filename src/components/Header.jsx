@@ -247,7 +247,7 @@ export default function Header() {
 
                                 {hasDailyExpensesAccess && (
                                     <NavLink to="/gastos-diarios" icon="cash" active={isActive('/gastos-diarios')}>
-                                        Gastos Diarios
+                                        Caja Chica
                                     </NavLink>
                                 )}
 
@@ -384,7 +384,7 @@ export default function Header() {
                                     active={isActive('/gastos-diarios')}
                                     onClick={() => setIsMobileMenuOpen(false)}
                                 >
-                                    Gastos Diarios
+                                    Caja Chica
                                 </NavLink>
                             )}
 

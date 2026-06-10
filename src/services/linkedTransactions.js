@@ -10,6 +10,7 @@ import {
 } from 'firebase/firestore';
 import { db } from '../firebase';
 import { DEFAULT_PURCHASE_CATEGORY_ID, buildExpenseCategoryPayload, getExpenseCategoryFromRecord } from './expenseCategories';
+import { buildPettyCashMovementPayload, pettyCashMovementRef } from './pettyCash';
 
 const uniqueRefs = (refs) => {
     const refMap = new Map();
@@ -149,6 +150,37 @@ const buildGastoMirrorPayload = (purchaseData, updateData) => {
     });
 };
 
+const buildExpenseGastoMirrorPayload = (expenseData, updateData) => {
+    const merged = { ...expenseData, ...updateData };
+    const categoryPayload = buildExpenseCategoryPayload(getExpenseCategoryFromRecord(merged));
+    const total = normalizeAmount(firstDefined(merged.total, merged.monto, merged.amount));
+    const date = firstDefined(merged.date, merged.fecha);
+
+    return cleanForFirestore({
+        fecha: date,
+        date,
+        month: merged.month || String(date || '').substring(0, 7),
+        proveedor: firstDefined(merged.supplier, merged.proveedor),
+        supplier: firstDefined(merged.supplier, merged.proveedor),
+        factura: firstDefined(merged.invoiceNumber, merged.numero, merged.factura),
+        invoiceNumber: firstDefined(merged.invoiceNumber, merged.numero, merged.factura),
+        descripcion: firstDefined(merged.description, merged.descripcion),
+        monto: total,
+        amount: normalizeAmount(firstDefined(merged.amount, merged.subtotal, total)),
+        subtotal: normalizeAmount(firstDefined(merged.subtotal, merged.amount, total)),
+        iva: normalizeAmount(merged.iva),
+        total,
+        retentionIr2: normalizeAmount(merged.retentionIr2),
+        retentionMunicipal1: normalizeAmount(merged.retentionMunicipal1),
+        retencionIr2: normalizeAmount(merged.retencionIr2 ?? merged.retentionIr2),
+        retencionMunicipal1: normalizeAmount(merged.retencionMunicipal1 ?? merged.retentionMunicipal1),
+        paymentType: merged.paymentType,
+        paymentReference: merged.paymentReference,
+        ...categoryPayload,
+        tipo: 'Gasto',
+    });
+};
+
 const getBlockingAbonos = async (facturaIds) => {
     if (!facturaIds.length) return [];
 
@@ -239,11 +271,31 @@ const findGastoRefsForPurchase = async (purchaseId, purchaseData) => {
     const gastoRefs = [];
 
     await addExistingRef(gastoRefs, 'gastosDiarios', purchaseData?.sourceGastoDiarioId);
+    await addExistingRef(gastoRefs, 'gastosDiarios', purchaseData?.linkedCashExpenseId);
 
     const gastosSnap = await getDocs(
         query(collection(db, 'gastosDiarios'), where('linkedPurchaseId', '==', purchaseId))
     );
     gastosSnap.docs.forEach((gastoDoc) => gastoRefs.push(gastoDoc.ref));
+
+    return uniqueRefs(gastoRefs);
+};
+
+const findGastoRefsForExpense = async (expenseId, expenseData) => {
+    const gastoRefs = [];
+
+    await addExistingRef(gastoRefs, 'gastosDiarios', expenseData?.sourceGastoDiarioId);
+    await addExistingRef(gastoRefs, 'gastosDiarios', expenseData?.linkedCashExpenseId);
+
+    const linkedQueries = [
+        query(collection(db, 'gastosDiarios'), where('linkedExpenseId', '==', expenseId)),
+        query(collection(db, 'gastosDiarios'), where('sourceExpenseId', '==', expenseId)),
+    ];
+
+    for (const linkedQuery of linkedQueries) {
+        const gastosSnap = await getDocs(linkedQuery);
+        gastosSnap.docs.forEach((gastoDoc) => gastoRefs.push(gastoDoc.ref));
+    }
 
     return uniqueRefs(gastoRefs);
 };
@@ -290,10 +342,30 @@ export async function updatePurchaseTransaction(purchaseId, updateData, options 
     }
 
     for (const gastoRef of gastoRefs) {
+        const gastoMirrorPayload = buildGastoMirrorPayload(purchaseData, cleanUpdate);
         batch.update(gastoRef, {
-            ...buildGastoMirrorPayload(purchaseData, cleanUpdate),
+            ...gastoMirrorPayload,
             updatedAt: serverTimestamp(),
         });
+        batch.set(
+            pettyCashMovementRef('gastosDiarios', gastoRef.id),
+            buildPettyCashMovementPayload({
+                ...gastoMirrorPayload,
+                direction: 'salida',
+                fecha: gastoMirrorPayload.fecha,
+                amount: gastoMirrorPayload.monto,
+                description: gastoMirrorPayload.descripcion,
+                paymentType: firstDefined(cleanUpdate.paymentType, purchaseData.paymentType, 'EFECTIVO'),
+                paymentReference: firstDefined(cleanUpdate.paymentReference, purchaseData.paymentReference, ''),
+                sourceCollection: 'gastosDiarios',
+                sourceDocId: gastoRef.id,
+                linkedGastoDiarioId: gastoRef.id,
+                linkedPurchaseId: purchaseId,
+                supplier: gastoMirrorPayload.proveedor,
+                invoiceNumber: gastoMirrorPayload.factura,
+            }),
+            { merge: true }
+        );
     }
 
     await batch.commit();
@@ -316,6 +388,7 @@ export async function updateExpenseTransaction(expenseId, updateData, options = 
     const expenseData = expenseSnap.data();
     const cleanUpdate = cleanForFirestore(updateData);
     const payableRefs = await findPayableRefsForExpense(expenseId, expenseData);
+    const gastoRefs = await findGastoRefsForExpense(expenseId, expenseData);
     const batch = writeBatch(db);
 
     if (options?.previousData) {
@@ -344,11 +417,39 @@ export async function updateExpenseTransaction(expenseId, updateData, options = 
         });
     }
 
+    for (const gastoRef of gastoRefs) {
+        const gastoMirrorPayload = buildExpenseGastoMirrorPayload(expenseData, cleanUpdate);
+        batch.update(gastoRef, {
+            ...gastoMirrorPayload,
+            updatedAt: serverTimestamp(),
+        });
+        batch.set(
+            pettyCashMovementRef('gastosDiarios', gastoRef.id),
+            buildPettyCashMovementPayload({
+                ...gastoMirrorPayload,
+                direction: 'salida',
+                fecha: gastoMirrorPayload.fecha,
+                amount: gastoMirrorPayload.monto,
+                description: gastoMirrorPayload.descripcion,
+                paymentType: firstDefined(cleanUpdate.paymentType, expenseData.paymentType, 'EFECTIVO'),
+                paymentReference: firstDefined(cleanUpdate.paymentReference, expenseData.paymentReference, ''),
+                sourceCollection: 'gastosDiarios',
+                sourceDocId: gastoRef.id,
+                linkedGastoDiarioId: gastoRef.id,
+                linkedExpenseId: expenseId,
+                supplier: gastoMirrorPayload.proveedor,
+                invoiceNumber: gastoMirrorPayload.factura,
+            }),
+            { merge: true }
+        );
+    }
+
     await batch.commit();
 
     return {
         updated: true,
         linkedPayableIds: payableRefs.map((payableRef) => payableRef.id),
+        linkedGastoDiarioIds: gastoRefs.map((gastoRef) => gastoRef.id),
     };
 }
 
@@ -403,6 +504,7 @@ export async function deleteExpenseTransaction(expenseId) {
 
     const expenseData = expenseSnap.data();
     const payableRefs = await findPayableRefsForExpense(expenseId, expenseData);
+    const gastoRefs = await findGastoRefsForExpense(expenseId, expenseData);
     const blockingAbonos = await getBlockingAbonos(payableRefs.map((payableRef) => payableRef.id));
 
     if (blockingAbonos.length) {
@@ -416,11 +518,16 @@ export async function deleteExpenseTransaction(expenseId) {
     const batch = writeBatch(db);
     batch.delete(expenseRef);
     payableRefs.forEach((payableRef) => batch.delete(payableRef));
+    gastoRefs.forEach((gastoRef) => {
+        batch.delete(gastoRef);
+        batch.delete(pettyCashMovementRef('gastosDiarios', gastoRef.id));
+    });
     await batch.commit();
 
     return {
         deleted: true,
         linkedPayableIds: payableRefs.map((payableRef) => payableRef.id),
+        linkedGastoDiarioIds: gastoRefs.map((gastoRef) => gastoRef.id),
     };
 }
 
@@ -449,7 +556,10 @@ export async function deletePurchaseTransaction(purchaseId) {
     const batch = writeBatch(db);
     batch.delete(purchaseRef);
     payableRefs.forEach((payableRef) => batch.delete(payableRef));
-    gastoRefs.forEach((gastoRef) => batch.delete(gastoRef));
+    gastoRefs.forEach((gastoRef) => {
+        batch.delete(gastoRef);
+        batch.delete(pettyCashMovementRef('gastosDiarios', gastoRef.id));
+    });
     await batch.commit();
 
     return {

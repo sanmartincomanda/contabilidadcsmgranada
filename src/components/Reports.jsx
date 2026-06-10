@@ -871,17 +871,7 @@ const TaxIncomeFlowDiagram = ({ totals, selectedMonth }) => {
     );
 };
 
-const flattenCategoryRows = (rows = []) => rows.flatMap((row) => (
-    row.subcategories.map((subcategory) => ({
-        category: row.category,
-        subcategory: subcategory.subcategory,
-        total: subcategory.total,
-    }))
-));
-
 const TaxStatementPrintableReport = ({ taxReport, selectedMonth, onPrint }) => {
-    const costRows = flattenCategoryRows(taxReport.purchaseCategoryRows);
-    const expenseRows = flattenCategoryRows(taxReport.operatingExpenseRows);
     const totalTaxes = taxReport.totals.municipalTax + taxReport.totals.incomeTax30;
     const printedAt = new Date().toLocaleDateString('es-NI', {
         year: 'numeric',
@@ -889,16 +879,43 @@ const TaxStatementPrintableReport = ({ taxReport, selectedMonth, onPrint }) => {
         day: 'numeric',
     });
 
-    const Line = ({ label, value, tone = 'default', strong = false, indent = false }) => (
+    const Line = ({ label, value, tone = 'default', strong = false, indent = false, category = false, plainAmount = false }) => (
         <tr className={`${strong ? 'bg-slate-50' : ''} ${tone === 'final' ? 'bg-emerald-50' : ''}`}>
-            <td className={`tax-pdf-cell ${indent ? 'pl-8 text-[11px] text-slate-600' : 'font-bold text-slate-800'} ${strong || tone === 'final' ? 'uppercase tracking-wide' : ''}`}>
+            <td className={`tax-pdf-cell ${
+                indent
+                    ? 'pl-10 text-[11px] font-semibold text-slate-600'
+                    : category
+                        ? 'pl-5 font-black text-slate-800'
+                        : 'font-bold text-slate-800'
+            } ${(strong && !category) || tone === 'final' ? 'uppercase tracking-wide' : ''}`}>
                 {label}
             </td>
             <td className={`tax-pdf-cell text-right font-black ${tone === 'negative' ? 'text-rose-700' : tone === 'final' ? 'text-emerald-700' : 'text-slate-900'}`}>
-                {tone === 'negative' && value > 0 ? `(${fmt(value)})` : fmt(value)}
+                {tone === 'negative' && value > 0 && !plainAmount ? `(${fmt(value)})` : fmt(value)}
             </td>
         </tr>
     );
+
+    const CategoryLines = ({ rows = [], emptyLabel = 'Sin subcategorias registradas' }) => {
+        if (!rows.length) {
+            return <Line label={emptyLabel} value={0} indent plainAmount />;
+        }
+
+        return rows.map((row) => (
+            <React.Fragment key={`category-${row.category}`}>
+                <Line label={row.category} value={row.total} category plainAmount />
+                {(row.subcategories || []).map((subNode) => (
+                    <Line
+                        key={`subcategory-${row.category}-${subNode.subcategory}`}
+                        label={`- ${subNode.subcategory}`}
+                        value={subNode.total}
+                        indent
+                        plainAmount
+                    />
+                ))}
+            </React.Fragment>
+        ));
+    };
 
     return (
         <Card
@@ -966,20 +983,12 @@ const TaxStatementPrintableReport = ({ taxReport, selectedMonth, onPrint }) => {
                             <Line label="Ventas subtotal sin IVA" value={taxReport.totals.salesSubtotal} indent />
 
                             <Line label="Costo de ventas totalizado" value={taxReport.totals.purchaseSubtotal} tone="negative" strong />
-                            {costRows.length === 0 ? (
-                                <Line label="Sin subcategorias de costo registradas" value={0} indent />
-                            ) : costRows.map((row) => (
-                                <Line key={`cost-${row.category}-${row.subcategory}`} label={row.subcategory} value={row.total} tone="negative" indent />
-                            ))}
+                            <CategoryLines rows={taxReport.purchaseCategoryRows} emptyLabel="Sin subcategorias de costo registradas" />
 
                             <Line label="Utilidad bruta" value={taxReport.totals.grossProfit} strong />
 
                             <Line label="Gastos operativos totalizados" value={taxReport.totals.operatingExpenseSubtotal} tone="negative" strong />
-                            {expenseRows.length === 0 ? (
-                                <Line label="Sin subcategorias de gasto registradas" value={0} indent />
-                            ) : expenseRows.map((row) => (
-                                <Line key={`expense-${row.category}-${row.subcategory}`} label={`${row.category} / ${row.subcategory}`} value={row.total} tone="negative" indent />
-                            ))}
+                            <CategoryLines rows={taxReport.operatingExpenseRows} emptyLabel="Sin subcategorias de gasto registradas" />
 
                             <Line label="Utilidad operativa" value={taxReport.totals.operatingProfit} strong />
                             <Line label="Impuestos" value={totalTaxes} tone="negative" strong />
