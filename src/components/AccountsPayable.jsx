@@ -22,6 +22,11 @@ import {
     uploadInvoicePhoto,
 } from '../services/fiscalUtils';
 import { getProviderCode, getProviderDisplayName, upsertProviderByName } from '../services/providers';
+import {
+    DEFAULT_PURCHASE_CATEGORY_ID,
+    EXPENSE_CATEGORY_TREE,
+    buildExpenseCategoryPayload,
+} from '../services/expenseCategories';
 
 // --- ICONOS SVG INLINE ---
 const Icon = ({ path, className = "w-5 h-5" }) => (
@@ -130,6 +135,23 @@ const Select = ({ label, options, ...props }) => (
             <Icon path={Icons.chevronRight} className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 rotate-90 pointer-events-none" />
         </div>
     </div>
+);
+
+const expenseCategoryOptions = () => (
+    <>
+        {EXPENSE_CATEGORY_TREE.map((group) => (
+            <optgroup key={group.category} label={group.category}>
+                {group.subcategories.map((subcategory) => {
+                    const payload = buildExpenseCategoryPayload({ category: group.category, subcategory }, DEFAULT_PURCHASE_CATEGORY_ID);
+                    return (
+                        <option key={payload.categoryLabel} value={payload.id}>
+                            {subcategory}
+                        </option>
+                    );
+                })}
+            </optgroup>
+        ))}
+    </>
 );
 
 const Badge = ({ children, variant = 'default' }) => {
@@ -438,6 +460,7 @@ export function AccountsPayable({ data }) {
         total: '',
         retentionIr2: '',
         retentionMunicipal1: '',
+        categoryId: DEFAULT_PURCHASE_CATEGORY_ID,
         paymentReference: ''
     });
     const [facturaSupportFiles, setFacturaSupportFiles] = useState(createEmptySupportFilesState());
@@ -493,6 +516,7 @@ export function AccountsPayable({ data }) {
 
         setLoading(true);
         try {
+            const categoryPayload = buildExpenseCategoryPayload(facturaForm.categoryId || DEFAULT_PURCHASE_CATEGORY_ID, DEFAULT_PURCHASE_CATEGORY_ID);
             const provider = await upsertProviderByName(facturaForm.proveedor, { source: 'cuentas_por_pagar' });
             const facturaRef = doc(collection(db, 'cuentas_por_pagar'));
             const compraRef = doc(collection(db, 'compras'), `credito_${facturaRef.id}`);
@@ -520,6 +544,7 @@ export function AccountsPayable({ data }) {
                 paymentType: 'credito',
                 paymentReference: facturaForm.paymentReference?.trim().toUpperCase() || "",
                 isInventoryCost: true,
+                ...categoryPayload,
                 mirroredToCompras: true,
                 mirroredPurchaseId: compraRef.id,
                 ...fiscal,
@@ -544,6 +569,7 @@ export function AccountsPayable({ data }) {
                 paymentType: 'credito',
                 paymentReference: facturaForm.paymentReference?.trim().toUpperCase() || "",
                 isInventoryCost: true,
+                ...categoryPayload,
                 sourceCollection: 'cuentas_por_pagar',
                 sourceFacturaId: facturaRef.id,
                 linkedPayableId: facturaRef.id,
@@ -563,6 +589,7 @@ export function AccountsPayable({ data }) {
                 total: '',
                 retentionIr2: '',
                 retentionMunicipal1: '',
+                categoryId: DEFAULT_PURCHASE_CATEGORY_ID,
                 paymentReference: ''
             }));
             setFacturaSupportFiles(createEmptySupportFilesState());
@@ -1015,6 +1042,13 @@ export function AccountsPayable({ data }) {
                                         placeholder="Detalle de la compra"
                                         value={facturaForm.descripcion}
                                         onChange={e => setFacturaForm({ ...facturaForm, descripcion: e.target.value })}
+                                    />
+
+                                    <Select
+                                        label="Categoria / subcategoria"
+                                        value={facturaForm.categoryId}
+                                        onChange={e => setFacturaForm({ ...facturaForm, categoryId: e.target.value })}
+                                        options={expenseCategoryOptions()}
                                     />
 
                                     <div className="grid grid-cols-2 gap-4">

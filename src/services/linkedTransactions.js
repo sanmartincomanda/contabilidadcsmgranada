@@ -9,6 +9,7 @@ import {
     writeBatch,
 } from 'firebase/firestore';
 import { db } from '../firebase';
+import { DEFAULT_PURCHASE_CATEGORY_ID, buildExpenseCategoryPayload, getExpenseCategoryFromRecord } from './expenseCategories';
 
 const uniqueRefs = (refs) => {
     const refMap = new Map();
@@ -49,6 +50,7 @@ const firstDefined = (...values) => values.find((value) => value !== undefined &
 
 const buildPayableMirrorPayload = (purchaseData, updateData, payableData = {}) => {
     const merged = { ...purchaseData, ...updateData };
+    const categoryPayload = buildExpenseCategoryPayload(getExpenseCategoryFromRecord(merged, DEFAULT_PURCHASE_CATEGORY_ID), DEFAULT_PURCHASE_CATEGORY_ID);
     const newTotal = normalizeAmount(firstDefined(merged.total, merged.monto, merged.amount));
     const previousTotal = normalizeAmount(firstDefined(payableData.total, payableData.monto, purchaseData.total, purchaseData.amount));
     const previousSaldo = normalizeAmount(firstDefined(payableData.saldo, newTotal));
@@ -63,6 +65,7 @@ const buildPayableMirrorPayload = (purchaseData, updateData, payableData = {}) =
         purchaseFolio: merged.purchaseFolio || '',
         purchaseSeries: merged.purchaseSeries || '',
         descripcion: firstDefined(merged.description, merged.descripcion),
+        ...categoryPayload,
         monto: newTotal,
         saldo,
         amount: normalizeAmount(firstDefined(merged.amount, merged.subtotal, newTotal)),
@@ -83,6 +86,7 @@ const buildPayableMirrorPayload = (purchaseData, updateData, payableData = {}) =
 
 const buildExpensePayableMirrorPayload = (expenseData, updateData, payableData = {}) => {
     const merged = { ...expenseData, ...updateData };
+    const categoryPayload = buildExpenseCategoryPayload(getExpenseCategoryFromRecord(merged));
     const newTotal = normalizeAmount(firstDefined(merged.total, merged.monto, merged.amount));
     const previousTotal = normalizeAmount(firstDefined(payableData.total, payableData.monto, expenseData.total, expenseData.amount));
     const previousSaldo = normalizeAmount(firstDefined(payableData.saldo, newTotal));
@@ -99,8 +103,7 @@ const buildExpensePayableMirrorPayload = (expenseData, updateData, payableData =
         numero: firstDefined(merged.invoiceNumber, merged.numero, merged.factura),
         factura: firstDefined(merged.invoiceNumber, merged.numero, merged.factura),
         descripcion: firstDefined(merged.description, merged.descripcion),
-        category: firstDefined(merged.category, merged.categoria, 'Gasto operativo'),
-        expenseCategory: firstDefined(merged.category, merged.categoria, 'Gasto operativo'),
+        ...categoryPayload,
         monto: newTotal,
         saldo,
         amount: normalizeAmount(firstDefined(merged.amount, merged.subtotal, newTotal)),
@@ -120,6 +123,7 @@ const buildExpensePayableMirrorPayload = (expenseData, updateData, payableData =
 
 const buildGastoMirrorPayload = (purchaseData, updateData) => {
     const merged = { ...purchaseData, ...updateData };
+    const categoryPayload = buildExpenseCategoryPayload(getExpenseCategoryFromRecord(merged, DEFAULT_PURCHASE_CATEGORY_ID), DEFAULT_PURCHASE_CATEGORY_ID);
     const total = normalizeAmount(firstDefined(merged.total, merged.monto, merged.amount));
     const date = firstDefined(merged.date, merged.fecha);
 
@@ -140,7 +144,7 @@ const buildGastoMirrorPayload = (purchaseData, updateData) => {
         retentionMunicipal1: normalizeAmount(merged.retentionMunicipal1),
         retencionIr2: normalizeAmount(merged.retencionIr2 ?? merged.retentionIr2),
         retencionMunicipal1: normalizeAmount(merged.retencionMunicipal1 ?? merged.retentionMunicipal1),
-        categoria: firstDefined(merged.category, merged.categoria, 'Compra'),
+        ...categoryPayload,
         tipo: 'Compra',
     });
 };

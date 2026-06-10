@@ -5,6 +5,15 @@ const CUTOVER_DATE = process.env.SICAR_PRIVATE_CUTOVER_DATE || '2026-05-14';
 const BRANCH_ID = process.env.SICAR_BRANCH_ID || 'granada';
 const BRANCH_NAME = process.env.SICAR_BRANCH_NAME || 'CARNES SAN MARTIN GRANADA';
 const CASHBOX_NAME = process.env.SICAR_CASHBOX_NAME || 'CAJA 2';
+const PURCHASE_CATEGORY_PAYLOAD = {
+  category: 'Costos de venta / compras',
+  categoria: 'Costos de venta / compras',
+  subcategory: 'Otros costos de producto',
+  subcategoria: 'Otros costos de producto',
+  expenseCategory: 'Costos de venta / compras',
+  expenseSubcategory: 'Otros costos de producto',
+  categoryLabel: 'Costos de venta / compras / Otros costos de producto',
+};
 const preview = process.argv.includes('--preview');
 const requeueErrors = process.argv.includes('--requeue-errors');
 const limitArg = process.argv.find((arg) => arg.startsWith('--limit='));
@@ -463,7 +472,7 @@ async function processPurchaseDocument(docSnapshot) {
         iva: normalized.iva,
         total: normalized.total,
         tipo: 'Compra',
-        categoria: 'Compra',
+        ...PURCHASE_CATEGORY_PAYLOAD,
         sucursal: BRANCH_ID,
         branch: BRANCH_ID,
         branchName: BRANCH_NAME,
@@ -509,6 +518,7 @@ async function processPurchaseDocument(docSnapshot) {
         subtotalGravado: normalized.subtotalGravado,
         iva: normalized.iva,
         total: normalized.total,
+        ...PURCHASE_CATEGORY_PAYLOAD,
         estado: saldo <= 0 ? 'pagado' : saldo < normalized.total ? 'parcial' : 'pendiente',
         paymentType: 'credito',
         paymentMethodOriginal: 'credito',
@@ -537,6 +547,7 @@ async function processPurchaseDocument(docSnapshot) {
       subtotalGravado: normalized.subtotalGravado,
       iva: normalized.iva,
       total: normalized.total,
+      ...PURCHASE_CATEGORY_PAYLOAD,
       branch: BRANCH_ID,
       branchName: BRANCH_NAME,
       paymentType: normalized.paymentRoute === 'credito' ? 'credito' : normalized.paymentRoute === 'efectivo' ? 'contado' : 'Transferencia',

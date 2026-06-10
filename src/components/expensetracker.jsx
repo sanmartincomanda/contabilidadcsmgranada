@@ -3,9 +3,10 @@
 import React, { useState } from 'react';
 import { db } from '../firebase'; // La ruta '../firebase' es correcta si estás en src/components/
 import { collection, addDoc, Timestamp } from 'firebase/firestore';
+import { EXPENSE_CATEGORY_OPTIONS, buildExpenseCategoryPayload } from '../services/expenseCategories';
 
 // --- Constantes de la aplicación ---
-const CATEGORIES = ['Alquiler', 'Servicios', 'Sueldos', 'Compra Inventario', 'Mantenimiento', 'Marketing', 'Otros'];
+const CATEGORIES = EXPENSE_CATEGORY_OPTIONS.map((option) => option.label);
 export const BRANCHES = [
     { id: 'granada', name: 'Distribuidora Granada San Martín' },
     { id: 'inmaculada', name: 'Distribuidora Granada Inmaculada (en proceso)' },
@@ -65,10 +66,11 @@ export default function expensetracker({ currentExpenses = [], isLoading }) {
 
         setLoading(true);
         try {
+            const categoryPayload = buildExpenseCategoryPayload(category);
             await addDoc(collection(db, 'gastos'), {
                 description,
                 amount: numAmount,
-                category,
+                ...categoryPayload,
                 branch,
                 date: Timestamp.now(), 
             });

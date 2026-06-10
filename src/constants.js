@@ -9,7 +9,17 @@ export const APP_BRAND_WORDMARK_BOTTOM = 'Granada';
 export const APP_BRAND_LOGO = '/logo.png';
 
 // 1. Constantes de Categorias
-export const CATEGORIES = ['Alquiler', 'Servicios', 'Sueldos', 'Compra Inventario', 'Mantenimiento', 'Marketing', 'Otros'];
+export const CATEGORIES = [
+    'Costos de venta / compras',
+    'Gastos de Nomina',
+    'Gastos del Local',
+    'Equipos y Operacion de Carniceria',
+    'Gastos de venta - Operaciones',
+    'Gastos administrativos',
+    'Impuestos, permisos y tasas',
+    'Gastos financieros',
+    'Otros Gastos',
+];
 
 // 2. Sucursal unica del sistema
 export const BRANCHES = [

@@ -100,6 +100,15 @@ const PURCHASE_TRIGGER_DOCUMENT = 'integraciones_privadas/sicar/compras_raw/{raw
 const SALES_TRIGGER_DOCUMENT = 'integraciones_privadas/sicar/ventas_raw/{rawId}';
 const DATE_REGEX = /^\d{4}-\d{2}-\d{2}$/;
 const LIMITED_USER_EMAIL = 'adriandiazc95@gmail.com';
+const PURCHASE_CATEGORY_PAYLOAD = {
+  category: 'Costos de venta / compras',
+  categoria: 'Costos de venta / compras',
+  subcategory: 'Otros costos de producto',
+  subcategoria: 'Otros costos de producto',
+  expenseCategory: 'Costos de venta / compras',
+  expenseSubcategory: 'Otros costos de producto',
+  categoryLabel: 'Costos de venta / compras / Otros costos de producto',
+};
 const SICAR_PRIVATE_CUTOVER_DATE = defineString('SICAR_PRIVATE_CUTOVER_DATE', { default: '2026-05-14' });
 const PIPELINE_STATUSES = new Set([
   'pending',
@@ -1600,7 +1609,7 @@ async function createCashPurchase(rawId, normalized, rawData) {
     iva: normalized.iva,
     total: normalized.total,
     tipo: 'Compra',
-    categoria: 'Compra',
+    ...PURCHASE_CATEGORY_PAYLOAD,
     sucursal: getBranchId(),
     branch: getBranchId(),
     branchName: getBranchName(),
@@ -1627,6 +1636,7 @@ async function createCashPurchase(rawId, normalized, rawData) {
     subtotalGravado: normalized.subtotalGravado,
     iva: normalized.iva,
     total: normalized.total,
+    ...PURCHASE_CATEGORY_PAYLOAD,
     branch: getBranchId(),
     branchName: getBranchName(),
     paymentType: 'contado',
@@ -1685,6 +1695,7 @@ async function createCreditPurchase(rawId, normalized, rawData) {
     subtotalGravado: normalized.subtotalGravado,
     iva: normalized.iva,
     total: normalized.total,
+    ...PURCHASE_CATEGORY_PAYLOAD,
     estado: saldo <= 0 ? 'pagado' : saldo < newTotal ? 'parcial' : 'pendiente',
     paymentType: 'credito',
     paymentMethodOriginal: 'credito',
@@ -1712,6 +1723,7 @@ async function createCreditPurchase(rawId, normalized, rawData) {
     subtotalGravado: normalized.subtotalGravado,
     iva: normalized.iva,
     total: normalized.total,
+    ...PURCHASE_CATEGORY_PAYLOAD,
     branch: getBranchId(),
     branchName: getBranchName(),
     paymentType: 'credito',
@@ -1754,6 +1766,7 @@ async function createOtherPurchase(rawId, normalized, rawData) {
     subtotalGravado: normalized.subtotalGravado,
     iva: normalized.iva,
     total: normalized.total,
+    ...PURCHASE_CATEGORY_PAYLOAD,
     branch: getBranchId(),
     branchName: getBranchName(),
     paymentType: 'Transferencia',

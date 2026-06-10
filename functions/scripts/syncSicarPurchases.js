@@ -9,6 +9,17 @@ const BRANCH_ID = 'granada';
 const BRANCH_NAME = 'CARNES SAN MARTIN GRANADA';
 const TIMEZONE = 'America/Managua';
 const DEFAULT_KEY_PATH = 'C:\\SICAR\\keys\\firebase-adminsdk.json';
+const DEFAULT_EXCLUDED_SUPPLIER_ID = 136;
+const DEFAULT_EXCLUDED_SUPPLIER_NAME = 'CARNES AMPARITO';
+const PURCHASE_CATEGORY_PAYLOAD = {
+  category: 'Costos de venta / compras',
+  categoria: 'Costos de venta / compras',
+  subcategory: 'Otros costos de producto',
+  subcategoria: 'Otros costos de producto',
+  expenseCategory: 'Costos de venta / compras',
+  expenseSubcategory: 'Otros costos de producto',
+  categoryLabel: 'Costos de venta / compras / Otros costos de producto',
+};
 
 function loadEnvFile(filePath) {
   if (!fs.existsSync(filePath)) return;
@@ -166,6 +177,14 @@ function buildRawSourcePath(rawId) {
   return `integraciones_privadas/sicar/compras_raw/${rawId}`;
 }
 
+function getPurchaseTargetIds(rawId) {
+  return {
+    compraId: `sicar_compra_${rawId}`,
+    gastoDiarioId: `sicar_gd_${rawId}`,
+    cuentaPorPagarId: `sicar_cxp_${rawId}`,
+  };
+}
+
 function buildSyncFingerprint(entry) {
   return createHash('sha1')
     .update(JSON.stringify({
@@ -199,6 +218,38 @@ function getMysqlConfig() {
   return { host, port, database, user, password, charset: 'utf8mb4' };
 }
 
+function getExcludedSupplierId() {
+  const parsed = Number(process.env.SICAR_EXCLUDED_PURCHASE_SUPPLIER_ID || DEFAULT_EXCLUDED_SUPPLIER_ID);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_EXCLUDED_SUPPLIER_ID;
+}
+
+function getExcludedSupplierName() {
+  return cleanText(process.env.SICAR_EXCLUDED_PURCHASE_SUPPLIER_NAME || DEFAULT_EXCLUDED_SUPPLIER_NAME)
+    .toUpperCase() || DEFAULT_EXCLUDED_SUPPLIER_NAME;
+}
+
+function getExcludedSupplierParams() {
+  return [getExcludedSupplierId(), getExcludedSupplierName()];
+}
+
+function getExcludedSupplierFilterSql(alias = 'p') {
+  return `
+    AND NOT (
+      ${alias}.pro_id = ?
+      OR UPPER(TRIM(${alias}.nombre)) = ?
+    )
+  `;
+}
+
+function getOnlyExcludedSupplierFilterSql(alias = 'p') {
+  return `
+    AND (
+      ${alias}.pro_id = ?
+      OR UPPER(TRIM(${alias}.nombre)) = ?
+    )
+  `;
+}
+
 function initFirebase() {
   if (!process.env.GOOGLE_APPLICATION_CREDENTIALS && fs.existsSync(DEFAULT_KEY_PATH)) {
     process.env.GOOGLE_APPLICATION_CREDENTIALS = DEFAULT_KEY_PATH;
@@ -215,6 +266,8 @@ function initFirebase() {
 }
 
 async function fetchPurchases(connection, startDate, endExclusive) {
+  const excludedSupplierFilterSql = getExcludedSupplierFilterSql('p');
+  const excludedSupplierParams = getExcludedSupplierParams();
   const [rows] = await connection.execute(`
     SELECT
       c.com_id,
@@ -246,6 +299,7 @@ async function fetchPurchases(connection, startDate, endExclusive) {
       AND IFNULL(c.status, 0) >= 0
       AND c.can_caj_id IS NULL
       AND c.can_rcc_id IS NULL
+      ${excludedSupplierFilterSql}
     GROUP BY
       c.com_id,
       c.fecha,
@@ -260,11 +314,12 @@ async function fetchPurchases(connection, startDate, endExclusive) {
       c.can_rcc_id,
       p.nombre
     ORDER BY c.fecha, c.com_id
-  `, [startDate, endExclusive]);
+  `, [startDate, endExclusive, ...excludedSupplierParams]);
 
   return rows.map((row) => {
     const date = toDateString(row.fecha);
     const rawId = `compra_${row.com_id}`;
+    const targetIds = getPurchaseTargetIds(rawId);
     const invoiceNumber = buildInvoiceNumber(row);
     const subtotal = money(row.subtotal);
     const subtotalExento = money(row.subtotal0);
@@ -275,9 +330,7 @@ async function fetchPurchases(connection, startDate, endExclusive) {
 
     return {
       rawId,
-      compraId: `sicar_compra_${rawId}`,
-      gastoDiarioId: `sicar_gd_${rawId}`,
-      cuentaPorPagarId: `sicar_cxp_${rawId}`,
+      ...targetIds,
       sourceRecordId: String(row.com_id),
       date,
       month: date.substring(0, 7),
@@ -305,6 +358,64 @@ async function fetchPurchases(connection, startDate, endExclusive) {
       },
     };
   });
+}
+
+async function fetchExcludedPurchases(connection, startDate, endExclusive) {
+  const onlyExcludedSupplierFilterSql = getOnlyExcludedSupplierFilterSql('p');
+  const excludedSupplierParams = getExcludedSupplierParams();
+  const [rows] = await connection.execute(`
+    SELECT
+      c.com_id,
+      c.fecha,
+      c.folio,
+      c.serieFolio,
+      c.subtotal,
+      ROUND(c.total - c.subtotal, 2) AS iva,
+      c.total,
+      p.pro_id AS supplierId,
+      p.nombre AS supplier
+    FROM compra c
+    LEFT JOIN proveedor p ON p.pro_id = c.pro_id
+    WHERE c.fecha >= ?
+      AND c.fecha < ?
+      AND IFNULL(c.status, 0) >= 0
+      AND c.can_caj_id IS NULL
+      AND c.can_rcc_id IS NULL
+      ${onlyExcludedSupplierFilterSql}
+    ORDER BY c.fecha, c.com_id
+  `, [startDate, endExclusive, ...excludedSupplierParams]);
+
+  return rows.map((row) => {
+    const rawId = `compra_${row.com_id}`;
+    return {
+      rawId,
+      ...getPurchaseTargetIds(rawId),
+      sourceRecordId: String(row.com_id),
+      date: toDateString(row.fecha),
+      supplierId: Number(row.supplierId || 0),
+      supplier: cleanText(row.supplier).toUpperCase() || getExcludedSupplierName(),
+      invoiceNumber: buildInvoiceNumber(row),
+      subtotal: money(row.subtotal),
+      iva: money(row.iva),
+      total: money(row.total),
+    };
+  });
+}
+
+async function deleteExcludedPurchases(db, excludedEntries, options) {
+  if (options.stageOnly || excludedEntries.length === 0) {
+    return { deletedCount: 0 };
+  }
+
+  const batch = db.batch();
+  excludedEntries.forEach((entry) => {
+    batch.delete(db.collection('integraciones_privadas').doc('sicar').collection('compras_raw').doc(entry.rawId));
+    batch.delete(db.collection('compras').doc(entry.compraId));
+    batch.delete(db.collection('gastosDiarios').doc(entry.gastoDiarioId));
+    batch.delete(db.collection('cuentas_por_pagar').doc(entry.cuentaPorPagarId));
+  });
+  await batch.commit();
+  return { deletedCount: excludedEntries.length };
 }
 
 async function writePurchase(db, entry, options) {
@@ -409,6 +520,7 @@ async function writePurchase(db, entry, options) {
       subtotalGravado: entry.subtotalGravado,
       iva: entry.iva,
       total: entry.total,
+      ...PURCHASE_CATEGORY_PAYLOAD,
       branch: BRANCH_ID,
       branchName: BRANCH_NAME,
       isInventoryCost: true,
@@ -447,6 +559,7 @@ async function writePurchase(db, entry, options) {
         subtotalGravado: entry.subtotalGravado,
         iva: entry.iva,
         total: entry.total,
+        ...PURCHASE_CATEGORY_PAYLOAD,
         estado: payableSaldo <= 0 ? 'pagado' : payableSaldo < entry.total ? 'parcial' : 'pendiente',
         paymentType: 'credito',
         paymentMethodOriginal: 'credito',
@@ -483,7 +596,7 @@ async function writePurchase(db, entry, options) {
         iva: entry.iva,
         total: entry.total,
         tipo: 'Compra',
-        categoria: 'Compra',
+        ...PURCHASE_CATEGORY_PAYLOAD,
         sucursal: BRANCH_ID,
         branch: BRANCH_ID,
         branchName: BRANCH_NAME,
@@ -544,6 +657,7 @@ async function main() {
 
   try {
     const entries = await fetchPurchases(connection, startDate, addDays(endDate, 1));
+    const excludedEntries = await fetchExcludedPurchases(connection, startDate, addDays(endDate, 1));
     const routes = entries.reduce((acc, entry) => {
       acc[entry.paymentRoute] = (acc[entry.paymentRoute] || 0) + 1;
       return acc;
@@ -559,7 +673,14 @@ async function main() {
         subtotal: money(entries.reduce((sum, entry) => sum + entry.subtotal, 0)),
         iva: money(entries.reduce((sum, entry) => sum + entry.iva, 0)),
         total: money(entries.reduce((sum, entry) => sum + entry.total, 0)),
+        excludedSupplierId: getExcludedSupplierId(),
+        excludedSupplierName: getExcludedSupplierName(),
+        excludedCount: excludedEntries.length,
+        excludedSubtotal: money(excludedEntries.reduce((sum, entry) => sum + entry.subtotal, 0)),
+        excludedIva: money(excludedEntries.reduce((sum, entry) => sum + entry.iva, 0)),
+        excludedTotal: money(excludedEntries.reduce((sum, entry) => sum + entry.total, 0)),
         routes,
+        excludedEntries: excludedEntries.slice(0, 20),
         firstEntries: entries.slice(0, 10).map((entry) => ({
           rawId: entry.rawId,
           date: entry.date,
@@ -576,6 +697,7 @@ async function main() {
       return;
     }
 
+    const excludedCleanup = await deleteExcludedPurchases(db, excludedEntries, { stageOnly: args.stageOnly });
     const writeResults = [];
     for (const entry of entries) {
       writeResults.push(await writePurchase(db, entry, { stageOnly: args.stageOnly }));
@@ -594,6 +716,13 @@ async function main() {
       subtotal: money(entries.reduce((sum, entry) => sum + entry.subtotal, 0)),
       iva: money(entries.reduce((sum, entry) => sum + entry.iva, 0)),
       total: money(entries.reduce((sum, entry) => sum + entry.total, 0)),
+      excludedSupplierId: getExcludedSupplierId(),
+      excludedSupplierName: getExcludedSupplierName(),
+      excludedCount: excludedEntries.length,
+      excludedSubtotal: money(excludedEntries.reduce((sum, entry) => sum + entry.subtotal, 0)),
+      excludedIva: money(excludedEntries.reduce((sum, entry) => sum + entry.iva, 0)),
+      excludedTotal: money(excludedEntries.reduce((sum, entry) => sum + entry.total, 0)),
+      excludedDeletedCount: excludedCleanup.deletedCount,
       routes,
       writtenCount,
       skippedUnchanged,
@@ -612,6 +741,13 @@ async function main() {
       subtotal: money(entries.reduce((sum, entry) => sum + entry.subtotal, 0)),
       iva: money(entries.reduce((sum, entry) => sum + entry.iva, 0)),
       total: money(entries.reduce((sum, entry) => sum + entry.total, 0)),
+      excludedSupplierId: getExcludedSupplierId(),
+      excludedSupplierName: getExcludedSupplierName(),
+      excludedCount: excludedEntries.length,
+      excludedSubtotal: money(excludedEntries.reduce((sum, entry) => sum + entry.subtotal, 0)),
+      excludedIva: money(excludedEntries.reduce((sum, entry) => sum + entry.iva, 0)),
+      excludedTotal: money(excludedEntries.reduce((sum, entry) => sum + entry.total, 0)),
+      excludedDeletedCount: excludedCleanup.deletedCount,
       routes,
       writtenCount,
       skippedUnchanged,

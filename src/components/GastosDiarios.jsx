@@ -6,6 +6,13 @@ import {
 } from 'firebase/firestore';
 import { APP_BRAND_NAME, DEFAULT_BRANCH_ID, DEFAULT_BRANCH_NAME, DEFAULT_CASHBOX_NAME, fmt } from '../constants';
 import { buildFiscalPayload, isCreditPayment, PURCHASE_PAYMENT_METHODS, uploadInvoicePhoto } from '../services/fiscalUtils';
+import {
+    DEFAULT_EXPENSE_CATEGORY_ID,
+    DEFAULT_PURCHASE_CATEGORY_ID,
+    EXPENSE_CATEGORY_TREE,
+    buildExpenseCategoryPayload,
+    getExpenseCategoryFromRecord,
+} from '../services/expenseCategories';
 
 // --- ICONOS SVG INLINE ---
 const Icons = {
@@ -100,6 +107,28 @@ const Select = ({ label, icon, options, ...props }) => (
     </div>
 );
 
+const expenseCategoryOptions = (placeholder = 'Seleccionar categoria / subcategoria...') => (
+    <>
+        <option value="">{placeholder}</option>
+        {EXPENSE_CATEGORY_TREE.map((group) => (
+            <optgroup key={group.category} label={group.category}>
+                {group.subcategories.map((subcategory) => {
+                    const payload = buildExpenseCategoryPayload({ category: group.category, subcategory });
+                    return (
+                        <option key={payload.categoryLabel} value={payload.id}>
+                            {subcategory}
+                        </option>
+                    );
+                })}
+            </optgroup>
+        ))}
+    </>
+);
+
+const resolveCategoryPayload = (selection, fallbackId = DEFAULT_EXPENSE_CATEGORY_ID) => (
+    buildExpenseCategoryPayload(selection, fallbackId)
+);
+
 const Badge = ({ children, variant = 'default' }) => {
     const variants = {
         default: 'bg-stone-100 text-stone-600',
@@ -186,9 +215,9 @@ export default function GastosDiarios({ categories = [] }) {
         setLoading(true);
         try {
             const timestamp = Timestamp.now();
-            const categoriaNombre = tipo === 'Gasto'
-                ? categories.find(c => c.id === categoriaId)?.name
-                : 'Compra';
+            const categoryPayload = tipo === 'Gasto'
+                ? resolveCategoryPayload(categoriaId)
+                : resolveCategoryPayload(DEFAULT_PURCHASE_CATEGORY_ID, DEFAULT_PURCHASE_CATEGORY_ID);
             const gastoDiarioRef = doc(collection(db, 'gastosDiarios'));
             const gastoRef = tipo === 'Gasto' ? doc(collection(db, 'gastos')) : null;
             const compraRef = tipo === 'Compra' ? doc(collection(db, 'compras')) : null;
@@ -200,7 +229,7 @@ export default function GastosDiarios({ categories = [] }) {
                 descripcion,
                 monto: numMonto,
                 tipo,
-                categoria: categoriaNombre || null,
+                ...categoryPayload,
                 sucursal: DEFAULT_BRANCH_ID,
                 branch: DEFAULT_BRANCH_ID,
                 branchName: DEFAULT_BRANCH_NAME,
@@ -214,7 +243,7 @@ export default function GastosDiarios({ categories = [] }) {
                     date: fecha,
                     description: descripcion,
                     amount: numMonto,
-                    category: categoriaNombre,
+                    ...categoryPayload,
                     branch: DEFAULT_BRANCH_ID,
                     branchName: DEFAULT_BRANCH_NAME,
                     timestamp,
@@ -231,6 +260,7 @@ export default function GastosDiarios({ categories = [] }) {
                     supplier: descripcion.trim().toUpperCase(),
                     invoiceNumber: `GD-${gastoDiarioRef.id.slice(0, 8).toUpperCase()}`,
                     amount: numMonto,
+                    ...categoryPayload,
                     branch: DEFAULT_BRANCH_ID,
                     branchName: DEFAULT_BRANCH_NAME,
                     paymentType: 'contado',
@@ -268,9 +298,9 @@ export default function GastosDiarios({ categories = [] }) {
         setLoading(true);
         try {
             const timestamp = Timestamp.now();
-            const categoriaNombre = tipo === 'Gasto'
-                ? categories.find(c => c.id === categoriaId)?.name
-                : 'Compra';
+            const categoryPayload = tipo === 'Gasto'
+                ? resolveCategoryPayload(categoriaId)
+                : resolveCategoryPayload(DEFAULT_PURCHASE_CATEGORY_ID, DEFAULT_PURCHASE_CATEGORY_ID);
             const gastoDiarioRef = doc(collection(db, 'gastosDiarios'));
             const gastoRef = tipo === 'Gasto' ? doc(collection(db, 'gastos')) : null;
             const compraRef = tipo === 'Compra' ? doc(collection(db, 'compras')) : null;
@@ -294,7 +324,7 @@ export default function GastosDiarios({ categories = [] }) {
                 monto: fiscal.total,
                 amount: fiscal.subtotal,
                 tipo,
-                categoria: categoriaNombre || null,
+                ...categoryPayload,
                 ...commonFiscal,
                 sucursal: DEFAULT_BRANCH_ID,
                 branch: DEFAULT_BRANCH_ID,
@@ -310,7 +340,7 @@ export default function GastosDiarios({ categories = [] }) {
                     month: fecha.substring(0, 7),
                     description: descripcion,
                     amount: fiscal.subtotal,
-                    category: categoriaNombre,
+                    ...categoryPayload,
                     ...commonFiscal,
                     branch: DEFAULT_BRANCH_ID,
                     branchName: DEFAULT_BRANCH_NAME,
@@ -328,6 +358,7 @@ export default function GastosDiarios({ categories = [] }) {
                     supplier: proveedor.trim().toUpperCase() || descripcion.trim().toUpperCase(),
                     invoiceNumber: numeroFactura.trim(),
                     amount: fiscal.subtotal,
+                    ...categoryPayload,
                     branch: DEFAULT_BRANCH_ID,
                     branchName: DEFAULT_BRANCH_NAME,
                     isInventoryCost: true,
@@ -573,17 +604,12 @@ export default function GastosDiarios({ categories = [] }) {
 
                             {tipo === 'Gasto' && (
                                 <Select
-                                    label="Categoria"
+                                    label="Categoria / subcategoria"
                                     icon="tag"
                                     value={categoriaId}
                                     onChange={e => setCategoriaId(e.target.value)}
                                     required
-                                    options={
-                                        <>
-                                            <option value="">Seleccionar categoria...</option>
-                                            {categories.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-                                        </>
-                                    }
+                                    options={expenseCategoryOptions()}
                                 />
                             )}
 
@@ -685,7 +711,12 @@ export default function GastosDiarios({ categories = [] }) {
                                                             {reg.tipo}
                                                         </Badge>
                                                     </td>
-                                                    <td className="px-4 py-3 text-sm text-stone-500">{reg.categoria || '-'}</td>
+                                                    <td className="px-4 py-3 text-sm text-stone-500">
+                                                        {(() => {
+                                                            const categoryInfo = getExpenseCategoryFromRecord(reg, reg.tipo === 'Compra' ? DEFAULT_PURCHASE_CATEGORY_ID : DEFAULT_EXPENSE_CATEGORY_ID);
+                                                            return reg.tipo === 'ABONO' ? 'ABONO' : `${categoryInfo.category} / ${categoryInfo.subcategory}`;
+                                                        })()}
+                                                    </td>
                                                     <td className="px-4 py-3 text-right font-bold text-stone-800">{fmt(reg.monto)}</td>
                                                     <td className="px-4 py-3 text-center no-print">
                                                         <button

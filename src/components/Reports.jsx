@@ -5,6 +5,7 @@ import BalanceSheet from './BalanceSheet';
 import DashboardGeneral from './DashboardGeneral';
 import ExecutiveFlowDiagram from './ExecutiveFlowDiagram';
 import { resolveReportIncomeEntries } from '../services/incomeAggregation';
+import { DEFAULT_PURCHASE_CATEGORY_ID, getExpenseCategoryFromRecord } from '../services/expenseCategories';
 
 // --- ICONOS SVG INLINE ---
 const Icons = {
@@ -102,6 +103,168 @@ const StatCard = ({ title, value, subtitle, icon, variant = 'default', trend }) 
     );
 };
 
+const addCategoryAmount = (tree, item, amount, fallbackId) => {
+    const categoryInfo = getExpenseCategoryFromRecord(item, fallbackId);
+    const category = categoryInfo.category;
+    const subcategory = categoryInfo.subcategory;
+
+    if (!tree[category]) {
+        tree[category] = { category, total: 0, subcategories: {} };
+    }
+    if (!tree[category].subcategories[subcategory]) {
+        tree[category].subcategories[subcategory] = { subcategory, total: 0 };
+    }
+
+    tree[category].total += amount;
+    tree[category].subcategories[subcategory].total += amount;
+    return categoryInfo;
+};
+
+const mergeCategoryTrees = (trees = []) => {
+    const merged = {};
+    trees.forEach((tree = {}) => {
+        Object.values(tree).forEach((categoryNode) => {
+            if (!merged[categoryNode.category]) {
+                merged[categoryNode.category] = {
+                    category: categoryNode.category,
+                    total: 0,
+                    subcategories: {},
+                };
+            }
+            merged[categoryNode.category].total += peso(categoryNode.total);
+            Object.values(categoryNode.subcategories || {}).forEach((subNode) => {
+                if (!merged[categoryNode.category].subcategories[subNode.subcategory]) {
+                    merged[categoryNode.category].subcategories[subNode.subcategory] = {
+                        subcategory: subNode.subcategory,
+                        total: 0,
+                    };
+                }
+                merged[categoryNode.category].subcategories[subNode.subcategory].total += peso(subNode.total);
+            });
+        });
+    });
+    return merged;
+};
+
+const categoryTreeToRows = (tree = {}) => Object.values(tree)
+    .map((categoryNode) => ({
+        ...categoryNode,
+        total: peso(categoryNode.total),
+        subcategories: Object.values(categoryNode.subcategories || {})
+            .map((subNode) => ({ ...subNode, total: peso(subNode.total) }))
+            .sort((a, b) => b.total - a.total),
+    }))
+    .sort((a, b) => b.total - a.total);
+
+const isCostCategory = (item) => (
+    getExpenseCategoryFromRecord(item, DEFAULT_PURCHASE_CATEGORY_ID).category === 'Costos de venta / compras'
+);
+
+const CategoryBreakdown = ({ rows = [], budgets = {}, onCategoryClick, emptyLabel = 'Sin movimientos para mostrar.' }) => {
+    if (!rows.length) {
+        return (
+            <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-4 py-8 text-center text-sm font-semibold text-slate-400">
+                {emptyLabel}
+            </div>
+        );
+    }
+
+    const readBudget = (category, subcategory = '') => {
+        const fullKey = subcategory ? `${category} / ${subcategory}` : category;
+        if (subcategory) return peso(budgets[fullKey] ?? budgets[subcategory] ?? 0);
+        const direct = peso(budgets[category]);
+        if (direct) return direct;
+        return Object.entries(budgets)
+            .filter(([key]) => key.startsWith(`${category} / `))
+            .reduce((sum, [, value]) => sum + peso(value), 0);
+    };
+
+    return (
+        <div className="space-y-2">
+            {rows.map((row) => {
+                const budget = readBudget(row.category);
+                const execution = budget > 0 ? (row.total / budget) * 100 : 0;
+
+                return (
+                    <details key={row.category} className="group overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm" open>
+                        <summary className="flex cursor-pointer list-none items-center justify-between gap-3 bg-slate-50 px-4 py-3 transition hover:bg-slate-100">
+                            <div className="min-w-0">
+                                <div className="flex items-center gap-2">
+                                    <Icon path={Icons.chevronRight} className="h-3.5 w-3.5 text-slate-400 transition group-open:rotate-90" />
+                                    <span className="truncate text-sm font-black uppercase tracking-wide text-slate-800">{row.category}</span>
+                                </div>
+                                <div className="mt-1 text-[11px] font-bold uppercase tracking-[0.18em] text-slate-400">
+                                    {row.subcategories.length} subcategorias
+                                </div>
+                            </div>
+                            <div className="flex shrink-0 items-center gap-3 text-right">
+                                {budget > 0 && (
+                                    <div className="hidden sm:block">
+                                        <div className="text-[10px] font-black uppercase tracking-wider text-slate-400">Presupuesto</div>
+                                        <div className="text-xs font-black text-slate-700">{fmt(budget)}</div>
+                                    </div>
+                                )}
+                                <div>
+                                    <div className="text-[10px] font-black uppercase tracking-wider text-slate-400">Real</div>
+                                    <div className="text-sm font-black text-[#9f111a]">{fmt(row.total)}</div>
+                                </div>
+                                {budget > 0 && (
+                                    <span className={`hidden rounded-full px-2 py-1 text-[10px] font-black sm:inline-flex ${
+                                        execution > 100 ? 'bg-rose-100 text-rose-700' : execution > 85 ? 'bg-amber-100 text-amber-700' : 'bg-emerald-100 text-emerald-700'
+                                    }`}>
+                                        {execution.toFixed(1)}%
+                                    </span>
+                                )}
+                                {onCategoryClick && row.total > 0 && (
+                                    <button
+                                        type="button"
+                                        onClick={(event) => {
+                                            event.preventDefault();
+                                            event.stopPropagation();
+                                            onCategoryClick(row.category);
+                                        }}
+                                        className="rounded-full border border-[#e30613]/20 bg-white px-3 py-1 text-[10px] font-black uppercase tracking-wider text-[#e30613] transition hover:bg-[#fff1f2]"
+                                    >
+                                        Detalle
+                                    </button>
+                                )}
+                            </div>
+                        </summary>
+                        <div className="divide-y divide-slate-100 px-4">
+                            {row.subcategories.map((subNode) => {
+                                const subBudget = readBudget(row.category, subNode.subcategory);
+                                const subExecution = subBudget > 0 ? (subNode.total / subBudget) * 100 : 0;
+                                return (
+                                    <div key={subNode.subcategory} className="grid grid-cols-1 gap-2 py-3 sm:grid-cols-[1fr_auto_auto] sm:items-center">
+                                        <div>
+                                            <div className="text-sm font-bold text-slate-700">{subNode.subcategory}</div>
+                                            <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">{row.category}</div>
+                                        </div>
+                                        <div className="text-left sm:text-right">
+                                            <div className="text-[10px] font-black uppercase tracking-wider text-slate-400">Real</div>
+                                            <div className="font-black text-slate-900">{fmt(subNode.total)}</div>
+                                        </div>
+                                        <div className="text-left sm:min-w-[110px] sm:text-right">
+                                            {subBudget > 0 ? (
+                                                <>
+                                                    <div className="text-[10px] font-black uppercase tracking-wider text-slate-400">Presupuesto</div>
+                                                    <div className={`font-black ${subExecution > 100 ? 'text-rose-700' : 'text-slate-600'}`}>{fmt(subBudget)} · {subExecution.toFixed(1)}%</div>
+                                                </>
+                                            ) : (
+                                                <span className="text-xs font-bold text-slate-300">Sin presupuesto</span>
+                                            )}
+                                        </div>
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    </details>
+                );
+            })}
+        </div>
+    );
+};
+
 // --- MODAL DE DETALLES DE GASTO ---
 const ExpenseDetailModal = ({ category, expenses, onClose }) => {
     if (!category) return null;
@@ -184,6 +347,8 @@ const aggregateData = (data) => {
             totalExpense: 0,
             totalPurchases: 0,
             expenseDetails: {},
+            expenseTree: {},
+            costTree: {},
             rawExpenses: []
         };
 
@@ -193,8 +358,9 @@ const aggregateData = (data) => {
     const legacyPurchasesByMonth = {};
 
     const budgetsByMonth = presupuestos.reduce((acc, p) => {
+        const categoryInfo = getExpenseCategoryFromRecord(p);
         acc[p.month] = acc[p.month] || {};
-        acc[p.month][p.category] = (acc[p.month][p.category] || 0) + peso(p.amount);
+        acc[p.month][categoryInfo.label] = (acc[p.month][categoryInfo.label] || 0) + peso(p.amount);
         return acc;
     }, {});
 
@@ -213,9 +379,19 @@ const aggregateData = (data) => {
 
         if (item.category) {
             const amount = accountingAmount(item);
+            const categoryInfo = addCategoryAmount(branchData.expenseTree, item, amount);
             branchData.totalExpense += amount;
-            branchData.expenseDetails[item.category] = (branchData.expenseDetails[item.category] || 0) + amount;
-            branchData.rawExpenses.push({ ...item, dateStr: dateString, amount });
+            branchData.expenseDetails[categoryInfo.category] = (branchData.expenseDetails[categoryInfo.category] || 0) + amount;
+            branchData.rawExpenses.push({
+                ...item,
+                dateStr: dateString,
+                amount,
+                category: categoryInfo.category,
+                categoria: categoryInfo.category,
+                subcategory: categoryInfo.subcategory,
+                subcategoria: categoryInfo.subcategory,
+                categoryLabel: categoryInfo.label,
+            });
         } else {
             branchData.totalIncome += accountingAmount(item);
         }
@@ -246,7 +422,25 @@ const aggregateData = (data) => {
 
         const branchData = ensureBranchData(month, branchId);
         if (!branchData) return;
-        branchData.totalPurchases += amount;
+        const categoryInfo = getExpenseCategoryFromRecord(item, DEFAULT_PURCHASE_CATEGORY_ID);
+        if (categoryInfo.category === 'Costos de venta / compras') {
+            branchData.totalPurchases += amount;
+            addCategoryAmount(branchData.costTree, item, amount, DEFAULT_PURCHASE_CATEGORY_ID);
+        } else {
+            branchData.totalExpense += amount;
+            addCategoryAmount(branchData.expenseTree, item, amount);
+            branchData.expenseDetails[categoryInfo.category] = (branchData.expenseDetails[categoryInfo.category] || 0) + amount;
+            branchData.rawExpenses.push({
+                ...item,
+                dateStr: getDateString(item.date || item.fecha),
+                amount,
+                category: categoryInfo.category,
+                categoria: categoryInfo.category,
+                subcategory: categoryInfo.subcategory,
+                subcategoria: categoryInfo.subcategory,
+                categoryLabel: categoryInfo.label,
+            });
+        }
     });
 
     facturasCredito.forEach(item => {
@@ -266,7 +460,25 @@ const aggregateData = (data) => {
 
         const branchData = ensureBranchData(month, branchId);
         if (!branchData) return;
-        branchData.totalPurchases += amount;
+        const categoryInfo = getExpenseCategoryFromRecord(item, DEFAULT_PURCHASE_CATEGORY_ID);
+        if (categoryInfo.category === 'Costos de venta / compras') {
+            branchData.totalPurchases += amount;
+            addCategoryAmount(branchData.costTree, item, amount, DEFAULT_PURCHASE_CATEGORY_ID);
+        } else {
+            branchData.totalExpense += amount;
+            addCategoryAmount(branchData.expenseTree, item, amount);
+            branchData.expenseDetails[categoryInfo.category] = (branchData.expenseDetails[categoryInfo.category] || 0) + amount;
+            branchData.rawExpenses.push({
+                ...item,
+                dateStr: getDateString(item.fecha || item.date),
+                amount,
+                category: categoryInfo.category,
+                categoria: categoryInfo.category,
+                subcategory: categoryInfo.subcategory,
+                subcategoria: categoryInfo.subcategory,
+                categoryLabel: categoryInfo.label,
+            });
+        }
     });
 
     return Object.entries(results).map(([month, branchesData]) => {
@@ -299,6 +511,8 @@ const aggregateData = (data) => {
                 grossProfit: grossProfit,
                 netProfit: netProfit,
                 expenseDetails: Object.entries(data.expenseDetails),
+                expenseTree: data.expenseTree,
+                costTree: data.costTree,
                 rawExpenses: data.rawExpenses,
                 budgets: monthlyBudget
             };
@@ -323,6 +537,8 @@ const aggregateData = (data) => {
             finalInventory: totalFinalInv,
             COGS: COGS_consolidado,
             expenseDetails: [],
+            expenseTree: mergeCategoryTrees(branchEntries.filter((b) => !b.isConsolidated).map((b) => b.expenseTree)),
+            costTree: mergeCategoryTrees(branchEntries.filter((b) => !b.isConsolidated).map((b) => b.costTree)),
             rawExpenses: branchEntries.reduce((acc, b) => [...acc, ...b.rawExpenses], []),
             budgets: monthlyBudget
         });
@@ -495,8 +711,30 @@ const buildTaxReport = (data, selectedMonth) => {
     const ivaSold = sumBy(incomeRows, 'iva');
     const ivaBought = sumBy(purchaseRows, 'iva');
     const salesSubtotal = sumBy(incomeRows, 'subtotal');
-    const purchaseSubtotal = (data.compras || []).filter(inMonth).reduce((sum, item) => sum + accountingAmount(item), 0);
-    const operatingExpenseSubtotal = (data.gastos || []).filter(inMonth).reduce((sum, item) => sum + accountingAmount(item), 0);
+    const purchaseCategoryTree = {};
+    const operatingExpenseTree = {};
+    let purchaseSubtotal = 0;
+    let operatingExpenseSubtotal = 0;
+
+    (data.compras || [])
+        .filter(inMonth)
+        .forEach((item) => {
+            const amount = accountingAmount(item);
+            if (isCostCategory(item)) {
+                purchaseSubtotal += amount;
+                addCategoryAmount(purchaseCategoryTree, item, amount, DEFAULT_PURCHASE_CATEGORY_ID);
+            } else {
+                operatingExpenseSubtotal += amount;
+                addCategoryAmount(operatingExpenseTree, item, amount);
+            }
+        });
+    (data.gastos || [])
+        .filter(inMonth)
+        .forEach((item) => {
+            const amount = accountingAmount(item);
+            operatingExpenseSubtotal += amount;
+            addCategoryAmount(operatingExpenseTree, item, amount);
+        });
     const stampedInvoiceTotal = sumBy(stampedInvoiceRows, 'total');
     const grossProfit = salesSubtotal - purchaseSubtotal;
     const operatingProfit = grossProfit - operatingExpenseSubtotal;
@@ -510,6 +748,8 @@ const buildTaxReport = (data, selectedMonth) => {
         retentionRows: [...salesRetentionRows, ...purchaseRetentionRows],
         stampedInvoiceRows,
         stampedInvoiceDailyRows,
+        purchaseCategoryRows: categoryTreeToRows(purchaseCategoryTree),
+        operatingExpenseRows: categoryTreeToRows(operatingExpenseTree),
         totals: {
             ivaSold,
             ivaBought,
@@ -631,6 +871,138 @@ const TaxIncomeFlowDiagram = ({ totals, selectedMonth }) => {
     );
 };
 
+const flattenCategoryRows = (rows = []) => rows.flatMap((row) => (
+    row.subcategories.map((subcategory) => ({
+        category: row.category,
+        subcategory: subcategory.subcategory,
+        total: subcategory.total,
+    }))
+));
+
+const TaxStatementPrintableReport = ({ taxReport, selectedMonth, onPrint }) => {
+    const costRows = flattenCategoryRows(taxReport.purchaseCategoryRows);
+    const expenseRows = flattenCategoryRows(taxReport.operatingExpenseRows);
+    const totalTaxes = taxReport.totals.municipalTax + taxReport.totals.incomeTax30;
+    const printedAt = new Date().toLocaleDateString('es-NI', {
+        year: 'numeric',
+        month: 'long',
+        day: 'numeric',
+    });
+
+    const Line = ({ label, value, tone = 'default', strong = false, indent = false }) => (
+        <tr className={`${strong ? 'bg-slate-50' : ''} ${tone === 'final' ? 'bg-emerald-50' : ''}`}>
+            <td className={`tax-pdf-cell ${indent ? 'pl-8 text-[11px] text-slate-600' : 'font-bold text-slate-800'} ${strong || tone === 'final' ? 'uppercase tracking-wide' : ''}`}>
+                {label}
+            </td>
+            <td className={`tax-pdf-cell text-right font-black ${tone === 'negative' ? 'text-rose-700' : tone === 'final' ? 'text-emerald-700' : 'text-slate-900'}`}>
+                {tone === 'negative' && value > 0 ? `(${fmt(value)})` : fmt(value)}
+            </td>
+        </tr>
+    );
+
+    return (
+        <Card
+            title="Reporte fiscal para PDF"
+            subtitle="Formato carta con desglose completo para soporte fiscal"
+            icon="receipt"
+            className="tax-statement-report"
+            right={
+                <button
+                    type="button"
+                    onClick={onPrint}
+                    className="no-print rounded-lg bg-[#e30613] px-3 py-1.5 text-xs font-bold text-white"
+                >
+                    Exportar PDF / Imprimir
+                </button>
+            }
+        >
+            <div className="tax-pdf-page rounded-2xl border border-slate-200 bg-white p-6 text-slate-900">
+                <header className="mb-5 flex items-start justify-between gap-4 border-b-2 border-slate-900 pb-4">
+                    <div className="flex items-center gap-3">
+                        <img src={APP_BRAND_LOGO} alt={APP_BRAND_NAME} className="h-16 w-16 rounded-xl border border-slate-200 object-contain p-1.5" />
+                        <div>
+                            <div className="text-[10px] font-black uppercase tracking-[0.32em] text-[#e30613]">{APP_BRAND_NAME}</div>
+                            <h2 className="mt-1 text-2xl font-black uppercase tracking-tight text-slate-950">Estado de resultado fiscal</h2>
+                            <p className="mt-1 text-xs font-bold uppercase tracking-[0.18em] text-slate-500">Soporte fiscal para impresion / PDF</p>
+                        </div>
+                    </div>
+                    <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-right">
+                        <div className="text-[10px] font-black uppercase tracking-wider text-slate-400">Periodo</div>
+                        <div className="text-lg font-black text-[#9f111a]">{selectedMonth || 'Todos'}</div>
+                        <div className="mt-1 text-[10px] font-bold uppercase tracking-wider text-slate-400">Emitido</div>
+                        <div className="text-xs font-bold text-slate-600">{printedAt}</div>
+                    </div>
+                </header>
+
+                <section className="mb-4 grid grid-cols-2 gap-3 md:grid-cols-4">
+                    <div className="tax-pdf-kpi">
+                        <div>Ingresos</div>
+                        <strong>{fmt(taxReport.totals.salesSubtotal)}</strong>
+                    </div>
+                    <div className="tax-pdf-kpi">
+                        <div>Costo ventas</div>
+                        <strong>{fmt(taxReport.totals.purchaseSubtotal)}</strong>
+                    </div>
+                    <div className="tax-pdf-kpi">
+                        <div>Gastos operativos</div>
+                        <strong>{fmt(taxReport.totals.operatingExpenseSubtotal)}</strong>
+                    </div>
+                    <div className="tax-pdf-kpi">
+                        <div>Utilidad neta</div>
+                        <strong>{fmt(taxReport.totals.netProfitAfterTax)}</strong>
+                    </div>
+                </section>
+
+                <div className="overflow-hidden rounded-xl border border-slate-200">
+                    <table className="w-full border-collapse text-xs">
+                        <thead>
+                            <tr className="bg-slate-950 text-white">
+                                <th className="tax-pdf-head text-left">Concepto</th>
+                                <th className="tax-pdf-head text-right">Monto C$</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <Line label="Ingresos" value={taxReport.totals.salesSubtotal} strong />
+                            <Line label="Ventas subtotal sin IVA" value={taxReport.totals.salesSubtotal} indent />
+
+                            <Line label="Costo de ventas totalizado" value={taxReport.totals.purchaseSubtotal} tone="negative" strong />
+                            {costRows.length === 0 ? (
+                                <Line label="Sin subcategorias de costo registradas" value={0} indent />
+                            ) : costRows.map((row) => (
+                                <Line key={`cost-${row.category}-${row.subcategory}`} label={row.subcategory} value={row.total} tone="negative" indent />
+                            ))}
+
+                            <Line label="Utilidad bruta" value={taxReport.totals.grossProfit} strong />
+
+                            <Line label="Gastos operativos totalizados" value={taxReport.totals.operatingExpenseSubtotal} tone="negative" strong />
+                            {expenseRows.length === 0 ? (
+                                <Line label="Sin subcategorias de gasto registradas" value={0} indent />
+                            ) : expenseRows.map((row) => (
+                                <Line key={`expense-${row.category}-${row.subcategory}`} label={`${row.category} / ${row.subcategory}`} value={row.total} tone="negative" indent />
+                            ))}
+
+                            <Line label="Utilidad operativa" value={taxReport.totals.operatingProfit} strong />
+                            <Line label="Impuestos" value={totalTaxes} tone="negative" strong />
+                            <Line label="Impuesto municipal 1% sobre ingresos" value={taxReport.totals.municipalTax} tone="negative" indent />
+                            <Line label="IR 30% sobre utilidad despues de IMI" value={taxReport.totals.incomeTax30} tone="negative" indent />
+                            <Line label="Utilidad neta" value={taxReport.totals.netProfitAfterTax} tone="final" strong />
+                        </tbody>
+                    </table>
+                </div>
+
+                <footer className="mt-5 grid grid-cols-1 gap-3 text-[10px] font-semibold text-slate-500 md:grid-cols-2">
+                    <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                        Los ingresos se presentan sobre subtotal contable sin IVA. El IVA se controla en el reporte tributario correspondiente.
+                    </div>
+                    <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                        Documento generado desde el sistema contable CSM Granada para soporte interno y fiscal.
+                    </div>
+                </footer>
+            </div>
+        </Card>
+    );
+};
+
 const TaxReportsPanel = ({ taxReport, taxTab, setTaxTab, selectedMonth, setSelectedMonth, availableMonths }) => {
     const subTabs = ['IVA', 'Retenciones', 'Facturas membretadas', 'Resultado despues de impuestos'];
     const tableClass = "w-full text-sm";
@@ -639,6 +1011,13 @@ const TaxReportsPanel = ({ taxReport, taxTab, setTaxTab, selectedMonth, setSelec
     const handlePrintStampedInvoices = () => {
         document.body.classList.add('print-stamped-tax-report');
         const cleanup = () => document.body.classList.remove('print-stamped-tax-report');
+        window.addEventListener('afterprint', cleanup, { once: true });
+        window.print();
+        window.setTimeout(cleanup, 1000);
+    };
+    const handlePrintTaxStatement = () => {
+        document.body.classList.add('print-tax-statement-report');
+        const cleanup = () => document.body.classList.remove('print-tax-statement-report');
         window.addEventListener('afterprint', cleanup, { once: true });
         window.print();
         window.setTimeout(cleanup, 1000);
@@ -974,6 +1353,19 @@ const TaxReportsPanel = ({ taxReport, taxTab, setTaxTab, selectedMonth, setSelec
                             ))}
                         </div>
                     </Card>
+                    <TaxStatementPrintableReport
+                        taxReport={taxReport}
+                        selectedMonth={selectedMonth}
+                        onPrint={handlePrintTaxStatement}
+                    />
+                    <div className="grid grid-cols-1 gap-5 xl:grid-cols-2">
+                        <Card title="Costos por categoria" subtitle="Compras y costos fiscales del periodo" icon="shoppingCart">
+                            <CategoryBreakdown rows={taxReport.purchaseCategoryRows} emptyLabel="Sin compras registradas en este periodo." />
+                        </Card>
+                        <Card title="Gastos operativos por categoria" subtitle="Gastos agrupados con subcategorias" icon="receipt">
+                            <CategoryBreakdown rows={taxReport.operatingExpenseRows} emptyLabel="Sin gastos registrados en este periodo." />
+                        </Card>
+                    </div>
                 </div>
             )}
         </div>
@@ -1014,6 +1406,7 @@ export default function Reports({ data }) {
     let currentBudgets = {};
     let filteredRawExpenses = [];
     let finalExpenseRows = [];
+    let finalCostRows = [];
 
     if (filteredReport.length > 0) {
         const d = filteredReport.find(x => x.branchId === 'consolidado');
@@ -1026,21 +1419,8 @@ export default function Reports({ data }) {
             inventoryAdjustment = (d.initialInventory || 0) - (d.finalInventory || 0);
             currentBudgets = d.budgets || {};
             filteredRawExpenses = d.rawExpenses;
-
-            const allCategories = new Set([
-                ...Object.keys(currentBudgets),
-                ...filteredReport.filter(x => !x.isConsolidated).flatMap(x => x.expenseDetails.map(ed => ed[0]))
-            ]);
-
-            const expenseMap = {};
-            allCategories.forEach(cat => {
-                const realAmount = filteredReport
-                    .filter(x => !x.isConsolidated)
-                    .reduce((acc, curr) => acc + (curr.expenseDetails.find(ed => ed[0] === cat)?.[1] || 0), 0);
-                expenseMap[cat] = realAmount;
-            });
-
-            finalExpenseRows = Object.entries(expenseMap).sort((a, b) => b[1] - a[1]);
+            finalExpenseRows = categoryTreeToRows(d.expenseTree || {});
+            finalCostRows = categoryTreeToRows(d.costTree || {});
         }
         totalGrossProfit = totalIncome - totalCOGS;
         totalNetProfit = totalGrossProfit - totalExpenses;
@@ -1071,7 +1451,13 @@ export default function Reports({ data }) {
                 .custom-scrollbar::-webkit-scrollbar { width: 5px; }
                 .custom-scrollbar::-webkit-scrollbar-track { background: #f5f0ec; border-radius: 3px; }
                 .custom-scrollbar::-webkit-scrollbar-thumb { background: #c8a898; border-radius: 3px; }
+                .tax-pdf-cell { border-top: 1px solid #e2e8f0; padding: 7px 12px; vertical-align: top; }
+                .tax-pdf-head { padding: 9px 12px; font-size: 10px; font-weight: 900; letter-spacing: 0.18em; text-transform: uppercase; }
+                .tax-pdf-kpi { border: 1px solid #e2e8f0; border-radius: 12px; background: #f8fafc; padding: 10px 12px; }
+                .tax-pdf-kpi div { color: #64748b; font-size: 10px; font-weight: 900; letter-spacing: 0.16em; text-transform: uppercase; }
+                .tax-pdf-kpi strong { display: block; margin-top: 4px; color: #0f172a; font-size: 15px; font-weight: 900; }
                 @media print {
+                    @page { size: letter portrait; margin: 0.42in; }
                     body.print-stamped-tax-report * { visibility: hidden !important; }
                     body.print-stamped-tax-report .stamped-tax-report,
                     body.print-stamped-tax-report .stamped-tax-report * { visibility: visible !important; }
@@ -1085,6 +1471,32 @@ export default function Reports({ data }) {
                     body.print-stamped-tax-report .no-print { display: none !important; }
                     body.print-stamped-tax-report table { page-break-inside: auto; }
                     body.print-stamped-tax-report tr { page-break-inside: avoid; page-break-after: auto; }
+                    body.print-tax-statement-report * { visibility: hidden !important; }
+                    body.print-tax-statement-report .tax-statement-report,
+                    body.print-tax-statement-report .tax-statement-report * { visibility: visible !important; }
+                    body.print-tax-statement-report .tax-statement-report {
+                        position: absolute !important;
+                        inset: 0 auto auto 0 !important;
+                        width: 100% !important;
+                        border: 0 !important;
+                        box-shadow: none !important;
+                        overflow: visible !important;
+                    }
+                    body.print-tax-statement-report .tax-statement-report > div:first-child,
+                    body.print-tax-statement-report .tax-statement-report .no-print { display: none !important; }
+                    body.print-tax-statement-report .tax-statement-report > div:last-child { padding: 0 !important; }
+                    body.print-tax-statement-report .tax-pdf-page {
+                        border: 0 !important;
+                        border-radius: 0 !important;
+                        padding: 0 !important;
+                        box-shadow: none !important;
+                        color: #0f172a !important;
+                    }
+                    body.print-tax-statement-report .tax-pdf-cell { padding: 5px 9px !important; font-size: 10.5px !important; }
+                    body.print-tax-statement-report .tax-pdf-head { padding: 7px 9px !important; font-size: 9px !important; }
+                    body.print-tax-statement-report .tax-pdf-kpi { padding: 7px 9px !important; break-inside: avoid; }
+                    body.print-tax-statement-report table { page-break-inside: auto; }
+                    body.print-tax-statement-report tr { page-break-inside: avoid; page-break-after: auto; }
                 }
             `}</style>
 
@@ -1312,103 +1724,37 @@ export default function Reports({ data }) {
                         {/* Desglose de Gastos */}
                         <div className="lg:col-span-2">
                             <Card
-                                title="Desglose Operativo"
-                                subtitle="Haz clic en una categoria para ver el detalle"
+                                title="Desglose por categoria y subcategoria"
+                                subtitle="Costos y gastos separados para lectura fiscal y gerencial"
                                 icon="receipt"
                             >
-                                <div className="overflow-x-auto custom-scrollbar">
-                                    <table className="w-full">
-                                        <thead>
-                                            <tr className="text-left border-b-2 border-[#d8dee6]">
-                                                <th className="pb-3 text-xs font-bold uppercase tracking-wider text-stone-500">Categoria</th>
-                                                <th className="pb-3 text-xs font-bold uppercase tracking-wider text-stone-500 text-right">Real</th>
-                                                <th className="pb-3 text-xs font-bold uppercase tracking-wider text-stone-500 text-right">Presupuesto</th>
-                                                <th className="pb-3 text-xs font-bold uppercase tracking-wider text-stone-500 text-right">Ejec.</th>
-                                            </tr>
-                                        </thead>
-                                        <tbody className="divide-y divide-stone-100">
-                                            {finalExpenseRows.map(([category, amount]) => {
-                                                const budget = currentBudgets[category] || 0;
-                                                const execPercent = budget > 0 ? (amount / budget) * 100 : 0;
-                                                const hasData = amount > 0;
+                                <div className="space-y-5">
+                                    <div>
+                                        <div className="mb-2 flex items-center justify-between">
+                                            <div>
+                                                <div className="text-xs font-black uppercase tracking-[0.2em] text-amber-700">Costos de venta</div>
+                                                <div className="text-[11px] font-semibold text-slate-400">Compras, inventario y costos directos</div>
+                                            </div>
+                                            <div className="text-right text-sm font-black text-amber-700">{fmt(totalPurchasesOnly)}</div>
+                                        </div>
+                                        <CategoryBreakdown rows={finalCostRows} budgets={currentBudgets} emptyLabel="Sin costos registrados en este periodo." />
+                                    </div>
 
-                                                return (
-                                                    <tr
-                                                        key={category}
-                                                        className={`transition-colors ${hasData ? 'cursor-pointer hover:bg-[#f8fafc]' : 'opacity-60'}`}
-                                                        onClick={() => hasData && setModalCategory(category)}
-                                                    >
-                                                        <td className="py-3">
-                                                            <div className="flex items-center gap-2">
-                                                                <div className={`w-5 h-5 rounded-md flex items-center justify-center ${hasData ? 'bg-[#fff1f2]' : 'bg-stone-100'}`}>
-                                                                    <Icon
-                                                                        path={Icons.receipt}
-                                                                        className={`w-3 h-3 ${hasData ? 'text-[#e30613]' : 'text-stone-400'}`}
-                                                                    />
-                                                                </div>
-                                                                <div>
-                                                                    <div className="font-bold text-stone-700 text-sm uppercase">{category}</div>
-                                                                    {!hasData && (
-                                                                        <span className="text-[10px] bg-stone-100 px-1.5 py-0.5 rounded text-stone-500 font-medium">Sin movimientos</span>
-                                                                    )}
-                                                                    {hasData && (
-                                                                        <div className="text-[10px] text-[#e30613] font-semibold">Ver detalle &gt;</div>
-                                                                    )}
-                                                                </div>
-                                                            </div>
-                                                        </td>
-                                                        <td className="py-3 text-right">
-                                                            <div className="font-bold text-stone-800 text-sm">{fmt(amount)}</div>
-                                                        </td>
-                                                        <td className="py-3 text-right">
-                                                            <div className="text-stone-500 text-sm font-medium">
-                                                                {budget > 0 ? fmt(budget) : '-'}
-                                                            </div>
-                                                        </td>
-                                                        <td className="py-3 text-right">
-                                                            {budget > 0 ? (
-                                                                <div className={`inline-flex items-center px-2 py-0.5 rounded-lg text-xs font-bold ${
-                                                                    execPercent > 100
-                                                                        ? 'bg-rose-100 text-rose-700'
-                                                                        : execPercent > 80
-                                                                            ? 'bg-amber-100 text-amber-700'
-                                                                            : 'bg-emerald-100 text-emerald-700'
-                                                                }`}>
-                                                                    {execPercent.toFixed(1)}%
-                                                                </div>
-                                                            ) : (
-                                                                <span className="text-stone-400">-</span>
-                                                            )}
-                                                        </td>
-                                                    </tr>
-                                                );
-                                            })}
-                                        </tbody>
-                                        <tfoot>
-                                            <tr className="border-t-2 border-[#9f111a] bg-stone-50">
-                                                <td className="py-3 pl-2">
-                                                    <div className="font-bold text-stone-800 uppercase text-xs tracking-wider">Total Operativo</div>
-                                                </td>
-                                                <td className="py-3 text-right">
-                                                    <div className="font-black text-stone-800 text-sm">{fmt(totalExpenses)}</div>
-                                                </td>
-                                                <td className="py-3 text-right">
-                                                    <div className="font-bold text-stone-600 text-sm">{fmt(totalBudgetLimit)}</div>
-                                                </td>
-                                                <td className="py-3 text-right pr-1">
-                                                    <div className={`inline-flex items-center px-2 py-0.5 rounded-lg text-xs font-black ${
-                                                        totalExecution > 100
-                                                            ? 'bg-rose-600 text-white'
-                                                            : totalExecution > 90
-                                                                ? 'bg-amber-500 text-white'
-                                                                : 'bg-emerald-600 text-white'
-                                                    }`}>
-                                                        {totalExecution.toFixed(1)}%
-                                                    </div>
-                                                </td>
-                                            </tr>
-                                        </tfoot>
-                                    </table>
+                                    <div>
+                                        <div className="mb-2 flex items-center justify-between">
+                                            <div>
+                                                <div className="text-xs font-black uppercase tracking-[0.2em] text-[#9f111a]">Gastos operativos</div>
+                                                <div className="text-[11px] font-semibold text-slate-400">Gastos por categoria y subcategoria</div>
+                                            </div>
+                                            <div className="text-right text-sm font-black text-[#9f111a]">{fmt(totalExpenses)}</div>
+                                        </div>
+                                        <CategoryBreakdown
+                                            rows={finalExpenseRows}
+                                            budgets={currentBudgets}
+                                            onCategoryClick={setModalCategory}
+                                            emptyLabel="Sin gastos operativos registrados en este periodo."
+                                        />
+                                    </div>
                                 </div>
 
                                 {/* Barra presupuesto */}
