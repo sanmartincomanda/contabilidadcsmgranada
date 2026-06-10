@@ -136,6 +136,26 @@ const expenseCategoryOptions = (placeholder = 'Seleccionar categoria / subcatego
     </>
 );
 
+const purchaseCategoryOptions = () => {
+    const purchaseGroup = EXPENSE_CATEGORY_TREE.find((group) => group.category === 'Costos de venta / compras');
+    return (
+        <>
+            <option value="">Seleccionar costo de venta...</option>
+            {purchaseGroup?.subcategories.map((subcategory) => {
+                const payload = buildExpenseCategoryPayload({
+                    category: purchaseGroup.category,
+                    subcategory,
+                }, DEFAULT_PURCHASE_CATEGORY_ID);
+                return (
+                    <option key={payload.categoryLabel} value={payload.id}>
+                        {subcategory}
+                    </option>
+                );
+            })}
+        </>
+    );
+};
+
 const resolveCategoryPayload = (selection, fallbackId = DEFAULT_EXPENSE_CATEGORY_ID) => (
     buildExpenseCategoryPayload(selection, fallbackId)
 );
@@ -519,13 +539,14 @@ export default function GastosDiarios({ categories = [], providers = [] }) {
         if (fiscal.total <= 0) return alert('Monto invalido.');
         if (!descripcion) return alert('Ingrese una descripcion.');
         if (tipo === 'Gasto' && !categoriaId) return alert('Categoria requerida para gastos.');
+        if (tipo === 'Compra' && !categoriaId) return alert('Seleccione la subcategoria fiscal de costo de venta.');
 
         setLoading(true);
         try {
             const timestamp = Timestamp.now();
             const categoryPayload = tipo === 'Gasto'
                 ? resolveCategoryPayload(categoriaId)
-                : resolveCategoryPayload(DEFAULT_PURCHASE_CATEGORY_ID, DEFAULT_PURCHASE_CATEGORY_ID);
+                : resolveCategoryPayload(categoriaId, DEFAULT_PURCHASE_CATEGORY_ID);
             const gastoDiarioRef = doc(collection(db, 'gastosDiarios'));
             const gastoRef = tipo === 'Gasto' ? doc(collection(db, 'gastos')) : null;
             const compraRef = tipo === 'Compra' ? doc(collection(db, 'compras')) : null;
@@ -990,16 +1011,14 @@ export default function GastosDiarios({ categories = [], providers = [] }) {
                                 <input type="file" accept="image/*,.pdf" onChange={e => setInvoicePhoto(e.target.files?.[0] || null)} className="block w-full text-xs text-stone-500 file:mr-2 file:rounded-full file:border-0 file:bg-[#fff1f2] file:px-3 file:py-1 file:text-xs file:font-semibold file:text-[#e30613]" />
                             </div>
 
-                            {tipo === 'Gasto' && (
-                                <Select
-                                    label="Categoria / subcategoria"
-                                    icon="tag"
-                                    value={categoriaId}
-                                    onChange={e => setCategoriaId(e.target.value)}
-                                    required
-                                    options={expenseCategoryOptions()}
-                                />
-                            )}
+                            <Select
+                                label={tipo === 'Compra' ? 'Costo de venta / subcategoria' : 'Categoria / subcategoria'}
+                                icon="tag"
+                                value={categoriaId}
+                                onChange={e => setCategoriaId(e.target.value)}
+                                required
+                                options={tipo === 'Compra' ? purchaseCategoryOptions() : expenseCategoryOptions()}
+                            />
 
                             <Button
                                 type="submit"
