@@ -160,6 +160,16 @@ const isCostCategory = (item) => (
     getExpenseCategoryFromRecord(item, DEFAULT_PURCHASE_CATEGORY_ID).category === 'Costos de venta / compras'
 );
 
+const isDepreciationOrAmortization = (item = {}) => {
+    const categoryInfo = getExpenseCategoryFromRecord(item);
+    const normalized = `${categoryInfo.category} ${categoryInfo.subcategory} ${categoryInfo.label || ''} ${item.description || item.descripcion || ''}`
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .toLowerCase();
+
+    return normalized.includes('depreciacion') || normalized.includes('amortizacion');
+};
+
 const CategoryBreakdown = ({ rows = [], budgets = {}, onCategoryClick, emptyLabel = 'Sin movimientos para mostrar.' }) => {
     if (!rows.length) {
         return (
@@ -715,6 +725,7 @@ const buildTaxReport = (data, selectedMonth) => {
     const operatingExpenseTree = {};
     let purchaseSubtotal = 0;
     let operatingExpenseSubtotal = 0;
+    let depreciationAmortization = 0;
 
     (data.compras || [])
         .filter(inMonth)
@@ -725,6 +736,7 @@ const buildTaxReport = (data, selectedMonth) => {
                 addCategoryAmount(purchaseCategoryTree, item, amount, DEFAULT_PURCHASE_CATEGORY_ID);
             } else {
                 operatingExpenseSubtotal += amount;
+                if (isDepreciationOrAmortization(item)) depreciationAmortization += amount;
                 addCategoryAmount(operatingExpenseTree, item, amount);
             }
         });
@@ -733,11 +745,13 @@ const buildTaxReport = (data, selectedMonth) => {
         .forEach((item) => {
             const amount = accountingAmount(item);
             operatingExpenseSubtotal += amount;
+            if (isDepreciationOrAmortization(item)) depreciationAmortization += amount;
             addCategoryAmount(operatingExpenseTree, item, amount);
         });
     const stampedInvoiceTotal = sumBy(stampedInvoiceRows, 'total');
     const grossProfit = salesSubtotal - purchaseSubtotal;
     const operatingProfit = grossProfit - operatingExpenseSubtotal;
+    const ebitda = operatingProfit + depreciationAmortization;
     const municipalTax = salesSubtotal * 0.01;
     const profitBeforeTax = operatingProfit;
     const profitAfterMunicipal = profitBeforeTax - municipalTax;
@@ -767,6 +781,8 @@ const buildTaxReport = (data, selectedMonth) => {
             operatingExpenseSubtotal,
             grossProfit,
             operatingProfit,
+            depreciationAmortization,
+            ebitda,
             profitBeforeTax,
             municipalTax,
             profitAfterMunicipal,
@@ -991,6 +1007,8 @@ const TaxStatementPrintableReport = ({ taxReport, selectedMonth, onPrint }) => {
                             <CategoryLines rows={taxReport.operatingExpenseRows} emptyLabel="Sin subcategorias de gasto registradas" />
 
                             <Line label="Utilidad operativa" value={taxReport.totals.operatingProfit} strong />
+                            <Line label="Depreciacion y amortizaciones" value={taxReport.totals.depreciationAmortization} indent plainAmount />
+                            <Line label="EBITDA" value={taxReport.totals.ebitda} strong />
                             <Line label="Impuestos" value={totalTaxes} tone="negative" strong />
                             <Line label="Impuesto municipal 1% sobre ingresos" value={taxReport.totals.municipalTax} tone="negative" indent />
                             <Line label="IR 30% sobre utilidad despues de IMI" value={taxReport.totals.incomeTax30} tone="negative" indent />
@@ -1298,10 +1316,11 @@ const TaxReportsPanel = ({ taxReport, taxTab, setTaxTab, selectedMonth, setSelec
 
             {taxTab === 'Resultado despues de impuestos' && (
                 <div className="space-y-5">
-                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-4">
                         <StatCard title="Ventas Subtotal" value={fmt(taxReport.totals.salesSubtotal)} icon="trendingUp" variant="success" />
                         <StatCard title="Costo Subtotal" value={fmt(taxReport.totals.purchaseSubtotal)} icon="shoppingCart" variant="warning" />
                         <StatCard title="Utilidad Antes Imp." value={fmt(taxReport.totals.profitBeforeTax)} icon="dollar" variant={taxReport.totals.profitBeforeTax >= 0 ? 'wine' : 'danger'} />
+                        <StatCard title="EBITDA" value={fmt(taxReport.totals.ebitda)} subtitle="Antes de imp., dep. y amort." icon="chart" variant={taxReport.totals.ebitda >= 0 ? 'success' : 'danger'} />
                         <StatCard title="Utilidad Neta" value={fmt(taxReport.totals.netProfitAfterTax)} icon="wallet" variant={taxReport.totals.netProfitAfterTax >= 0 ? 'dark' : 'danger'} />
                     </div>
                     <ExecutiveFlowDiagram
@@ -1350,6 +1369,8 @@ const TaxReportsPanel = ({ taxReport, taxTab, setTaxTab, selectedMonth, setSelec
                                 ['Utilidad bruta', taxReport.totals.grossProfit],
                                 ['Gastos operativos', -taxReport.totals.operatingExpenseSubtotal],
                                 ['Utilidades operativas', taxReport.totals.operatingProfit],
+                                ['Depreciacion y amortizaciones', taxReport.totals.depreciationAmortization],
+                                ['EBITDA', taxReport.totals.ebitda],
                                 ['Impuesto municipal 1% sobre ventas', -taxReport.totals.municipalTax],
                                 ['Utilidad despues de IMI', taxReport.totals.profitAfterMunicipal],
                                 ['IR 30% sobre utilidad despues de IMI', -taxReport.totals.incomeTax30],
