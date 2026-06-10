@@ -42,6 +42,7 @@ import {
     getExpenseCategoryFromRecord,
 } from '../services/expenseCategories';
 import { buildPettyCashMovementPayload, pettyCashMovementRef } from '../services/pettyCash';
+import ProviderAutocomplete from './ProviderAutocomplete';
 
 // --- ICONOS SVG INLINE ---
 const Icons = {
@@ -1554,7 +1555,7 @@ const FiscalExpenseForm = ({ categories, providers = [], loading, setLoading, on
         e.preventDefault();
         const categoryPayload = resolveCategoryPayload(categoryId);
         const fiscal = buildFiscalPayload({ subtotal, iva, total: calculatedTotal, retentionIr2, retentionMunicipal1 });
-        const cleanSupplier = normalizeProviderName(supplier === '__new__' ? newSupplier : supplier);
+        const cleanSupplier = normalizeProviderName(supplier);
         if (!description.trim() || !cleanSupplier || !categoryId || fiscal.total <= 0) {
             return alert('Complete proveedor, categoria, descripcion y montos fiscales.');
         }
@@ -1703,26 +1704,14 @@ const FiscalExpenseForm = ({ categories, providers = [], loading, setLoading, on
             <Input label="Fecha" type="date" icon="calendar" value={date} onChange={e => setDate(e.target.value)} required />
             {isCreditPayment(paymentType) && <Input label="Vencimiento" type="date" icon="calendar" value={dueDate} onChange={e => setDueDate(e.target.value)} required />}
             <Input label="Numero de factura" icon="receipt" placeholder="Dejar vacio si no aplica" value={invoiceNumber} onChange={e => setInvoiceNumber(e.target.value)} />
-            <Select
+            <ProviderAutocomplete
                 label="Proveedor"
-                icon="users"
                 value={supplier}
-                onChange={e => setSupplier(e.target.value)}
+                onChange={setSupplier}
+                providers={providers}
+                placeholder="Escribe para buscar proveedor..."
                 required
-                options={
-                    <>
-                        <option value="">Seleccionar proveedor...</option>
-                        {providers.map((provider) => {
-                            const name = getProviderDisplayName(provider);
-                            return <option key={provider.id || name} value={name}>{provider.code || provider.codigo || getProviderCode(name)} - {name}</option>;
-                        })}
-                        <option value="__new__">+ Crear proveedor nuevo</option>
-                    </>
-                }
             />
-            {supplier === '__new__' && (
-                <Input label="Nuevo proveedor" icon="users" placeholder="Nombre del proveedor" value={newSupplier} onChange={e => setNewSupplier(e.target.value)} required />
-            )}
             <Input label="Descripcion" icon="fileText" placeholder="Ej: Pago de servicios..." value={description} onChange={e => setDescription(e.target.value)} required />
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                 <Select label="Categoria / subcategoria" icon="tag" value={categoryId} onChange={e => setCategoryId(e.target.value)} required options={expenseCategoryOptions()} />
@@ -1797,7 +1786,7 @@ const FiscalPurchasesForm = ({ categories, providers = [], loading, setLoading, 
         e.preventDefault();
         const fiscal = buildFiscalPayload({ subtotal, iva, total, retentionIr2, retentionMunicipal1 });
         const categoryPayload = resolveCategoryPayload(categoryId || DEFAULT_PURCHASE_CATEGORY_ID, DEFAULT_PURCHASE_CATEGORY_ID);
-        const cleanSupplier = normalizeProviderName(supplier === '__new__' ? newSupplier : supplier);
+        const cleanSupplier = normalizeProviderName(supplier);
         if (!cleanSupplier || fiscal.total <= 0 || !paymentType) {
             return alert('Complete proveedor, tipo de pago y montos fiscales.');
         }
@@ -1936,26 +1925,14 @@ const FiscalPurchasesForm = ({ categories, providers = [], loading, setLoading, 
             <Input label="Fecha" type="date" icon="calendar" value={date} onChange={e => setDate(e.target.value)} required />
             {isCreditPayment(paymentType) && <Input label="Vencimiento" type="date" icon="calendar" value={dueDate} onChange={e => setDueDate(e.target.value)} required />}
             <Input label="Numero de factura" icon="fileText" placeholder="Dejar vacio si SICAR/proveedor no manda folio" value={invoiceNumber} onChange={e => setInvoiceNumber(e.target.value)} />
-            <Select
+            <ProviderAutocomplete
                 label="Proveedor"
-                icon="users"
                 value={supplier}
-                onChange={e => setSupplier(e.target.value)}
+                onChange={setSupplier}
+                providers={providers}
+                placeholder="Escribe para buscar proveedor..."
                 required
-                options={
-                    <>
-                        <option value="">Seleccionar proveedor...</option>
-                        {providers.map((provider) => {
-                            const name = getProviderDisplayName(provider);
-                            return <option key={provider.id || name} value={name}>{provider.code || provider.codigo || getProviderCode(name)} - {name}</option>;
-                        })}
-                        <option value="__new__">+ Crear proveedor nuevo</option>
-                    </>
-                }
             />
-            {supplier === '__new__' && (
-                <Input label="Nuevo proveedor" icon="users" placeholder="Nombre del proveedor" value={newSupplier} onChange={e => setNewSupplier(e.target.value)} required />
-            )}
             <Input label="Descripcion" icon="fileText" placeholder="Detalle de la compra" value={description} onChange={e => setDescription(e.target.value)} />
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                 <Select label="Categoria / subcategoria" icon="tag" value={categoryId} onChange={e => setCategoryId(e.target.value)} options={expenseCategoryOptions('Compra de mercancia / costo de venta')} />
@@ -2137,7 +2114,7 @@ const InventoryForm = ({ loading, setLoading, onSuccess }) => {
     );
 };
 
-const PurchasesForm = ({ loading, setLoading, onSuccess }) => {
+const PurchasesForm = ({ providers = [], loading, setLoading, onSuccess }) => {
     const [date, setDate] = useState(new Date().toISOString().substring(0, 10));
     const [supplier, setSupplier] = useState('');
     const [invoiceNumber, setInvoiceNumber] = useState('');
@@ -2146,16 +2123,23 @@ const PurchasesForm = ({ loading, setLoading, onSuccess }) => {
     const handleSubmit = async (e) => {
         e.preventDefault();
         const numAmount = Number(amount);
-        if (!supplier.trim() || isNaN(numAmount) || numAmount <= 0) {
+        const cleanSupplier = normalizeProviderName(supplier);
+        if (!cleanSupplier || isNaN(numAmount) || numAmount <= 0) {
             return alert('Complete proveedor y monto.');
         }
         setLoading(true);
         try {
             const categoryPayload = resolveCategoryPayload(DEFAULT_PURCHASE_CATEGORY_ID, DEFAULT_PURCHASE_CATEGORY_ID);
+            const provider = await upsertProviderByName(cleanSupplier, { source: 'compras' });
             await addDoc(collection(db, 'compras'), {
                 date,
                 month: date.substring(0, 7),
-                supplier: supplier.trim().toUpperCase(),
+                supplier: provider.nombre,
+                proveedor: provider.nombre,
+                providerId: provider.id,
+                proveedorId: provider.id,
+                providerCode: provider.code,
+                codigoProveedor: provider.code,
                 invoiceNumber: invoiceNumber.trim() || 'S/N',
                 amount: numAmount,
                 ...categoryPayload,
@@ -2186,7 +2170,14 @@ const PurchasesForm = ({ loading, setLoading, onSuccess }) => {
                 Todo se registra en {DEFAULT_BRANCH_NAME}.
             </div>
             <Input label="Fecha" type="date" icon="calendar" value={date} onChange={e => setDate(e.target.value)} required />
-            <Input label="Proveedor" icon="users" placeholder="Nombre del proveedor" value={supplier} onChange={e => setSupplier(e.target.value)} required />
+            <ProviderAutocomplete
+                label="Proveedor"
+                value={supplier}
+                onChange={setSupplier}
+                providers={providers}
+                placeholder="Escribe para buscar proveedor..."
+                required
+            />
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                 <Input label="Numero de Factura" icon="fileText" placeholder="Ej: 001-001-000000001" value={invoiceNumber} onChange={e => setInvoiceNumber(e.target.value)} />
                 <Input label="Monto Factura" type="number" step="0.01" icon="shoppingCart" placeholder="0.00" className="text-lg font-bold text-purple-600" value={amount} onChange={e => setAmount(e.target.value)} required />

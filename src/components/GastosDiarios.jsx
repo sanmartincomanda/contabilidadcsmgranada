@@ -22,6 +22,8 @@ import {
     buildExpenseCategoryPayload,
     getExpenseCategoryFromRecord,
 } from '../services/expenseCategories';
+import { normalizeProviderName, upsertProviderByName } from '../services/providers';
+import ProviderAutocomplete from './ProviderAutocomplete';
 
 // --- ICONOS SVG INLINE ---
 const Icons = {
@@ -203,7 +205,7 @@ const getRecordPaymentMethod = (record = {}) => (
     record.paymentType || record.paymentMethod || (record.tipo === 'ABONO' ? 'EFECTIVO' : 'SIN METODO')
 );
 
-export default function GastosDiarios({ categories = [] }) {
+export default function GastosDiarios({ categories = [], providers = [] }) {
     const [activeTab, setActiveTab] = useState('registro');
     const [loading, setLoading] = useState(false);
     const [refreshKey, setRefreshKey] = useState(0);
@@ -527,10 +529,21 @@ export default function GastosDiarios({ categories = [] }) {
             const gastoDiarioRef = doc(collection(db, 'gastosDiarios'));
             const gastoRef = tipo === 'Gasto' ? doc(collection(db, 'gastos')) : null;
             const compraRef = tipo === 'Compra' ? doc(collection(db, 'compras')) : null;
+            const cleanProviderName = normalizeProviderName(proveedor);
+            const provider = cleanProviderName
+                ? await upsertProviderByName(cleanProviderName, { source: 'caja_chica' })
+                : null;
+            const providerPayload = provider ? {
+                proveedor: provider.nombre,
+                supplier: provider.nombre,
+                providerId: provider.id,
+                proveedorId: provider.id,
+                providerCode: provider.code,
+                codigoProveedor: provider.code,
+            } : {};
             const photoPayload = await uploadInvoicePhoto(invoicePhoto, 'facturas/gastos_diarios', gastoDiarioRef.id);
             const commonFiscal = {
-                proveedor: proveedor.trim().toUpperCase(),
-                supplier: proveedor.trim().toUpperCase(),
+                ...providerPayload,
                 factura: numeroFactura.trim(),
                 invoiceNumber: numeroFactura.trim(),
                 paymentType,
@@ -608,7 +621,7 @@ export default function GastosDiarios({ categories = [] }) {
                         linkedGastoDiarioId: gastoDiarioRef.id,
                         linkedExpenseId: gastoRef?.id || '',
                         linkedPurchaseId: compraRef?.id || '',
-                        supplier: proveedor.trim().toUpperCase(),
+                        supplier: provider?.nombre || cleanProviderName,
                         invoiceNumber: numeroFactura.trim(),
                         timestamp,
                         ...categoryPayload,
@@ -622,7 +635,7 @@ export default function GastosDiarios({ categories = [] }) {
                 fecha,
                 tipo,
                 descripcion,
-                proveedor: proveedor.trim().toUpperCase(),
+                proveedor: provider?.nombre || cleanProviderName,
                 factura: numeroFactura.trim(),
                 paymentType,
                 paymentReference: paymentReference.trim().toUpperCase(),
@@ -912,12 +925,12 @@ export default function GastosDiarios({ categories = [] }) {
                             />
 
                             <div className="grid grid-cols-2 gap-3">
-                                <Input
+                                <ProviderAutocomplete
                                     label="Proveedor"
-                                    icon="receipt"
-                                    placeholder="Proveedor"
                                     value={proveedor}
-                                    onChange={e => setProveedor(e.target.value)}
+                                    onChange={setProveedor}
+                                    providers={providers}
+                                    placeholder="Escribe para buscar proveedor..."
                                 />
                                 <Input
                                     label="Numero factura"

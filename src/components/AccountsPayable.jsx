@@ -28,6 +28,7 @@ import {
     buildExpenseCategoryPayload,
 } from '../services/expenseCategories';
 import { buildPettyCashMovementPayload, pettyCashMovementRef } from '../services/pettyCash';
+import ProviderAutocomplete from './ProviderAutocomplete';
 
 // --- ICONOS SVG INLINE ---
 const Icon = ({ path, className = "w-5 h-5" }) => (
@@ -1004,19 +1005,13 @@ export function AccountsPayable({ data }) {
                                         Las facturas registradas aqu? se contabilizan como costo a cr?dito en {DEFAULT_BRANCH_NAME}.
                                     </div>
 
-                                    <Select
+                                    <ProviderAutocomplete
                                         label="Proveedor"
                                         value={facturaForm.proveedor}
-                                        onChange={e => setFacturaForm({ ...facturaForm, proveedor: e.target.value })}
+                                        onChange={(providerName) => setFacturaForm({ ...facturaForm, proveedor: providerName })}
+                                        providers={listaProveedores}
+                                        placeholder="Escribe para buscar proveedor..."
                                         required
-                                        options={
-                                            <>
-                                                <option value="">Seleccionar proveedor...</option>
-                                                {listaProveedores
-                                                    .map(p => <option key={p.id} value={p.nombre}>{p.code} - {p.nombre}</option>)
-                                                }
-                                            </>
-                                        }
                                     />
 
                                     <div className="grid grid-cols-2 gap-4">

@@ -22,7 +22,7 @@ import { resolveReportIncomeEntries } from './services/incomeAggregation';
 
 const BRAND_LOGO = APP_BRAND_LOGO;
 
-const CATEGORY_COLLECTIONS = ['categorias'];
+const CATEGORY_COLLECTIONS = ['categorias', 'proveedores'];
 const DATA_ENTRY_HISTORY_MONTHS = 6;
 const REPORT_HISTORY_MONTHS = 24;
 const ACCOUNT_HISTORY_MONTHS = 12;
@@ -1054,7 +1054,7 @@ function AppContent() {
                         <Route path="/login" element={<Navigate to="/" replace />} />
                         <Route path="/" element={<PrivateRoute element={isAdmin ? (dashboardLoading ? <AppLoadingState /> : dashboardError ? <AppErrorState error={dashboardError} /> : <Dashboard data={dashboardData} themeMode={themeMode} onThemeToggle={toggleTheme} />) : <Navigate to="/cuentas-pagar" />} />} />
                         <Route path="/ingresar" element={<PrivateRoute element={isAdmin ? (dataEntryLoading ? <AppLoadingState /> : dataEntryError ? <AppErrorState error={dataEntryError} /> : <DataEntry data={dataEntryData} categories={categoriesList} />) : <Navigate to="/cuentas-pagar" />} />} />
-                        <Route path="/gastos-diarios" element={<PrivateRoute element={<GastosDiarios categories={categoriesList} />} />} />
+                        <Route path="/gastos-diarios" element={<PrivateRoute element={<GastosDiarios categories={categoriesList} providers={categoriesData.proveedores || []} />} />} />
                         <Route path="/conciliacion" element={<PrivateRoute element={isAdmin ? <BankReconciliation /> : <Navigate to="/cuentas-pagar" />} />} />
                         <Route path="/cuentas-pagar" element={<PrivateRoute element={accountsPayableLoading ? <AppLoadingState /> : accountsPayableError ? <AppErrorState error={accountsPayableError} /> : <AccountsPayable data={accountsPayableData} />} />} />
                         <Route path="/reportes" element={<PrivateRoute element={isAdmin ? (reportsLoading ? <AppLoadingState /> : reportsError ? <AppErrorState error={reportsError} /> : <Reports data={reportsData} />) : <Navigate to="/cuentas-pagar" />} />} />
