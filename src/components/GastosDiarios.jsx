@@ -242,10 +242,10 @@ export default function GastosDiarios({ categories = [], providers = [] }) {
     const [paymentReference, setPaymentReference] = useState('');
     const [subtotal, setSubtotal] = useState('');
     const [iva, setIva] = useState('');
-    const [total, setTotal] = useState('');
     const [retentionIr2, setRetentionIr2] = useState('');
     const [retentionMunicipal1, setRetentionMunicipal1] = useState('');
     const [invoicePhoto, setInvoicePhoto] = useState(null);
+    const calculatedTotal = Number(((Number(subtotal || 0) || 0) + (Number(iva || 0) || 0)).toFixed(2));
 
     // Historial
     const [filtroPeriodo, setFiltroPeriodo] = useState('mes');
@@ -535,7 +535,7 @@ export default function GastosDiarios({ categories = [], providers = [] }) {
 
     const handleSubmitFiscal = async (e) => {
         e.preventDefault();
-        const fiscal = buildFiscalPayload({ subtotal, iva, total, retentionIr2, retentionMunicipal1 });
+        const fiscal = buildFiscalPayload({ subtotal, iva, total: calculatedTotal, retentionIr2, retentionMunicipal1 });
         if (fiscal.total <= 0) return alert('Monto invalido.');
         if (!descripcion) return alert('Ingrese una descripcion.');
         if (tipo === 'Gasto' && !categoriaId) return alert('Categoria requerida para gastos.');
@@ -675,7 +675,6 @@ export default function GastosDiarios({ categories = [], providers = [] }) {
             setPaymentReference('');
             setSubtotal('');
             setIva('');
-            setTotal('');
             setRetentionIr2('');
             setRetentionMunicipal1('');
             setInvoicePhoto(null);
@@ -998,7 +997,11 @@ export default function GastosDiarios({ categories = [], providers = [] }) {
 
                             <div className="grid grid-cols-2 gap-3">
                                 <Input label="IVA" type="number" step="0.01" icon="dollar" placeholder="0.00" value={iva} onChange={e => setIva(e.target.value)} />
-                                <Input label="Total" type="number" step="0.01" icon="dollar" placeholder="0.00" value={total} onChange={e => setTotal(e.target.value)} />
+                                <div className="rounded-lg border border-stone-200 bg-stone-50 px-3 py-2">
+                                    <div className="text-xs font-bold uppercase tracking-wider text-stone-500">Total calculado</div>
+                                    <div className="mt-1 font-mono text-lg font-black text-[#9f111a]">{fmt(calculatedTotal)}</div>
+                                    <div className="mt-0.5 text-[11px] font-semibold text-stone-400">Subtotal + IVA</div>
+                                </div>
                             </div>
 
                             <div className="grid grid-cols-2 gap-3">
