@@ -14,6 +14,7 @@ import { DataEntry } from './components/DataEntry';
 import { BankReconciliation } from './components/BankReconciliation';
 import Reports from './components/Reports';
 import CategoryManager from './components/CategoryManager';
+import Settings from './components/Settings';
 import { AccountsPayable } from './components/AccountsPayable';
 import ExecutiveFlowDiagram from './components/ExecutiveFlowDiagram';
 import { APP_BRAND_LOGO, APP_BRAND_NAME, fmt } from './constants';
@@ -974,7 +975,7 @@ function AppContent() {
     const isLimitedUser = user?.email === 'adriandiazc95@gmail.com';
     const isAdmin = !isLimitedUser;
     const currentPath = location.pathname;
-    const needsCategories = currentPath === '/ingresar' || currentPath === '/gastos-diarios' || currentPath.startsWith('/maestros/categorias');
+    const needsCategories = currentPath === '/ingresar' || currentPath === '/gastos-diarios' || currentPath.startsWith('/maestros/categorias') || currentPath.startsWith('/configuraciones');
     const currentMonth = useMemo(() => getMonthOffset(0), []);
     const dataEntryStartMonth = useMemo(() => getMonthOffset(DATA_ENTRY_HISTORY_MONTHS), []);
     const reportStartMonth = useMemo(() => getMonthOffset(REPORT_HISTORY_MONTHS), []);
@@ -1057,6 +1058,7 @@ function AppContent() {
                         <Route path="/conciliacion" element={<PrivateRoute element={isAdmin ? <BankReconciliation /> : <Navigate to="/cuentas-pagar" />} />} />
                         <Route path="/cuentas-pagar" element={<PrivateRoute element={accountsPayableLoading ? <AppLoadingState /> : accountsPayableError ? <AppErrorState error={accountsPayableError} /> : <AccountsPayable data={accountsPayableData} />} />} />
                         <Route path="/reportes" element={<PrivateRoute element={isAdmin ? (reportsLoading ? <AppLoadingState /> : reportsError ? <AppErrorState error={reportsError} /> : <Reports data={reportsData} />) : <Navigate to="/cuentas-pagar" />} />} />
+                        <Route path="/configuraciones" element={<PrivateRoute element={isAdmin ? <Settings /> : <Navigate to="/cuentas-pagar" />} />} />
                         <Route path="/maestros/categorias" element={<PrivateRoute element={isAdmin ? <CategoryManager categories={categoriesList} /> : <Navigate to="/cuentas-pagar" />} />} />
                         <Route path="*" element={<Navigate to="/" />} />
                     </Routes>

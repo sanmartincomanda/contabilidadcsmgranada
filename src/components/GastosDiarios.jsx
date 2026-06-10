@@ -14,6 +14,7 @@ import {
     createPettyCashRef,
     pettyCashMovementRef,
 } from '../services/pettyCash';
+import { getDeviceSettings } from '../services/deviceSettings';
 import {
     DEFAULT_EXPENSE_CATEGORY_ID,
     DEFAULT_PURCHASE_CATEGORY_ID,
@@ -148,6 +149,46 @@ const Badge = ({ children, variant = 'default' }) => {
     return <span className={`px-2 py-0.5 rounded-full text-xs font-bold ${variants[variant]}`}>{children}</span>;
 };
 
+const PettyCashVoucher = ({ voucher }) => {
+    if (!voucher) return null;
+
+    return (
+        <div className="petty-cash-voucher-print">
+            <div className="ticket-center">
+                <div className="ticket-brand">{APP_BRAND_NAME}</div>
+                <div className="ticket-title">VOUCHER CAJA CHICA</div>
+                <div className="ticket-subtitle">Ticket 80mm</div>
+            </div>
+            <div className="ticket-line" />
+            <div className="ticket-row"><span>Fecha</span><strong>{voucher.fecha}</strong></div>
+            <div className="ticket-row"><span>Hora</span><strong>{voucher.hora}</strong></div>
+            <div className="ticket-row"><span>Tipo</span><strong>{voucher.tipo}</strong></div>
+            <div className="ticket-row"><span>Pago</span><strong>{voucher.paymentType}</strong></div>
+            {voucher.paymentReference && <div className="ticket-row"><span>Referencia</span><strong>{voucher.paymentReference}</strong></div>}
+            {voucher.proveedor && <div className="ticket-row"><span>Proveedor</span><strong>{voucher.proveedor}</strong></div>}
+            {voucher.factura && <div className="ticket-row"><span>Factura</span><strong>{voucher.factura}</strong></div>}
+            <div className="ticket-line" />
+            <div className="ticket-label">Descripcion</div>
+            <div className="ticket-description">{voucher.descripcion}</div>
+            {voucher.categoryLabel && (
+                <>
+                    <div className="ticket-label">Categoria</div>
+                    <div className="ticket-description">{voucher.categoryLabel}</div>
+                </>
+            )}
+            <div className="ticket-line" />
+            <div className="ticket-row"><span>Subtotal</span><strong>{fmt(voucher.subtotal)}</strong></div>
+            <div className="ticket-row"><span>IVA</span><strong>{fmt(voucher.iva)}</strong></div>
+            <div className="ticket-total"><span>Total</span><strong>{fmt(voucher.total)}</strong></div>
+            <div className="ticket-line" />
+            <div className="ticket-approved">
+                <div>___________________</div>
+                <strong>APROBADO POR</strong>
+            </div>
+        </div>
+    );
+};
+
 // --- COMPONENTE PRINCIPAL ---
 
 const CAJA = DEFAULT_CASHBOX_NAME;
@@ -196,6 +237,7 @@ export default function GastosDiarios({ categories = [] }) {
     const [depositConfirmPin, setDepositConfirmPin] = useState('');
     const [cashMovements, setCashMovements] = useState([]);
     const [cashboxError, setCashboxError] = useState('');
+    const [voucherToPrint, setVoucherToPrint] = useState(null);
 
     const cargarRegistros = useCallback(async () => {
         setLoading(true);
@@ -258,6 +300,51 @@ export default function GastosDiarios({ categories = [] }) {
             cargarMovimientosCaja();
         }
     }, [cashboxUnlocked, cargarMovimientosCaja, refreshKey]);
+
+    useEffect(() => {
+        if (!voucherToPrint?.autoPrint) return undefined;
+
+        const timer = window.setTimeout(() => {
+            document.body.classList.add('print-petty-cash-voucher');
+            const cleanup = () => document.body.classList.remove('print-petty-cash-voucher');
+            window.addEventListener('afterprint', cleanup, { once: true });
+            window.print();
+            window.setTimeout(cleanup, 1200);
+        }, 180);
+
+        return () => window.clearTimeout(timer);
+    }, [voucherToPrint]);
+
+    const buildVoucher = useCallback((payload = {}) => {
+        const now = new Date();
+        const fiscalSubtotal = Number(payload.subtotal ?? payload.amount ?? payload.total ?? payload.monto ?? 0) || 0;
+        const fiscalIva = Number(payload.iva ?? 0) || 0;
+        const fiscalTotal = Number(payload.total ?? payload.monto ?? (fiscalSubtotal + fiscalIva)) || 0;
+        return {
+            fecha: payload.fecha || payload.date || now.toISOString().substring(0, 10),
+            hora: now.toLocaleTimeString('es-NI', { hour: '2-digit', minute: '2-digit' }),
+            tipo: payload.tipo || 'Gasto',
+            descripcion: payload.descripcion || payload.description || 'Movimiento de Caja Chica',
+            paymentType: payload.paymentType || 'EFECTIVO',
+            paymentReference: payload.paymentReference || '',
+            proveedor: payload.proveedor || payload.supplier || '',
+            factura: payload.factura || payload.invoiceNumber || '',
+            categoryLabel: payload.categoryLabel || [payload.category, payload.subcategory].filter(Boolean).join(' / '),
+            subtotal: fiscalSubtotal,
+            iva: fiscalIva,
+            total: fiscalTotal,
+            autoPrint: getDeviceSettings().printer.voucherAutoPrint !== false,
+        };
+    }, []);
+
+    const handleManualVoucherPrint = () => {
+        if (!voucherToPrint) return;
+        document.body.classList.add('print-petty-cash-voucher');
+        const cleanup = () => document.body.classList.remove('print-petty-cash-voucher');
+        window.addEventListener('afterprint', cleanup, { once: true });
+        window.print();
+        window.setTimeout(cleanup, 1200);
+    };
 
     const handleUnlockCashbox = (e) => {
         e.preventDefault();
@@ -397,6 +484,16 @@ export default function GastosDiarios({ categories = [] }) {
             );
 
             await batch.commit();
+            setVoucherToPrint(buildVoucher({
+                fecha,
+                tipo,
+                descripcion,
+                paymentType: 'EFECTIVO',
+                subtotal: numMonto,
+                iva: 0,
+                total: numMonto,
+                ...categoryPayload,
+            }));
 
             setDescripcion('');
             setMonto('');
@@ -519,6 +616,19 @@ export default function GastosDiarios({ categories = [] }) {
             }
 
             await batch.commit();
+            setVoucherToPrint(buildVoucher({
+                fecha,
+                tipo,
+                descripcion,
+                proveedor: proveedor.trim().toUpperCase(),
+                factura: numeroFactura.trim(),
+                paymentType,
+                paymentReference: paymentReference.trim().toUpperCase(),
+                subtotal: fiscal.subtotal,
+                iva: fiscal.iva,
+                total: fiscal.total,
+                ...categoryPayload,
+            }));
 
             setDescripcion('');
             setMonto('');
@@ -617,7 +727,42 @@ export default function GastosDiarios({ categories = [] }) {
             <style>{`
                 @keyframes fade-in { from { opacity: 0; transform: translateY(16px); } to { opacity: 1; transform: translateY(0); } }
                 .animate-fade-in { animation: fade-in 0.4s ease-out; }
-                @media print { .no-print { display: none !important; } }
+                .petty-cash-voucher-print { display: none; }
+                @media print {
+                    .no-print { display: none !important; }
+                    body.print-petty-cash-voucher * { visibility: hidden !important; }
+                    body.print-petty-cash-voucher .petty-cash-voucher-print,
+                    body.print-petty-cash-voucher .petty-cash-voucher-print * { visibility: visible !important; }
+                    body.print-petty-cash-voucher .petty-cash-voucher-print {
+                        display: block !important;
+                        position: fixed !important;
+                        left: 0 !important;
+                        top: 0 !important;
+                        width: 72mm !important;
+                        padding: 3mm 4mm !important;
+                        background: white !important;
+                        color: #111827 !important;
+                        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace !important;
+                        font-size: 11px !important;
+                        line-height: 1.25 !important;
+                    }
+                    @page { size: 80mm 180mm; margin: 0; }
+                    body.print-petty-cash-voucher .ticket-center { text-align: center; }
+                    body.print-petty-cash-voucher .ticket-brand { font-size: 12px; font-weight: 900; text-transform: uppercase; }
+                    body.print-petty-cash-voucher .ticket-title { margin-top: 3px; font-size: 14px; font-weight: 900; letter-spacing: .04em; }
+                    body.print-petty-cash-voucher .ticket-subtitle { font-size: 10px; font-weight: 700; color: #374151; }
+                    body.print-petty-cash-voucher .ticket-line { border-top: 1px dashed #111827; margin: 7px 0; }
+                    body.print-petty-cash-voucher .ticket-row,
+                    body.print-petty-cash-voucher .ticket-total { display: flex; justify-content: space-between; gap: 8px; margin: 3px 0; }
+                    body.print-petty-cash-voucher .ticket-row span,
+                    body.print-petty-cash-voucher .ticket-total span { flex: 0 0 auto; }
+                    body.print-petty-cash-voucher .ticket-row strong,
+                    body.print-petty-cash-voucher .ticket-total strong { text-align: right; word-break: break-word; }
+                    body.print-petty-cash-voucher .ticket-label { margin-top: 6px; font-size: 10px; font-weight: 900; text-transform: uppercase; }
+                    body.print-petty-cash-voucher .ticket-description { margin-top: 2px; word-break: break-word; }
+                    body.print-petty-cash-voucher .ticket-total { margin-top: 7px; font-size: 14px; font-weight: 900; }
+                    body.print-petty-cash-voucher .ticket-approved { margin-top: 18px; text-align: center; font-size: 11px; font-weight: 900; }
+                }
             `}</style>
 
             {/* Page header */}
@@ -850,6 +995,21 @@ export default function GastosDiarios({ categories = [] }) {
                             </Button>
                         </form>
                     </Card>
+                    {voucherToPrint && (
+                        <div className="mt-4 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 no-print">
+                            <div className="text-xs font-black uppercase tracking-[0.22em] text-emerald-700">Voucher listo</div>
+                            <div className="mt-1 text-sm font-semibold text-emerald-800">
+                                Ultimo ticket: {voucherToPrint.descripcion} - {fmt(voucherToPrint.total)}
+                            </div>
+                            <button
+                                type="button"
+                                onClick={handleManualVoucherPrint}
+                                className="mt-3 rounded-xl bg-emerald-700 px-4 py-2 text-xs font-black uppercase tracking-wider text-white transition hover:bg-emerald-800"
+                            >
+                                Reimprimir voucher 80mm
+                            </button>
+                        </div>
+                    )}
                     </div>
                 </div>
             ) : (
@@ -1023,6 +1183,7 @@ export default function GastosDiarios({ categories = [] }) {
                     </Card>
                 </div>
             )}
+            <PettyCashVoucher voucher={voucherToPrint} />
             {detalleMetodo && (
                 <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/55 p-4 backdrop-blur-sm no-print" onClick={() => setDetalleMetodo(null)}>
                     <div className="max-h-[86vh] w-full max-w-3xl overflow-hidden rounded-2xl bg-white shadow-2xl" onClick={e => e.stopPropagation()}>
