@@ -258,8 +258,8 @@ export default function Header() {
 
                                 {isAdmin && (
                                     <>
-                                        <NavLink to="/conciliacion" icon="check" active={isActive('/conciliacion')}>
-                                            Conciliacion
+                                        <NavLink to="/facturacion" icon="receipt" active={isActive('/facturacion')}>
+                                            Facturacion
                                         </NavLink>
                                         <NavLink to="/reportes" icon="chart" active={isActive('/reportes')}>
                                             Reportes
@@ -401,12 +401,12 @@ export default function Header() {
                             {isAdmin && (
                                 <>
                                     <NavLink
-                                        to="/conciliacion"
-                                        icon="check"
-                                        active={isActive('/conciliacion')}
+                                        to="/facturacion"
+                                        icon="receipt"
+                                        active={isActive('/facturacion')}
                                         onClick={() => setIsMobileMenuOpen(false)}
                                     >
-                                        Conciliacion
+                                        Facturacion
                                     </NavLink>
                                     <NavLink
                                         to="/reportes"

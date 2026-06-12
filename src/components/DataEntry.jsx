@@ -2265,7 +2265,7 @@ const EquityForm = ({ loading, setLoading, onSuccess }) => {
 
 // --- COMPONENTE PRINCIPAL ---
 
-const VALID_TABS = ['Ingresos', 'Facturas Membretadas', 'Gastos', 'Inventario', 'Compras', 'Presupuesto', 'Cuentas por Cobrar', 'Patrimonio'];
+const VALID_TABS = ['Ingresos', 'Gastos', 'Inventario', 'Compras', 'Presupuesto', 'Cuentas por Cobrar', 'Patrimonio'];
 
 export function DataEntry({ categories, data }) {
     const [searchParams] = useSearchParams();
@@ -2330,7 +2330,6 @@ export function DataEntry({ categories, data }) {
 
     const tabsConfig = {
         'Ingresos': { icon: 'trendingUp', label: 'Ingresos' },
-        'Facturas Membretadas': { icon: 'receipt', label: 'Membretadas' },
         'Gastos': { icon: 'trendingDown', label: 'Gastos' },
         'Inventario': { icon: 'box', label: 'Inventario' },
         'Compras': { icon: 'shoppingCart', label: 'Compras' },
@@ -2660,7 +2659,6 @@ export function DataEntry({ categories, data }) {
                 <div className="no-print mx-auto max-w-4xl animate-fade-in">
                     <Card title={`Nuevo - ${tabsConfig[activeTab].label}`} icon={tabsConfig[activeTab].icon} gradient={true}>
                         {activeTab === 'Ingresos' && <IncomeForm loading={loading} setLoading={setLoading} onSuccess={handleSuccess} />}
-                        {activeTab === 'Facturas Membretadas' && <StampedSalesInvoiceForm data={data} loading={loading} setLoading={setLoading} onSuccess={handleSuccess} />}
                         {activeTab === 'Gastos' && <FiscalExpenseForm categories={categories} providers={providers} loading={loading} setLoading={setLoading} onSuccess={handleSuccess} />}
                         {activeTab === 'Inventario' && <InventoryForm loading={loading} setLoading={setLoading} onSuccess={handleSuccess} />}
                         {activeTab === 'Compras' && <FiscalPurchasesForm categories={categories} providers={providers} loading={loading} setLoading={setLoading} onSuccess={handleSuccess} />}

@@ -11,7 +11,7 @@ import Header from './components/Header';
 import HomeDashboard from './components/HomeDashboard';
 import GastosDiarios from './components/GastosDiarios';
 import { DataEntry } from './components/DataEntry';
-import { BankReconciliation } from './components/BankReconciliation';
+import Billing from './components/Billing';
 import Reports from './components/Reports';
 import CategoryManager from './components/CategoryManager';
 import Settings from './components/Settings';
@@ -992,7 +992,6 @@ function AppContent() {
 
     const dataEntryCollections = useMemo(() => [
         collectionConfig('ingresos', [where('month', '>=', dataEntryStartMonth)]),
-        collectionConfig('facturas_membretadas_ventas', [where('saleDate', '>=', `${dataEntryStartMonth}-01`)]),
         collectionConfig('gastos', [where('date', '>=', `${dataEntryStartMonth}-01`)]),
         collectionConfig('inventarios', [where('month', '>=', dataEntryStartMonth)]),
         collectionConfig('compras', [where('month', '>=', dataEntryStartMonth)]),
@@ -1019,11 +1018,22 @@ function AppContent() {
         'proveedores',
     ], [accountStartMonth]);
 
+    const billingCollections = useMemo(() => [
+        collectionConfig('sicar_cierres_caja', [where('date', '>=', `${accountStartMonth}-01`)]),
+        collectionConfig('sicar_facturas_membretadas', [where('date', '>=', `${accountStartMonth}-01`)]),
+        collectionConfig('cierres_caja', [where('date', '>=', `${accountStartMonth}-01`)]),
+        collectionConfig('diferencias_caja', [where('date', '>=', `${accountStartMonth}-01`)]),
+        collectionConfig('facturas_membretadas_ventas', [where('saleDate', '>=', `${accountStartMonth}-01`)]),
+        'clientes_facturacion',
+        'cajeros',
+    ], [accountStartMonth]);
+
     const { data: categoriesData } = useFirestoreCollections(CATEGORY_COLLECTIONS, !!user && needsCategories, true);
     const { data: dataEntryData, loading: dataEntryLoading, error: dataEntryError } = useFirestoreCollections(dataEntryCollections, !!user && isAdmin && currentPath === '/ingresar', true);
     const { data: accountsPayableData, loading: accountsPayableLoading, error: accountsPayableError } = useFirestoreCollections(accountsPayableCollections, !!user && currentPath === '/cuentas-pagar', true);
     const { data: reportsData, loading: reportsLoading, error: reportsError } = useFirestoreCollections(reportCollections, !!user && isAdmin && currentPath === '/reportes', false);
     const { data: dashboardData, loading: dashboardLoading, error: dashboardError } = useFirestoreCollections(dashboardCollections, !!user && isAdmin && currentPath === '/', false);
+    const { data: billingData, loading: billingLoading, error: billingError } = useFirestoreCollections(billingCollections, !!user && isAdmin && currentPath === '/facturacion', true);
 
     const categoriesList = useMemo(() => (
         [...(categoriesData.categorias || [])].sort((a, b) => {
@@ -1055,7 +1065,8 @@ function AppContent() {
                         <Route path="/" element={<PrivateRoute element={isAdmin ? (dashboardLoading ? <AppLoadingState /> : dashboardError ? <AppErrorState error={dashboardError} /> : <Dashboard data={dashboardData} themeMode={themeMode} onThemeToggle={toggleTheme} />) : <Navigate to="/cuentas-pagar" />} />} />
                         <Route path="/ingresar" element={<PrivateRoute element={isAdmin ? (dataEntryLoading ? <AppLoadingState /> : dataEntryError ? <AppErrorState error={dataEntryError} /> : <DataEntry data={dataEntryData} categories={categoriesList} />) : <Navigate to="/cuentas-pagar" />} />} />
                         <Route path="/gastos-diarios" element={<PrivateRoute element={<GastosDiarios categories={categoriesList} providers={categoriesData.proveedores || []} />} />} />
-                        <Route path="/conciliacion" element={<PrivateRoute element={isAdmin ? <BankReconciliation /> : <Navigate to="/cuentas-pagar" />} />} />
+                        <Route path="/conciliacion" element={<PrivateRoute element={<Navigate to="/" replace />} />} />
+                        <Route path="/facturacion" element={<PrivateRoute element={isAdmin ? (billingLoading ? <AppLoadingState /> : billingError ? <AppErrorState error={billingError} /> : <Billing data={billingData} />) : <Navigate to="/cuentas-pagar" />} />} />
                         <Route path="/cuentas-pagar" element={<PrivateRoute element={accountsPayableLoading ? <AppLoadingState /> : accountsPayableError ? <AppErrorState error={accountsPayableError} /> : <AccountsPayable data={accountsPayableData} />} />} />
                         <Route path="/reportes" element={<PrivateRoute element={isAdmin ? (reportsLoading ? <AppLoadingState /> : reportsError ? <AppErrorState error={reportsError} /> : <Reports data={reportsData} />) : <Navigate to="/cuentas-pagar" />} />} />
                         <Route path="/configuraciones" element={<PrivateRoute element={isAdmin ? <Settings /> : <Navigate to="/cuentas-pagar" />} />} />
