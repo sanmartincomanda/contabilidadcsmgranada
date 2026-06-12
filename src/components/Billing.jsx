@@ -34,6 +34,11 @@ const slugify = (value = '') => (
         .slice(0, 20) || 'SIN-NOMBRE'
 );
 
+const recordExistsByName = (records = [], name = '') => {
+    const normalized = normalizeText(name);
+    return Boolean(normalized) && records.some((record) => normalizeText(record.name || record.nombre) === normalized);
+};
+
 const getMonth = (date = '') => String(date || todayString()).substring(0, 7);
 
 const getRecordDate = (value) => {
@@ -144,7 +149,7 @@ const SummaryCard = ({ label, value, tone = 'slate' }) => {
     );
 };
 
-const DetailRows = ({ title, rows, onChange, onAdd, onRemove, type, clients = [] }) => (
+const DetailRows = ({ title, rows, onChange, onAdd, onRemove, type, clients = [], onCreateClient }) => (
     <div className="rounded-3xl border border-slate-200 bg-slate-50/60 p-4">
         <div className="mb-3 flex items-center justify-between gap-3">
             <div>
@@ -162,13 +167,24 @@ const DetailRows = ({ title, rows, onChange, onAdd, onRemove, type, clients = []
             {rows.map((row, index) => (
                 <div key={row.localId || index} className="grid gap-2 rounded-2xl border border-slate-200 bg-white p-3 md:grid-cols-[1.4fr_1fr_1fr_auto]">
                     {type === 'transfer' ? (
-                        <input
-                            className={inputClass}
-                            list="billing-clients"
-                            placeholder="Cliente"
-                            value={row.clientName}
-                            onChange={(event) => onChange(index, 'clientName', event.target.value)}
-                        />
+                        <div>
+                            <input
+                                className={inputClass}
+                                list="billing-clients"
+                                placeholder="Cliente"
+                                value={row.clientName}
+                                onChange={(event) => onChange(index, 'clientName', event.target.value)}
+                            />
+                            {String(row.clientName || '').trim() && !recordExistsByName(clients, row.clientName) && (
+                                <button
+                                    type="button"
+                                    onClick={() => onCreateClient?.(row.clientName)}
+                                    className="mt-2 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-[10px] font-black uppercase tracking-[0.16em] text-emerald-700 transition hover:bg-emerald-100"
+                                >
+                                    Agregar cliente
+                                </button>
+                            )}
+                        </div>
                     ) : (
                         <input
                             className={inputClass}
@@ -364,6 +380,60 @@ function CashClosure({ data }) {
         )));
     };
 
+    const upsertClientRecord = async (name, source = 'manual') => {
+        const safeName = String(name || '').trim();
+        if (!safeName) return '';
+        const code = `CLI-${slugify(safeName)}`;
+        await setDoc(doc(db, 'clientes_facturacion', code), {
+            code,
+            name: safeName,
+            normalizedName: normalizeText(safeName),
+            source,
+            updatedAt: serverTimestamp(),
+            createdAt: serverTimestamp(),
+        }, { merge: true });
+        return code;
+    };
+
+    const upsertCashierRecord = async (name, source = 'manual') => {
+        const safeName = String(name || '').trim();
+        if (!safeName) return '';
+        const code = `CAJ-${slugify(safeName)}`;
+        await setDoc(doc(db, 'cajeros', code), {
+            code,
+            name: safeName,
+            normalizedName: normalizeText(safeName),
+            source,
+            updatedAt: serverTimestamp(),
+            createdAt: serverTimestamp(),
+        }, { merge: true });
+        return code;
+    };
+
+    const requestCreateClient = async (name) => {
+        const safeName = String(name || '').trim();
+        if (!safeName) return;
+        if (recordExistsByName(clients, safeName)) {
+            setMessage(`Cliente ya existe: ${safeName}.`);
+            return;
+        }
+        if (!window.confirm(`El cliente "${safeName}" no existe. Deseas agregarlo a la base de clientes?`)) return;
+        await upsertClientRecord(safeName, 'manual_facturacion');
+        setMessage(`Cliente agregado a la base: ${safeName}.`);
+    };
+
+    const requestCreateCashier = async (name) => {
+        const safeName = String(name || '').trim();
+        if (!safeName) return;
+        if (recordExistsByName(cashiers, safeName)) {
+            setMessage(`Cajero ya existe: ${safeName}.`);
+            return;
+        }
+        if (!window.confirm(`El cajero "${safeName}" no existe. Deseas agregarlo a la base de cajeros?`)) return;
+        await upsertCashierRecord(safeName, 'manual_facturacion');
+        setMessage(`Cajero agregado a la base: ${safeName}.`);
+    };
+
     const updateTransfer = (bank, index, field, value) => {
         setTransfers((prev) => ({
             ...prev,
@@ -385,28 +455,16 @@ function CashClosure({ data }) {
             if (name) touchedClients.add(name);
         });
 
-        await Promise.all([...touchedClients].map((name) => {
-            const code = `CLI-${slugify(name)}`;
-            return setDoc(doc(db, 'clientes_facturacion', code), {
-                code,
-                name,
-                normalizedName: normalizeText(name),
-                source: 'cierre_caja',
-                updatedAt: serverTimestamp(),
-                createdAt: serverTimestamp(),
-            }, { merge: true });
-        }));
+        closureInvoices.forEach((invoice) => {
+            const name = String(invoice.customerName || '').trim();
+            if (name) touchedClients.add(name);
+        });
+
+        await Promise.all([...touchedClients].map((name) => upsertClientRecord(name, 'cierre_caja')));
 
         const safeCashierName = String(cashierName || '').trim();
         if (safeCashierName) {
-            const cashierCode = `CAJ-${slugify(safeCashierName)}`;
-            await setDoc(doc(db, 'cajeros', cashierCode), {
-                code: cashierCode,
-                name: safeCashierName,
-                normalizedName: normalizeText(safeCashierName),
-                updatedAt: serverTimestamp(),
-                createdAt: serverTimestamp(),
-            }, { merge: true });
+            await upsertCashierRecord(safeCashierName, 'cierre_caja');
         }
     };
 
@@ -627,6 +685,15 @@ function CashClosure({ data }) {
                             <datalist id="billing-cashiers">
                                 {cashiers.map((cashier) => <option key={cashier.id || cashier.code || cashier.name} value={cashier.name} />)}
                             </datalist>
+                            {String(cashierName || '').trim() && !recordExistsByName(cashiers, cashierName) && (
+                                <button
+                                    type="button"
+                                    onClick={() => requestCreateCashier(cashierName)}
+                                    className="mt-2 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-[10px] font-black uppercase tracking-[0.16em] text-emerald-700 transition hover:bg-emerald-100"
+                                >
+                                    Agregar nuevo cajero
+                                </button>
+                            )}
                         </Field>
                         <Field label="Cierre SICAR">
                             <select className={inputClass} value={selectedClosureId} onChange={(event) => setSelectedClosureId(event.target.value)}>
@@ -682,6 +749,7 @@ function CashClosure({ data }) {
                                 rows={transfers[bank.key] || []}
                                 type="transfer"
                                 clients={clients}
+                                onCreateClient={requestCreateClient}
                                 onAdd={() => setTransfers((prev) => ({ ...prev, [bank.key]: [...(prev[bank.key] || []), emptyTransfer()] }))}
                                 onRemove={(index) => setTransfers((prev) => ({ ...prev, [bank.key]: (prev[bank.key] || []).filter((_, rowIndex) => rowIndex !== index) }))}
                                 onChange={(index, field, value) => updateTransfer(bank.key, index, field, value)}
@@ -763,7 +831,16 @@ function CashClosure({ data }) {
                                         <input className={inputClass} type="date" value={invoice.date} onChange={(event) => updateClosureInvoice(invoice.localId, 'date', event.target.value)} />
                                     </Field>
                                     <Field label="Cliente">
-                                        <input className={inputClass} value={invoice.customerName} onChange={(event) => updateClosureInvoice(invoice.localId, 'customerName', event.target.value)} placeholder="Cliente / razon social" />
+                                        <input className={inputClass} list="billing-clients" value={invoice.customerName} onChange={(event) => updateClosureInvoice(invoice.localId, 'customerName', event.target.value)} placeholder="Cliente / razon social" />
+                                        {String(invoice.customerName || '').trim() && !recordExistsByName(clients, invoice.customerName) && (
+                                            <button
+                                                type="button"
+                                                onClick={() => requestCreateClient(invoice.customerName)}
+                                                className="mt-2 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-[10px] font-black uppercase tracking-[0.16em] text-emerald-700 transition hover:bg-emerald-100"
+                                            >
+                                                Agregar cliente
+                                            </button>
+                                        )}
                                     </Field>
                                     <Field label="Metodo de pago">
                                         <input className={inputClass} value={invoice.paymentMethod} onChange={(event) => updateClosureInvoice(invoice.localId, 'paymentMethod', event.target.value)} placeholder="Transferencia, POS, efectivo..." />
@@ -840,6 +917,13 @@ function StampedInvoices({ data }) {
             .sort((a, b) => String(b.date).localeCompare(String(a.date)))
     ), [data.facturas_membretadas_ventas]);
 
+    const clients = useMemo(() => (
+        [...(data.clientes_facturacion || [])]
+            .map((item) => ({ ...item, name: item.name || item.nombre || '' }))
+            .filter((item) => item.name)
+            .sort((a, b) => a.name.localeCompare(b.name, 'es'))
+    ), [data.clientes_facturacion]);
+
     const [form, setForm] = useState({
         date: todayString(),
         invoiceNumber: '',
@@ -890,6 +974,33 @@ function StampedInvoices({ data }) {
         setMessage(`Factura SICAR ${invoice.invoiceNumber || invoice.id} cargada para completar retenciones.`);
     };
 
+    const upsertClientRecord = async (name, source = 'factura_membretada') => {
+        const safeName = String(name || '').trim();
+        if (!safeName) return '';
+        const code = `CLI-${slugify(safeName)}`;
+        await setDoc(doc(db, 'clientes_facturacion', code), {
+            code,
+            name: safeName,
+            normalizedName: normalizeText(safeName),
+            source,
+            updatedAt: serverTimestamp(),
+            createdAt: serverTimestamp(),
+        }, { merge: true });
+        return code;
+    };
+
+    const requestCreateClient = async (name) => {
+        const safeName = String(name || '').trim();
+        if (!safeName) return;
+        if (recordExistsByName(clients, safeName)) {
+            setMessage(`Cliente ya existe: ${safeName}.`);
+            return;
+        }
+        if (!window.confirm(`El cliente "${safeName}" no existe. Deseas agregarlo a la base de clientes?`)) return;
+        await upsertClientRecord(safeName, 'manual_factura_membretada');
+        setMessage(`Cliente agregado a la base: ${safeName}.`);
+    };
+
     const saveInvoice = async (event) => {
         event.preventDefault();
         setSaving(true);
@@ -902,6 +1013,10 @@ function StampedInvoices({ data }) {
             const supportPayload = supportFile
                 ? await uploadInvoicePhoto(supportFile, 'facturacion/facturas_membretadas', docId)
                 : {};
+
+            if (form.customerName.trim()) {
+                await upsertClientRecord(form.customerName.trim(), 'factura_membretada');
+            }
 
             await setDoc(doc(db, 'facturas_membretadas_ventas', docId), {
                 date: form.date,
@@ -959,7 +1074,19 @@ function StampedInvoices({ data }) {
                             <input className={inputClass} value={form.invoiceNumber} onChange={(event) => update('invoiceNumber', event.target.value)} required />
                         </Field>
                         <Field label="Cliente">
-                            <input className={inputClass} value={form.customerName} onChange={(event) => update('customerName', event.target.value)} placeholder="Cliente / razon social" />
+                            <input className={inputClass} list="stamped-invoice-clients" value={form.customerName} onChange={(event) => update('customerName', event.target.value)} placeholder="Cliente / razon social" />
+                            <datalist id="stamped-invoice-clients">
+                                {clients.map((client) => <option key={client.id || client.code || client.name} value={client.name} />)}
+                            </datalist>
+                            {String(form.customerName || '').trim() && !recordExistsByName(clients, form.customerName) && (
+                                <button
+                                    type="button"
+                                    onClick={() => requestCreateClient(form.customerName)}
+                                    className="mt-2 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-[10px] font-black uppercase tracking-[0.16em] text-emerald-700 transition hover:bg-emerald-100"
+                                >
+                                    Agregar cliente
+                                </button>
+                            )}
                         </Field>
                         <Field label="Metodo de pago">
                             <input className={inputClass} value={form.paymentMethod} onChange={(event) => update('paymentMethod', event.target.value)} placeholder="Transferencia, POS, efectivo..." />
