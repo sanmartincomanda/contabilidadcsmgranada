@@ -60,6 +60,10 @@ const createInvoiceDraft = (invoice = {}, fallbackDate = todayString()) => {
     const subtotal = safeNumber(invoice.subtotal ?? invoice.amount);
     const iva = safeNumber(invoice.iva);
     const total = safeNumber(invoice.total || subtotal + iva);
+    const isSicarInvoice = invoice.source === 'sicar'
+        || invoice.sourceSystem === 'SICAR'
+        || String(invoice.id || '').startsWith('sicar_factura_')
+        || Boolean(invoice.facId);
 
     return {
         localId: invoice.localId || createLineId('invoice'),
@@ -73,7 +77,8 @@ const createInvoiceDraft = (invoice = {}, fallbackDate = todayString()) => {
         total: total ? String(total) : '',
         retentionIr2: safeNumber(invoice.retentionIr2) ? String(safeNumber(invoice.retentionIr2)) : '',
         retentionMunicipal1: safeNumber(invoice.retentionMunicipal1) ? String(safeNumber(invoice.retentionMunicipal1)) : '',
-        sourceSicarInvoiceId: invoice.sourceSicarInvoiceId || invoice.sourceSicarId || '',
+        sourceSicarInvoiceId: invoice.sourceSicarInvoiceId || invoice.sourceSicarId || (isSicarInvoice ? invoice.id : ''),
+        sourceSicarFacId: invoice.sourceSicarFacId || invoice.facId || null,
         status: invoice.status || 'active',
         supportFiles: {},
     };
@@ -240,7 +245,20 @@ function CashClosure({ data }) {
             .sort((a, b) => String(b.closureDateTime || b.fecha || b.date).localeCompare(String(a.closureDateTime || a.fecha || a.date)))
     ), [data.sicar_cierres_caja]);
 
-    const stampedInvoices = useMemo(() => (
+    const sicarStampedInvoices = useMemo(() => (
+        [...(data.sicar_facturas_membretadas || [])]
+            .map((item) => ({
+                ...item,
+                date: item.date || getRecordDate(item.fecha || item.invoiceDate),
+                invoiceNumber: item.numeroFactura || item.invoiceNumber || item.folio || '',
+                retentionTotal: safeNumber(item.retentionTotal ?? (safeNumber(item.retentionIr2) + safeNumber(item.retentionMunicipal1))),
+                source: item.source || 'sicar',
+                sourceSystem: item.sourceSystem || 'SICAR',
+            }))
+            .sort((a, b) => String(b.date).localeCompare(String(a.date)))
+    ), [data.sicar_facturas_membretadas]);
+
+    const accountingStampedInvoices = useMemo(() => (
         [...(data.facturas_membretadas_ventas || [])]
             .map((item) => ({
                 ...item,
@@ -495,7 +513,10 @@ function CashClosure({ data }) {
                     retentionIr2: safeNumber(invoice.retentionIr2),
                     retentionMunicipal1: safeNumber(invoice.retentionMunicipal1),
                 });
-                const existingInvoice = stampedInvoices.find((item) => item.id === invoiceDocId) || {};
+                const existingInvoice = accountingStampedInvoices.find((item) => (
+                    item.id === invoiceDocId
+                    || (invoice.sourceSicarInvoiceId && item.sourceSicarInvoiceId === invoice.sourceSicarInvoiceId)
+                )) || {};
                 const supportPayload = await uploadFiscalSupportFiles(
                     invoice.supportFiles || {},
                     'facturacion/facturas_membretadas',
@@ -514,6 +535,7 @@ function CashClosure({ data }) {
                     source: invoice.sourceSicarInvoiceId ? 'sicar_factura' : (invoice.docId ? 'manual' : 'cierre_caja'),
                     sourceType: 'stamped_sale_invoice',
                     sourceSicarInvoiceId: invoice.sourceSicarInvoiceId || '',
+                    sourceSicarFacId: invoice.sourceSicarFacId || null,
                     status: isWaiting ? 'en_cierre' : 'conciliada',
                     closureStatus: isWaiting ? 'en_espera' : 'conciliada',
                     linkedCashClosureId: docId,
@@ -778,7 +800,7 @@ function CashClosure({ data }) {
                     <div className="mb-4 flex flex-col gap-3 rounded-3xl border border-slate-200 bg-slate-50/70 p-4 sm:flex-row sm:items-center sm:justify-between">
                         <div>
                             <div className="text-sm font-black text-slate-950">Facturas aplicadas al cierre</div>
-                            <div className="text-xs font-semibold text-slate-500">Marca una existente o crea una nueva si SICAR todavia no la cargo.</div>
+                            <div className="text-xs font-semibold text-slate-500">Marca facturas de SICAR; al cerrar se registran como membretadas contables y quedan conciliadas.</div>
                         </div>
                         <button type="button" onClick={addBlankClosureInvoice} className="rounded-xl bg-slate-950 px-4 py-2.5 text-xs font-black uppercase tracking-[0.16em] text-white transition hover:bg-[#e30613]">
                             Agregar nueva
@@ -786,11 +808,11 @@ function CashClosure({ data }) {
                     </div>
 
                     <div className="grid gap-3 md:grid-cols-2">
-                        {stampedInvoices.length === 0 ? (
+                        {sicarStampedInvoices.length === 0 ? (
                             <div className="rounded-3xl border border-dashed border-slate-300 p-8 text-center text-sm font-bold text-slate-400 md:col-span-2">
-                                No hay facturas membretadas guardadas todavia.
+                                No hay facturas SICAR pendientes para cargar. Ejecuta la sincronizacion de facturacion o revisa el rango cargado.
                             </div>
-                        ) : stampedInvoices.slice(0, 24).map((invoice) => (
+                        ) : sicarStampedInvoices.slice(0, 40).map((invoice) => (
                             <label key={invoice.id} className="flex cursor-pointer items-center gap-3 rounded-2xl border border-slate-200 bg-white p-3 transition hover:border-[#e30613]">
                                 <input
                                     type="checkbox"
