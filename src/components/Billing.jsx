@@ -2,7 +2,7 @@ import React, { useMemo, useState } from 'react';
 import { doc, serverTimestamp, setDoc } from 'firebase/firestore';
 import { db } from '../firebase';
 import { APP_BRAND_NAME, fmt } from '../constants';
-import { buildFiscalPayload, uploadInvoicePhoto } from '../services/fiscalUtils';
+import { buildFiscalPayload, uploadFiscalSupportFiles, uploadInvoicePhoto } from '../services/fiscalUtils';
 
 const PAYMENT_BANKS = [
     { key: 'bac', label: 'BAC' },
@@ -44,8 +44,50 @@ const getRecordDate = (value) => {
     return String(value).substring(0, 10);
 };
 
-const emptyTransfer = () => ({ clientName: '', amount: '', reference: '' });
-const emptyPos = () => ({ amount: '', reference: '' });
+const createLineId = (prefix = 'line') => `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+
+const emptyTransfer = () => ({ localId: createLineId('transfer'), clientName: '', amount: '', reference: '' });
+const emptyPos = () => ({ localId: createLineId('pos'), amount: '', reference: '' });
+
+const createInvoiceDraft = (invoice = {}, fallbackDate = todayString()) => {
+    const date = invoice.saleDate || invoice.date || fallbackDate;
+    const invoiceNumber = invoice.numeroFactura || invoice.invoiceNumber || '';
+    const subtotal = safeNumber(invoice.subtotal ?? invoice.amount);
+    const iva = safeNumber(invoice.iva);
+    const total = safeNumber(invoice.total || subtotal + iva);
+
+    return {
+        localId: invoice.localId || createLineId('invoice'),
+        docId: invoice.id || invoice.docId || '',
+        date,
+        invoiceNumber,
+        customerName: invoice.customerName || invoice.cliente || '',
+        paymentMethod: invoice.paymentMethod || '',
+        subtotal: subtotal ? String(subtotal) : '',
+        iva: iva ? String(iva) : '',
+        total: total ? String(total) : '',
+        retentionIr2: safeNumber(invoice.retentionIr2) ? String(safeNumber(invoice.retentionIr2)) : '',
+        retentionMunicipal1: safeNumber(invoice.retentionMunicipal1) ? String(safeNumber(invoice.retentionMunicipal1)) : '',
+        sourceSicarInvoiceId: invoice.sourceSicarInvoiceId || invoice.sourceSicarId || '',
+        status: invoice.status || 'active',
+        supportFiles: {},
+    };
+};
+
+const hasInvoiceDraftContent = (invoice = {}) => (
+    Boolean(
+        String(invoice.invoiceNumber || '').trim()
+        || String(invoice.customerName || '').trim()
+        || safeNumber(invoice.subtotal)
+        || safeNumber(invoice.iva)
+        || safeNumber(invoice.total)
+        || safeNumber(invoice.retentionIr2)
+        || safeNumber(invoice.retentionMunicipal1)
+        || invoice.supportFiles?.invoice
+        || invoice.supportFiles?.retentionIr2
+        || invoice.supportFiles?.retentionMunicipal1
+    )
+);
 
 const Badge = ({ children, tone = 'slate' }) => {
     const tones = {
@@ -118,7 +160,7 @@ const DetailRows = ({ title, rows, onChange, onAdd, onRemove, type, clients = []
 
         <div className="space-y-2">
             {rows.map((row, index) => (
-                <div key={`${title}-${index}`} className="grid gap-2 rounded-2xl border border-slate-200 bg-white p-3 md:grid-cols-[1.4fr_1fr_1fr_auto]">
+                <div key={row.localId || index} className="grid gap-2 rounded-2xl border border-slate-200 bg-white p-3 md:grid-cols-[1.4fr_1fr_1fr_auto]">
                     {type === 'transfer' ? (
                         <input
                             className={inputClass}
@@ -207,13 +249,20 @@ function CashClosure({ data }) {
             .sort((a, b) => a.name.localeCompare(b.name, 'es'))
     ), [data.cajeros]);
 
+    const waitingClosures = useMemo(() => (
+        [...(data.cierres_caja || [])]
+            .filter((item) => item.status === 'en_espera')
+            .sort((a, b) => String(b.updatedAt?.seconds || b.date || '').localeCompare(String(a.updatedAt?.seconds || a.date || '')))
+    ), [data.cierres_caja]);
+
+    const [activeClosureDocId, setActiveClosureDocId] = useState('');
     const [selectedClosureId, setSelectedClosureId] = useState('');
     const [closureDate, setClosureDate] = useState(todayString());
     const [cashierName, setCashierName] = useState('');
     const [cashCount, setCashCount] = useState({});
     const [transfers, setTransfers] = useState({ bac: [], banpro: [], lafise: [] });
     const [posDetails, setPosDetails] = useState({ bac: [], banpro: [], lafise: [] });
-    const [selectedInvoiceIds, setSelectedInvoiceIds] = useState([]);
+    const [closureInvoices, setClosureInvoices] = useState([]);
     const [notes, setNotes] = useState('');
     const [saving, setSaving] = useState(false);
     const [message, setMessage] = useState('');
@@ -222,9 +271,9 @@ function CashClosure({ data }) {
         sicarClosures.find((closure) => closure.id === selectedClosureId) || null
     ), [selectedClosureId, sicarClosures]);
 
-    const selectedInvoices = useMemo(() => (
-        stampedInvoices.filter((invoice) => selectedInvoiceIds.includes(invoice.id))
-    ), [selectedInvoiceIds, stampedInvoices]);
+    const selectedInvoiceIds = useMemo(() => (
+        closureInvoices.map((invoice) => invoice.docId).filter(Boolean)
+    ), [closureInvoices]);
 
     const cashTotal = useMemo(() => (
         CASH_DENOMINATIONS.reduce((sum, denomination) => sum + denomination * safeNumber(cashCount[denomination]), 0)
@@ -245,15 +294,74 @@ function CashClosure({ data }) {
         + Object.values(transferTotals).reduce((sum, value) => sum + value, 0)
         + Object.values(posTotals).reduce((sum, value) => sum + value, 0)
     );
-    const retentionTotal = safeNumber(selectedInvoices.reduce((sum, invoice) => sum + safeNumber(invoice.retentionTotal), 0));
+    const retentionTotal = safeNumber(closureInvoices.reduce((sum, invoice) => (
+        sum + safeNumber(invoice.retentionIr2) + safeNumber(invoice.retentionMunicipal1)
+    ), 0));
     const sicarExpected = safeNumber(selectedClosure?.calculatedTotal ?? selectedClosure?.calculado ?? selectedClosure?.totalDineroIngresado);
     const expectedAfterRetentions = safeNumber(sicarExpected - retentionTotal);
     const difference = safeNumber(manualTotal - expectedAfterRetentions);
 
     const loadClosure = (closure) => {
+        setActiveClosureDocId(closure.corId ? `cierre_${closure.date || getRecordDate(closure.closureDateTime || closure.fecha)}_${closure.corId}` : '');
         setSelectedClosureId(closure.id);
         setClosureDate(closure.date || getRecordDate(closure.closureDateTime || closure.fecha) || todayString());
         setMessage(`Cargado ${closure.cashboxName || closure.cajaName || 'cierre SICAR'} ${closure.corId || closure.cor_id || ''}.`);
+    };
+
+    const loadWaitingClosure = (closure) => {
+        setActiveClosureDocId(closure.id || '');
+        setClosureDate(closure.date || todayString());
+        setCashierName(closure.cashierName || '');
+        setSelectedClosureId(closure.linkedSicarClosureId || '');
+        setCashCount(closure.cashCount || {});
+        setTransfers(closure.transferDetails || { bac: [], banpro: [], lafise: [] });
+        setPosDetails(closure.posDetails || { bac: [], banpro: [], lafise: [] });
+        setClosureInvoices((closure.stampedInvoiceDrafts || closure.stampedInvoices || []).map((invoice) => createInvoiceDraft(invoice, closure.date || todayString())));
+        setNotes(closure.notes || '');
+        setMessage(`Cierre en espera cargado: ${closure.date || ''}.`);
+    };
+
+    const addClosureInvoice = (invoice) => {
+        const draft = createInvoiceDraft(invoice, closureDate);
+        setClosureInvoices((prev) => {
+            if (draft.docId && prev.some((item) => item.docId === draft.docId)) return prev;
+            return [...prev, draft];
+        });
+    };
+
+    const toggleClosureInvoice = (invoice, checked) => {
+        if (checked) {
+            addClosureInvoice(invoice);
+            return;
+        }
+        setClosureInvoices((prev) => prev.filter((item) => item.docId !== invoice.id));
+    };
+
+    const addBlankClosureInvoice = () => {
+        setClosureInvoices((prev) => [...prev, createInvoiceDraft({ date: closureDate }, closureDate)]);
+    };
+
+    const removeClosureInvoice = (localId) => {
+        setClosureInvoices((prev) => prev.filter((invoice) => invoice.localId !== localId));
+    };
+
+    const updateClosureInvoice = (localId, key, value) => {
+        setClosureInvoices((prev) => prev.map((invoice) => {
+            if (invoice.localId !== localId) return invoice;
+            const next = { ...invoice, [key]: value };
+            if (key === 'subtotal' || key === 'iva') {
+                next.total = String(safeNumber(next.subtotal) + safeNumber(next.iva));
+            }
+            return next;
+        }));
+    };
+
+    const updateClosureInvoiceFile = (localId, key, file) => {
+        setClosureInvoices((prev) => prev.map((invoice) => (
+            invoice.localId === localId
+                ? { ...invoice, supportFiles: { ...(invoice.supportFiles || {}), [key]: file } }
+                : invoice
+        )));
     };
 
     const updateTransfer = (bank, index, field, value) => {
@@ -302,20 +410,78 @@ function CashClosure({ data }) {
         }
     };
 
-    const saveClosure = async () => {
+    const saveClosure = async (mode = 'closed') => {
         setSaving(true);
         setMessage('');
         try {
             await ensurePeopleRecords();
             const cashierCode = cashierName ? `CAJ-${slugify(cashierName)}` : '';
-            const docId = selectedClosure?.corId
+            const docId = activeClosureDocId || (selectedClosure?.corId
                 ? `cierre_${closureDate}_${selectedClosure.corId}`
-                : `cierre_${closureDate}_${Date.now()}`;
+                : `cierre_${closureDate}_${Date.now()}`);
+            const isWaiting = mode === 'waiting';
+            const validInvoiceDrafts = closureInvoices.filter(hasInvoiceDraftContent);
+            const savedInvoices = [];
+
+            for (const invoice of validInvoiceDrafts) {
+                if (!String(invoice.invoiceNumber || '').trim()) {
+                    throw new Error('Cada factura membretada del cierre necesita numero de factura.');
+                }
+
+                const invoiceDate = invoice.date || closureDate;
+                const invoiceDocId = invoice.docId || `membretada_${slugify(invoice.invoiceNumber)}_${invoiceDate.replace(/-/g, '')}`;
+                const fiscal = buildFiscalPayload({
+                    subtotal: safeNumber(invoice.subtotal),
+                    iva: safeNumber(invoice.iva),
+                    total: safeNumber(invoice.total) || safeNumber(invoice.subtotal) + safeNumber(invoice.iva),
+                    retentionIr2: safeNumber(invoice.retentionIr2),
+                    retentionMunicipal1: safeNumber(invoice.retentionMunicipal1),
+                });
+                const existingInvoice = stampedInvoices.find((item) => item.id === invoiceDocId) || {};
+                const supportPayload = await uploadFiscalSupportFiles(
+                    invoice.supportFiles || {},
+                    'facturacion/facturas_membretadas',
+                    invoiceDocId,
+                    existingInvoice
+                );
+                const invoicePayload = {
+                    date: invoiceDate,
+                    saleDate: invoiceDate,
+                    month: getMonth(invoiceDate),
+                    numeroFactura: String(invoice.invoiceNumber || '').trim(),
+                    invoiceNumber: String(invoice.invoiceNumber || '').trim(),
+                    customerName: String(invoice.customerName || '').trim(),
+                    paymentMethod: String(invoice.paymentMethod || '').trim(),
+                    ...fiscal,
+                    source: invoice.sourceSicarInvoiceId ? 'sicar_factura' : (invoice.docId ? 'manual' : 'cierre_caja'),
+                    sourceType: 'stamped_sale_invoice',
+                    sourceSicarInvoiceId: invoice.sourceSicarInvoiceId || '',
+                    status: isWaiting ? 'en_cierre' : 'conciliada',
+                    closureStatus: isWaiting ? 'en_espera' : 'conciliada',
+                    linkedCashClosureId: docId,
+                    linkedSicarClosureId: selectedClosure?.id || '',
+                    linkedSicarCorId: selectedClosure?.corId || selectedClosure?.cor_id || null,
+                    reconciledAt: isWaiting ? null : serverTimestamp(),
+                    ...supportPayload,
+                    updatedAt: serverTimestamp(),
+                    createdAt: serverTimestamp(),
+                };
+
+                await setDoc(doc(db, 'facturas_membretadas_ventas', invoiceDocId), invoicePayload, { merge: true });
+                savedInvoices.push({
+                    localId: invoice.localId,
+                    id: invoiceDocId,
+                    docId: invoiceDocId,
+                    ...invoicePayload,
+                    total: fiscal.total,
+                    retentionTotal: fiscal.retentionTotal,
+                });
+            }
 
             const payload = {
                 date: closureDate,
                 month: getMonth(closureDate),
-                status: Math.abs(difference) > 0.01 ? 'con_diferencia' : 'cuadrado',
+                status: isWaiting ? 'en_espera' : (Math.abs(difference) > 0.01 ? 'con_diferencia' : 'cuadrado'),
                 cashierName: cashierName || '',
                 cashierCode,
                 linkedSicarClosureId: selectedClosure?.id || '',
@@ -333,12 +499,20 @@ function CashClosure({ data }) {
                 posTotals,
                 manualTotal,
                 difference,
-                stampedInvoiceIds: selectedInvoiceIds,
-                stampedInvoices: selectedInvoices.map((invoice) => ({
+                stampedInvoiceIds: savedInvoices.map((invoice) => invoice.id),
+                stampedInvoices: savedInvoices.map((invoice) => ({
                     id: invoice.id,
                     invoiceNumber: invoice.invoiceNumber,
+                    date: invoice.saleDate || invoice.date,
+                    subtotal: safeNumber(invoice.subtotal),
+                    iva: safeNumber(invoice.iva),
                     total: safeNumber(invoice.total),
                     retentionTotal: safeNumber(invoice.retentionTotal),
+                })),
+                stampedInvoiceDrafts: validInvoiceDrafts.map((invoice) => ({
+                    ...invoice,
+                    supportFiles: {},
+                    docId: invoice.docId || `membretada_${slugify(invoice.invoiceNumber)}_${(invoice.date || closureDate).replace(/-/g, '')}`,
                 })),
                 notes,
                 source: 'manual_app',
@@ -348,8 +522,9 @@ function CashClosure({ data }) {
             };
 
             await setDoc(doc(db, 'cierres_caja', docId), payload, { merge: true });
+            setActiveClosureDocId(docId);
 
-            if (cashierCode && Math.abs(difference) > 0.01) {
+            if (!isWaiting && cashierCode && Math.abs(difference) > 0.01) {
                 await setDoc(doc(db, 'diferencias_caja', `${docId}_${cashierCode}`), {
                     closureId: docId,
                     date: closureDate,
@@ -364,7 +539,7 @@ function CashClosure({ data }) {
                 }, { merge: true });
             }
 
-            setMessage('Cierre guardado con detalle completo.');
+            setMessage(isWaiting ? 'Cierre guardado en espera. Podes volver y continuar luego.' : 'Cierre guardado y facturas membretadas conciliadas.');
         } catch (error) {
             console.error(error);
             setMessage(error?.message || 'No se pudo guardar el cierre.');
@@ -381,6 +556,32 @@ function CashClosure({ data }) {
                 action={<Badge tone="blue">{sicarClosures.length} cierres</Badge>}
             >
                 <div className="max-h-[34rem] space-y-3 overflow-y-auto pr-1">
+                    {waitingClosures.length > 0 && (
+                        <div className="mb-4 rounded-3xl border border-amber-200 bg-amber-50 p-3">
+                            <div className="mb-2 flex items-center justify-between gap-2">
+                                <div className="text-xs font-black uppercase tracking-[0.22em] text-amber-700">Cierres en espera</div>
+                                <Badge tone="amber">{waitingClosures.length}</Badge>
+                            </div>
+                            <div className="space-y-2">
+                                {waitingClosures.map((closure) => (
+                                    <button
+                                        key={closure.id}
+                                        type="button"
+                                        onClick={() => loadWaitingClosure(closure)}
+                                        className="w-full rounded-2xl border border-amber-200 bg-white p-3 text-left transition hover:border-amber-400"
+                                    >
+                                        <div className="flex items-center justify-between gap-3">
+                                            <div>
+                                                <div className="text-sm font-black text-slate-950">{closure.cashierName || 'Sin cajero'}</div>
+                                                <div className="text-xs font-bold text-slate-500">{closure.date} · {closure.linkedSicarCorId ? `Corte ${closure.linkedSicarCorId}` : 'Manual'}</div>
+                                            </div>
+                                            <div className="font-mono text-sm font-black text-amber-700">{fmt(closure.manualTotal || 0)}</div>
+                                        </div>
+                                    </button>
+                                ))}
+                            </div>
+                        </div>
+                    )}
                     {sicarClosures.length === 0 ? (
                         <div className="rounded-3xl border border-dashed border-slate-300 p-8 text-center text-sm font-bold text-slate-400">
                             Aun no hay cierres sincronizados. Ejecuta el worker de facturacion para cargar SICAR.
@@ -506,6 +707,16 @@ function CashClosure({ data }) {
                 </Section>
 
                 <Section title="Facturas membretadas del cierre" eyebrow="Retenciones que reducen caja">
+                    <div className="mb-4 flex flex-col gap-3 rounded-3xl border border-slate-200 bg-slate-50/70 p-4 sm:flex-row sm:items-center sm:justify-between">
+                        <div>
+                            <div className="text-sm font-black text-slate-950">Facturas aplicadas al cierre</div>
+                            <div className="text-xs font-semibold text-slate-500">Marca una existente o crea una nueva si SICAR todavia no la cargo.</div>
+                        </div>
+                        <button type="button" onClick={addBlankClosureInvoice} className="rounded-xl bg-slate-950 px-4 py-2.5 text-xs font-black uppercase tracking-[0.16em] text-white transition hover:bg-[#e30613]">
+                            Agregar nueva
+                        </button>
+                    </div>
+
                     <div className="grid gap-3 md:grid-cols-2">
                         {stampedInvoices.length === 0 ? (
                             <div className="rounded-3xl border border-dashed border-slate-300 p-8 text-center text-sm font-bold text-slate-400 md:col-span-2">
@@ -516,11 +727,7 @@ function CashClosure({ data }) {
                                 <input
                                     type="checkbox"
                                     checked={selectedInvoiceIds.includes(invoice.id)}
-                                    onChange={(event) => {
-                                        setSelectedInvoiceIds((prev) => event.target.checked
-                                            ? [...prev, invoice.id]
-                                            : prev.filter((id) => id !== invoice.id));
-                                    }}
+                                    onChange={(event) => toggleClosureInvoice(invoice, event.target.checked)}
                                 />
                                 <div className="min-w-0 flex-1">
                                     <div className="truncate text-sm font-black text-slate-950">Factura {invoice.invoiceNumber || '-'}</div>
@@ -528,6 +735,68 @@ function CashClosure({ data }) {
                                 </div>
                                 <div className="font-mono text-sm font-black text-slate-900">{fmt(invoice.total)}</div>
                             </label>
+                        ))}
+                    </div>
+
+                    <div className="mt-4 space-y-3">
+                        {closureInvoices.length === 0 ? (
+                            <div className="rounded-3xl border border-dashed border-slate-300 bg-white p-8 text-center text-sm font-bold text-slate-400">
+                                No hay facturas aplicadas al cierre todavia.
+                            </div>
+                        ) : closureInvoices.map((invoice, index) => (
+                            <div key={invoice.localId} className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm">
+                                <div className="mb-3 flex items-center justify-between gap-3">
+                                    <div>
+                                        <div className="text-sm font-black text-slate-950">Factura aplicada #{index + 1}</div>
+                                        <div className="text-xs font-bold text-slate-500">Editable antes de guardar en espera o cerrar caja.</div>
+                                    </div>
+                                    <button type="button" onClick={() => removeClosureInvoice(invoice.localId)} className="rounded-xl border border-red-200 px-3 py-2 text-xs font-black text-red-700 transition hover:bg-red-50">
+                                        Quitar
+                                    </button>
+                                </div>
+
+                                <div className="grid gap-3 md:grid-cols-2">
+                                    <Field label="Numero de factura">
+                                        <input className={inputClass} value={invoice.invoiceNumber} onChange={(event) => updateClosureInvoice(invoice.localId, 'invoiceNumber', event.target.value)} />
+                                    </Field>
+                                    <Field label="Fecha">
+                                        <input className={inputClass} type="date" value={invoice.date} onChange={(event) => updateClosureInvoice(invoice.localId, 'date', event.target.value)} />
+                                    </Field>
+                                    <Field label="Cliente">
+                                        <input className={inputClass} value={invoice.customerName} onChange={(event) => updateClosureInvoice(invoice.localId, 'customerName', event.target.value)} placeholder="Cliente / razon social" />
+                                    </Field>
+                                    <Field label="Metodo de pago">
+                                        <input className={inputClass} value={invoice.paymentMethod} onChange={(event) => updateClosureInvoice(invoice.localId, 'paymentMethod', event.target.value)} placeholder="Transferencia, POS, efectivo..." />
+                                    </Field>
+                                    <Field label="Subtotal">
+                                        <input className={inputClass} type="number" step="0.01" min="0" value={invoice.subtotal} onChange={(event) => updateClosureInvoice(invoice.localId, 'subtotal', event.target.value)} />
+                                    </Field>
+                                    <Field label="IVA">
+                                        <input className={inputClass} type="number" step="0.01" min="0" value={invoice.iva} onChange={(event) => updateClosureInvoice(invoice.localId, 'iva', event.target.value)} />
+                                    </Field>
+                                    <Field label="Total">
+                                        <input className={inputClass} type="number" step="0.01" min="0" value={invoice.total} onChange={(event) => updateClosureInvoice(invoice.localId, 'total', event.target.value)} />
+                                    </Field>
+                                    <Field label="Retencion IR 2%">
+                                        <input className={inputClass} type="number" step="0.01" min="0" value={invoice.retentionIr2} onChange={(event) => updateClosureInvoice(invoice.localId, 'retentionIr2', event.target.value)} />
+                                    </Field>
+                                    <Field label="Retencion municipal 1%">
+                                        <input className={inputClass} type="number" step="0.01" min="0" value={invoice.retentionMunicipal1} onChange={(event) => updateClosureInvoice(invoice.localId, 'retentionMunicipal1', event.target.value)} />
+                                    </Field>
+                                </div>
+
+                                <div className="mt-4 grid gap-3 md:grid-cols-3">
+                                    <Field label="Foto factura">
+                                        <input className={inputClass} type="file" accept="image/*,application/pdf" onChange={(event) => updateClosureInvoiceFile(invoice.localId, 'invoice', event.target.files?.[0] || null)} />
+                                    </Field>
+                                    <Field label="Soporte IR 2%">
+                                        <input className={inputClass} type="file" accept="image/*,application/pdf" onChange={(event) => updateClosureInvoiceFile(invoice.localId, 'retentionIr2', event.target.files?.[0] || null)} />
+                                    </Field>
+                                    <Field label="Soporte municipal 1%">
+                                        <input className={inputClass} type="file" accept="image/*,application/pdf" onChange={(event) => updateClosureInvoiceFile(invoice.localId, 'retentionMunicipal1', event.target.files?.[0] || null)} />
+                                    </Field>
+                                </div>
+                            </div>
                         ))}
                     </div>
 
@@ -540,9 +809,14 @@ function CashClosure({ data }) {
 
                     {message && <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-3 text-sm font-bold text-slate-700">{message}</div>}
 
-                    <button type="button" onClick={saveClosure} disabled={saving} className="mt-4 w-full rounded-2xl bg-[#e30613] px-5 py-4 text-sm font-black uppercase tracking-[0.2em] text-white shadow-lg shadow-red-950/20 transition hover:bg-[#9f111a] disabled:cursor-not-allowed disabled:opacity-60">
-                        {saving ? 'Guardando cierre...' : 'Guardar cierre de caja'}
-                    </button>
+                    <div className="mt-4 grid gap-3 md:grid-cols-2">
+                        <button type="button" onClick={() => saveClosure('waiting')} disabled={saving} className="rounded-2xl border border-amber-300 bg-amber-50 px-5 py-4 text-sm font-black uppercase tracking-[0.2em] text-amber-800 transition hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-60">
+                            {saving ? 'Guardando...' : 'Guardar en espera'}
+                        </button>
+                        <button type="button" onClick={() => saveClosure('closed')} disabled={saving} className="rounded-2xl bg-[#e30613] px-5 py-4 text-sm font-black uppercase tracking-[0.2em] text-white shadow-lg shadow-red-950/20 transition hover:bg-[#9f111a] disabled:cursor-not-allowed disabled:opacity-60">
+                            {saving ? 'Cerrando...' : 'Cerrar caja y conciliar'}
+                        </button>
+                    </div>
                 </Section>
             </div>
         </div>
