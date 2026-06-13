@@ -120,6 +120,8 @@ const Field = ({ label, children, span = '' }) => (
 const inputClass = 'w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-bold text-slate-900 outline-none transition focus:border-[#e30613] focus:ring-4 focus:ring-red-100';
 
 const STAMPED_PRINT_LAYOUT_DOC = 'factura_membretada_preimpresa';
+const DEFAULT_PRINT_TEMPLATE_ID = 'principal';
+const DEFAULT_PRINT_TEMPLATE_NAME = 'Plantilla principal';
 
 const DEFAULT_STAMPED_PRINT_LAYOUT = {
     pageWidthCm: 17.8,
@@ -170,6 +172,39 @@ const mergePrintLayout = (layout = {}) => ({
     total: { ...DEFAULT_STAMPED_PRINT_LAYOUT.total, ...(layout.total || {}) },
     items: { ...DEFAULT_STAMPED_PRINT_LAYOUT.items, ...(layout.items || {}) },
 });
+
+const createPrintTemplateId = (name = '') => (
+    `plantilla_${slugify(name || 'factura')}_${Date.now()}`
+        .toLowerCase()
+        .replace(/[^a-z0-9_]+/g, '_')
+);
+
+const normalizePrintTemplate = (template = {}, fallbackIndex = 0) => ({
+    id: template.id || (fallbackIndex === 0 ? DEFAULT_PRINT_TEMPLATE_ID : createPrintTemplateId(template.name || template.nombre || `Plantilla ${fallbackIndex + 1}`)),
+    name: template.name || template.nombre || (fallbackIndex === 0 ? DEFAULT_PRINT_TEMPLATE_NAME : `Plantilla ${fallbackIndex + 1}`),
+    layout: mergePrintLayout(template.layout || template),
+});
+
+const readPrintTemplates = (config = {}) => {
+    if (Array.isArray(config.templates) && config.templates.length > 0) {
+        return config.templates.map(normalizePrintTemplate);
+    }
+
+    if (config.templates && typeof config.templates === 'object') {
+        const templates = Object.entries(config.templates).map(([id, template], index) => (
+            normalizePrintTemplate({ ...(template || {}), id }, index)
+        ));
+        if (templates.length > 0) return templates;
+    }
+
+    return [
+        normalizePrintTemplate({
+            id: DEFAULT_PRINT_TEMPLATE_ID,
+            name: DEFAULT_PRINT_TEMPLATE_NAME,
+            layout: config.layout || config,
+        }, 0),
+    ];
+};
 
 const cm = (value) => `${safeNumber(value)}cm`;
 
@@ -1162,7 +1197,19 @@ const StampedInvoicePrintSheet = ({ invoice, layout }) => {
     );
 };
 
-const StampedInvoicePrintModal = ({ invoice, layout, onLayoutChange, onSaveLayout, onClose }) => {
+const StampedInvoicePrintModal = ({
+    invoice,
+    layout,
+    templates,
+    activeTemplateId,
+    templateName,
+    onSelectTemplate,
+    onTemplateNameChange,
+    onLayoutChange,
+    onSaveLayout,
+    onSaveNewLayout,
+    onClose,
+}) => {
     if (!invoice) return null;
 
     const updateField = (fieldKey, prop, value) => {
@@ -1228,7 +1275,10 @@ const StampedInvoicePrintModal = ({ invoice, layout, onLayoutChange, onSaveLayou
                     </div>
                     <div className="flex flex-wrap gap-2">
                         <button type="button" onClick={onSaveLayout} className="rounded-2xl border border-white/20 px-4 py-2 text-xs font-black uppercase tracking-[0.16em] text-white transition hover:bg-white/10">
-                            Guardar plantilla
+                            Guardar
+                        </button>
+                        <button type="button" onClick={onSaveNewLayout} className="rounded-2xl border border-white/20 px-4 py-2 text-xs font-black uppercase tracking-[0.16em] text-white transition hover:bg-white/10">
+                            Guardar nueva
                         </button>
                         <button type="button" onClick={printInvoice} className="rounded-2xl bg-[#e30613] px-4 py-2 text-xs font-black uppercase tracking-[0.16em] text-white transition hover:bg-red-700">
                             Imprimir texto
@@ -1241,6 +1291,25 @@ const StampedInvoicePrintModal = ({ invoice, layout, onLayoutChange, onSaveLayou
 
                 <div className="grid gap-5 p-5 xl:grid-cols-[0.85fr_1.15fr]">
                     <div className="no-print space-y-4">
+                        <div className="rounded-3xl border border-slate-200 bg-white p-4">
+                            <div className="text-sm font-black text-slate-950">Plantilla de impresion</div>
+                            <div className="mt-3 grid gap-3 md:grid-cols-[1fr_1fr]">
+                                <Field label="Elegir plantilla">
+                                    <select className={inputClass} value={activeTemplateId || ''} onChange={(event) => onSelectTemplate(event.target.value)}>
+                                        {(templates || []).map((template) => (
+                                            <option key={template.id} value={template.id}>{template.name}</option>
+                                        ))}
+                                    </select>
+                                </Field>
+                                <Field label="Nombre">
+                                    <input className={inputClass} value={templateName || ''} onChange={(event) => onTemplateNameChange(event.target.value)} placeholder="Ej: Epson oficina, PDF, impresora caja..." />
+                                </Field>
+                            </div>
+                            <div className="mt-2 text-xs font-semibold text-slate-500">
+                                Podes tener varias alineaciones segun impresora o bandeja. Guardar actualiza la seleccionada; guardar nueva crea otra plantilla.
+                            </div>
+                        </div>
+
                         <div className="rounded-3xl border border-slate-200 bg-white p-4">
                             <div className="text-sm font-black text-slate-950">Ajuste general</div>
                             <div className="mt-3 grid grid-cols-2 gap-3">
@@ -1378,6 +1447,11 @@ function StampedInvoices({ data }) {
     const [supportFiles, setSupportFiles] = useState({});
     const [printTarget, setPrintTarget] = useState(null);
     const [printLayout, setPrintLayout] = useState(DEFAULT_STAMPED_PRINT_LAYOUT);
+    const [printTemplates, setPrintTemplates] = useState([
+        { id: DEFAULT_PRINT_TEMPLATE_ID, name: DEFAULT_PRINT_TEMPLATE_NAME, layout: DEFAULT_STAMPED_PRINT_LAYOUT },
+    ]);
+    const [activePrintTemplateId, setActivePrintTemplateId] = useState(DEFAULT_PRINT_TEMPLATE_ID);
+    const [printTemplateName, setPrintTemplateName] = useState(DEFAULT_PRINT_TEMPLATE_NAME);
     const [saving, setSaving] = useState(false);
     const [message, setMessage] = useState('');
 
@@ -1386,7 +1460,14 @@ function StampedInvoices({ data }) {
         getDoc(doc(db, 'configuracion', STAMPED_PRINT_LAYOUT_DOC))
             .then((snapshot) => {
                 if (!mounted || !snapshot.exists()) return;
-                setPrintLayout(mergePrintLayout(snapshot.data()?.layout || snapshot.data() || {}));
+                const config = snapshot.data() || {};
+                const templates = readPrintTemplates(config);
+                const selectedId = config.selectedTemplateId || templates[0]?.id || DEFAULT_PRINT_TEMPLATE_ID;
+                const selectedTemplate = templates.find((template) => template.id === selectedId) || templates[0];
+                setPrintTemplates(templates);
+                setActivePrintTemplateId(selectedTemplate.id);
+                setPrintTemplateName(selectedTemplate.name);
+                setPrintLayout(mergePrintLayout(selectedTemplate.layout));
             })
             .catch((error) => console.warn('No se pudo cargar plantilla de factura membretada:', error));
         return () => {
@@ -1431,12 +1512,54 @@ function StampedInvoices({ data }) {
         setMessage(`Factura SICAR ${invoice.invoiceNumber || invoice.id} cargada con ${(invoice.items || []).length} articulo(s).`);
     };
 
-    const savePrintLayout = async () => {
+    const persistPrintTemplates = async (templates, selectedTemplateId, successMessage) => {
+        const normalizedTemplates = templates.map((template, index) => normalizePrintTemplate(template, index));
         await setDoc(doc(db, 'configuracion', STAMPED_PRINT_LAYOUT_DOC), {
-            layout: mergePrintLayout(printLayout),
+            templates: normalizedTemplates,
+            selectedTemplateId,
+            layout: normalizedTemplates.find((template) => template.id === selectedTemplateId)?.layout || normalizedTemplates[0]?.layout || mergePrintLayout(printLayout),
             updatedAt: serverTimestamp(),
         }, { merge: true });
-        setMessage('Plantilla de impresion guardada. Las proximas facturas usaran esta alineacion.');
+        setPrintTemplates(normalizedTemplates);
+        setActivePrintTemplateId(selectedTemplateId);
+        const selected = normalizedTemplates.find((template) => template.id === selectedTemplateId) || normalizedTemplates[0];
+        setPrintTemplateName(selected?.name || DEFAULT_PRINT_TEMPLATE_NAME);
+        setPrintLayout(mergePrintLayout(selected?.layout || printLayout));
+        setMessage(successMessage);
+    };
+
+    const selectPrintTemplate = (templateId) => {
+        const selected = printTemplates.find((template) => template.id === templateId);
+        if (!selected) return;
+        setActivePrintTemplateId(selected.id);
+        setPrintTemplateName(selected.name);
+        setPrintLayout(mergePrintLayout(selected.layout));
+    };
+
+    const savePrintLayout = async () => {
+        const name = String(printTemplateName || '').trim() || DEFAULT_PRINT_TEMPLATE_NAME;
+        const templateId = activePrintTemplateId || DEFAULT_PRINT_TEMPLATE_ID;
+        const nextTemplates = printTemplates.map((template) => (
+            template.id === templateId
+                ? { ...template, name, layout: mergePrintLayout(printLayout) }
+                : template
+        ));
+
+        if (!nextTemplates.some((template) => template.id === templateId)) {
+            nextTemplates.push({ id: templateId, name, layout: mergePrintLayout(printLayout) });
+        }
+
+        await persistPrintTemplates(nextTemplates, templateId, `Plantilla "${name}" guardada.`);
+    };
+
+    const saveNewPrintLayout = async () => {
+        const name = String(printTemplateName || '').trim() || `Plantilla ${printTemplates.length + 1}`;
+        const templateId = createPrintTemplateId(name);
+        const nextTemplates = [
+            ...printTemplates,
+            { id: templateId, name, layout: mergePrintLayout(printLayout) },
+        ];
+        await persistPrintTemplates(nextTemplates, templateId, `Nueva plantilla "${name}" guardada.`);
     };
 
     const upsertClientRecord = async (name, source = 'factura_membretada') => {
@@ -1679,8 +1802,14 @@ function StampedInvoices({ data }) {
         <StampedInvoicePrintModal
             invoice={printTarget}
             layout={printLayout}
+            templates={printTemplates}
+            activeTemplateId={activePrintTemplateId}
+            templateName={printTemplateName}
+            onSelectTemplate={selectPrintTemplate}
+            onTemplateNameChange={setPrintTemplateName}
             onLayoutChange={setPrintLayout}
             onSaveLayout={savePrintLayout}
+            onSaveNewLayout={saveNewPrintLayout}
             onClose={() => setPrintTarget(null)}
         />
         </>
