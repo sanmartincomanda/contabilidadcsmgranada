@@ -2186,9 +2186,14 @@ const StampedInvoiceDetailModal = ({
     onClose,
     onPrint,
     onPaymentMethodChange,
+    supportUploadFiles = {},
+    onSupportFileChange,
+    onSupportUpload,
+    supportSaving = false,
 }) => {
     if (!invoice) return null;
     const supportFiles = getSupportFiles(invoice);
+    const hasPendingSupportFiles = Object.values(supportUploadFiles || {}).some(Boolean);
 
     return (
         <div className="fixed inset-0 z-[70] flex items-start justify-center overflow-y-auto bg-slate-950/70 p-4 backdrop-blur-sm">
@@ -2237,10 +2242,49 @@ const StampedInvoiceDetailModal = ({
                             <div className="mb-3 flex items-center justify-between gap-3">
                                 <div>
                                     <div className="text-sm font-black text-slate-950">Soportes</div>
-                                    <div className="text-xs font-semibold text-slate-500">Factura y retenciones asociadas.</div>
+                                    <div className="text-xs font-semibold text-slate-500">Factura y retenciones asociadas. Podes subir o reemplazar soportes desde aqui.</div>
                                 </div>
                                 <Badge tone={supportFiles.length ? 'green' : 'slate'}>{supportFiles.length}</Badge>
                             </div>
+
+                            <div className="mb-4 rounded-3xl border border-dashed border-red-200 bg-red-50/40 p-4">
+                                <div className="mb-3 text-[10px] font-black uppercase tracking-[0.24em] text-[#9f111a]">Adjuntar soportes</div>
+                                <div className="grid gap-3">
+                                    <Field label="Foto factura">
+                                        <input
+                                            className={inputClass}
+                                            type="file"
+                                            accept="image/*,application/pdf"
+                                            onChange={(event) => onSupportFileChange('invoice', event.target.files?.[0] || null)}
+                                        />
+                                    </Field>
+                                    <Field label="Soporte retencion IR 2%">
+                                        <input
+                                            className={inputClass}
+                                            type="file"
+                                            accept="image/*,application/pdf"
+                                            onChange={(event) => onSupportFileChange('retentionIr2', event.target.files?.[0] || null)}
+                                        />
+                                    </Field>
+                                    <Field label="Soporte retencion municipal 1%">
+                                        <input
+                                            className={inputClass}
+                                            type="file"
+                                            accept="image/*,application/pdf"
+                                            onChange={(event) => onSupportFileChange('retentionMunicipal1', event.target.files?.[0] || null)}
+                                        />
+                                    </Field>
+                                </div>
+                                <button
+                                    type="button"
+                                    onClick={onSupportUpload}
+                                    disabled={supportSaving || !hasPendingSupportFiles}
+                                    className="mt-4 w-full rounded-2xl bg-[#e30613] px-4 py-3 text-xs font-black uppercase tracking-[0.16em] text-white shadow-lg shadow-red-950/10 transition hover:bg-[#9f111a] disabled:cursor-not-allowed disabled:opacity-50"
+                                >
+                                    {supportSaving ? 'Subiendo soportes...' : 'Guardar soportes'}
+                                </button>
+                            </div>
+
                             {supportFiles.length === 0 ? (
                                 <div className="rounded-2xl border border-dashed border-slate-300 p-5 text-center text-sm font-bold text-slate-400">
                                     No hay soportes adjuntos.
@@ -2298,6 +2342,8 @@ function StampedInvoiceHistory({ data }) {
     const [message, setMessage] = useState('');
     const [detailTarget, setDetailTarget] = useState(null);
     const [printTarget, setPrintTarget] = useState(null);
+    const [supportUploadFiles, setSupportUploadFiles] = useState({});
+    const [supportSaving, setSupportSaving] = useState(false);
     const {
         printLayout,
         printTemplates,
@@ -2378,6 +2424,56 @@ function StampedInvoiceHistory({ data }) {
         } catch (error) {
             console.error(error);
             setMessage(error?.message || 'No se pudo actualizar el metodo de pago.');
+        }
+    };
+
+    const openInvoiceDetail = (invoice) => {
+        setDetailTarget(invoice);
+        setSupportUploadFiles({});
+    };
+
+    const updateSupportUploadFile = (type, file) => {
+        setSupportUploadFiles((current) => ({ ...current, [type]: file }));
+    };
+
+    const uploadDetailSupports = async () => {
+        if (!detailTarget) return;
+        const invoiceId = detailTarget.id || detailTarget.docId;
+        if (!invoiceId) {
+            setMessage('No se pudo identificar la factura para guardar soportes.');
+            return;
+        }
+        if (!Object.values(supportUploadFiles).some(Boolean)) {
+            setMessage('Selecciona al menos una foto o PDF para guardar.');
+            return;
+        }
+
+        setSupportSaving(true);
+        try {
+            const supportPayload = await uploadFiscalSupportFiles(
+                supportUploadFiles,
+                'facturacion/facturas_membretadas',
+                invoiceId,
+                detailTarget
+            );
+
+            await setDoc(doc(db, 'facturas_membretadas_ventas', invoiceId), {
+                ...supportPayload,
+                updatedAt: serverTimestamp(),
+            }, { merge: true });
+
+            setDetailTarget((current) => (
+                current && (current.id || current.docId) === invoiceId
+                    ? { ...current, ...supportPayload }
+                    : current
+            ));
+            setSupportUploadFiles({});
+            setMessage(`Soportes actualizados para factura ${detailTarget.invoiceNumber || detailTarget.numeroFactura || invoiceId}.`);
+        } catch (error) {
+            console.error(error);
+            setMessage(error?.message || 'No se pudieron subir los soportes.');
+        } finally {
+            setSupportSaving(false);
         }
     };
 
@@ -2481,7 +2577,7 @@ function StampedInvoiceHistory({ data }) {
                                     <div className="flex flex-wrap justify-start gap-2 xl:justify-end">
                                         <button
                                             type="button"
-                                            onClick={() => setDetailTarget(invoice)}
+                                            onClick={() => openInvoiceDetail(invoice)}
                                             className="rounded-xl bg-slate-950 px-4 py-3 text-xs font-black uppercase tracking-[0.14em] text-white transition hover:bg-slate-800"
                                         >
                                             Ver detalle
@@ -2514,9 +2610,16 @@ function StampedInvoiceHistory({ data }) {
 
             <StampedInvoiceDetailModal
                 invoice={detailTarget}
-                onClose={() => setDetailTarget(null)}
+                onClose={() => {
+                    setDetailTarget(null);
+                    setSupportUploadFiles({});
+                }}
                 onPrint={setPrintTarget}
                 onPaymentMethodChange={updatePaymentMethod}
+                supportUploadFiles={supportUploadFiles}
+                onSupportFileChange={updateSupportUploadFile}
+                onSupportUpload={uploadDetailSupports}
+                supportSaving={supportSaving}
             />
             <StampedInvoicePrintModal
                 invoice={printTarget}
