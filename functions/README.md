@@ -529,7 +529,8 @@ Esto evita costos altos en Firebase:
 - MySQL se consulta localmente en `127.0.0.1`.
 - Firebase no recibe escrituras si no hay facturas nuevas.
 - El estado local se guarda en `C:\SICAR\state\sicar-stamped-invoice-watch.json`.
-- La primera vez no sube historicos; toma el `MAX(fac_id)` actual y desde ahi escucha nuevas facturas.
+- Al iniciar verifica de forma idempotente los ultimos 3 dias para recuperar facturas recientes que se hayan creado antes de encender el watcher.
+- Luego toma el `MAX(fac_id)` actual y desde ahi escucha nuevas facturas.
 
 Prueba manual una sola vez:
 
@@ -550,6 +551,14 @@ Registrar tarea oculta al iniciar sesion:
 ```powershell
 cd functions
 .\scripts\registerSicarStampedInvoiceWatcherTask.ps1 -IntervalMs 1000
+Start-ScheduledTask -TaskName "SICAR Stamped Invoice Watcher"
+```
+
+Si quieres cambiar cuantos dias recupera al iniciar:
+
+```powershell
+cd functions
+.\scripts\registerSicarStampedInvoiceWatcherTask.ps1 -IntervalMs 1000 -StartupBackfillDays 7
 Start-ScheduledTask -TaskName "SICAR Stamped Invoice Watcher"
 ```
 
