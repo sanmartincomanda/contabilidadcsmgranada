@@ -1,5 +1,5 @@
-import React, { useMemo, useState } from 'react';
-import { doc, serverTimestamp, setDoc } from 'firebase/firestore';
+import React, { useEffect, useMemo, useState } from 'react';
+import { doc, getDoc, serverTimestamp, setDoc } from 'firebase/firestore';
 import { db } from '../firebase';
 import { APP_BRAND_NAME, fmt } from '../constants';
 import { buildFiscalPayload, uploadFiscalSupportFiles } from '../services/fiscalUtils';
@@ -118,6 +118,73 @@ const Field = ({ label, children, span = '' }) => (
 );
 
 const inputClass = 'w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-bold text-slate-900 outline-none transition focus:border-[#e30613] focus:ring-4 focus:ring-red-100';
+
+const STAMPED_PRINT_LAYOUT_DOC = 'factura_membretada_preimpresa';
+
+const DEFAULT_STAMPED_PRINT_LAYOUT = {
+    pageWidthCm: 17.8,
+    pageHeightCm: 22.3,
+    fontSizePt: 9,
+    itemFontSizePt: 8,
+    date: { x: 14.45, y: 4.32, width: 2.8 },
+    customerName: { x: 3.05, y: 4.32, width: 9.7 },
+    customerAddress: { x: 3.05, y: 5.12, width: 9.7 },
+    customerRfc: { x: 14.15, y: 5.12, width: 2.9 },
+    items: {
+        quantityX: 0.8,
+        descriptionX: 3.15,
+        unitPriceX: 13.55,
+        totalX: 15.45,
+        y: 6.58,
+        rowHeight: 0.47,
+        quantityWidth: 1.6,
+        descriptionWidth: 8.9,
+        unitPriceWidth: 1.45,
+        totalWidth: 1.5,
+        maxRows: 15,
+    },
+    subtotal: { x: 15.35, y: 15.28, width: 1.7 },
+    iva: { x: 15.35, y: 16.28, width: 1.7 },
+    total: { x: 15.35, y: 17.28, width: 1.7 },
+};
+
+const PRINT_LAYOUT_FIELDS = [
+    { key: 'date', label: 'Fecha' },
+    { key: 'customerName', label: 'Cliente' },
+    { key: 'customerAddress', label: 'Direccion' },
+    { key: 'customerRfc', label: 'R.F.C / RUC' },
+    { key: 'subtotal', label: 'Subtotal' },
+    { key: 'iva', label: 'IVA' },
+    { key: 'total', label: 'Total' },
+];
+
+const mergePrintLayout = (layout = {}) => ({
+    ...DEFAULT_STAMPED_PRINT_LAYOUT,
+    ...layout,
+    date: { ...DEFAULT_STAMPED_PRINT_LAYOUT.date, ...(layout.date || {}) },
+    customerName: { ...DEFAULT_STAMPED_PRINT_LAYOUT.customerName, ...(layout.customerName || {}) },
+    customerAddress: { ...DEFAULT_STAMPED_PRINT_LAYOUT.customerAddress, ...(layout.customerAddress || {}) },
+    customerRfc: { ...DEFAULT_STAMPED_PRINT_LAYOUT.customerRfc, ...(layout.customerRfc || {}) },
+    subtotal: { ...DEFAULT_STAMPED_PRINT_LAYOUT.subtotal, ...(layout.subtotal || {}) },
+    iva: { ...DEFAULT_STAMPED_PRINT_LAYOUT.iva, ...(layout.iva || {}) },
+    total: { ...DEFAULT_STAMPED_PRINT_LAYOUT.total, ...(layout.total || {}) },
+    items: { ...DEFAULT_STAMPED_PRINT_LAYOUT.items, ...(layout.items || {}) },
+});
+
+const cm = (value) => `${safeNumber(value)}cm`;
+
+const formatInvoiceMoney = (value) => (
+    new Intl.NumberFormat('es-NI', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(safeNumber(value))
+);
+
+const formatQuantity = (value) => (
+    new Intl.NumberFormat('es-NI', { minimumFractionDigits: 0, maximumFractionDigits: 2 }).format(Number(value || 0))
+);
+
+const formatInvoiceDate = (date = '') => {
+    const [year, month, day] = String(date || '').substring(0, 10).split('-');
+    return [day, month, year].filter(Boolean).join(' / ');
+};
 
 const Section = ({ title, eyebrow, action, children }) => (
     <section className="overflow-hidden rounded-[1.8rem] border border-slate-200 bg-white shadow-xl shadow-slate-900/5">
@@ -900,6 +967,238 @@ function CashClosure({ data }) {
     );
 }
 
+const InvoiceItemsTable = ({ items = [] }) => (
+    <div className="overflow-hidden rounded-3xl border border-slate-200 bg-white">
+        <div className="grid grid-cols-[0.6fr_2fr_0.8fr_0.8fr] gap-3 border-b border-slate-200 bg-slate-50 px-4 py-3 text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">
+            <span>Cant.</span>
+            <span>Producto</span>
+            <span className="text-right">Precio s/IVA</span>
+            <span className="text-right">Total s/IVA</span>
+        </div>
+        {items.length === 0 ? (
+            <div className="p-5 text-center text-sm font-bold text-slate-400">
+                Esta factura todavia no tiene articulos sincronizados desde SICAR.
+            </div>
+        ) : items.map((item, index) => (
+            <div key={`${item.saleId || 'line'}-${item.articleId || index}-${index}`} className="grid grid-cols-[0.6fr_2fr_0.8fr_0.8fr] gap-3 border-b border-slate-100 px-4 py-3 text-sm last:border-0">
+                <span className="font-mono font-black text-slate-800">{formatQuantity(item.quantity)}</span>
+                <span className="min-w-0 font-bold text-slate-700">
+                    <span className="block truncate">{item.description || item.descripcion || '-'}</span>
+                    {item.code && <span className="block text-[10px] font-black uppercase tracking-[0.18em] text-slate-400">{item.code}</span>}
+                </span>
+                <span className="text-right font-mono font-black text-slate-800">{formatInvoiceMoney(item.unitPriceWithoutTax ?? item.precioSin)}</span>
+                <span className="text-right font-mono font-black text-slate-950">{formatInvoiceMoney(item.totalWithoutTax ?? item.importeSin)}</span>
+            </div>
+        ))}
+    </div>
+);
+
+const PrintText = ({ field, layout, children, align = 'left', mono = false, className = '' }) => (
+    <div
+        className={`absolute leading-tight text-slate-950 ${mono ? 'font-mono' : 'font-sans'} ${className}`}
+        style={{
+            left: cm(field.x),
+            top: cm(field.y),
+            width: cm(field.width || 2),
+            fontSize: `${safeNumber(layout.fontSizePt) || 9}pt`,
+            fontWeight: 700,
+            textAlign: align,
+            whiteSpace: 'nowrap',
+            overflow: 'hidden',
+        }}
+    >
+        {children}
+    </div>
+);
+
+const StampedInvoicePrintSheet = ({ invoice, layout }) => {
+    const itemsLayout = layout.items || DEFAULT_STAMPED_PRINT_LAYOUT.items;
+    const items = (invoice?.items || []).slice(0, Number(itemsLayout.maxRows || 15));
+
+    return (
+        <div
+            className="stamped-invoice-print-sheet relative mx-auto overflow-hidden bg-white shadow-2xl shadow-slate-950/20 ring-1 ring-slate-300"
+            style={{ width: cm(layout.pageWidthCm), height: cm(layout.pageHeightCm) }}
+        >
+            <div className="stamped-invoice-screen-guide absolute inset-0 bg-[linear-gradient(rgba(15,23,42,0.05)_1px,transparent_1px),linear-gradient(90deg,rgba(15,23,42,0.05)_1px,transparent_1px)] bg-[size:0.5cm_0.5cm]" />
+            <div className="stamped-invoice-screen-guide absolute left-[0.45cm] top-[6.1cm] h-[7.9cm] w-[16.9cm] rounded-sm border border-dashed border-red-300" />
+
+            <PrintText field={layout.customerName} layout={layout}>{invoice.customerName || invoice.cliente || ''}</PrintText>
+            <PrintText field={layout.customerAddress} layout={layout}>{invoice.customerAddress || invoice.address || ''}</PrintText>
+            <PrintText field={layout.customerRfc} layout={layout}>{invoice.customerRfc || invoice.rfc || ''}</PrintText>
+            <PrintText field={layout.date} layout={layout}>{formatInvoiceDate(invoice.date || invoice.saleDate)}</PrintText>
+
+            {items.map((item, index) => {
+                const y = safeNumber(itemsLayout.y) + index * safeNumber(itemsLayout.rowHeight || 0.47);
+                return (
+                    <React.Fragment key={`${item.saleId || 'item'}-${item.articleId || index}-${index}`}>
+                        <PrintText field={{ x: itemsLayout.quantityX, y, width: itemsLayout.quantityWidth }} layout={{ ...layout, fontSizePt: layout.itemFontSizePt }} align="center" mono>
+                            {formatQuantity(item.quantity)}
+                        </PrintText>
+                        <PrintText field={{ x: itemsLayout.descriptionX, y, width: itemsLayout.descriptionWidth }} layout={{ ...layout, fontSizePt: layout.itemFontSizePt }}>
+                            {item.description || item.descripcion || ''}
+                        </PrintText>
+                        <PrintText field={{ x: itemsLayout.unitPriceX, y, width: itemsLayout.unitPriceWidth }} layout={{ ...layout, fontSizePt: layout.itemFontSizePt }} align="right" mono>
+                            {formatInvoiceMoney(item.unitPriceWithoutTax ?? item.precioSin)}
+                        </PrintText>
+                        <PrintText field={{ x: itemsLayout.totalX, y, width: itemsLayout.totalWidth }} layout={{ ...layout, fontSizePt: layout.itemFontSizePt }} align="right" mono>
+                            {formatInvoiceMoney(item.totalWithoutTax ?? item.importeSin)}
+                        </PrintText>
+                    </React.Fragment>
+                );
+            })}
+
+            <PrintText field={layout.subtotal} layout={layout} align="right" mono>{formatInvoiceMoney(invoice.subtotal)}</PrintText>
+            <PrintText field={layout.iva} layout={layout} align="right" mono>{formatInvoiceMoney(invoice.iva)}</PrintText>
+            <PrintText field={layout.total} layout={layout} align="right" mono>{formatInvoiceMoney(invoice.total)}</PrintText>
+        </div>
+    );
+};
+
+const StampedInvoicePrintModal = ({ invoice, layout, onLayoutChange, onSaveLayout, onClose }) => {
+    if (!invoice) return null;
+
+    const updateField = (fieldKey, prop, value) => {
+        onLayoutChange(mergePrintLayout({
+            ...layout,
+            [fieldKey]: {
+                ...(layout[fieldKey] || {}),
+                [prop]: Number(value),
+            },
+        }));
+    };
+
+    const updateItems = (prop, value) => {
+        onLayoutChange(mergePrintLayout({
+            ...layout,
+            items: {
+                ...(layout.items || {}),
+                [prop]: Number(value),
+            },
+        }));
+    };
+
+    const printInvoice = () => {
+        document.body.classList.add('print-stamped-invoice-overlay');
+        const cleanup = () => document.body.classList.remove('print-stamped-invoice-overlay');
+        setTimeout(() => {
+            window.print();
+            setTimeout(cleanup, 500);
+        }, 80);
+    };
+
+    return (
+        <div className="fixed inset-0 z-[80] flex items-start justify-center overflow-y-auto bg-slate-950/70 p-4 backdrop-blur-sm">
+            <div className="w-full max-w-7xl rounded-[2rem] border border-white/10 bg-slate-50 shadow-2xl">
+                <div className="no-print flex flex-col gap-3 border-b border-slate-200 bg-slate-950 px-5 py-4 text-white sm:flex-row sm:items-center sm:justify-between">
+                    <div>
+                        <div className="text-[10px] font-black uppercase tracking-[0.28em] text-red-300">Formato preimpreso 17.8 x 22.3 cm</div>
+                        <h3 className="text-xl font-black">Imprimir factura {invoice.invoiceNumber || invoice.numeroFactura || '-'}</h3>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                        <button type="button" onClick={onSaveLayout} className="rounded-2xl border border-white/20 px-4 py-2 text-xs font-black uppercase tracking-[0.16em] text-white transition hover:bg-white/10">
+                            Guardar plantilla
+                        </button>
+                        <button type="button" onClick={printInvoice} className="rounded-2xl bg-[#e30613] px-4 py-2 text-xs font-black uppercase tracking-[0.16em] text-white transition hover:bg-red-700">
+                            Imprimir texto
+                        </button>
+                        <button type="button" onClick={onClose} className="rounded-2xl bg-white px-4 py-2 text-xs font-black uppercase tracking-[0.16em] text-slate-950 transition hover:bg-slate-200">
+                            Cerrar
+                        </button>
+                    </div>
+                </div>
+
+                <div className="grid gap-5 p-5 xl:grid-cols-[0.85fr_1.15fr]">
+                    <div className="no-print space-y-4">
+                        <div className="rounded-3xl border border-slate-200 bg-white p-4">
+                            <div className="text-sm font-black text-slate-950">Ajuste general</div>
+                            <div className="mt-3 grid grid-cols-2 gap-3">
+                                <Field label="Fuente datos">
+                                    <input className={inputClass} type="number" step="0.5" value={layout.fontSizePt} onChange={(event) => onLayoutChange({ ...layout, fontSizePt: Number(event.target.value) })} />
+                                </Field>
+                                <Field label="Fuente articulos">
+                                    <input className={inputClass} type="number" step="0.5" value={layout.itemFontSizePt} onChange={(event) => onLayoutChange({ ...layout, itemFontSizePt: Number(event.target.value) })} />
+                                </Field>
+                            </div>
+                        </div>
+
+                        <div className="max-h-[46rem] space-y-3 overflow-y-auto pr-1">
+                            {PRINT_LAYOUT_FIELDS.map((field) => (
+                                <div key={field.key} className="rounded-3xl border border-slate-200 bg-white p-4">
+                                    <div className="mb-3 text-xs font-black uppercase tracking-[0.2em] text-slate-500">{field.label}</div>
+                                    <div className="grid grid-cols-3 gap-2">
+                                        <Field label="X cm">
+                                            <input className={inputClass} type="number" step="0.05" value={layout[field.key]?.x || 0} onChange={(event) => updateField(field.key, 'x', event.target.value)} />
+                                        </Field>
+                                        <Field label="Y cm">
+                                            <input className={inputClass} type="number" step="0.05" value={layout[field.key]?.y || 0} onChange={(event) => updateField(field.key, 'y', event.target.value)} />
+                                        </Field>
+                                        <Field label="Ancho">
+                                            <input className={inputClass} type="number" step="0.05" value={layout[field.key]?.width || 2} onChange={(event) => updateField(field.key, 'width', event.target.value)} />
+                                        </Field>
+                                    </div>
+                                </div>
+                            ))}
+
+                            <div className="rounded-3xl border border-slate-200 bg-white p-4">
+                                <div className="mb-3 text-xs font-black uppercase tracking-[0.2em] text-slate-500">Renglones de articulos</div>
+                                <div className="grid grid-cols-2 gap-2">
+                                    {[
+                                        ['quantityX', 'X cantidad'],
+                                        ['descriptionX', 'X descripcion'],
+                                        ['unitPriceX', 'X precio'],
+                                        ['totalX', 'X total'],
+                                        ['y', 'Y inicial'],
+                                        ['rowHeight', 'Alto renglon'],
+                                        ['maxRows', 'Max renglones'],
+                                    ].map(([key, label]) => (
+                                        <Field key={key} label={label}>
+                                            <input className={inputClass} type="number" step={key === 'maxRows' ? '1' : '0.05'} value={layout.items?.[key] || 0} onChange={(event) => updateItems(key, event.target.value)} />
+                                        </Field>
+                                    ))}
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div className="stamped-invoice-print-area overflow-auto rounded-3xl border border-slate-200 bg-slate-100 p-4">
+                        <StampedInvoicePrintSheet invoice={invoice} layout={layout} />
+                    </div>
+                </div>
+
+                <style>{`
+                    @media print {
+                        @page { size: 17.8cm 22.3cm; margin: 0; }
+                        body.print-stamped-invoice-overlay * { visibility: hidden !important; }
+                        body.print-stamped-invoice-overlay .stamped-invoice-print-area,
+                        body.print-stamped-invoice-overlay .stamped-invoice-print-area * { visibility: visible !important; }
+                        body.print-stamped-invoice-overlay .stamped-invoice-print-area {
+                            position: absolute !important;
+                            inset: 0 auto auto 0 !important;
+                            width: 17.8cm !important;
+                            height: 22.3cm !important;
+                            overflow: hidden !important;
+                            border: 0 !important;
+                            border-radius: 0 !important;
+                            background: transparent !important;
+                            padding: 0 !important;
+                        }
+                        body.print-stamped-invoice-overlay .stamped-invoice-print-sheet {
+                            width: 17.8cm !important;
+                            height: 22.3cm !important;
+                            margin: 0 !important;
+                            box-shadow: none !important;
+                            border: 0 !important;
+                            background: transparent !important;
+                        }
+                        body.print-stamped-invoice-overlay .stamped-invoice-screen-guide { display: none !important; }
+                    }
+                `}</style>
+            </div>
+        </div>
+    );
+};
+
 function StampedInvoices({ data }) {
     const sicarInvoices = useMemo(() => (
         [...(data.sicar_facturas_membretadas || [])]
@@ -907,13 +1206,19 @@ function StampedInvoices({ data }) {
                 ...item,
                 date: item.date || getRecordDate(item.fecha || item.invoiceDate),
                 invoiceNumber: item.numeroFactura || item.invoiceNumber || item.folio || '',
+                items: item.items || [],
             }))
             .sort((a, b) => String(b.date).localeCompare(String(a.date)))
     ), [data.sicar_facturas_membretadas]);
 
     const savedInvoices = useMemo(() => (
         [...(data.facturas_membretadas_ventas || [])]
-            .map((item) => ({ ...item, date: item.saleDate || item.date || '', invoiceNumber: item.numeroFactura || item.invoiceNumber || '' }))
+            .map((item) => ({
+                ...item,
+                date: item.saleDate || item.date || '',
+                invoiceNumber: item.numeroFactura || item.invoiceNumber || '',
+                items: item.items || [],
+            }))
             .sort((a, b) => String(b.date).localeCompare(String(a.date)))
     ), [data.facturas_membretadas_ventas]);
 
@@ -928,6 +1233,8 @@ function StampedInvoices({ data }) {
         date: todayString(),
         invoiceNumber: '',
         customerName: '',
+        customerAddress: '',
+        customerRfc: '',
         subtotal: '',
         iva: '',
         total: '',
@@ -935,10 +1242,26 @@ function StampedInvoices({ data }) {
         retentionMunicipal1: '',
         paymentMethod: '',
         sourceSicarInvoiceId: '',
+        items: [],
     });
     const [supportFiles, setSupportFiles] = useState({});
+    const [printTarget, setPrintTarget] = useState(null);
+    const [printLayout, setPrintLayout] = useState(DEFAULT_STAMPED_PRINT_LAYOUT);
     const [saving, setSaving] = useState(false);
     const [message, setMessage] = useState('');
+
+    useEffect(() => {
+        let mounted = true;
+        getDoc(doc(db, 'configuracion', STAMPED_PRINT_LAYOUT_DOC))
+            .then((snapshot) => {
+                if (!mounted || !snapshot.exists()) return;
+                setPrintLayout(mergePrintLayout(snapshot.data()?.layout || snapshot.data() || {}));
+            })
+            .catch((error) => console.warn('No se pudo cargar plantilla de factura membretada:', error));
+        return () => {
+            mounted = false;
+        };
+    }, []);
 
     const fiscal = buildFiscalPayload({
         subtotal: safeNumber(form.subtotal),
@@ -963,6 +1286,8 @@ function StampedInvoices({ data }) {
             date: invoice.date || todayString(),
             invoiceNumber: invoice.invoiceNumber || '',
             customerName: invoice.customerName || invoice.cliente || '',
+            customerAddress: invoice.customerAddress || invoice.address || '',
+            customerRfc: invoice.customerRfc || invoice.rfc || '',
             subtotal: String(safeNumber(invoice.subtotal)),
             iva: String(safeNumber(invoice.iva)),
             total: String(safeNumber(invoice.total)),
@@ -970,8 +1295,17 @@ function StampedInvoices({ data }) {
             retentionMunicipal1: '',
             paymentMethod: invoice.paymentMethod || '',
             sourceSicarInvoiceId: invoice.id || '',
+            items: invoice.items || [],
         });
-        setMessage(`Factura SICAR ${invoice.invoiceNumber || invoice.id} cargada para completar retenciones.`);
+        setMessage(`Factura SICAR ${invoice.invoiceNumber || invoice.id} cargada con ${(invoice.items || []).length} articulo(s).`);
+    };
+
+    const savePrintLayout = async () => {
+        await setDoc(doc(db, 'configuracion', STAMPED_PRINT_LAYOUT_DOC), {
+            layout: mergePrintLayout(printLayout),
+            updatedAt: serverTimestamp(),
+        }, { merge: true });
+        setMessage('Plantilla de impresion guardada. Las proximas facturas usaran esta alineacion.');
     };
 
     const upsertClientRecord = async (name, source = 'factura_membretada') => {
@@ -1029,7 +1363,10 @@ function StampedInvoices({ data }) {
                 numeroFactura: form.invoiceNumber.trim(),
                 invoiceNumber: form.invoiceNumber.trim(),
                 customerName: form.customerName.trim(),
+                customerAddress: form.customerAddress.trim(),
+                customerRfc: form.customerRfc.trim(),
                 paymentMethod: form.paymentMethod.trim(),
+                items: form.items || [],
                 ...fiscal,
                 source: form.sourceSicarInvoiceId ? 'sicar_factura' : 'manual',
                 sourceType: 'stamped_sale_invoice',
@@ -1046,6 +1383,8 @@ function StampedInvoices({ data }) {
                 date: todayString(),
                 invoiceNumber: '',
                 customerName: '',
+                customerAddress: '',
+                customerRfc: '',
                 subtotal: '',
                 iva: '',
                 total: '',
@@ -1053,6 +1392,7 @@ function StampedInvoices({ data }) {
                 retentionMunicipal1: '',
                 paymentMethod: '',
                 sourceSicarInvoiceId: '',
+                items: [],
             });
         } catch (error) {
             console.error(error);
@@ -1063,6 +1403,7 @@ function StampedInvoices({ data }) {
     };
 
     return (
+        <>
         <div className="grid gap-5 xl:grid-cols-[1fr_0.9fr]">
             <Section
                 title="Nueva factura membretada"
@@ -1091,6 +1432,12 @@ function StampedInvoices({ data }) {
                                     Agregar cliente
                                 </button>
                             )}
+                        </Field>
+                        <Field label="Direccion cliente" span="md:col-span-2">
+                            <input className={inputClass} value={form.customerAddress} onChange={(event) => update('customerAddress', event.target.value)} placeholder="Direccion fiscal / direccion de entrega" />
+                        </Field>
+                        <Field label="R.F.C / RUC">
+                            <input className={inputClass} value={form.customerRfc} onChange={(event) => update('customerRfc', event.target.value)} placeholder="RUC / RFC del cliente" />
                         </Field>
                         <Field label="Metodo de pago">
                             <input className={inputClass} value={form.paymentMethod} onChange={(event) => update('paymentMethod', event.target.value)} placeholder="Transferencia, POS, efectivo..." />
@@ -1121,6 +1468,17 @@ function StampedInvoices({ data }) {
                         </Field>
                     </div>
 
+                    <div className="rounded-[1.8rem] border border-slate-200 bg-slate-50/70 p-4">
+                        <div className="mb-3 flex items-center justify-between gap-3">
+                            <div>
+                                <div className="text-sm font-black text-slate-950">Detalle de articulos SICAR</div>
+                                <div className="text-xs font-semibold text-slate-500">Se imprimen cantidad, producto, precio sin IVA y total sin IVA.</div>
+                            </div>
+                            <Badge tone={form.items?.length ? 'green' : 'slate'}>{form.items?.length || 0} lineas</Badge>
+                        </div>
+                        <InvoiceItemsTable items={form.items || []} />
+                    </div>
+
                     <div className="grid gap-3 md:grid-cols-4">
                         <SummaryCard label="Subtotal" value={fmt(fiscal.subtotal)} />
                         <SummaryCard label="IVA" value={fmt(fiscal.iva)} tone="blue" />
@@ -1148,7 +1506,7 @@ function StampedInvoices({ data }) {
                                 <div className="flex items-center justify-between gap-3">
                                     <div className="min-w-0">
                                         <div className="truncate text-sm font-black text-slate-950">Factura {invoice.invoiceNumber || '-'}</div>
-                                        <div className="text-xs font-bold text-slate-500">{invoice.date} · {invoice.customerName || invoice.cliente || 'Sin cliente'}</div>
+                                        <div className="text-xs font-bold text-slate-500">{invoice.date} · {invoice.customerName || invoice.cliente || 'Sin cliente'} · {(invoice.items || []).length} articulos</div>
                                     </div>
                                     <div className="font-mono text-sm font-black text-slate-900">{fmt(invoice.total)}</div>
                                 </div>
@@ -1168,9 +1526,18 @@ function StampedInvoices({ data }) {
                                 <div className="flex items-center justify-between gap-3">
                                     <div className="min-w-0">
                                         <div className="truncate text-sm font-black text-slate-950">Factura {invoice.invoiceNumber || '-'}</div>
-                                        <div className="text-xs font-bold text-slate-500">{invoice.date} · Ret. {fmt(invoice.retentionTotal || 0)}</div>
+                                        <div className="text-xs font-bold text-slate-500">{invoice.date} · Ret. {fmt(invoice.retentionTotal || 0)} · {(invoice.items || []).length} articulos</div>
                                     </div>
-                                    <div className="font-mono text-sm font-black text-slate-900">{fmt(invoice.total)}</div>
+                                    <div className="flex shrink-0 items-center gap-2">
+                                        <div className="font-mono text-sm font-black text-slate-900">{fmt(invoice.total)}</div>
+                                        <button
+                                            type="button"
+                                            onClick={() => setPrintTarget(invoice)}
+                                            className="rounded-xl border border-slate-200 px-3 py-2 text-[10px] font-black uppercase tracking-[0.16em] text-slate-700 transition hover:border-[#e30613] hover:text-[#e30613]"
+                                        >
+                                            Imprimir
+                                        </button>
+                                    </div>
                                 </div>
                             </div>
                         ))}
@@ -1178,6 +1545,14 @@ function StampedInvoices({ data }) {
                 </Section>
             </div>
         </div>
+        <StampedInvoicePrintModal
+            invoice={printTarget}
+            layout={printLayout}
+            onLayoutChange={setPrintLayout}
+            onSaveLayout={savePrintLayout}
+            onClose={() => setPrintTarget(null)}
+        />
+        </>
     );
 }
 

@@ -78,6 +78,22 @@ function normalizeText(value = '') {
     .toUpperCase();
 }
 
+function compactAddress(row = {}) {
+  return [
+    row.domicilio,
+    row.noExt ? `No. ${row.noExt}` : '',
+    row.noInt ? `Int. ${row.noInt}` : '',
+    row.colonia,
+    row.localidad,
+    row.ciudad,
+    row.estado,
+    row.pais,
+  ]
+    .map((value) => String(value || '').trim())
+    .filter(Boolean)
+    .join(', ');
+}
+
 function getMysqlConfig() {
   const host = process.env.MYSQL_HOST || process.env.SICAR_DB_HOST || '127.0.0.1';
   const port = Number(process.env.MYSQL_PORT || process.env.SICAR_DB_PORT || 3307);
@@ -267,12 +283,16 @@ function normalizeInvoiceRow(row, sourceDate = '') {
     customerName: row.cliente || '',
     cashboxId: row.caj_id || null,
     cashboxName: row.cajaName || '',
+    customerAddress: compactAddress(row),
+    customerRfc: row.rfc || row.customerRfc || '',
     subtotalExento: money(row.subtotal0),
     subtotal: money(row.subtotal),
     iva: money(money(row.total) - money(row.subtotal)),
     total: money(row.total),
     status: row.status,
     sourceDateTime: toDateTimeString(row.fecha || row.ventaFecha),
+    sicarSaleIds: [],
+    items: [],
   };
 }
 
@@ -289,6 +309,15 @@ async function fetchStampedInvoices(connection, startDate, endExclusive) {
       f.status,
       f.cli_id,
       cli.nombre AS cliente,
+      cli.domicilio,
+      cli.noExt,
+      cli.noInt,
+      cli.colonia,
+      cli.localidad,
+      cli.ciudad,
+      cli.estado,
+      cli.pais,
+      cli.rfc,
       f.caj_id,
       cj.nombre AS cajaName
     FROM factura f
@@ -312,6 +341,15 @@ async function fetchStampedInvoices(connection, startDate, endExclusive) {
       f.status,
       f.cli_id,
       cli.nombre AS cliente,
+      cli.domicilio,
+      cli.noExt,
+      cli.noInt,
+      cli.colonia,
+      cli.localidad,
+      cli.ciudad,
+      cli.estado,
+      cli.pais,
+      cli.rfc,
       f.caj_id,
       cj.nombre AS cajaName
     FROM facturaven fv
@@ -321,13 +359,84 @@ async function fetchStampedInvoices(connection, startDate, endExclusive) {
     LEFT JOIN caja cj ON cj.caj_id = f.caj_id
     WHERE v.fecha >= ?
       AND v.fecha < ?
-    GROUP BY f.fac_id, f.folio, f.letraFolio, f.fecha, f.subtotal0, f.subtotal, f.total, f.status, f.cli_id, cli.nombre, f.caj_id, cj.nombre
+    GROUP BY
+      f.fac_id,
+      f.folio,
+      f.letraFolio,
+      f.fecha,
+      f.subtotal0,
+      f.subtotal,
+      f.total,
+      f.status,
+      f.cli_id,
+      cli.nombre,
+      cli.domicilio,
+      cli.noExt,
+      cli.noInt,
+      cli.colonia,
+      cli.localidad,
+      cli.ciudad,
+      cli.estado,
+      cli.pais,
+      cli.rfc,
+      f.caj_id,
+      cj.nombre
     ORDER BY ventaFecha, f.fac_id
   `, [startDate, endExclusive]);
 
   const map = new Map();
   directRows.forEach((row) => map.set(row.fac_id, normalizeInvoiceRow(row)));
   linkedRows.forEach((row) => map.set(row.fac_id, normalizeInvoiceRow(row, row.ventaFecha)));
+
+  const facIds = [...map.keys()].filter(Boolean);
+  if (facIds.length > 0) {
+    const [lineRows] = await connection.execute(`
+      SELECT
+        fv.fac_id,
+        fv.ven_id,
+        dv.orden,
+        dv.art_id,
+        dv.clave,
+        dv.descripcion,
+        dv.cantidad,
+        dv.unidad,
+        dv.precioSin,
+        dv.importeSin,
+        dv.precioCon,
+        dv.importeCon,
+        dv.sinGravar
+      FROM facturaven fv
+      INNER JOIN detallev dv ON dv.ven_id = fv.ven_id
+      WHERE fv.fac_id IN (${placeholders(facIds)})
+      ORDER BY fv.fac_id, fv.ven_id, dv.orden, dv.descripcion
+    `, facIds);
+
+    lineRows.forEach((row) => {
+      const invoice = map.get(row.fac_id);
+      if (!invoice) return;
+      const saleIds = new Set(invoice.sicarSaleIds || []);
+      saleIds.add(row.ven_id);
+      invoice.sicarSaleIds = [...saleIds];
+      invoice.items = [
+        ...(invoice.items || []),
+        {
+          saleId: row.ven_id,
+          articleId: row.art_id,
+          code: row.clave || '',
+          description: row.descripcion || '',
+          quantity: money(row.cantidad),
+          unit: row.unidad || '',
+          unitPriceWithoutTax: money(row.precioSin),
+          unitPriceWithTax: money(row.precioCon),
+          totalWithoutTax: money(row.importeSin),
+          totalWithTax: money(row.importeCon),
+          taxable: !row.sinGravar,
+          order: Number(row.orden || 0),
+        },
+      ];
+    });
+  }
+
   return [...map.values()].sort((a, b) => String(a.date).localeCompare(String(b.date)));
 }
 
