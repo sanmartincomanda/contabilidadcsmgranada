@@ -118,6 +118,84 @@ const Field = ({ label, children, span = '' }) => (
 );
 
 const inputClass = 'w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-bold text-slate-900 outline-none transition focus:border-[#e30613] focus:ring-4 focus:ring-red-100';
+const BILLING_PAGE_SIZE = 15;
+
+const recordSearchText = (record = {}, fields = []) => (
+    normalizeText(fields.map((field) => {
+        if (typeof field === 'function') return field(record);
+        return record?.[field];
+    }).filter((value) => value !== undefined && value !== null).join(' '))
+);
+
+const filterRecords = (records = [], query = '', fields = []) => {
+    const normalizedQuery = normalizeText(query);
+    if (!normalizedQuery) return records;
+    return records.filter((record) => recordSearchText(record, fields).includes(normalizedQuery));
+};
+
+const paginateRecords = (records = [], page = 1, pageSize = BILLING_PAGE_SIZE) => {
+    const totalPages = Math.max(1, Math.ceil(records.length / pageSize));
+    const safePage = Math.min(Math.max(Number(page) || 1, 1), totalPages);
+    const start = (safePage - 1) * pageSize;
+    return {
+        page: safePage,
+        totalPages,
+        records: records.slice(start, start + pageSize),
+        start: records.length ? start + 1 : 0,
+        end: Math.min(start + pageSize, records.length),
+    };
+};
+
+const SearchBox = ({ value, onChange, placeholder, resultLabel }) => (
+    <div className="rounded-3xl border border-slate-200 bg-slate-50/80 p-3">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="relative flex-1">
+                <input
+                    className="w-full rounded-2xl border border-slate-200 bg-white py-3 pl-4 pr-4 text-sm font-bold text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-[#e30613] focus:ring-4 focus:ring-red-100"
+                    value={value}
+                    onChange={(event) => onChange(event.target.value)}
+                    placeholder={placeholder}
+                />
+            </div>
+            <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-[10px] font-black uppercase tracking-[0.22em] text-slate-500">
+                {resultLabel}
+            </div>
+        </div>
+    </div>
+);
+
+const PaginationControls = ({ page, totalPages, total, start, end, onPageChange }) => {
+    if (total <= BILLING_PAGE_SIZE && totalPages <= 1) return null;
+
+    return (
+        <div className="flex flex-col gap-3 rounded-3xl border border-slate-200 bg-white px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="text-xs font-black uppercase tracking-[0.18em] text-slate-500">
+                Mostrando {start}-{end} de {total}
+            </div>
+            <div className="flex items-center gap-2">
+                <button
+                    type="button"
+                    onClick={() => onPageChange(Math.max(1, page - 1))}
+                    disabled={page <= 1}
+                    className="rounded-xl border border-slate-200 px-4 py-2 text-xs font-black text-slate-700 transition hover:border-[#e30613] hover:text-[#e30613] disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                    Anterior
+                </button>
+                <span className="rounded-xl bg-slate-950 px-4 py-2 text-xs font-black text-white">
+                    {page} / {totalPages}
+                </span>
+                <button
+                    type="button"
+                    onClick={() => onPageChange(Math.min(totalPages, page + 1))}
+                    disabled={page >= totalPages}
+                    className="rounded-xl border border-slate-200 px-4 py-2 text-xs font-black text-slate-700 transition hover:border-[#e30613] hover:text-[#e30613] disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                    Siguiente
+                </button>
+            </div>
+        </div>
+    );
+};
 
 const PaymentMethodSelect = ({ value, onChange, required = false }) => (
     <select className={inputClass} value={value || ''} onChange={(event) => onChange(event.target.value)} required={required}>
@@ -500,10 +578,60 @@ function CashClosure({ data }) {
     const [notes, setNotes] = useState('');
     const [saving, setSaving] = useState(false);
     const [message, setMessage] = useState('');
+    const [sicarClosureSearch, setSicarClosureSearch] = useState('');
+    const [sicarClosurePage, setSicarClosurePage] = useState(1);
+    const [closureInvoiceSearch, setClosureInvoiceSearch] = useState('');
+    const [closureInvoicePage, setClosureInvoicePage] = useState(1);
 
     const selectedClosure = useMemo(() => (
         sicarClosures.find((closure) => closure.id === selectedClosureId) || null
     ), [selectedClosureId, sicarClosures]);
+
+    const filteredSicarClosures = useMemo(() => filterRecords(sicarClosures, sicarClosureSearch, [
+        'date',
+        'corId',
+        'cor_id',
+        'cashboxName',
+        'cajaName',
+        'cashboxId',
+        'rccId',
+        'rcc_id',
+        'closureDateTime',
+        'fecha',
+    ]), [sicarClosures, sicarClosureSearch]);
+
+    const pagedSicarClosures = useMemo(() => (
+        paginateRecords(filteredSicarClosures, sicarClosurePage)
+    ), [filteredSicarClosures, sicarClosurePage]);
+
+    const filteredStampedInvoices = useMemo(() => filterRecords(stampedInvoices, closureInvoiceSearch, [
+        'date',
+        'invoiceNumber',
+        'numeroFactura',
+        'customerName',
+        'cliente',
+        'total',
+    ]), [stampedInvoices, closureInvoiceSearch]);
+
+    const pagedStampedInvoices = useMemo(() => (
+        paginateRecords(filteredStampedInvoices, closureInvoicePage)
+    ), [filteredStampedInvoices, closureInvoicePage]);
+
+    useEffect(() => {
+        setSicarClosurePage(1);
+    }, [sicarClosureSearch]);
+
+    useEffect(() => {
+        setClosureInvoicePage(1);
+    }, [closureInvoiceSearch]);
+
+    useEffect(() => {
+        if (sicarClosurePage !== pagedSicarClosures.page) setSicarClosurePage(pagedSicarClosures.page);
+    }, [sicarClosurePage, pagedSicarClosures.page]);
+
+    useEffect(() => {
+        if (closureInvoicePage !== pagedStampedInvoices.page) setClosureInvoicePage(pagedStampedInvoices.page);
+    }, [closureInvoicePage, pagedStampedInvoices.page]);
 
     const selectedInvoiceIds = useMemo(() => (
         closureInvoices.map((invoice) => invoice.docId).filter(Boolean)
@@ -831,7 +959,15 @@ function CashClosure({ data }) {
                 eyebrow="Integracion"
                 action={<Badge tone="blue">{sicarClosures.length} cierres</Badge>}
             >
-                <div className="max-h-[34rem] space-y-3 overflow-y-auto pr-1">
+                <div className="space-y-3">
+                    <SearchBox
+                        value={sicarClosureSearch}
+                        onChange={setSicarClosureSearch}
+                        placeholder="Buscar por numero de cierre, fecha, caja o RCC..."
+                        resultLabel={`${filteredSicarClosures.length} de ${sicarClosures.length}`}
+                    />
+                </div>
+                <div className="mt-3 max-h-[34rem] space-y-3 overflow-y-auto pr-1">
                     {waitingClosures.length > 0 && (
                         <div className="mb-4 rounded-3xl border border-amber-200 bg-amber-50 p-3">
                             <div className="mb-2 flex items-center justify-between gap-2">
@@ -862,7 +998,11 @@ function CashClosure({ data }) {
                         <div className="rounded-3xl border border-dashed border-slate-300 p-8 text-center text-sm font-bold text-slate-400">
                             Aun no hay cierres sincronizados. Ejecuta el worker de facturacion para cargar SICAR.
                         </div>
-                    ) : sicarClosures.map((closure) => (
+                    ) : filteredSicarClosures.length === 0 ? (
+                        <div className="rounded-3xl border border-dashed border-slate-300 p-8 text-center text-sm font-bold text-slate-400">
+                            No hay cierres que coincidan con la busqueda.
+                        </div>
+                    ) : pagedSicarClosures.records.map((closure) => (
                         <button
                             key={closure.id}
                             type="button"
@@ -889,6 +1029,16 @@ function CashClosure({ data }) {
                             </div>
                         </button>
                     ))}
+                </div>
+                <div className="mt-3">
+                    <PaginationControls
+                        page={pagedSicarClosures.page}
+                        totalPages={pagedSicarClosures.totalPages}
+                        total={filteredSicarClosures.length}
+                        start={pagedSicarClosures.start}
+                        end={pagedSicarClosures.end}
+                        onPageChange={setSicarClosurePage}
+                    />
                 </div>
             </Section>
 
@@ -1003,12 +1153,25 @@ function CashClosure({ data }) {
                         </button>
                     </div>
 
+                    <div className="mb-4">
+                        <SearchBox
+                            value={closureInvoiceSearch}
+                            onChange={setClosureInvoiceSearch}
+                            placeholder="Buscar factura membretada por fecha, numero o cliente..."
+                            resultLabel={`${filteredStampedInvoices.length} de ${stampedInvoices.length}`}
+                        />
+                    </div>
+
                     <div className="grid gap-3 md:grid-cols-2">
                         {stampedInvoices.length === 0 ? (
                             <div className="rounded-3xl border border-dashed border-slate-300 p-8 text-center text-sm font-bold text-slate-400 md:col-span-2">
                                 No hay facturas membretadas guardadas todavia.
                             </div>
-                        ) : stampedInvoices.slice(0, 24).map((invoice) => (
+                        ) : filteredStampedInvoices.length === 0 ? (
+                            <div className="rounded-3xl border border-dashed border-slate-300 p-8 text-center text-sm font-bold text-slate-400 md:col-span-2">
+                                No hay facturas membretadas que coincidan con la busqueda.
+                            </div>
+                        ) : pagedStampedInvoices.records.map((invoice) => (
                             <label key={invoice.id} className="flex cursor-pointer items-center gap-3 rounded-2xl border border-slate-200 bg-white p-3 transition hover:border-[#e30613]">
                                 <input
                                     type="checkbox"
@@ -1022,6 +1185,16 @@ function CashClosure({ data }) {
                                 <div className="font-mono text-sm font-black text-slate-900">{fmt(invoice.total)}</div>
                             </label>
                         ))}
+                    </div>
+                    <div className="mt-4">
+                        <PaginationControls
+                            page={pagedStampedInvoices.page}
+                            totalPages={pagedStampedInvoices.totalPages}
+                            total={filteredStampedInvoices.length}
+                            start={pagedStampedInvoices.start}
+                            end={pagedStampedInvoices.end}
+                            onPageChange={setClosureInvoicePage}
+                        />
                     </div>
 
                     <div className="mt-4 space-y-3">
@@ -1463,6 +1636,10 @@ function StampedInvoices({ data }) {
     const [printTemplateName, setPrintTemplateName] = useState(DEFAULT_PRINT_TEMPLATE_NAME);
     const [saving, setSaving] = useState(false);
     const [message, setMessage] = useState('');
+    const [sicarInvoiceSearch, setSicarInvoiceSearch] = useState('');
+    const [sicarInvoicePage, setSicarInvoicePage] = useState(1);
+    const [savedInvoiceSearch, setSavedInvoiceSearch] = useState('');
+    const [savedInvoicePage, setSavedInvoicePage] = useState(1);
 
     useEffect(() => {
         let mounted = true;
@@ -1491,6 +1668,53 @@ function StampedInvoices({ data }) {
         retentionIr2: safeNumber(form.retentionIr2),
         retentionMunicipal1: safeNumber(form.retentionMunicipal1),
     });
+
+    const filteredSicarInvoices = useMemo(() => filterRecords(sicarInvoices, sicarInvoiceSearch, [
+        'date',
+        'invoiceNumber',
+        'numeroFactura',
+        'folio',
+        'customerName',
+        'cliente',
+        'customerRfc',
+        'rfc',
+        'total',
+    ]), [sicarInvoices, sicarInvoiceSearch]);
+
+    const pagedSicarInvoices = useMemo(() => (
+        paginateRecords(filteredSicarInvoices, sicarInvoicePage)
+    ), [filteredSicarInvoices, sicarInvoicePage]);
+
+    const filteredSavedInvoices = useMemo(() => filterRecords(savedInvoices, savedInvoiceSearch, [
+        'date',
+        'saleDate',
+        'invoiceNumber',
+        'numeroFactura',
+        'customerName',
+        'cliente',
+        'paymentMethod',
+        'total',
+    ]), [savedInvoices, savedInvoiceSearch]);
+
+    const pagedSavedInvoices = useMemo(() => (
+        paginateRecords(filteredSavedInvoices, savedInvoicePage)
+    ), [filteredSavedInvoices, savedInvoicePage]);
+
+    useEffect(() => {
+        setSicarInvoicePage(1);
+    }, [sicarInvoiceSearch]);
+
+    useEffect(() => {
+        setSavedInvoicePage(1);
+    }, [savedInvoiceSearch]);
+
+    useEffect(() => {
+        if (sicarInvoicePage !== pagedSicarInvoices.page) setSicarInvoicePage(pagedSicarInvoices.page);
+    }, [sicarInvoicePage, pagedSicarInvoices.page]);
+
+    useEffect(() => {
+        if (savedInvoicePage !== pagedSavedInvoices.page) setSavedInvoicePage(pagedSavedInvoices.page);
+    }, [savedInvoicePage, pagedSavedInvoices.page]);
 
     const update = (key, value) => {
         setForm((prev) => {
@@ -1774,12 +1998,24 @@ function StampedInvoices({ data }) {
 
             <div className="space-y-5">
                 <Section title="Facturas SICAR para cargar" eyebrow="Lectura MySQL" action={<Badge tone="blue">{sicarInvoices.length} registros</Badge>}>
-                    <div className="max-h-80 space-y-2 overflow-y-auto">
+                    <div className="space-y-3">
+                        <SearchBox
+                            value={sicarInvoiceSearch}
+                            onChange={setSicarInvoiceSearch}
+                            placeholder="Buscar por fecha, numero de factura, cliente o RUC..."
+                            resultLabel={`${filteredSicarInvoices.length} de ${sicarInvoices.length}`}
+                        />
+                    </div>
+                    <div className="mt-3 space-y-2">
                         {sicarInvoices.length === 0 ? (
                             <div className="rounded-3xl border border-dashed border-slate-300 p-8 text-center text-sm font-bold text-slate-400">
                                 No hay facturas SICAR sincronizadas en este rango.
                             </div>
-                        ) : sicarInvoices.slice(0, 30).map((invoice) => (
+                        ) : filteredSicarInvoices.length === 0 ? (
+                            <div className="rounded-3xl border border-dashed border-slate-300 p-8 text-center text-sm font-bold text-slate-400">
+                                No hay facturas SICAR que coincidan con la busqueda.
+                            </div>
+                        ) : pagedSicarInvoices.records.map((invoice) => (
                             <button key={invoice.id} type="button" onClick={() => loadSicarInvoice(invoice)} className="w-full rounded-2xl border border-slate-200 bg-white p-3 text-left transition hover:border-[#e30613] hover:bg-red-50">
                                 <div className="flex items-center justify-between gap-3">
                                     <div className="min-w-0">
@@ -1791,15 +2027,37 @@ function StampedInvoices({ data }) {
                             </button>
                         ))}
                     </div>
+                    <div className="mt-3">
+                        <PaginationControls
+                            page={pagedSicarInvoices.page}
+                            totalPages={pagedSicarInvoices.totalPages}
+                            total={filteredSicarInvoices.length}
+                            start={pagedSicarInvoices.start}
+                            end={pagedSicarInvoices.end}
+                            onPageChange={setSicarInvoicePage}
+                        />
+                    </div>
                 </Section>
 
                 <Section title="Guardadas" eyebrow="Facturas membretadas" action={<Badge tone="green">{savedInvoices.length} registros</Badge>}>
-                    <div className="max-h-80 space-y-2 overflow-y-auto">
+                    <div className="space-y-3">
+                        <SearchBox
+                            value={savedInvoiceSearch}
+                            onChange={setSavedInvoiceSearch}
+                            placeholder="Buscar guardadas por fecha, factura, cliente o metodo de pago..."
+                            resultLabel={`${filteredSavedInvoices.length} de ${savedInvoices.length}`}
+                        />
+                    </div>
+                    <div className="mt-3 space-y-2">
                         {savedInvoices.length === 0 ? (
                             <div className="rounded-3xl border border-dashed border-slate-300 p-8 text-center text-sm font-bold text-slate-400">
                                 Todavia no hay facturas membretadas guardadas.
                             </div>
-                        ) : savedInvoices.slice(0, 30).map((invoice) => (
+                        ) : filteredSavedInvoices.length === 0 ? (
+                            <div className="rounded-3xl border border-dashed border-slate-300 p-8 text-center text-sm font-bold text-slate-400">
+                                No hay facturas guardadas que coincidan con la busqueda.
+                            </div>
+                        ) : pagedSavedInvoices.records.map((invoice) => (
                             <div key={invoice.id} className="rounded-2xl border border-slate-200 bg-white p-3">
                                 <div className="flex items-center justify-between gap-3">
                                     <div className="min-w-0">
@@ -1829,6 +2087,16 @@ function StampedInvoices({ data }) {
                                 </div>
                             </div>
                         ))}
+                    </div>
+                    <div className="mt-3">
+                        <PaginationControls
+                            page={pagedSavedInvoices.page}
+                            totalPages={pagedSavedInvoices.totalPages}
+                            total={filteredSavedInvoices.length}
+                            start={pagedSavedInvoices.start}
+                            end={pagedSavedInvoices.end}
+                            onPageChange={setSavedInvoicePage}
+                        />
                     </div>
                 </Section>
             </div>
