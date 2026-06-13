@@ -388,56 +388,124 @@ async function fetchStampedInvoices(connection, startDate, endExclusive) {
   directRows.forEach((row) => map.set(row.fac_id, normalizeInvoiceRow(row)));
   linkedRows.forEach((row) => map.set(row.fac_id, normalizeInvoiceRow(row, row.ventaFecha)));
 
-  const facIds = [...map.keys()].filter(Boolean);
-  if (facIds.length > 0) {
-    const [lineRows] = await connection.execute(`
-      SELECT
-        fv.fac_id,
-        fv.ven_id,
-        dv.orden,
-        dv.art_id,
-        dv.clave,
-        dv.descripcion,
-        dv.cantidad,
-        dv.unidad,
-        dv.precioSin,
-        dv.importeSin,
-        dv.precioCon,
-        dv.importeCon,
-        dv.sinGravar
-      FROM facturaven fv
-      INNER JOIN detallev dv ON dv.ven_id = fv.ven_id
-      WHERE fv.fac_id IN (${placeholders(facIds)})
-      ORDER BY fv.fac_id, fv.ven_id, dv.orden, dv.descripcion
-    `, facIds);
-
-    lineRows.forEach((row) => {
-      const invoice = map.get(row.fac_id);
-      if (!invoice) return;
-      const saleIds = new Set(invoice.sicarSaleIds || []);
-      saleIds.add(row.ven_id);
-      invoice.sicarSaleIds = [...saleIds];
-      invoice.items = [
-        ...(invoice.items || []),
-        {
-          saleId: row.ven_id,
-          articleId: row.art_id,
-          code: row.clave || '',
-          description: row.descripcion || '',
-          quantity: money(row.cantidad),
-          unit: row.unidad || '',
-          unitPriceWithoutTax: money(row.precioSin),
-          unitPriceWithTax: money(row.precioCon),
-          totalWithoutTax: money(row.importeSin),
-          totalWithTax: money(row.importeCon),
-          taxable: !row.sinGravar,
-          order: Number(row.orden || 0),
-        },
-      ];
-    });
-  }
-
+  await attachInvoiceItems(connection, map);
   return [...map.values()].sort((a, b) => String(a.date).localeCompare(String(b.date)));
+}
+
+async function attachInvoiceItems(connection, map) {
+  const facIds = [...map.keys()].filter(Boolean);
+  if (facIds.length === 0) return;
+
+  const [lineRows] = await connection.execute(`
+    SELECT
+      fv.fac_id,
+      fv.ven_id,
+      dv.orden,
+      dv.art_id,
+      dv.clave,
+      dv.descripcion,
+      dv.cantidad,
+      dv.unidad,
+      dv.precioSin,
+      dv.importeSin,
+      dv.precioCon,
+      dv.importeCon,
+      dv.sinGravar
+    FROM facturaven fv
+    INNER JOIN detallev dv ON dv.ven_id = fv.ven_id
+    WHERE fv.fac_id IN (${placeholders(facIds)})
+    ORDER BY fv.fac_id, fv.ven_id, dv.orden, dv.descripcion
+  `, facIds);
+
+  lineRows.forEach((row) => {
+    const invoice = map.get(row.fac_id);
+    if (!invoice) return;
+    const saleIds = new Set(invoice.sicarSaleIds || []);
+    saleIds.add(row.ven_id);
+    invoice.sicarSaleIds = [...saleIds];
+    invoice.items = [
+      ...(invoice.items || []),
+      {
+        saleId: row.ven_id,
+        articleId: row.art_id,
+        code: row.clave || '',
+        description: row.descripcion || '',
+        quantity: money(row.cantidad),
+        unit: row.unidad || '',
+        unitPriceWithoutTax: money(row.precioSin),
+        unitPriceWithTax: money(row.precioCon),
+        totalWithoutTax: money(row.importeSin),
+        totalWithTax: money(row.importeCon),
+        taxable: !row.sinGravar,
+        order: Number(row.orden || 0),
+      },
+    ];
+  });
+}
+
+async function fetchStampedInvoicesByIds(connection, facIds) {
+  const ids = [...new Set((facIds || []).map((id) => Number(id)).filter(Number.isFinite))];
+  if (ids.length === 0) return [];
+
+  const [rows] = await connection.execute(`
+    SELECT
+      f.fac_id,
+      f.folio,
+      f.letraFolio,
+      f.fecha,
+      MIN(v.fecha) AS ventaFecha,
+      f.subtotal0,
+      f.subtotal,
+      f.total,
+      f.status,
+      f.cli_id,
+      cli.nombre AS cliente,
+      cli.domicilio,
+      cli.noExt,
+      cli.noInt,
+      cli.colonia,
+      cli.localidad,
+      cli.ciudad,
+      cli.estado,
+      cli.pais,
+      cli.rfc,
+      f.caj_id,
+      cj.nombre AS cajaName
+    FROM factura f
+    LEFT JOIN facturaven fv ON fv.fac_id = f.fac_id
+    LEFT JOIN venta v ON v.ven_id = fv.ven_id
+    LEFT JOIN cliente cli ON cli.cli_id = f.cli_id
+    LEFT JOIN caja cj ON cj.caj_id = f.caj_id
+    WHERE f.fac_id IN (${placeholders(ids)})
+    GROUP BY
+      f.fac_id,
+      f.folio,
+      f.letraFolio,
+      f.fecha,
+      f.subtotal0,
+      f.subtotal,
+      f.total,
+      f.status,
+      f.cli_id,
+      cli.nombre,
+      cli.domicilio,
+      cli.noExt,
+      cli.noInt,
+      cli.colonia,
+      cli.localidad,
+      cli.ciudad,
+      cli.estado,
+      cli.pais,
+      cli.rfc,
+      f.caj_id,
+      cj.nombre
+    ORDER BY f.fac_id
+  `, ids);
+
+  const map = new Map();
+  rows.forEach((row) => map.set(row.fac_id, normalizeInvoiceRow(row, row.ventaFecha)));
+  await attachInvoiceItems(connection, map);
+  return [...map.values()].sort((a, b) => Number(a.facId || 0) - Number(b.facId || 0));
 }
 
 async function writeClosure(db, entry, options) {
@@ -592,7 +660,23 @@ async function main() {
   }
 }
 
-main().catch((error) => {
-  console.error(error);
-  process.exitCode = 1;
-});
+if (require.main === module) {
+  main().catch((error) => {
+    console.error(error);
+    process.exitCode = 1;
+  });
+}
+
+module.exports = {
+  addDays,
+  fetchClosures,
+  fetchStampedInvoices,
+  fetchStampedInvoicesByIds,
+  getMysqlConfig,
+  initFirebase,
+  loadEnvFile,
+  money,
+  toDateString,
+  writeClosure,
+  writeInvoice,
+};

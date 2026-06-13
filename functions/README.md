@@ -519,3 +519,43 @@ El worker local de esta sucursal crea:
 No crea CxP ni gasto diario porque las compras se estan integrando como transferencia de contado.
 
 Tambien guarda bitacora en `sicar_sync_logs`.
+
+## Facturas membretadas casi en tiempo real
+
+Para imprimir facturas membretadas desde la app, el servidor SICAR puede dejar corriendo un watcher local que revisa MySQL cada segundo y solo escribe en Firebase cuando aparece una nueva fila en `factura`.
+
+Esto evita costos altos en Firebase:
+
+- MySQL se consulta localmente en `127.0.0.1`.
+- Firebase no recibe escrituras si no hay facturas nuevas.
+- El estado local se guarda en `C:\SICAR\state\sicar-stamped-invoice-watch.json`.
+- La primera vez no sube historicos; toma el `MAX(fac_id)` actual y desde ahi escucha nuevas facturas.
+
+Prueba manual una sola vez:
+
+```powershell
+cd functions
+npm run watch-stamped-invoices -- --once --preview
+```
+
+Ejecutar watcher en consola:
+
+```powershell
+cd functions
+npm run watch-stamped-invoices
+```
+
+Registrar tarea oculta al iniciar sesion:
+
+```powershell
+cd functions
+.\scripts\registerSicarStampedInvoiceWatcherTask.ps1 -IntervalMs 1000
+Start-ScheduledTask -TaskName "SICAR Stamped Invoice Watcher"
+```
+
+Si alguna vez necesitas reiniciar el punto de partida:
+
+```powershell
+cd functions
+npm run watch-stamped-invoices -- --once --reset-state
+```

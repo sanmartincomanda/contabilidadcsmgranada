@@ -12,6 +12,7 @@
     "replay-pending-purchases": "node scripts/processPendingSicarPurchases.js",
     "sync-daily-sales": "node scripts/syncDailySicarSales.js",
     "sync-billing": "node scripts/syncSicarBilling.js",
+    "watch-stamped-invoices": "node scripts/watchSicarStampedInvoices.js",
     "sync-purchases": "node scripts/syncSicarPurchases.js",
     "watch-scanner-supports": "node scripts/watchScannedSupports.js",
     "migrate-expense-categories": "node scripts/migrateExpenseCategories.js"
