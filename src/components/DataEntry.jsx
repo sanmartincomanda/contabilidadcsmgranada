@@ -31,6 +31,7 @@ import {
     isCashPayment,
     isCreditPayment,
     isPdfSupportRecord,
+    normalizePaymentMethod,
     SUPPORT_FILE_TYPES,
     uploadFiscalSupportFiles,
 } from '../services/fiscalUtils';
@@ -245,6 +246,26 @@ const buildEditablePayload = (collectionName, editData, fields) => {
         }
     });
 
+    const categoryField = Object.values(fields).find((field) => field?.type === 'expenseCategory');
+    if (categoryField) {
+        Object.assign(
+            dataToSave,
+            buildExpenseCategoryPayload(
+                getExpenseCategoryFromRecord(editData, categoryField.fallbackId || DEFAULT_EXPENSE_CATEGORY_ID),
+                categoryField.fallbackId || DEFAULT_EXPENSE_CATEGORY_ID
+            )
+        );
+    }
+
+    const providerField = Object.values(fields).find((field) => field?.type === 'provider');
+    if (providerField) {
+        const supplier = normalizeProviderName(editData.supplier || editData.proveedor || dataToSave.supplier || dataToSave.proveedor);
+        dataToSave.supplier = supplier;
+        dataToSave.proveedor = supplier;
+        dataToSave.providerCode = editData.providerCode || editData.codigoProveedor || getProviderCode(supplier);
+        dataToSave.codigoProveedor = editData.codigoProveedor || editData.providerCode || getProviderCode(supplier);
+    }
+
     if (dataToSave.date) dataToSave.month = String(dataToSave.date).substring(0, 7);
     if (dataToSave.saleDate) dataToSave.month = String(dataToSave.saleDate).substring(0, 7);
 
@@ -434,7 +455,7 @@ const RecordDetailModal = ({ item, collectionName, fields, onClose, onEdit }) =>
     );
 };
 
-const EditRecordModal = ({ item, collectionName, fields, onClose, onSaved }) => {
+const EditRecordModal = ({ item, collectionName, fields, onClose, onSaved, providers = [] }) => {
     const [editData, setEditData] = useState(item);
     const [supportFiles, setSupportFiles] = useState(createEmptySupportFilesState());
     const [loading, setLoading] = useState(false);
@@ -468,6 +489,53 @@ const EditRecordModal = ({ item, collectionName, fields, onClose, onSaved }) => 
                     disabled={loading}
                 >
                     {renderSelectOptions(field.options || [])}
+                </select>
+            );
+        }
+
+        if (field?.type === 'provider') {
+            return (
+                <ProviderAutocomplete
+                    label=""
+                    value={editData.supplier || editData.proveedor || ''}
+                    onChange={(providerName) => {
+                        const matchedProvider = providers.find((provider) => normalizeProviderName(provider.nombre || provider.name || provider.proveedor) === normalizeProviderName(providerName));
+                        setEditData((prev) => ({
+                            ...prev,
+                            supplier: providerName,
+                            proveedor: providerName,
+                            providerId: matchedProvider?.id || prev.providerId || prev.proveedorId || '',
+                            proveedorId: matchedProvider?.id || prev.proveedorId || prev.providerId || '',
+                            providerCode: matchedProvider?.code || matchedProvider?.codigo || getProviderCode(providerName),
+                            codigoProveedor: matchedProvider?.codigo || matchedProvider?.code || getProviderCode(providerName),
+                        }));
+                    }}
+                    providers={providers}
+                    placeholder="Escribe para buscar proveedor..."
+                    disabled={loading}
+                    required
+                />
+            );
+        }
+
+        if (field?.type === 'expenseCategory') {
+            const fallbackId = field.fallbackId || DEFAULT_EXPENSE_CATEGORY_ID;
+            const categoryInfo = getExpenseCategoryFromRecord(editData, fallbackId);
+
+            return (
+                <select
+                    value={categoryInfo.id}
+                    onChange={(e) => {
+                        const categoryPayload = buildExpenseCategoryPayload(e.target.value, fallbackId);
+                        setEditData((prev) => ({
+                            ...prev,
+                            ...categoryPayload,
+                        }));
+                    }}
+                    className="w-full rounded-lg border border-stone-200 bg-stone-50 px-3 py-2 text-sm font-semibold text-stone-700 outline-none focus:border-[#e30613] focus:ring-2 focus:ring-[#e30613]/15"
+                    disabled={loading}
+                >
+                    {expenseCategoryOptions(field.placeholder || 'Seleccionar categoria / subcategoria...')}
                 </select>
             );
         }
@@ -512,6 +580,19 @@ const EditRecordModal = ({ item, collectionName, fields, onClose, onSaved }) => 
         setLoading(true);
         try {
             let dataToSave = buildEditablePayload(collectionName, editData, fields);
+
+            if (['compras', 'gastos'].includes(collectionName) && (dataToSave.supplier || dataToSave.proveedor)) {
+                const provider = await upsertProviderByName(dataToSave.supplier || dataToSave.proveedor, { source: collectionName });
+                dataToSave = {
+                    ...dataToSave,
+                    supplier: provider.nombre,
+                    proveedor: provider.nombre,
+                    providerId: provider.id,
+                    proveedorId: provider.id,
+                    providerCode: provider.code,
+                    codigoProveedor: provider.code,
+                };
+            }
 
             if (canAttachPhoto && Object.values(supportFiles).some(Boolean)) {
                 const photoPayload = await uploadFiscalSupportFiles(supportFiles, PHOTO_EDIT_FOLDERS[collectionName], item.id, item);
@@ -625,7 +706,7 @@ const EditRecordModal = ({ item, collectionName, fields, onClose, onSaved }) => 
 
 // --- COMPONENTE: EDITABLE LIST ---
 
-const EditableRow = ({ item, collectionName, fields, onUpdate, onDelete }) => {
+const EditableRow = ({ item, collectionName, fields, providers = [], onUpdate, onDelete }) => {
     const [isEditing, setIsEditing] = useState(false);
     const [showViewModal, setShowViewModal] = useState(false);
     const [showEditModal, setShowEditModal] = useState(false);
@@ -819,6 +900,7 @@ const EditableRow = ({ item, collectionName, fields, onUpdate, onDelete }) => {
                                 item={item}
                                 collectionName={collectionName}
                                 fields={fields}
+                                providers={providers}
                                 onClose={() => setShowEditModal(false)}
                                 onSaved={onUpdate}
                             />
@@ -842,7 +924,7 @@ const EditableRow = ({ item, collectionName, fields, onUpdate, onDelete }) => {
     );
 };
 
-const EditableMobileCard = ({ item, collectionName, fields, onUpdate, onDelete }) => {
+const EditableMobileCard = ({ item, collectionName, fields, providers = [], onUpdate, onDelete }) => {
     const [showEditModal, setShowEditModal] = useState(false);
     const [showViewModal, setShowViewModal] = useState(false);
     const [loading, setLoading] = useState(false);
@@ -952,6 +1034,7 @@ const EditableMobileCard = ({ item, collectionName, fields, onUpdate, onDelete }
                     item={item}
                     collectionName={collectionName}
                     fields={fields}
+                    providers={providers}
                     onClose={() => setShowEditModal(false)}
                     onSaved={onUpdate}
                 />
@@ -976,6 +1059,7 @@ const EditableList = ({
     data,
     collectionName,
     fields,
+    providers = [],
     filterValue,
     filterType = 'month',
     filterLabel = 'Filtrar por Mes',
@@ -1186,6 +1270,7 @@ const EditableList = ({
                                 item={item}
                                 collectionName={collectionName}
                                 fields={fields}
+                                providers={providers}
                                 onUpdate={handleUpdate}
                                 onDelete={handleDelete}
                             />
@@ -1209,6 +1294,7 @@ const EditableList = ({
                                     item={item}
                                     collectionName={collectionName}
                                     fields={fields}
+                                    providers={providers}
                                     onUpdate={handleUpdate}
                                     onDelete={handleDelete}
                                 />
@@ -1550,6 +1636,18 @@ const expenseCategoryOptions = (placeholder = 'Seleccionar categoria / subcatego
 const resolveCategoryPayload = (selection, fallbackId = DEFAULT_EXPENSE_CATEGORY_ID) => (
     buildExpenseCategoryPayload(selection, fallbackId)
 );
+
+const normalizeEditablePaymentType = (value = '', fallback = 'TRANSFERENCIA') => {
+    const normalized = normalizePaymentMethod(value);
+    const exactMethod = PURCHASE_PAYMENT_METHODS.find((method) => normalizePaymentMethod(method) === normalized);
+    if (exactMethod) return exactMethod;
+    if (!normalized) return fallback;
+    if (normalized === 'CONTADO') return fallback;
+    if (normalized.includes('CREDITO')) return 'CREDITO';
+    if (normalized.includes('EFECTIVO')) return 'EFECTIVO';
+    if (normalized.includes('TRANSFER')) return 'TRANSFERENCIA';
+    return value;
+};
 
 const FiscalExpenseForm = ({ categories, providers = [], loading, setLoading, onSuccess }) => {
     const [date, setDate] = useState(new Date().toISOString().substring(0, 10));
@@ -2424,17 +2522,18 @@ export function DataEntry({ categories, data }) {
         Gastos: {
             date: { label: 'Fecha', type: 'date' },
             providerCode: { label: 'Codigo', type: 'text', readonly: true },
-            supplier: { label: 'Proveedor', type: 'text' },
+            supplier: { label: 'Proveedor', type: 'provider' },
             invoiceNumber: { label: 'Factura', type: 'text' },
-            paymentType: { label: 'Tipo Pago', type: 'text' },
+            paymentType: { label: 'Tipo Pago', type: 'select', options: PURCHASE_PAYMENT_METHODS },
+            paymentReference: { label: 'Referencia', type: 'text' },
             subtotal: { label: 'Subtotal', type: 'currency' },
             iva: { label: 'IVA', type: 'currency' },
             total: { label: 'Total', type: 'currency' },
             retentionIr2: { label: 'Ret. IR 2%', type: 'currency' },
             retentionMunicipal1: { label: 'Ret. Municipal 1%', type: 'currency' },
             description: { label: 'Descripcion', type: 'text' },
-            category: { label: 'Categoria', type: 'text' },
-            subcategory: { label: 'Subcategoria', type: 'text' },
+            category: { label: 'Categoria / Subcategoria', type: 'expenseCategory', fallbackId: DEFAULT_EXPENSE_CATEGORY_ID },
+            subcategory: { label: 'Subcategoria', type: 'text', readonly: true },
             amount: { label: 'Monto', type: 'currency' }
         },
         Inventario: {
@@ -2446,16 +2545,18 @@ export function DataEntry({ categories, data }) {
             date: { label: 'Fecha', type: 'date' },
             month: { label: 'Mes', type: 'month' },
             providerCode: { label: 'Codigo', type: 'text', readonly: true },
-            supplier: { label: 'Proveedor', type: 'text' },
+            supplier: { label: 'Proveedor', type: 'provider' },
             invoiceNumber: { label: 'Factura', type: 'text' },
             paymentType: { label: 'Tipo', type: 'select', options: PURCHASE_PAYMENT_METHODS },
+            paymentReference: { label: 'Referencia', type: 'text' },
             subtotal: { label: 'Subtotal', type: 'currency' },
             iva: { label: 'IVA', type: 'currency' },
             total: { label: 'Total', type: 'currency' },
             retentionIr2: { label: 'Ret. IR 2%', type: 'currency' },
             retentionMunicipal1: { label: 'Ret. Municipal 1%', type: 'currency' },
-            category: { label: 'Categoria', type: 'text' },
-            subcategory: { label: 'Subcategoria', type: 'text' }
+            description: { label: 'Descripcion', type: 'text' },
+            category: { label: 'Categoria / Subcategoria', type: 'expenseCategory', fallbackId: DEFAULT_PURCHASE_CATEGORY_ID, placeholder: 'Compra de mercancia / costo de venta' },
+            subcategory: { label: 'Subcategoria', type: 'text', readonly: true }
         },
         Presupuesto: {
             month: { label: 'Mes', type: 'month' },
@@ -2557,7 +2658,10 @@ export function DataEntry({ categories, data }) {
                     invoiceNumber: item.invoiceNumber || item.numero || '',
                     branch: item.branch || DEFAULT_BRANCH_ID,
                     branchName: item.branchName || DEFAULT_BRANCH_NAME,
-                    paymentType: item.paymentType || (item.sourceFacturaId || item.linkedPayableId ? 'credito' : ((item.date || item.fecha) ? 'contado' : 'legacy')),
+                    paymentType: normalizeEditablePaymentType(
+                        item.paymentType || (item.sourceFacturaId || item.linkedPayableId ? 'CREDITO' : 'TRANSFERENCIA'),
+                        'TRANSFERENCIA'
+                    ),
                     subtotal: Number(item.subtotal ?? item.amount ?? item.monto ?? 0) || 0,
                     iva: Number(item.iva ?? 0) || 0,
                     total: Number(item.total ?? item.amount ?? item.monto ?? 0) || 0,
@@ -2582,7 +2686,10 @@ export function DataEntry({ categories, data }) {
                     supplier: item.supplier || item.proveedor || 'REGISTRO LEGACY',
                     providerCode: item.providerCode || item.codigoProveedor || getProviderCode(item.supplier || item.proveedor || ''),
                     invoiceNumber: item.invoiceNumber || item.numero || item.factura || '',
-                    paymentType: item.paymentType || (item.linkedPayableId || item.sourceFacturaId ? 'CREDITO' : 'CONTADO'),
+                    paymentType: normalizeEditablePaymentType(
+                        item.paymentType || (item.linkedPayableId || item.sourceFacturaId ? 'CREDITO' : 'EFECTIVO'),
+                        'EFECTIVO'
+                    ),
                     subtotal: Number(item.subtotal ?? item.amount ?? item.monto ?? 0) || 0,
                     iva: Number(item.iva ?? 0) || 0,
                     total: Number(item.total ?? item.amount ?? item.monto ?? 0) || 0,
@@ -2712,6 +2819,7 @@ export function DataEntry({ categories, data }) {
                             data={getListData()}
                             collectionName={getCollectionName()}
                             fields={fieldsConfig[activeTab]}
+                            providers={providers}
                             filterValue={filterMonth[activeTab]}
                             filterType={filterConfig[activeTab].type}
                             filterLabel={filterConfig[activeTab].label}
