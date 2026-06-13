@@ -12,6 +12,13 @@ const PAYMENT_BANKS = [
 
 const CASH_DENOMINATIONS = [1000, 500, 200, 100, 50, 20, 10, 5, 1];
 
+const CASHIER_OPTIONS = [
+    'Dania Espinoza',
+    'Katherine Obando',
+    'Jose Flores',
+    'Nicol Barbosa',
+];
+
 const safeNumber = (value) => {
     const parsed = Number(value || 0);
     return Number.isFinite(parsed) ? Math.round(parsed * 100) / 100 : 0;
@@ -608,13 +615,6 @@ function CashClosure({ data }) {
             .sort((a, b) => a.name.localeCompare(b.name, 'es'))
     ), [data.clientes_facturacion]);
 
-    const cashiers = useMemo(() => (
-        [...(data.cajeros || [])]
-            .map((item) => ({ ...item, name: item.name || item.nombre || '' }))
-            .filter((item) => item.name)
-            .sort((a, b) => a.name.localeCompare(b.name, 'es'))
-    ), [data.cajeros]);
-
     const waitingClosures = useMemo(() => (
         [...(data.cierres_caja || [])]
             .filter((item) => item.status === 'en_espera')
@@ -820,18 +820,6 @@ function CashClosure({ data }) {
         if (!window.confirm(`El cliente "${safeName}" no existe. Deseas agregarlo a la base de clientes?`)) return;
         await upsertClientRecord(safeName, 'manual_facturacion');
         setMessage(`Cliente agregado a la base: ${safeName}.`);
-    };
-
-    const requestCreateCashier = async (name) => {
-        const safeName = String(name || '').trim();
-        if (!safeName) return;
-        if (recordExistsByName(cashiers, safeName)) {
-            setMessage(`Cajero ya existe: ${safeName}.`);
-            return;
-        }
-        if (!window.confirm(`El cajero "${safeName}" no existe. Deseas agregarlo a la base de cajeros?`)) return;
-        await upsertCashierRecord(safeName, 'manual_facturacion');
-        setMessage(`Cajero agregado a la base: ${safeName}.`);
     };
 
     const updateTransfer = (bank, index, field, value) => {
@@ -1103,19 +1091,12 @@ function CashClosure({ data }) {
                             <input className={inputClass} type="date" value={closureDate} onChange={(event) => setClosureDate(event.target.value)} />
                         </Field>
                         <Field label="Cajero">
-                            <input className={inputClass} list="billing-cashiers" placeholder="Nombre del cajero" value={cashierName} onChange={(event) => setCashierName(event.target.value)} />
-                            <datalist id="billing-cashiers">
-                                {cashiers.map((cashier) => <option key={cashier.id || cashier.code || cashier.name} value={cashier.name} />)}
-                            </datalist>
-                            {String(cashierName || '').trim() && !recordExistsByName(cashiers, cashierName) && (
-                                <button
-                                    type="button"
-                                    onClick={() => requestCreateCashier(cashierName)}
-                                    className="mt-2 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-[10px] font-black uppercase tracking-[0.16em] text-emerald-700 transition hover:bg-emerald-100"
-                                >
-                                    Agregar nuevo cajero
-                                </button>
-                            )}
+                            <select className={inputClass} value={cashierName} onChange={(event) => setCashierName(event.target.value)}>
+                                <option value="">Seleccionar cajero...</option>
+                                {CASHIER_OPTIONS.map((cashier) => (
+                                    <option key={cashier} value={cashier}>{cashier}</option>
+                                ))}
+                            </select>
                         </Field>
                         <Field label="Cierre SICAR">
                             <select className={inputClass} value={selectedClosureId} onChange={(event) => setSelectedClosureId(event.target.value)}>
