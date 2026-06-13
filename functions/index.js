@@ -33,6 +33,21 @@ const BASE_FUNCTION_OPTIONS = {
   memory: '256MiB',
 };
 
+const ADMIN_ALLOWED_ORIGINS = [
+  'https://csmgcontabilidad.sanmartinsr.com',
+  'https://csmcontabilidad.netlify.app',
+  'http://localhost:5173',
+  'http://127.0.0.1:5173',
+  /^http:\/\/localhost:\d+$/,
+  /^http:\/\/127\.0\.0\.1:\d+$/,
+];
+
+const ADMIN_CALLABLE_FUNCTION_OPTIONS = {
+  ...BASE_FUNCTION_OPTIONS,
+  cors: ADMIN_ALLOWED_ORIGINS,
+  invoker: 'public',
+};
+
 const INCOME_CALLABLE_FUNCTION_OPTIONS = {
   ...BASE_FUNCTION_OPTIONS,
   secrets: [
@@ -2214,7 +2229,7 @@ function publicAuthUserPayload(userRecord, profile = {}) {
   };
 }
 
-exports.adminListAppUsers = onCall(BASE_FUNCTION_OPTIONS, async (request) => {
+exports.adminListAppUsers = onCall(ADMIN_CALLABLE_FUNCTION_OPTIONS, async (request) => {
   ensureMasterUser(request.auth, 'listar usuarios del sistema');
 
   const [listResult, profilesSnapshot] = await Promise.all([
@@ -2257,7 +2272,7 @@ exports.adminListAppUsers = onCall(BASE_FUNCTION_OPTIONS, async (request) => {
   };
 });
 
-exports.adminCreateAppUser = onCall(BASE_FUNCTION_OPTIONS, async (request) => {
+exports.adminCreateAppUser = onCall(ADMIN_CALLABLE_FUNCTION_OPTIONS, async (request) => {
   const actorEmail = ensureMasterUser(request.auth, 'crear o actualizar usuarios del sistema');
   const payload = request.data || {};
   const email = normalizeUserEmail(payload.email);
