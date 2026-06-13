@@ -3,7 +3,7 @@ import { collection, doc, getDoc, serverTimestamp, setDoc, writeBatch } from 'fi
 import { db } from '../firebase';
 import { useAuth } from '../context/AuthContext';
 import { APP_BRAND_NAME, fmt } from '../constants';
-import { PAYMENT_METHODS, buildFiscalPayload, uploadFiscalSupportFiles } from '../services/fiscalUtils';
+import { PAYMENT_METHODS, buildFiscalPayload, getSupportFiles, uploadFiscalSupportFiles } from '../services/fiscalUtils';
 import { isMasterEmail } from '../services/userAccess';
 
 const PAYMENT_BANKS = [
@@ -111,6 +111,22 @@ const isSicarInvoicePendingAccounting = (invoice = {}, loadedIndex = buildLoaded
 
     return true;
 };
+
+const normalizeStampedInvoiceRecord = (item = {}) => ({
+    ...item,
+    date: item.saleDate || item.date || '',
+    invoiceNumber: item.numeroFactura || item.invoiceNumber || '',
+    customerName: item.customerName || item.cliente || '',
+    customerRfc: item.customerRfc || item.rfc || '',
+    customerAddress: item.customerAddress || item.address || '',
+    paymentMethod: item.paymentMethod || '',
+    items: Array.isArray(item.items) ? item.items : [],
+});
+
+const isPdfSupportFile = (support = {}) => (
+    `${support.url || ''} ${support.path || ''} ${support.contentType || ''}`.toLowerCase().includes('.pdf')
+    || String(support.contentType || '').toLowerCase().includes('pdf')
+);
 
 const getMonth = (date = '') => String(date || todayString()).substring(0, 7);
 
@@ -1644,68 +1660,13 @@ const StampedInvoicePrintModal = ({
     );
 };
 
-function StampedInvoices({ data }) {
-    const savedInvoices = useMemo(() => (
-        [...(data.facturas_membretadas_ventas || [])]
-            .map((item) => ({
-                ...item,
-                date: item.saleDate || item.date || '',
-                invoiceNumber: item.numeroFactura || item.invoiceNumber || '',
-                items: item.items || [],
-            }))
-            .sort((a, b) => String(b.date).localeCompare(String(a.date)))
-    ), [data.facturas_membretadas_ventas]);
-
-    const loadedInvoiceIndex = useMemo(() => buildLoadedInvoiceIndex(savedInvoices), [savedInvoices]);
-
-    const sicarInvoices = useMemo(() => (
-        [...(data.sicar_facturas_membretadas || [])]
-            .map((item) => ({
-                ...item,
-                date: item.date || getRecordDate(item.fecha || item.invoiceDate),
-                invoiceNumber: item.numeroFactura || item.invoiceNumber || item.folio || '',
-                items: item.items || [],
-            }))
-            .filter((invoice) => isSicarInvoicePendingAccounting(invoice, loadedInvoiceIndex))
-            .sort((a, b) => String(b.date).localeCompare(String(a.date)))
-    ), [data.sicar_facturas_membretadas, loadedInvoiceIndex]);
-
-    const clients = useMemo(() => (
-        [...(data.clientes_facturacion || [])]
-            .map((item) => ({ ...item, name: item.name || item.nombre || '' }))
-            .filter((item) => item.name)
-            .sort((a, b) => a.name.localeCompare(b.name, 'es'))
-    ), [data.clientes_facturacion]);
-
-    const [form, setForm] = useState({
-        date: todayString(),
-        invoiceNumber: '',
-        customerName: '',
-        customerAddress: '',
-        customerRfc: '',
-        subtotal: '',
-        iva: '',
-        total: '',
-        retentionIr2: '',
-        retentionMunicipal1: '',
-        paymentMethod: '',
-        sourceSicarInvoiceId: '',
-        items: [],
-    });
-    const [supportFiles, setSupportFiles] = useState({});
-    const [printTarget, setPrintTarget] = useState(null);
+function useStampedPrintTemplates(setMessage = () => {}) {
     const [printLayout, setPrintLayout] = useState(DEFAULT_STAMPED_PRINT_LAYOUT);
     const [printTemplates, setPrintTemplates] = useState([
         { id: DEFAULT_PRINT_TEMPLATE_ID, name: DEFAULT_PRINT_TEMPLATE_NAME, layout: DEFAULT_STAMPED_PRINT_LAYOUT },
     ]);
     const [activePrintTemplateId, setActivePrintTemplateId] = useState(DEFAULT_PRINT_TEMPLATE_ID);
     const [printTemplateName, setPrintTemplateName] = useState(DEFAULT_PRINT_TEMPLATE_NAME);
-    const [saving, setSaving] = useState(false);
-    const [message, setMessage] = useState('');
-    const [sicarInvoiceSearch, setSicarInvoiceSearch] = useState('');
-    const [sicarInvoicePage, setSicarInvoicePage] = useState(1);
-    const [savedInvoiceSearch, setSavedInvoiceSearch] = useState('');
-    const [savedInvoicePage, setSavedInvoicePage] = useState(1);
 
     useEffect(() => {
         let mounted = true;
@@ -1726,90 +1687,6 @@ function StampedInvoices({ data }) {
             mounted = false;
         };
     }, []);
-
-    const fiscal = buildFiscalPayload({
-        subtotal: safeNumber(form.subtotal),
-        iva: safeNumber(form.iva),
-        total: safeNumber(form.total) || safeNumber(form.subtotal) + safeNumber(form.iva),
-        retentionIr2: safeNumber(form.retentionIr2),
-        retentionMunicipal1: safeNumber(form.retentionMunicipal1),
-    });
-
-    const filteredSicarInvoices = useMemo(() => filterRecords(sicarInvoices, sicarInvoiceSearch, [
-        'date',
-        'invoiceNumber',
-        'numeroFactura',
-        'folio',
-        'customerName',
-        'cliente',
-        'customerRfc',
-        'rfc',
-        'total',
-    ]), [sicarInvoices, sicarInvoiceSearch]);
-
-    const pagedSicarInvoices = useMemo(() => (
-        paginateRecords(filteredSicarInvoices, sicarInvoicePage)
-    ), [filteredSicarInvoices, sicarInvoicePage]);
-
-    const filteredSavedInvoices = useMemo(() => filterRecords(savedInvoices, savedInvoiceSearch, [
-        'date',
-        'saleDate',
-        'invoiceNumber',
-        'numeroFactura',
-        'customerName',
-        'cliente',
-        'paymentMethod',
-        'total',
-    ]), [savedInvoices, savedInvoiceSearch]);
-
-    const pagedSavedInvoices = useMemo(() => (
-        paginateRecords(filteredSavedInvoices, savedInvoicePage)
-    ), [filteredSavedInvoices, savedInvoicePage]);
-
-    useEffect(() => {
-        setSicarInvoicePage(1);
-    }, [sicarInvoiceSearch]);
-
-    useEffect(() => {
-        setSavedInvoicePage(1);
-    }, [savedInvoiceSearch]);
-
-    useEffect(() => {
-        if (sicarInvoicePage !== pagedSicarInvoices.page) setSicarInvoicePage(pagedSicarInvoices.page);
-    }, [sicarInvoicePage, pagedSicarInvoices.page]);
-
-    useEffect(() => {
-        if (savedInvoicePage !== pagedSavedInvoices.page) setSavedInvoicePage(pagedSavedInvoices.page);
-    }, [savedInvoicePage, pagedSavedInvoices.page]);
-
-    const update = (key, value) => {
-        setForm((prev) => {
-            const next = { ...prev, [key]: value };
-            if (key === 'subtotal' || key === 'iva') {
-                next.total = String(safeNumber(next.subtotal) + safeNumber(next.iva));
-            }
-            return next;
-        });
-    };
-
-    const loadSicarInvoice = (invoice) => {
-        setForm({
-            date: invoice.date || todayString(),
-            invoiceNumber: invoice.invoiceNumber || '',
-            customerName: invoice.customerName || invoice.cliente || '',
-            customerAddress: invoice.customerAddress || invoice.address || '',
-            customerRfc: invoice.customerRfc || invoice.rfc || '',
-            subtotal: String(safeNumber(invoice.subtotal)),
-            iva: String(safeNumber(invoice.iva)),
-            total: String(safeNumber(invoice.total)),
-            retentionIr2: '',
-            retentionMunicipal1: '',
-            paymentMethod: invoice.paymentMethod || '',
-            sourceSicarInvoiceId: invoice.id || '',
-            items: invoice.items || [],
-        });
-        setMessage(`Factura SICAR ${invoice.invoiceNumber || invoice.id} cargada con ${(invoice.items || []).length} articulo(s).`);
-    };
 
     const persistPrintTemplates = async (templates, selectedTemplateId, successMessage) => {
         const normalizedTemplates = templates.map((template, index) => normalizePrintTemplate(template, index));
@@ -1861,6 +1738,129 @@ function StampedInvoices({ data }) {
         await persistPrintTemplates(nextTemplates, templateId, `Nueva plantilla "${name}" guardada.`);
     };
 
+    return {
+        printLayout,
+        printTemplates,
+        activePrintTemplateId,
+        printTemplateName,
+        setPrintLayout,
+        setPrintTemplateName,
+        selectPrintTemplate,
+        savePrintLayout,
+        saveNewPrintLayout,
+    };
+}
+
+function StampedInvoices({ data }) {
+    const savedInvoices = useMemo(() => (
+        [...(data.facturas_membretadas_ventas || [])]
+            .map(normalizeStampedInvoiceRecord)
+            .sort((a, b) => String(b.date).localeCompare(String(a.date)))
+    ), [data.facturas_membretadas_ventas]);
+
+    const loadedInvoiceIndex = useMemo(() => buildLoadedInvoiceIndex(savedInvoices), [savedInvoices]);
+
+    const sicarInvoices = useMemo(() => (
+        [...(data.sicar_facturas_membretadas || [])]
+            .map((item) => ({
+                ...item,
+                date: item.date || getRecordDate(item.fecha || item.invoiceDate),
+                invoiceNumber: item.numeroFactura || item.invoiceNumber || item.folio || '',
+                items: item.items || [],
+            }))
+            .filter((invoice) => isSicarInvoicePendingAccounting(invoice, loadedInvoiceIndex))
+            .sort((a, b) => String(b.date).localeCompare(String(a.date)))
+    ), [data.sicar_facturas_membretadas, loadedInvoiceIndex]);
+
+    const clients = useMemo(() => (
+        [...(data.clientes_facturacion || [])]
+            .map((item) => ({ ...item, name: item.name || item.nombre || '' }))
+            .filter((item) => item.name)
+            .sort((a, b) => a.name.localeCompare(b.name, 'es'))
+    ), [data.clientes_facturacion]);
+
+    const [form, setForm] = useState({
+        date: todayString(),
+        invoiceNumber: '',
+        customerName: '',
+        customerAddress: '',
+        customerRfc: '',
+        subtotal: '',
+        iva: '',
+        total: '',
+        retentionIr2: '',
+        retentionMunicipal1: '',
+        paymentMethod: '',
+        sourceSicarInvoiceId: '',
+        items: [],
+    });
+    const [supportFiles, setSupportFiles] = useState({});
+    const [saving, setSaving] = useState(false);
+    const [message, setMessage] = useState('');
+    const [sicarInvoiceSearch, setSicarInvoiceSearch] = useState('');
+    const [sicarInvoicePage, setSicarInvoicePage] = useState(1);
+
+    const fiscal = buildFiscalPayload({
+        subtotal: safeNumber(form.subtotal),
+        iva: safeNumber(form.iva),
+        total: safeNumber(form.total) || safeNumber(form.subtotal) + safeNumber(form.iva),
+        retentionIr2: safeNumber(form.retentionIr2),
+        retentionMunicipal1: safeNumber(form.retentionMunicipal1),
+    });
+
+    const filteredSicarInvoices = useMemo(() => filterRecords(sicarInvoices, sicarInvoiceSearch, [
+        'date',
+        'invoiceNumber',
+        'numeroFactura',
+        'folio',
+        'customerName',
+        'cliente',
+        'customerRfc',
+        'rfc',
+        'total',
+    ]), [sicarInvoices, sicarInvoiceSearch]);
+
+    const pagedSicarInvoices = useMemo(() => (
+        paginateRecords(filteredSicarInvoices, sicarInvoicePage)
+    ), [filteredSicarInvoices, sicarInvoicePage]);
+
+    useEffect(() => {
+        setSicarInvoicePage(1);
+    }, [sicarInvoiceSearch]);
+
+    useEffect(() => {
+        if (sicarInvoicePage !== pagedSicarInvoices.page) setSicarInvoicePage(pagedSicarInvoices.page);
+    }, [sicarInvoicePage, pagedSicarInvoices.page]);
+
+    const update = (key, value) => {
+        setForm((prev) => {
+            const next = { ...prev, [key]: value };
+            if (key === 'subtotal' || key === 'iva') {
+                next.total = String(safeNumber(next.subtotal) + safeNumber(next.iva));
+            }
+            return next;
+        });
+    };
+
+    const loadSicarInvoice = (invoice) => {
+        setForm({
+            date: invoice.date || todayString(),
+            invoiceNumber: invoice.invoiceNumber || '',
+            customerName: invoice.customerName || invoice.cliente || '',
+            customerAddress: invoice.customerAddress || invoice.address || '',
+            customerRfc: invoice.customerRfc || invoice.rfc || '',
+            subtotal: String(safeNumber(invoice.subtotal)),
+            iva: String(safeNumber(invoice.iva)),
+            total: String(safeNumber(invoice.total)),
+            retentionIr2: '',
+            retentionMunicipal1: '',
+            paymentMethod: invoice.paymentMethod || '',
+            sourceSicarInvoiceId: invoice.id || '',
+            items: invoice.items || [],
+        });
+        setMessage(`Factura SICAR ${invoice.invoiceNumber || invoice.id} cargada con ${(invoice.items || []).length} articulo(s).`);
+    };
+
     const upsertClientRecord = async (name, source = 'factura_membretada') => {
         const safeName = String(name || '').trim();
         if (!safeName) return '';
@@ -1886,21 +1886,6 @@ function StampedInvoices({ data }) {
         if (!window.confirm(`El cliente "${safeName}" no existe. Deseas agregarlo a la base de clientes?`)) return;
         await upsertClientRecord(safeName, 'manual_factura_membretada');
         setMessage(`Cliente agregado a la base: ${safeName}.`);
-    };
-
-    const updateSavedInvoicePaymentMethod = async (invoice, paymentMethod) => {
-        const invoiceId = invoice.id || invoice.docId;
-        if (!invoiceId) return;
-        try {
-            await setDoc(doc(db, 'facturas_membretadas_ventas', invoiceId), {
-                paymentMethod,
-                updatedAt: serverTimestamp(),
-            }, { merge: true });
-            setMessage(`Metodo de pago actualizado para factura ${invoice.invoiceNumber || invoice.numeroFactura || invoiceId}.`);
-        } catch (error) {
-            console.error(error);
-            setMessage(error?.message || 'No se pudo actualizar el metodo de pago.');
-        }
     };
 
     const saveInvoice = async (event) => {
@@ -2115,6 +2100,7 @@ function StampedInvoices({ data }) {
                     </div>
                 </Section>
 
+                {false && (
                 <Section title="Guardadas" eyebrow="Facturas membretadas" action={<Badge tone="green">{savedInvoices.length} registros</Badge>}>
                     <div className="space-y-3">
                         <SearchBox
@@ -2175,9 +2161,10 @@ function StampedInvoices({ data }) {
                         />
                     </div>
                 </Section>
+                )}
             </div>
         </div>
-        <StampedInvoicePrintModal
+        {false && <StampedInvoicePrintModal
             invoice={printTarget}
             layout={printLayout}
             templates={printTemplates}
@@ -2189,7 +2176,361 @@ function StampedInvoices({ data }) {
             onSaveLayout={savePrintLayout}
             onSaveNewLayout={saveNewPrintLayout}
             onClose={() => setPrintTarget(null)}
-        />
+        />}
+        </>
+    );
+}
+
+const StampedInvoiceDetailModal = ({
+    invoice,
+    onClose,
+    onPrint,
+    onPaymentMethodChange,
+}) => {
+    if (!invoice) return null;
+    const supportFiles = getSupportFiles(invoice);
+
+    return (
+        <div className="fixed inset-0 z-[70] flex items-start justify-center overflow-y-auto bg-slate-950/70 p-4 backdrop-blur-sm">
+            <div className="w-full max-w-6xl overflow-hidden rounded-[2rem] border border-white/10 bg-white shadow-2xl">
+                <div className="flex flex-col gap-3 border-b border-slate-200 bg-slate-950 px-5 py-4 text-white sm:flex-row sm:items-center sm:justify-between">
+                    <div>
+                        <div className="text-[10px] font-black uppercase tracking-[0.28em] text-red-300">Detalle fiscal</div>
+                        <h3 className="text-xl font-black">Factura {invoice.invoiceNumber || invoice.numeroFactura || '-'}</h3>
+                        <p className="mt-1 text-sm font-semibold text-slate-300">{invoice.date || invoice.saleDate || '-'} · {invoice.customerName || invoice.cliente || 'Sin cliente'}</p>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                        <button type="button" onClick={() => onPrint(invoice)} className="rounded-2xl bg-[#e30613] px-4 py-2 text-xs font-black uppercase tracking-[0.16em] text-white transition hover:bg-red-700">
+                            Imprimir
+                        </button>
+                        <button type="button" onClick={onClose} className="rounded-2xl bg-white px-4 py-2 text-xs font-black uppercase tracking-[0.16em] text-slate-950 transition hover:bg-slate-200">
+                            Cerrar
+                        </button>
+                    </div>
+                </div>
+
+                <div className="grid gap-5 p-5 xl:grid-cols-[0.8fr_1.2fr]">
+                    <div className="space-y-4">
+                        <div className="rounded-3xl border border-slate-200 bg-slate-50 p-4">
+                            <div className="text-[10px] font-black uppercase tracking-[0.22em] text-slate-400">Cliente</div>
+                            <div className="mt-1 text-lg font-black text-slate-950">{invoice.customerName || invoice.cliente || 'Sin cliente'}</div>
+                            <div className="mt-2 space-y-1 text-sm font-semibold text-slate-600">
+                                <div>RUC/RFC: {invoice.customerRfc || invoice.rfc || '-'}</div>
+                                <div>Direccion: {invoice.customerAddress || invoice.address || '-'}</div>
+                            </div>
+                        </div>
+
+                        <div className="grid gap-3 sm:grid-cols-2">
+                            <SummaryCard label="Subtotal" value={fmt(invoice.subtotal)} />
+                            <SummaryCard label="IVA" value={fmt(invoice.iva)} tone="blue" />
+                            <SummaryCard label="Total" value={fmt(invoice.total)} tone="green" />
+                            <SummaryCard label="Retenciones" value={fmt(invoice.retentionTotal || safeNumber(invoice.retentionIr2) + safeNumber(invoice.retentionMunicipal1))} tone="amber" />
+                        </div>
+
+                        <div className="rounded-3xl border border-slate-200 bg-white p-4">
+                            <Field label="Metodo de pago">
+                                <PaymentMethodSelect value={invoice.paymentMethod || ''} onChange={(value) => onPaymentMethodChange(invoice, value)} />
+                            </Field>
+                        </div>
+
+                        <div className="rounded-3xl border border-slate-200 bg-white p-4">
+                            <div className="mb-3 flex items-center justify-between gap-3">
+                                <div>
+                                    <div className="text-sm font-black text-slate-950">Soportes</div>
+                                    <div className="text-xs font-semibold text-slate-500">Factura y retenciones asociadas.</div>
+                                </div>
+                                <Badge tone={supportFiles.length ? 'green' : 'slate'}>{supportFiles.length}</Badge>
+                            </div>
+                            {supportFiles.length === 0 ? (
+                                <div className="rounded-2xl border border-dashed border-slate-300 p-5 text-center text-sm font-bold text-slate-400">
+                                    No hay soportes adjuntos.
+                                </div>
+                            ) : (
+                                <div className="space-y-3">
+                                    {supportFiles.map((support) => (
+                                        <div key={`${support.type}-${support.path || support.url}`} className="rounded-2xl border border-slate-200 bg-slate-50 p-3">
+                                            <div className="mb-2 flex items-center justify-between gap-3">
+                                                <div>
+                                                    <div className="text-[10px] font-black uppercase tracking-[0.2em] text-[#e30613]">{support.label}</div>
+                                                    {support.fileName && <div className="text-xs font-semibold text-slate-500">{support.fileName}</div>}
+                                                </div>
+                                                {support.url && (
+                                                    <a href={support.url} target="_blank" rel="noreferrer" className="rounded-xl bg-slate-950 px-3 py-2 text-[10px] font-black uppercase tracking-[0.16em] text-white">
+                                                        Abrir
+                                                    </a>
+                                                )}
+                                            </div>
+                                            {support.url && (
+                                                isPdfSupportFile(support) ? (
+                                                    <iframe title={support.label} src={support.url} className="h-72 w-full rounded-xl border border-slate-200 bg-white" />
+                                                ) : (
+                                                    <img src={support.url} alt={support.label} className="max-h-72 w-full rounded-xl object-contain" />
+                                                )
+                                            )}
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
+                        </div>
+                    </div>
+
+                    <div className="rounded-3xl border border-slate-200 bg-slate-50/70 p-4">
+                        <div className="mb-3 flex items-center justify-between gap-3">
+                            <div>
+                                <div className="text-sm font-black text-slate-950">Detalle de articulos</div>
+                                <div className="text-xs font-semibold text-slate-500">Cantidad, producto, precio sin IVA y total sin IVA.</div>
+                            </div>
+                            <Badge tone={invoice.items?.length ? 'green' : 'slate'}>{invoice.items?.length || 0} lineas</Badge>
+                        </div>
+                        <InvoiceItemsTable items={invoice.items || []} />
+                    </div>
+                </div>
+            </div>
+        </div>
+    );
+};
+
+function StampedInvoiceHistory({ data }) {
+    const [search, setSearch] = useState('');
+    const [selectedMonth, setSelectedMonth] = useState(getMonth(todayString()));
+    const [paymentMethodFilter, setPaymentMethodFilter] = useState('');
+    const [page, setPage] = useState(1);
+    const [message, setMessage] = useState('');
+    const [detailTarget, setDetailTarget] = useState(null);
+    const [printTarget, setPrintTarget] = useState(null);
+    const {
+        printLayout,
+        printTemplates,
+        activePrintTemplateId,
+        printTemplateName,
+        setPrintLayout,
+        setPrintTemplateName,
+        selectPrintTemplate,
+        savePrintLayout,
+        saveNewPrintLayout,
+    } = useStampedPrintTemplates(setMessage);
+
+    const savedInvoices = useMemo(() => (
+        [...(data.facturas_membretadas_ventas || [])]
+            .map(normalizeStampedInvoiceRecord)
+            .sort((a, b) => String(b.date).localeCompare(String(a.date)))
+    ), [data.facturas_membretadas_ventas]);
+
+    const searchedInvoices = useMemo(() => filterRecords(savedInvoices, search, [
+        'date',
+        'saleDate',
+        'invoiceNumber',
+        'numeroFactura',
+        'customerName',
+        'cliente',
+        'customerRfc',
+        'rfc',
+        'paymentMethod',
+        'total',
+    ]), [savedInvoices, search]);
+
+    const filteredInvoices = useMemo(() => (
+        searchedInvoices.filter((invoice) => {
+            const invoiceMonth = getMonth(invoice.date || invoice.saleDate || '');
+            const matchesMonth = !selectedMonth || invoiceMonth === selectedMonth;
+            const matchesPayment = !paymentMethodFilter || normalizeText(invoice.paymentMethod) === normalizeText(paymentMethodFilter);
+            return matchesMonth && matchesPayment;
+        })
+    ), [searchedInvoices, selectedMonth, paymentMethodFilter]);
+
+    const pagedInvoices = useMemo(() => (
+        paginateRecords(filteredInvoices, page)
+    ), [filteredInvoices, page]);
+
+    const stats = useMemo(() => (
+        filteredInvoices.reduce((acc, invoice) => {
+            acc.subtotal = safeNumber(acc.subtotal + safeNumber(invoice.subtotal));
+            acc.iva = safeNumber(acc.iva + safeNumber(invoice.iva));
+            acc.total = safeNumber(acc.total + safeNumber(invoice.total));
+            acc.retentionTotal = safeNumber(acc.retentionTotal + safeNumber(invoice.retentionTotal || safeNumber(invoice.retentionIr2) + safeNumber(invoice.retentionMunicipal1)));
+            acc.items += (invoice.items || []).length;
+            return acc;
+        }, { subtotal: 0, iva: 0, total: 0, retentionTotal: 0, items: 0 })
+    ), [filteredInvoices]);
+
+    useEffect(() => {
+        setPage(1);
+    }, [search, selectedMonth, paymentMethodFilter]);
+
+    useEffect(() => {
+        if (page !== pagedInvoices.page) setPage(pagedInvoices.page);
+    }, [page, pagedInvoices.page]);
+
+    const updatePaymentMethod = async (invoice, paymentMethod) => {
+        const invoiceId = invoice.id || invoice.docId;
+        if (!invoiceId) return;
+        try {
+            await setDoc(doc(db, 'facturas_membretadas_ventas', invoiceId), {
+                paymentMethod,
+                updatedAt: serverTimestamp(),
+            }, { merge: true });
+            setDetailTarget((current) => (
+                current && (current.id || current.docId) === invoiceId
+                    ? { ...current, paymentMethod }
+                    : current
+            ));
+            setMessage(`Metodo de pago actualizado para factura ${invoice.invoiceNumber || invoice.numeroFactura || invoiceId}.`);
+        } catch (error) {
+            console.error(error);
+            setMessage(error?.message || 'No se pudo actualizar el metodo de pago.');
+        }
+    };
+
+    return (
+        <>
+            <div className="space-y-5">
+                <Section
+                    title="Historial Fact. Membretadas"
+                    eyebrow="Facturas ya registradas"
+                    action={<Badge tone="green">{filteredInvoices.length} de {savedInvoices.length}</Badge>}
+                >
+                    <div className="grid gap-3 lg:grid-cols-[1.4fr_0.55fr_0.8fr_auto]">
+                        <SearchBox
+                            value={search}
+                            onChange={setSearch}
+                            placeholder="Buscar por factura, cliente, RUC, fecha o metodo..."
+                            resultLabel={`${searchedInvoices.length} encontrados`}
+                        />
+                        <Field label="Mes">
+                            <input className={inputClass} type="month" value={selectedMonth} onChange={(event) => setSelectedMonth(event.target.value)} />
+                        </Field>
+                        <Field label="Metodo de pago">
+                            <select className={inputClass} value={paymentMethodFilter} onChange={(event) => setPaymentMethodFilter(event.target.value)}>
+                                <option value="">Todos</option>
+                                {PAYMENT_METHODS.map((method) => (
+                                    <option key={method} value={method}>{method}</option>
+                                ))}
+                            </select>
+                        </Field>
+                        <div className="flex items-end">
+                            <button
+                                type="button"
+                                onClick={() => {
+                                    setSearch('');
+                                    setSelectedMonth('');
+                                    setPaymentMethodFilter('');
+                                }}
+                                className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-xs font-black uppercase tracking-[0.16em] text-slate-600 transition hover:border-[#e30613] hover:text-[#e30613]"
+                            >
+                                Limpiar
+                            </button>
+                        </div>
+                    </div>
+
+                    <div className="mt-5 grid gap-3 md:grid-cols-5">
+                        <SummaryCard label="Facturas" value={filteredInvoices.length} />
+                        <SummaryCard label="Subtotal" value={fmt(stats.subtotal)} />
+                        <SummaryCard label="IVA" value={fmt(stats.iva)} tone="blue" />
+                        <SummaryCard label="Total" value={fmt(stats.total)} tone="green" />
+                        <SummaryCard label="Retenciones" value={fmt(stats.retentionTotal)} tone="amber" />
+                    </div>
+
+                    {message && <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-3 text-sm font-bold text-slate-700">{message}</div>}
+                </Section>
+
+                <Section title="Facturas registradas" eyebrow="Consulta y revision" action={<Badge tone="blue">{stats.items} articulos</Badge>}>
+                    <div className="space-y-3">
+                        {savedInvoices.length === 0 ? (
+                            <div className="rounded-3xl border border-dashed border-slate-300 p-10 text-center text-sm font-bold text-slate-400">
+                                Todavia no hay facturas membretadas guardadas.
+                            </div>
+                        ) : filteredInvoices.length === 0 ? (
+                            <div className="rounded-3xl border border-dashed border-slate-300 p-10 text-center text-sm font-bold text-slate-400">
+                                No hay facturas membretadas que coincidan con los filtros.
+                            </div>
+                        ) : pagedInvoices.records.map((invoice) => (
+                            <div key={invoice.id || `${invoice.invoiceNumber}-${invoice.date}`} className="rounded-[1.6rem] border border-slate-200 bg-white p-4 shadow-sm transition hover:-translate-y-0.5 hover:border-red-200 hover:shadow-lg hover:shadow-slate-900/5">
+                                <div className="grid gap-4 xl:grid-cols-[1fr_0.58fr_0.8fr_auto] xl:items-center">
+                                    <div className="min-w-0">
+                                        <div className="flex flex-wrap items-center gap-2">
+                                            <div className="truncate text-base font-black text-slate-950">Factura {invoice.invoiceNumber || '-'}</div>
+                                            <Badge tone={invoice.source === 'sicar_factura' ? 'blue' : 'slate'}>{invoice.source === 'sicar_factura' ? 'SICAR' : 'Manual'}</Badge>
+                                        </div>
+                                        <div className="mt-1 text-sm font-bold text-slate-600">{invoice.customerName || invoice.cliente || 'Sin cliente'}</div>
+                                        <div className="mt-1 text-xs font-bold text-slate-400">{invoice.date || '-'} · RUC {invoice.customerRfc || invoice.rfc || '-'} · {(invoice.items || []).length} articulo(s)</div>
+                                    </div>
+
+                                    <div className="grid grid-cols-2 gap-2 text-xs font-bold text-slate-500">
+                                        <div>
+                                            <div className="text-[10px] font-black uppercase tracking-[0.18em] text-slate-400">Subtotal</div>
+                                            <div className="font-mono text-sm font-black text-slate-950">{fmt(invoice.subtotal)}</div>
+                                        </div>
+                                        <div>
+                                            <div className="text-[10px] font-black uppercase tracking-[0.18em] text-slate-400">Total</div>
+                                            <div className="font-mono text-sm font-black text-emerald-700">{fmt(invoice.total)}</div>
+                                        </div>
+                                        <div>
+                                            <div className="text-[10px] font-black uppercase tracking-[0.18em] text-slate-400">IVA</div>
+                                            <div className="font-mono text-sm font-black text-sky-700">{fmt(invoice.iva)}</div>
+                                        </div>
+                                        <div>
+                                            <div className="text-[10px] font-black uppercase tracking-[0.18em] text-slate-400">Ret.</div>
+                                            <div className="font-mono text-sm font-black text-amber-700">{fmt(invoice.retentionTotal || 0)}</div>
+                                        </div>
+                                    </div>
+
+                                    <Field label="Metodo">
+                                        <PaymentMethodSelect value={invoice.paymentMethod || ''} onChange={(value) => updatePaymentMethod(invoice, value)} />
+                                    </Field>
+
+                                    <div className="flex flex-wrap justify-start gap-2 xl:justify-end">
+                                        <button
+                                            type="button"
+                                            onClick={() => setDetailTarget(invoice)}
+                                            className="rounded-xl bg-slate-950 px-4 py-3 text-xs font-black uppercase tracking-[0.14em] text-white transition hover:bg-slate-800"
+                                        >
+                                            Ver detalle
+                                        </button>
+                                        <button
+                                            type="button"
+                                            onClick={() => setPrintTarget(invoice)}
+                                            className="rounded-xl border border-slate-200 bg-white px-4 py-3 text-xs font-black uppercase tracking-[0.14em] text-slate-700 transition hover:border-[#e30613] hover:text-[#e30613]"
+                                        >
+                                            Imprimir
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+
+                    <div className="mt-4">
+                        <PaginationControls
+                            page={pagedInvoices.page}
+                            totalPages={pagedInvoices.totalPages}
+                            total={filteredInvoices.length}
+                            start={pagedInvoices.start}
+                            end={pagedInvoices.end}
+                            onPageChange={setPage}
+                        />
+                    </div>
+                </Section>
+            </div>
+
+            <StampedInvoiceDetailModal
+                invoice={detailTarget}
+                onClose={() => setDetailTarget(null)}
+                onPrint={setPrintTarget}
+                onPaymentMethodChange={updatePaymentMethod}
+            />
+            <StampedInvoicePrintModal
+                invoice={printTarget}
+                layout={printLayout}
+                templates={printTemplates}
+                activeTemplateId={activePrintTemplateId}
+                templateName={printTemplateName}
+                onSelectTemplate={selectPrintTemplate}
+                onTemplateNameChange={setPrintTemplateName}
+                onLayoutChange={setPrintLayout}
+                onSaveLayout={savePrintLayout}
+                onSaveNewLayout={saveNewPrintLayout}
+                onClose={() => setPrintTarget(null)}
+            />
         </>
     );
 }
@@ -2398,6 +2739,7 @@ export default function Billing({ data = {} }) {
     const tabs = [
         { key: 'cierre', label: 'Cierre de caja' },
         { key: 'membretadas', label: 'Facturas membretadas' },
+        { key: 'historial_membretadas', label: 'Historial Fact. Membretadas' },
         { key: 'diferencias', label: 'Diferencias de caja' },
         { key: 'depositos', label: 'Depositos bancarios' },
     ];
@@ -2444,6 +2786,7 @@ export default function Billing({ data = {} }) {
 
             {activeTab === 'cierre' && <CashClosure data={data} />}
             {activeTab === 'membretadas' && <StampedInvoices data={data} />}
+            {activeTab === 'historial_membretadas' && <StampedInvoiceHistory data={data} />}
             {activeTab === 'diferencias' && <CashDifferences data={data} />}
             {activeTab === 'depositos' && <ComingSoon />}
         </div>
