@@ -1,8 +1,10 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { doc, getDoc, serverTimestamp, setDoc } from 'firebase/firestore';
+import { collection, doc, getDoc, serverTimestamp, setDoc, writeBatch } from 'firebase/firestore';
 import { db } from '../firebase';
+import { useAuth } from '../context/AuthContext';
 import { APP_BRAND_NAME, fmt } from '../constants';
 import { PAYMENT_METHODS, buildFiscalPayload, uploadFiscalSupportFiles } from '../services/fiscalUtils';
+import { isMasterEmail } from '../services/userAccess';
 
 const PAYMENT_BANKS = [
     { key: 'bac', label: 'BAC' },
@@ -11,6 +13,7 @@ const PAYMENT_BANKS = [
 ];
 
 const CASH_DENOMINATIONS = [1000, 500, 200, 100, 50, 20, 10, 5, 1];
+const CASH_DIFFERENCE_THRESHOLD = 30;
 
 const CASHIER_OPTIONS = [
     'Dania Espinoza',
@@ -22,6 +25,15 @@ const CASHIER_OPTIONS = [
 const safeNumber = (value) => {
     const parsed = Number(value || 0);
     return Number.isFinite(parsed) ? Math.round(parsed * 100) / 100 : 0;
+};
+
+const parsePromptAmount = (value = '') => {
+    const raw = String(value || '').trim().replace(/\s/g, '');
+    if (!raw) return 0;
+    const normalized = raw.includes(',') && raw.includes('.')
+        ? raw.replace(/\./g, '').replace(',', '.')
+        : raw.replace(',', '.');
+    return safeNumber(normalized);
 };
 
 const todayString = () => new Date().toISOString().substring(0, 10);
@@ -111,6 +123,15 @@ const getRecordDate = (value) => {
 };
 
 const createLineId = (prefix = 'line') => `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+
+const getCashDifferencePendingAmount = (item = {}) => {
+    if (['pagado', 'cerrado'].includes(String(item.status || '').toLowerCase())) return 0;
+    const storedBalance = safeNumber(item.pendingAmount ?? item.saldo);
+    if (storedBalance > 0) return storedBalance;
+    return Math.abs(safeNumber(item.amount));
+};
+
+const getCashDifferenceType = (amount = 0) => (safeNumber(amount) < 0 ? 'faltante' : 'sobrante');
 
 const emptyTransfer = () => ({ localId: createLineId('transfer'), clientName: '', amount: '', reference: '' });
 const emptyPos = () => ({ localId: createLineId('pos'), amount: '', reference: '' });
@@ -716,6 +737,7 @@ function CashClosure({ data }) {
     const sicarExpected = safeNumber(selectedClosure?.calculatedTotal ?? selectedClosure?.calculado ?? selectedClosure?.totalDineroIngresado);
     const expectedAfterRetentions = safeNumber(sicarExpected - retentionTotal);
     const difference = safeNumber(manualTotal - expectedAfterRetentions);
+    const shouldTrackDifference = Math.abs(difference) > CASH_DIFFERENCE_THRESHOLD;
 
     const loadClosure = (closure) => {
         setActiveClosureDocId(closure.corId ? `cierre_${closure.date || getRecordDate(closure.closureDateTime || closure.fecha)}_${closure.corId}` : '');
@@ -927,7 +949,7 @@ function CashClosure({ data }) {
             const payload = {
                 date: closureDate,
                 month: getMonth(closureDate),
-                status: isWaiting ? 'en_espera' : (Math.abs(difference) > 0.01 ? 'con_diferencia' : 'cuadrado'),
+                status: isWaiting ? 'en_espera' : (shouldTrackDifference ? 'con_diferencia' : 'cuadrado'),
                 cashierName: cashierName || '',
                 cashierCode,
                 linkedSicarClosureId: selectedClosure?.id || '',
@@ -970,7 +992,8 @@ function CashClosure({ data }) {
             await setDoc(doc(db, 'cierres_caja', docId), payload, { merge: true });
             setActiveClosureDocId(docId);
 
-            if (!isWaiting && cashierCode && Math.abs(difference) > 0.01) {
+            if (!isWaiting && cashierCode && shouldTrackDifference) {
+                const pendingAmount = Math.abs(difference);
                 await setDoc(doc(db, 'diferencias_caja', `${docId}_${cashierCode}`), {
                     closureId: docId,
                     date: closureDate,
@@ -978,6 +1001,11 @@ function CashClosure({ data }) {
                     cashierName,
                     cashierCode,
                     amount: difference,
+                    pendingAmount,
+                    saldo: pendingAmount,
+                    paidAmount: 0,
+                    differenceType: getCashDifferenceType(difference),
+                    threshold: CASH_DIFFERENCE_THRESHOLD,
                     status: 'pendiente',
                     source: 'cierre_caja',
                     updatedAt: serverTimestamp(),
@@ -1085,7 +1113,7 @@ function CashClosure({ data }) {
             </Section>
 
             <div className="space-y-5">
-                <Section title="Cierre de caja" eyebrow="Formulario operativo" action={<Badge tone={Math.abs(difference) > 0.01 ? 'red' : 'green'}>{Math.abs(difference) > 0.01 ? 'Con diferencia' : 'Cuadrado'}</Badge>}>
+                <Section title="Cierre de caja" eyebrow="Formulario operativo" action={<Badge tone={shouldTrackDifference ? 'red' : 'green'}>{shouldTrackDifference ? 'Con diferencia' : 'Cuadrado'}</Badge>}>
                     <div className="grid gap-4 md:grid-cols-3">
                         <Field label="Fecha de cierre">
                             <input className={inputClass} type="date" value={closureDate} onChange={(event) => setClosureDate(event.target.value)} />
@@ -1114,7 +1142,7 @@ function CashClosure({ data }) {
                         <SummaryCard label="SICAR esperado" value={fmt(sicarExpected)} tone="blue" />
                         <SummaryCard label="Retenciones membretadas" value={fmt(retentionTotal)} tone="amber" />
                         <SummaryCard label="Total contado app" value={fmt(manualTotal)} tone="slate" />
-                        <SummaryCard label="Diferencia" value={fmt(difference)} tone={Math.abs(difference) > 0.01 ? 'red' : 'green'} />
+                        <SummaryCard label="Diferencia" value={fmt(difference)} tone={shouldTrackDifference ? 'red' : 'green'} />
                     </div>
 
                     <div className="mt-5 rounded-3xl border border-slate-200 bg-slate-50/70 p-4">
@@ -2167,6 +2195,10 @@ function StampedInvoices({ data }) {
 }
 
 function CashDifferences({ data }) {
+    const { user } = useAuth();
+    const isMaster = isMasterEmail(user?.email);
+    const [message, setMessage] = useState('');
+
     const differences = useMemo(() => (
         [...(data.diferencias_caja || [])]
             .sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')))
@@ -2175,18 +2207,108 @@ function CashDifferences({ data }) {
     const byCashier = useMemo(() => {
         const map = new Map();
         differences.forEach((item) => {
+            const pendingAmount = getCashDifferencePendingAmount(item);
+            if (pendingAmount <= 0.01) return;
             const key = item.cashierCode || item.cashierName || 'SIN-CAJERO';
-            const current = map.get(key) || { cashierName: item.cashierName || 'Sin cajero', amount: 0, count: 0 };
-            current.amount = safeNumber(current.amount + safeNumber(item.amount));
+            const current = map.get(key) || {
+                cashierCode: item.cashierCode || '',
+                cashierName: item.cashierName || 'Sin cajero',
+                amount: 0,
+                count: 0,
+                rawNet: 0,
+            };
+            current.amount = safeNumber(current.amount + pendingAmount);
+            current.rawNet = safeNumber(current.rawNet + safeNumber(item.amount));
             current.count += 1;
             map.set(key, current);
         });
-        return [...map.values()].sort((a, b) => Math.abs(b.amount) - Math.abs(a.amount));
+        return [...map.values()].sort((a, b) => b.amount - a.amount);
     }, [differences]);
+
+    const handleCashierPayment = async (cashier) => {
+        if (!isMaster) return;
+
+        const amountInput = window.prompt(`Monto a abonar a ${cashier.cashierName}:`, '');
+        if (amountInput === null) return;
+
+        const requestedAmount = parsePromptAmount(amountInput);
+        if (requestedAmount <= 0) {
+            setMessage('Ingresa un monto de abono mayor que cero.');
+            return;
+        }
+
+        const note = window.prompt('Nota del abono / deduccion de salario:', 'Deduccion de salario') || '';
+        const cashierKey = cashier.cashierCode || cashier.cashierName || 'SIN-CAJERO';
+        const pendingRows = differences
+            .filter((item) => (item.cashierCode || item.cashierName || 'SIN-CAJERO') === cashierKey)
+            .filter((item) => getCashDifferencePendingAmount(item) > 0.01)
+            .sort((a, b) => String(a.date || '').localeCompare(String(b.date || '')));
+
+        let remaining = requestedAmount;
+        const allocations = [];
+        const batch = writeBatch(db);
+
+        pendingRows.forEach((item) => {
+            if (remaining <= 0.01) return;
+            const pendingAmount = getCashDifferencePendingAmount(item);
+            const applied = safeNumber(Math.min(pendingAmount, remaining));
+            const nextPending = safeNumber(Math.max(pendingAmount - applied, 0));
+            remaining = safeNumber(remaining - applied);
+            allocations.push({
+                differenceId: item.id,
+                closureId: item.closureId || '',
+                date: item.date || '',
+                previousPending: pendingAmount,
+                applied,
+                nextPending,
+            });
+            batch.set(doc(db, 'diferencias_caja', item.id), {
+                pendingAmount: nextPending,
+                saldo: nextPending,
+                paidAmount: safeNumber(safeNumber(item.paidAmount) + applied),
+                status: nextPending <= 0.01 ? 'pagado' : 'pendiente',
+                lastPaymentAt: serverTimestamp(),
+                updatedAt: serverTimestamp(),
+            }, { merge: true });
+        });
+
+        const appliedTotal = safeNumber(requestedAmount - remaining);
+        if (appliedTotal <= 0) {
+            setMessage('No hay saldo pendiente para abonar a ese cajero.');
+            return;
+        }
+
+        batch.set(doc(collection(db, 'abonos_diferencias_caja')), {
+            date: todayString(),
+            month: getMonth(todayString()),
+            cashierCode: cashier.cashierCode || '',
+            cashierName: cashier.cashierName || '',
+            amount: appliedTotal,
+            requestedAmount,
+            unusedAmount: remaining,
+            note,
+            source: 'deduccion_salario',
+            createdBy: user?.email || '',
+            allocations,
+            createdAt: serverTimestamp(),
+            updatedAt: serverTimestamp(),
+        });
+
+        await batch.commit();
+        setMessage(`Abono registrado a ${cashier.cashierName}: ${fmt(appliedTotal)}.`);
+    };
 
     return (
         <div className="grid gap-5 lg:grid-cols-[0.8fr_1.2fr]">
             <Section title="Saldo por cajero" eyebrow="Diferencias de caja" action={<Badge tone="red">{byCashier.length} cajeros</Badge>}>
+                <div className="mb-3 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs font-bold text-amber-800">
+                    Solo se acumulan diferencias mayores a {fmt(CASH_DIFFERENCE_THRESHOLD)}. Los abonos por deduccion salarial solo los puede registrar el usuario master.
+                </div>
+                {message && (
+                    <div className="mb-3 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-bold text-slate-700">
+                        {message}
+                    </div>
+                )}
                 <div className="space-y-3">
                     {byCashier.length === 0 ? (
                         <div className="rounded-3xl border border-dashed border-slate-300 p-8 text-center text-sm font-bold text-slate-400">
@@ -2194,12 +2316,26 @@ function CashDifferences({ data }) {
                         </div>
                     ) : byCashier.map((item) => (
                         <div key={item.cashierName} className="rounded-2xl border border-slate-200 bg-white p-4">
-                            <div className="flex items-center justify-between gap-3">
+                            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                                 <div>
                                     <div className="text-sm font-black text-slate-950">{item.cashierName}</div>
-                                    <div className="text-xs font-bold text-slate-500">{item.count} cierre(s)</div>
+                                    <div className="text-xs font-bold text-slate-500">{item.count} movimiento(s) pendiente(s)</div>
                                 </div>
-                                <div className="font-mono text-lg font-black text-red-700">{fmt(item.amount)}</div>
+                                <div className="flex items-center gap-2">
+                                    <div className="text-right">
+                                        <div className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">Saldo</div>
+                                        <div className="font-mono text-lg font-black text-red-700">{fmt(item.amount)}</div>
+                                    </div>
+                                    {isMaster && (
+                                        <button
+                                            type="button"
+                                            onClick={() => handleCashierPayment(item)}
+                                            className="rounded-xl bg-emerald-600 px-3 py-2 text-xs font-black uppercase tracking-[0.14em] text-white transition hover:bg-emerald-700"
+                                        >
+                                            Abonar
+                                        </button>
+                                    )}
+                                </div>
                             </div>
                         </div>
                     ))}
@@ -2213,8 +2349,10 @@ function CashDifferences({ data }) {
                             <tr className="border-b border-slate-200 text-[10px] font-black uppercase tracking-[0.22em] text-slate-400">
                                 <th className="py-3 pr-4">Fecha</th>
                                 <th className="py-3 pr-4">Cajero</th>
+                                <th className="py-3 pr-4">Tipo</th>
                                 <th className="py-3 pr-4">Estado</th>
-                                <th className="py-3 text-right">Monto</th>
+                                <th className="py-3 pr-4 text-right">Monto</th>
+                                <th className="py-3 text-right">Saldo</th>
                             </tr>
                         </thead>
                         <tbody>
@@ -2222,13 +2360,15 @@ function CashDifferences({ data }) {
                                 <tr key={item.id} className="border-b border-slate-100">
                                     <td className="py-3 pr-4 font-bold text-slate-700">{item.date || '-'}</td>
                                     <td className="py-3 pr-4 font-black text-slate-950">{item.cashierName || 'Sin cajero'}</td>
+                                    <td className="py-3 pr-4 font-bold capitalize text-slate-600">{item.differenceType || getCashDifferenceType(item.amount)}</td>
                                     <td className="py-3 pr-4"><Badge tone={item.status === 'pendiente' ? 'red' : 'green'}>{item.status || 'pendiente'}</Badge></td>
-                                    <td className="py-3 text-right font-mono font-black text-red-700">{fmt(item.amount)}</td>
+                                    <td className="py-3 pr-4 text-right font-mono font-black text-red-700">{fmt(item.amount)}</td>
+                                    <td className="py-3 text-right font-mono font-black text-slate-900">{fmt(getCashDifferencePendingAmount(item))}</td>
                                 </tr>
                             ))}
                             {differences.length === 0 && (
                                 <tr>
-                                    <td className="py-10 text-center text-sm font-bold text-slate-400" colSpan="4">Sin movimientos.</td>
+                                    <td className="py-10 text-center text-sm font-bold text-slate-400" colSpan="6">Sin movimientos.</td>
                                 </tr>
                             )}
                         </tbody>

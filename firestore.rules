@@ -19,10 +19,23 @@ service cloud.firestore {
       allow write: if isMaster();
     }
 
+    match /diferencias_caja/{document} {
+      allow read: if signedIn();
+      allow create: if signedIn();
+      allow update, delete: if isMaster();
+    }
+
+    match /abonos_diferencias_caja/{document} {
+      allow read: if signedIn();
+      allow write: if isMaster();
+    }
+
     match /{collection}/{document=**} {
       allow read, write: if signedIn()
         && collection != 'integraciones_privadas'
-        && collection != 'usuarios_sistema';
+        && collection != 'usuarios_sistema'
+        && collection != 'diferencias_caja'
+        && collection != 'abonos_diferencias_caja';
     }
   }
 }
