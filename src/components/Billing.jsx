@@ -186,6 +186,113 @@ const formatInvoiceDate = (date = '') => {
     return [day, month, year].filter(Boolean).join(' / ');
 };
 
+const escapeHtml = (value = '') => (
+    String(value ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;')
+);
+
+const buildPrintTextHtml = ({ x, y, width }, content, layout, options = {}) => {
+    const align = options.align || 'left';
+    const fontSize = safeNumber(options.fontSizePt ?? layout.fontSizePt) || 9;
+    const family = options.mono ? 'Consolas, \"Courier New\", monospace' : 'Arial, Helvetica, sans-serif';
+    return `
+        <div class="txt" style="
+            left:${cm(x)};
+            top:${cm(y)};
+            width:${cm(width || 2)};
+            font-size:${fontSize}pt;
+            font-family:${family};
+            text-align:${align};
+        ">${escapeHtml(content)}</div>
+    `;
+};
+
+const buildStampedInvoicePrintHtml = (invoice, layout) => {
+    const mergedLayout = mergePrintLayout(layout);
+    const itemsLayout = mergedLayout.items;
+    const items = (invoice?.items || []).slice(0, Number(itemsLayout.maxRows || 15));
+    const itemRows = items.map((item, index) => {
+        const y = safeNumber(itemsLayout.y) + index * safeNumber(itemsLayout.rowHeight || 0.47);
+        return [
+            buildPrintTextHtml({ x: itemsLayout.quantityX, y, width: itemsLayout.quantityWidth }, formatQuantity(item.quantity), mergedLayout, { align: 'center', mono: true, fontSizePt: mergedLayout.itemFontSizePt }),
+            buildPrintTextHtml({ x: itemsLayout.descriptionX, y, width: itemsLayout.descriptionWidth }, item.description || item.descripcion || '', mergedLayout, { fontSizePt: mergedLayout.itemFontSizePt }),
+            buildPrintTextHtml({ x: itemsLayout.unitPriceX, y, width: itemsLayout.unitPriceWidth }, formatInvoiceMoney(item.unitPriceWithoutTax ?? item.precioSin), mergedLayout, { align: 'right', mono: true, fontSizePt: mergedLayout.itemFontSizePt }),
+            buildPrintTextHtml({ x: itemsLayout.totalX, y, width: itemsLayout.totalWidth }, formatInvoiceMoney(item.totalWithoutTax ?? item.importeSin), mergedLayout, { align: 'right', mono: true, fontSizePt: mergedLayout.itemFontSizePt }),
+        ].join('');
+    }).join('');
+
+    return `<!doctype html>
+<html>
+<head>
+    <meta charset="utf-8" />
+    <title></title>
+    <style>
+        @page {
+            size: ${cm(mergedLayout.pageWidthCm)} ${cm(mergedLayout.pageHeightCm)};
+            margin: 0;
+        }
+        html,
+        body {
+            width: ${cm(mergedLayout.pageWidthCm)};
+            height: ${cm(mergedLayout.pageHeightCm)};
+            margin: 0 !important;
+            padding: 0 !important;
+            overflow: hidden !important;
+            background: transparent !important;
+        }
+        * {
+            box-sizing: border-box;
+            -webkit-print-color-adjust: exact;
+            print-color-adjust: exact;
+        }
+        .sheet {
+            position: relative;
+            width: ${cm(mergedLayout.pageWidthCm)};
+            height: ${cm(mergedLayout.pageHeightCm)};
+            margin: 0 !important;
+            padding: 0 !important;
+            overflow: hidden;
+            background: transparent;
+        }
+        .txt {
+            position: absolute;
+            color: #000;
+            font-weight: 700;
+            line-height: 1.05;
+            white-space: nowrap;
+            overflow: hidden;
+        }
+        @media print {
+            html,
+            body,
+            .sheet {
+                width: ${cm(mergedLayout.pageWidthCm)} !important;
+                height: ${cm(mergedLayout.pageHeightCm)} !important;
+                margin: 0 !important;
+                padding: 0 !important;
+            }
+        }
+    </style>
+</head>
+<body>
+    <main class="sheet">
+        ${buildPrintTextHtml(mergedLayout.customerName, invoice.customerName || invoice.cliente || '', mergedLayout)}
+        ${buildPrintTextHtml(mergedLayout.customerAddress, invoice.customerAddress || invoice.address || '', mergedLayout)}
+        ${buildPrintTextHtml(mergedLayout.customerRfc, invoice.customerRfc || invoice.rfc || '', mergedLayout)}
+        ${buildPrintTextHtml(mergedLayout.date, formatInvoiceDate(invoice.date || invoice.saleDate), mergedLayout)}
+        ${itemRows}
+        ${buildPrintTextHtml(mergedLayout.subtotal, formatInvoiceMoney(invoice.subtotal), mergedLayout, { align: 'right', mono: true })}
+        ${buildPrintTextHtml(mergedLayout.iva, formatInvoiceMoney(invoice.iva), mergedLayout, { align: 'right', mono: true })}
+        ${buildPrintTextHtml(mergedLayout.total, formatInvoiceMoney(invoice.total), mergedLayout, { align: 'right', mono: true })}
+    </main>
+</body>
+</html>`;
+};
+
 const Section = ({ title, eyebrow, action, children }) => (
     <section className="overflow-hidden rounded-[1.8rem] border border-slate-200 bg-white shadow-xl shadow-slate-900/5">
         <div className="flex flex-col gap-3 border-b border-slate-200 bg-slate-50/80 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
@@ -1079,12 +1186,36 @@ const StampedInvoicePrintModal = ({ invoice, layout, onLayoutChange, onSaveLayou
     };
 
     const printInvoice = () => {
-        document.body.classList.add('print-stamped-invoice-overlay');
-        const cleanup = () => document.body.classList.remove('print-stamped-invoice-overlay');
+        const iframe = document.createElement('iframe');
+        iframe.title = '';
+        iframe.setAttribute('aria-hidden', 'true');
+        iframe.style.position = 'fixed';
+        iframe.style.right = '0';
+        iframe.style.bottom = '0';
+        iframe.style.width = '0';
+        iframe.style.height = '0';
+        iframe.style.border = '0';
+        iframe.style.opacity = '0';
+        document.body.appendChild(iframe);
+
+        const iframeWindow = iframe.contentWindow;
+        const iframeDocument = iframe.contentDocument || iframeWindow?.document;
+        if (!iframeWindow || !iframeDocument) {
+            iframe.remove();
+            return;
+        }
+
+        iframeDocument.open();
+        iframeDocument.write(buildStampedInvoicePrintHtml(invoice, layout));
+        iframeDocument.close();
+
+        const cleanup = () => setTimeout(() => iframe.remove(), 500);
+        iframeWindow.onafterprint = cleanup;
         setTimeout(() => {
-            window.print();
-            setTimeout(cleanup, 500);
-        }, 80);
+            iframeWindow.focus();
+            iframeWindow.print();
+            cleanup();
+        }, 180);
     };
 
     return (
