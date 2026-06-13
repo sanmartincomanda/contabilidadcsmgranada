@@ -23,7 +23,7 @@ export const PAYMENT_METHODS = [
     'TRANSFERENCIA LAFISE',
     'TRANSFERENCIA BANPRO',
     'EFECTIVO',
-    'OTRO',
+    'CREDITO',
 ];
 
 export const PURCHASE_PAYMENT_METHODS = [
