@@ -1064,15 +1064,26 @@ function AppContent() {
         if (typeof window === 'undefined') return 'dark';
         return window.localStorage.getItem('csm-theme-mode') || 'dark';
     });
+    const effectiveThemeMode = user && !accessLoading && !isMaster ? 'light' : themeMode;
 
     useEffect(() => {
-        document.documentElement.dataset.theme = themeMode;
-        window.localStorage.setItem('csm-theme-mode', themeMode);
-    }, [themeMode]);
+        document.documentElement.dataset.theme = effectiveThemeMode;
+        window.localStorage.setItem('csm-theme-mode', effectiveThemeMode);
+    }, [effectiveThemeMode]);
+
+    useEffect(() => {
+        if (user && !accessLoading && !isMaster && themeMode !== 'light') {
+            setThemeMode('light');
+        }
+    }, [accessLoading, isMaster, themeMode, user]);
 
     const toggleTheme = useCallback(() => {
+        if (!isMaster) {
+            setThemeMode('light');
+            return;
+        }
         setThemeMode((current) => (current === 'dark' ? 'light' : 'dark'));
-    }, []);
+    }, [isMaster]);
 
     const canAccess = useCallback((moduleId) => canUseModule(moduleAccess, moduleId), [moduleAccess]);
     const defaultAllowedPath = useMemo(() => getDefaultAllowedPath(moduleAccess), [moduleAccess]);
@@ -1180,7 +1191,7 @@ function AppContent() {
                 >
                     <Routes location={location}>
                         <Route path="/login" element={<Navigate to={defaultAllowedPath} replace />} />
-                        <Route path="/" element={<PrivateRoute element={canAccess('dashboard') ? (dashboardLoading ? <AppLoadingState /> : dashboardError ? <AppErrorState error={dashboardError} /> : <Dashboard data={dashboardData} themeMode={themeMode} onThemeToggle={toggleTheme} />) : <Navigate to={defaultAllowedPath} replace />} />} />
+                        <Route path="/" element={<PrivateRoute element={canAccess('dashboard') ? (dashboardLoading ? <AppLoadingState /> : dashboardError ? <AppErrorState error={dashboardError} /> : <Dashboard data={dashboardData} themeMode={effectiveThemeMode} onThemeToggle={isMaster ? toggleTheme : undefined} />) : <Navigate to={defaultAllowedPath} replace />} />} />
                         <Route path="/ingresar" element={<PrivateRoute element={canAccess('ingresar') ? (dataEntryLoading ? <AppLoadingState /> : dataEntryError ? <AppErrorState error={dataEntryError} /> : <DataEntry data={dataEntryData} categories={categoriesList} />) : <Navigate to={defaultAllowedPath} replace />} />} />
                         <Route path="/gastos-diarios" element={<PrivateRoute element={canAccess('caja_chica') ? <GastosDiarios categories={categoriesList} providers={categoriesData.proveedores || []} /> : <Navigate to={defaultAllowedPath} replace />} />} />
                         <Route path="/conciliacion" element={<PrivateRoute element={<Navigate to={defaultAllowedPath} replace />} />} />
