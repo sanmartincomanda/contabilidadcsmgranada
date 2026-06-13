@@ -100,6 +100,17 @@ const PURCHASE_TRIGGER_DOCUMENT = 'integraciones_privadas/sicar/compras_raw/{raw
 const SALES_TRIGGER_DOCUMENT = 'integraciones_privadas/sicar/ventas_raw/{rawId}';
 const DATE_REGEX = /^\d{4}-\d{2}-\d{2}$/;
 const LIMITED_USER_EMAIL = 'adriandiazc95@gmail.com';
+const MASTER_USER_EMAIL = 'luis.s.97@hotmail.com';
+const USER_PROFILES_COLLECTION = 'usuarios_sistema';
+const USER_ACCESS_MODULES = [
+  'dashboard',
+  'ingresar',
+  'caja_chica',
+  'cuentas_pagar',
+  'facturacion',
+  'reportes',
+  'categorias',
+];
 const PURCHASE_CATEGORY_PAYLOAD = {
   category: 'Costos de venta / compras',
   categoria: 'Costos de venta / compras',
@@ -2157,6 +2168,175 @@ function ensureAdminUser(auth, actionLabel = 'sincronizar SICAR') {
 
   return email;
 }
+
+function normalizeUserEmail(email = '') {
+  return normalizeText(email).toLowerCase();
+}
+
+function getUserProfileDocId(email = '') {
+  return normalizeUserEmail(email).replace(/\//g, '_');
+}
+
+function ensureMasterUser(auth, actionLabel = 'administrar usuarios') {
+  const email = normalizeUserEmail(auth?.token?.email || '');
+
+  if (!auth) {
+    throw new HttpsError('unauthenticated', `Debes iniciar sesion para ${actionLabel}.`);
+  }
+
+  if (email !== MASTER_USER_EMAIL) {
+    throw new HttpsError('permission-denied', `Solo el usuario master puede ${actionLabel}.`);
+  }
+
+  return email;
+}
+
+function normalizeUserModules(modules = {}) {
+  return USER_ACCESS_MODULES.reduce((acc, moduleId) => {
+    acc[moduleId] = modules?.[moduleId] === true;
+    return acc;
+  }, {});
+}
+
+function publicAuthUserPayload(userRecord, profile = {}) {
+  const email = normalizeUserEmail(userRecord.email || profile.email || '');
+
+  return {
+    uid: userRecord.uid || profile.uid || '',
+    email,
+    displayName: userRecord.displayName || profile.displayName || profile.name || '',
+    disabled: userRecord.disabled === true,
+    active: profile.active !== false && userRecord.disabled !== true,
+    modules: normalizeUserModules(profile.modules || {}),
+    role: email === MASTER_USER_EMAIL ? 'master' : (profile.role || 'limited'),
+    createdAt: userRecord.metadata?.creationTime || profile.createdAt || null,
+    lastSignInAt: userRecord.metadata?.lastSignInTime || profile.lastSignInAt || null,
+  };
+}
+
+exports.adminListAppUsers = onCall(BASE_FUNCTION_OPTIONS, async (request) => {
+  ensureMasterUser(request.auth, 'listar usuarios del sistema');
+
+  const [listResult, profilesSnapshot] = await Promise.all([
+    admin.auth().listUsers(1000),
+    firestore.collection(USER_PROFILES_COLLECTION).get(),
+  ]);
+
+  const profilesByEmail = new Map();
+  profilesSnapshot.forEach((docSnap) => {
+    const profile = docSnap.data() || {};
+    const email = normalizeUserEmail(profile.email || docSnap.id);
+    if (email) profilesByEmail.set(email, { id: docSnap.id, ...profile });
+  });
+
+  const users = listResult.users.map((userRecord) => {
+    const email = normalizeUserEmail(userRecord.email || '');
+    return publicAuthUserPayload(userRecord, profilesByEmail.get(email) || {});
+  });
+
+  const authEmails = new Set(users.map((user) => user.email));
+  profilesByEmail.forEach((profile, email) => {
+    if (!authEmails.has(email)) {
+      users.push(publicAuthUserPayload({
+        uid: profile.uid || '',
+        email,
+        displayName: profile.displayName || profile.name || '',
+        disabled: profile.active === false,
+        metadata: {},
+      }, profile));
+    }
+  });
+
+  return {
+    ok: true,
+    users: users.sort((a, b) => {
+      if (a.role === 'master' && b.role !== 'master') return -1;
+      if (b.role === 'master' && a.role !== 'master') return 1;
+      return String(a.email).localeCompare(String(b.email), 'es');
+    }),
+  };
+});
+
+exports.adminCreateAppUser = onCall(BASE_FUNCTION_OPTIONS, async (request) => {
+  const actorEmail = ensureMasterUser(request.auth, 'crear o actualizar usuarios del sistema');
+  const payload = request.data || {};
+  const email = normalizeUserEmail(payload.email);
+  const password = normalizeText(payload.password);
+  const displayName = normalizeText(payload.displayName || payload.name);
+  const active = payload.active !== false;
+  const modules = normalizeUserModules(payload.modules || {});
+
+  if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    throw new HttpsError('invalid-argument', 'Debes indicar un correo valido.');
+  }
+
+  if (email === MASTER_USER_EMAIL) {
+    throw new HttpsError('invalid-argument', 'El usuario master no se edita desde este panel.');
+  }
+
+  let userRecord = null;
+
+  try {
+    userRecord = await admin.auth().getUserByEmail(email);
+  } catch (error) {
+    if (error.code !== 'auth/user-not-found') {
+      throw error;
+    }
+  }
+
+  if (!userRecord && password.length < 6) {
+    throw new HttpsError('invalid-argument', 'La contrasena debe tener al menos 6 caracteres para usuarios nuevos.');
+  }
+
+  if (userRecord) {
+    const updates = {
+      disabled: !active,
+    };
+
+    if (displayName) updates.displayName = displayName;
+
+    if (password) {
+      if (password.length < 6) {
+        throw new HttpsError('invalid-argument', 'La contrasena debe tener al menos 6 caracteres.');
+      }
+      updates.password = password;
+    }
+
+    userRecord = await admin.auth().updateUser(userRecord.uid, updates);
+  } else {
+    userRecord = await admin.auth().createUser({
+      email,
+      password,
+      displayName: displayName || undefined,
+      disabled: !active,
+      emailVerified: false,
+    });
+  }
+
+  const profileRef = firestore.collection(USER_PROFILES_COLLECTION).doc(getUserProfileDocId(email));
+  const existingProfile = await profileRef.get();
+  const profilePayload = {
+    uid: userRecord.uid,
+    email,
+    displayName,
+    active,
+    role: 'limited',
+    modules,
+    updatedAt: FieldValue.serverTimestamp(),
+    updatedBy: actorEmail,
+  };
+
+  if (!existingProfile.exists) {
+    profilePayload.createdAt = FieldValue.serverTimestamp();
+  }
+
+  await profileRef.set(profilePayload, { merge: true });
+
+  return {
+    ok: true,
+    user: publicAuthUserPayload(userRecord, { email, displayName, active, role: 'limited', modules }),
+  };
+});
 
 function getWhatsappMedia(message = {}) {
   const supportedTypes = ['image', 'document', 'audio', 'video'];

@@ -19,6 +19,14 @@ import { AccountsPayable } from './components/AccountsPayable';
 import ExecutiveFlowDiagram from './components/ExecutiveFlowDiagram';
 import { APP_BRAND_LOGO, APP_BRAND_NAME, fmt } from './constants';
 import { resolveReportIncomeEntries } from './services/incomeAggregation';
+import {
+    USER_PROFILES_COLLECTION,
+    canUseModule,
+    getDefaultAllowedPath,
+    getEffectiveModuleAccess,
+    isMasterEmail,
+    userProfileDocId,
+} from './services/userAccess';
 
 const BRAND_LOGO = APP_BRAND_LOGO;
 
@@ -27,6 +35,7 @@ const DATA_ENTRY_HISTORY_MONTHS = 6;
 const REPORT_HISTORY_MONTHS = 24;
 const ACCOUNT_HISTORY_MONTHS = 12;
 const MAX_ROUTE_BLOCKING_MS = 900;
+const INACTIVITY_TIMEOUT_MS = 3 * 60 * 60 * 1000;
 
 const DEFAULT_REMINDERS = [
     { id: 'r1', texto: 'DGI CUOTA FIJA', diaDelMes: 7, activo: true },
@@ -953,11 +962,104 @@ const useFirestoreCollections = (collections = [], enabled = true, live = true) 
     return { data, loading, error };
 };
 
+const useUserModuleAccess = (user) => {
+    const [state, setState] = useState({
+        loading: false,
+        profile: null,
+        moduleAccess: {},
+        isMaster: false,
+    });
+
+    useEffect(() => {
+        if (!user?.email) {
+            setState({ loading: false, profile: null, moduleAccess: {}, isMaster: false });
+            return undefined;
+        }
+
+        if (isMasterEmail(user.email)) {
+            setState({
+                loading: false,
+                profile: { email: user.email, role: 'master', active: true },
+                moduleAccess: getEffectiveModuleAccess(user.email, null),
+                isMaster: true,
+            });
+            return undefined;
+        }
+
+        setState((current) => ({
+            ...current,
+            loading: true,
+            isMaster: false,
+        }));
+
+        const profileRef = doc(db, USER_PROFILES_COLLECTION, userProfileDocId(user.email));
+        const unsubscribe = onSnapshot(
+            profileRef,
+            (snapshot) => {
+                const profile = snapshot.exists() ? { id: snapshot.id, ...snapshot.data() } : null;
+                setState({
+                    loading: false,
+                    profile,
+                    moduleAccess: getEffectiveModuleAccess(user.email, profile),
+                    isMaster: false,
+                });
+            },
+            (error) => {
+                console.error('Error cargando permisos del usuario:', error);
+                setState({
+                    loading: false,
+                    profile: null,
+                    moduleAccess: getEffectiveModuleAccess(user.email, null),
+                    isMaster: false,
+                });
+            }
+        );
+
+        return () => unsubscribe();
+    }, [user?.email]);
+
+    return state;
+};
+
+const useInactivityLogout = (user, logout) => {
+    useEffect(() => {
+        if (!user) return undefined;
+
+        let timeoutId = null;
+
+        const logoutForInactivity = async () => {
+            try {
+                window.localStorage.setItem('csm-last-auto-logout', new Date().toISOString());
+                await logout();
+            } catch (error) {
+                console.error('No se pudo cerrar sesion por inactividad:', error);
+            }
+        };
+
+        const resetTimer = () => {
+            window.clearTimeout(timeoutId);
+            window.localStorage.setItem('csm-last-activity', String(Date.now()));
+            timeoutId = window.setTimeout(logoutForInactivity, INACTIVITY_TIMEOUT_MS);
+        };
+
+        const events = ['click', 'keydown', 'mousemove', 'scroll', 'touchstart', 'pointerdown'];
+        events.forEach((eventName) => window.addEventListener(eventName, resetTimer, { passive: true }));
+        resetTimer();
+
+        return () => {
+            window.clearTimeout(timeoutId);
+            events.forEach((eventName) => window.removeEventListener(eventName, resetTimer));
+        };
+    }, [user, logout]);
+};
+
 // --- APP CONTENT ---
 
 function AppContent() {
-    const { user } = useAuth();
+    const { user, logout } = useAuth();
     const location = useLocation();
+    const { loading: accessLoading, moduleAccess, isMaster } = useUserModuleAccess(user);
+    useInactivityLogout(user, logout);
     const [themeMode, setThemeMode] = useState(() => {
         if (typeof window === 'undefined') return 'dark';
         return window.localStorage.getItem('csm-theme-mode') || 'dark';
@@ -972,10 +1074,15 @@ function AppContent() {
         setThemeMode((current) => (current === 'dark' ? 'light' : 'dark'));
     }, []);
 
-    const isLimitedUser = user?.email === 'adriandiazc95@gmail.com';
-    const isAdmin = !isLimitedUser;
+    const canAccess = useCallback((moduleId) => canUseModule(moduleAccess, moduleId), [moduleAccess]);
+    const defaultAllowedPath = useMemo(() => getDefaultAllowedPath(moduleAccess), [moduleAccess]);
     const currentPath = location.pathname;
-    const needsCategories = currentPath === '/ingresar' || currentPath === '/gastos-diarios' || currentPath.startsWith('/maestros/categorias') || currentPath.startsWith('/configuraciones');
+    const needsCategories = (
+        (currentPath === '/ingresar' && canAccess('ingresar'))
+        || (currentPath === '/gastos-diarios' && canAccess('caja_chica'))
+        || (currentPath.startsWith('/maestros/categorias') && canAccess('categorias'))
+        || (currentPath.startsWith('/configuraciones') && isMaster)
+    );
     const currentMonth = useMemo(() => getMonthOffset(0), []);
     const dataEntryStartMonth = useMemo(() => getMonthOffset(DATA_ENTRY_HISTORY_MONTHS), []);
     const reportStartMonth = useMemo(() => getMonthOffset(REPORT_HISTORY_MONTHS), []);
@@ -1028,12 +1135,12 @@ function AppContent() {
         'cajeros',
     ], [accountStartMonth]);
 
-    const { data: categoriesData } = useFirestoreCollections(CATEGORY_COLLECTIONS, !!user && needsCategories, true);
-    const { data: dataEntryData, loading: dataEntryLoading, error: dataEntryError } = useFirestoreCollections(dataEntryCollections, !!user && isAdmin && currentPath === '/ingresar', true);
-    const { data: accountsPayableData, loading: accountsPayableLoading, error: accountsPayableError } = useFirestoreCollections(accountsPayableCollections, !!user && currentPath === '/cuentas-pagar', true);
-    const { data: reportsData, loading: reportsLoading, error: reportsError } = useFirestoreCollections(reportCollections, !!user && isAdmin && currentPath === '/reportes', false);
-    const { data: dashboardData, loading: dashboardLoading, error: dashboardError } = useFirestoreCollections(dashboardCollections, !!user && isAdmin && currentPath === '/', false);
-    const { data: billingData, loading: billingLoading, error: billingError } = useFirestoreCollections(billingCollections, !!user && isAdmin && currentPath === '/facturacion', true);
+    const { data: categoriesData } = useFirestoreCollections(CATEGORY_COLLECTIONS, !!user && !accessLoading && needsCategories, true);
+    const { data: dataEntryData, loading: dataEntryLoading, error: dataEntryError } = useFirestoreCollections(dataEntryCollections, !!user && !accessLoading && canAccess('ingresar') && currentPath === '/ingresar', true);
+    const { data: accountsPayableData, loading: accountsPayableLoading, error: accountsPayableError } = useFirestoreCollections(accountsPayableCollections, !!user && !accessLoading && canAccess('cuentas_pagar') && currentPath === '/cuentas-pagar', true);
+    const { data: reportsData, loading: reportsLoading, error: reportsError } = useFirestoreCollections(reportCollections, !!user && !accessLoading && canAccess('reportes') && currentPath === '/reportes', false);
+    const { data: dashboardData, loading: dashboardLoading, error: dashboardError } = useFirestoreCollections(dashboardCollections, !!user && !accessLoading && canAccess('dashboard') && currentPath === '/', false);
+    const { data: billingData, loading: billingLoading, error: billingError } = useFirestoreCollections(billingCollections, !!user && !accessLoading && canAccess('facturacion') && currentPath === '/facturacion', true);
 
     const categoriesList = useMemo(() => (
         [...(categoriesData.categorias || [])].sort((a, b) => {
@@ -1048,9 +1155,20 @@ function AppContent() {
         return <main><Routes><Route path="/login" element={<Login />} /><Route path="*" element={<Navigate to="/login" replace />} /></Routes></main>;
     }
 
+    if (accessLoading) {
+        return (
+            <>
+                <Header moduleAccess={{}} isMaster={false} defaultPath="/" />
+                <main className="app-route-shell p-4 md:p-6">
+                    <AppLoadingState />
+                </main>
+            </>
+        );
+    }
+
     return (
         <>
-            <Header />
+            <Header moduleAccess={moduleAccess} isMaster={isMaster} defaultPath={defaultAllowedPath} />
             <AnimatePresence mode="wait" initial={false}>
                 <motion.main
                     key={`${location.pathname}${location.search}`}
@@ -1061,17 +1179,18 @@ function AppContent() {
                     transition={pageMotion.transition}
                 >
                     <Routes location={location}>
-                        <Route path="/login" element={<Navigate to="/" replace />} />
-                        <Route path="/" element={<PrivateRoute element={isAdmin ? (dashboardLoading ? <AppLoadingState /> : dashboardError ? <AppErrorState error={dashboardError} /> : <Dashboard data={dashboardData} themeMode={themeMode} onThemeToggle={toggleTheme} />) : <Navigate to="/cuentas-pagar" />} />} />
-                        <Route path="/ingresar" element={<PrivateRoute element={isAdmin ? (dataEntryLoading ? <AppLoadingState /> : dataEntryError ? <AppErrorState error={dataEntryError} /> : <DataEntry data={dataEntryData} categories={categoriesList} />) : <Navigate to="/cuentas-pagar" />} />} />
-                        <Route path="/gastos-diarios" element={<PrivateRoute element={<GastosDiarios categories={categoriesList} providers={categoriesData.proveedores || []} />} />} />
-                        <Route path="/conciliacion" element={<PrivateRoute element={<Navigate to="/" replace />} />} />
-                        <Route path="/facturacion" element={<PrivateRoute element={isAdmin ? (billingLoading ? <AppLoadingState /> : billingError ? <AppErrorState error={billingError} /> : <Billing data={billingData} />) : <Navigate to="/cuentas-pagar" />} />} />
-                        <Route path="/cuentas-pagar" element={<PrivateRoute element={accountsPayableLoading ? <AppLoadingState /> : accountsPayableError ? <AppErrorState error={accountsPayableError} /> : <AccountsPayable data={accountsPayableData} />} />} />
-                        <Route path="/reportes" element={<PrivateRoute element={isAdmin ? (reportsLoading ? <AppLoadingState /> : reportsError ? <AppErrorState error={reportsError} /> : <Reports data={reportsData} />) : <Navigate to="/cuentas-pagar" />} />} />
-                        <Route path="/configuraciones" element={<PrivateRoute element={isAdmin ? <Settings /> : <Navigate to="/cuentas-pagar" />} />} />
-                        <Route path="/maestros/categorias" element={<PrivateRoute element={isAdmin ? <CategoryManager categories={categoriesList} /> : <Navigate to="/cuentas-pagar" />} />} />
-                        <Route path="*" element={<Navigate to="/" />} />
+                        <Route path="/login" element={<Navigate to={defaultAllowedPath} replace />} />
+                        <Route path="/" element={<PrivateRoute element={canAccess('dashboard') ? (dashboardLoading ? <AppLoadingState /> : dashboardError ? <AppErrorState error={dashboardError} /> : <Dashboard data={dashboardData} themeMode={themeMode} onThemeToggle={toggleTheme} />) : <Navigate to={defaultAllowedPath} replace />} />} />
+                        <Route path="/ingresar" element={<PrivateRoute element={canAccess('ingresar') ? (dataEntryLoading ? <AppLoadingState /> : dataEntryError ? <AppErrorState error={dataEntryError} /> : <DataEntry data={dataEntryData} categories={categoriesList} />) : <Navigate to={defaultAllowedPath} replace />} />} />
+                        <Route path="/gastos-diarios" element={<PrivateRoute element={canAccess('caja_chica') ? <GastosDiarios categories={categoriesList} providers={categoriesData.proveedores || []} /> : <Navigate to={defaultAllowedPath} replace />} />} />
+                        <Route path="/conciliacion" element={<PrivateRoute element={<Navigate to={defaultAllowedPath} replace />} />} />
+                        <Route path="/facturacion" element={<PrivateRoute element={canAccess('facturacion') ? (billingLoading ? <AppLoadingState /> : billingError ? <AppErrorState error={billingError} /> : <Billing data={billingData} />) : <Navigate to={defaultAllowedPath} replace />} />} />
+                        <Route path="/cuentas-pagar" element={<PrivateRoute element={canAccess('cuentas_pagar') ? (accountsPayableLoading ? <AppLoadingState /> : accountsPayableError ? <AppErrorState error={accountsPayableError} /> : <AccountsPayable data={accountsPayableData} />) : <Navigate to={defaultAllowedPath} replace />} />} />
+                        <Route path="/reportes" element={<PrivateRoute element={canAccess('reportes') ? (reportsLoading ? <AppLoadingState /> : reportsError ? <AppErrorState error={reportsError} /> : <Reports data={reportsData} />) : <Navigate to={defaultAllowedPath} replace />} />} />
+                        <Route path="/configuraciones" element={<PrivateRoute element={isMaster ? <Settings /> : <Navigate to={defaultAllowedPath} replace />} />} />
+                        <Route path="/maestros/categorias" element={<PrivateRoute element={canAccess('categorias') ? <CategoryManager categories={categoriesList} /> : <Navigate to={defaultAllowedPath} replace />} />} />
+                        <Route path="/sin-permisos" element={<PrivateRoute element={<AppErrorState error={{ message: 'Este usuario no tiene modulos asignados. Pide al usuario master que active sus permisos en Configuraciones > Usuarios.' }} />} />} />
+                        <Route path="*" element={<Navigate to={defaultAllowedPath} replace />} />
                     </Routes>
                 </motion.main>
             </AnimatePresence>

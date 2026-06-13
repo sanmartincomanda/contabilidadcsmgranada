@@ -37,7 +37,7 @@ const MotionLink = motion(Link);
 const dropdownBase =
     'rounded-2xl border border-slate-200 bg-white/95 shadow-2xl shadow-slate-950/10 ring-1 ring-slate-950/5 backdrop-blur';
 
-export default function Header() {
+export default function Header({ moduleAccess = {}, isMaster = false, defaultPath = '/' }) {
     const { user, logout } = useAuth();
     const navigate = useNavigate();
     const location = useLocation();
@@ -46,8 +46,7 @@ export default function Header() {
     const [isScrolled, setIsScrolled] = useState(false);
     const dropdownRef = useRef(null);
 
-    const isAdmin = user?.email !== 'adriandiazc95@gmail.com';
-    const hasDailyExpensesAccess = user?.email === 'adriandiazc95@gmail.com' || isAdmin;
+    const canAccess = (moduleId) => moduleAccess?.[moduleId] === true;
 
     useEffect(() => {
         const handleScroll = () => setIsScrolled(window.scrollY > 10);
@@ -103,7 +102,7 @@ export default function Header() {
     );
 
     const DataEntryButton = () => {
-        if (!isAdmin) return null;
+        if (!canAccess('ingresar')) return null;
 
         return (
             <div className="relative" ref={dropdownRef}>
@@ -216,7 +215,7 @@ export default function Header() {
                 <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
                     <div className="flex h-20 items-center justify-between">
                         <MotionLink
-                            to="/"
+                            to={defaultPath}
                             className="group flex items-center gap-4"
                             whileHover={{ scale: 1.012 }}
                             whileTap={{ scale: 0.985 }}
@@ -240,34 +239,42 @@ export default function Header() {
 
                         {user && (
                             <div className="hidden items-center gap-1 md:flex">
-                                <NavLink to="/" icon="home" active={location.pathname === '/'}>
-                                    Inicio
-                                </NavLink>
+                                {canAccess('dashboard') && (
+                                    <NavLink to="/" icon="home" active={location.pathname === '/'}>
+                                        Inicio
+                                    </NavLink>
+                                )}
 
                                 <DataEntryButton />
 
-                                {hasDailyExpensesAccess && (
+                                {canAccess('caja_chica') && (
                                     <NavLink to="/gastos-diarios" icon="cash" active={isActive('/gastos-diarios')}>
                                         Caja Chica
                                     </NavLink>
                                 )}
 
-                                <NavLink to="/cuentas-pagar" icon="creditCard" active={isActive('/cuentas-pagar')}>
-                                    Cuentas por Pagar
-                                </NavLink>
+                                {canAccess('cuentas_pagar') && (
+                                    <NavLink to="/cuentas-pagar" icon="creditCard" active={isActive('/cuentas-pagar')}>
+                                        Cuentas por Pagar
+                                    </NavLink>
+                                )}
 
-                                {isAdmin && (
-                                    <>
-                                        <NavLink to="/facturacion" icon="receipt" active={isActive('/facturacion')}>
-                                            Facturacion
-                                        </NavLink>
-                                        <NavLink to="/reportes" icon="chart" active={isActive('/reportes')}>
-                                            Reportes
-                                        </NavLink>
-                                        <NavLink to="/configuraciones" icon="gear" active={isActive('/configuraciones')}>
-                                            Configuraciones
-                                        </NavLink>
-                                    </>
+                                {canAccess('facturacion') && (
+                                    <NavLink to="/facturacion" icon="receipt" active={isActive('/facturacion')}>
+                                        Facturacion
+                                    </NavLink>
+                                )}
+
+                                {canAccess('reportes') && (
+                                    <NavLink to="/reportes" icon="chart" active={isActive('/reportes')}>
+                                        Reportes
+                                    </NavLink>
+                                )}
+
+                                {isMaster && (
+                                    <NavLink to="/configuraciones" icon="gear" active={isActive('/configuraciones')}>
+                                        Configuraciones
+                                    </NavLink>
                                 )}
 
                                 <div className="ml-4 flex items-center gap-3 border-l border-white/15 pl-4">
@@ -338,11 +345,13 @@ export default function Header() {
                                 </div>
                             </div>
 
-                            <NavLink to="/" icon="home" active={location.pathname === '/'} onClick={() => setIsMobileMenuOpen(false)}>
-                                Inicio
-                            </NavLink>
+                            {canAccess('dashboard') && (
+                                <NavLink to="/" icon="home" active={location.pathname === '/'} onClick={() => setIsMobileMenuOpen(false)}>
+                                    Inicio
+                                </NavLink>
+                            )}
 
-                            {isAdmin && (
+                            {canAccess('ingresar') && (
                                 <>
                                     <div className="px-4 pb-1 pt-3 text-[11px] font-bold uppercase tracking-[0.32em] text-[#f5b51b]">
                                         Ingresar datos
@@ -378,7 +387,7 @@ export default function Header() {
                                 </>
                             )}
 
-                            {hasDailyExpensesAccess && (
+                            {canAccess('caja_chica') && (
                                 <NavLink
                                     to="/gastos-diarios"
                                     icon="cash"
@@ -389,42 +398,48 @@ export default function Header() {
                                 </NavLink>
                             )}
 
-                            <NavLink
-                                to="/cuentas-pagar"
-                                icon="creditCard"
-                                active={isActive('/cuentas-pagar')}
-                                onClick={() => setIsMobileMenuOpen(false)}
-                            >
-                                Cuentas por Pagar
-                            </NavLink>
+                            {canAccess('cuentas_pagar') && (
+                                <NavLink
+                                    to="/cuentas-pagar"
+                                    icon="creditCard"
+                                    active={isActive('/cuentas-pagar')}
+                                    onClick={() => setIsMobileMenuOpen(false)}
+                                >
+                                    Cuentas por Pagar
+                                </NavLink>
+                            )}
 
-                            {isAdmin && (
-                                <>
-                                    <NavLink
-                                        to="/facturacion"
-                                        icon="receipt"
-                                        active={isActive('/facturacion')}
-                                        onClick={() => setIsMobileMenuOpen(false)}
-                                    >
-                                        Facturacion
-                                    </NavLink>
-                                    <NavLink
-                                        to="/reportes"
-                                        icon="chart"
-                                        active={isActive('/reportes')}
-                                        onClick={() => setIsMobileMenuOpen(false)}
-                                    >
-                                        Reportes
-                                    </NavLink>
-                                    <NavLink
-                                        to="/configuraciones"
-                                        icon="gear"
-                                        active={isActive('/configuraciones')}
-                                        onClick={() => setIsMobileMenuOpen(false)}
-                                    >
-                                        Configuraciones
-                                    </NavLink>
-                                </>
+                            {canAccess('facturacion') && (
+                                <NavLink
+                                    to="/facturacion"
+                                    icon="receipt"
+                                    active={isActive('/facturacion')}
+                                    onClick={() => setIsMobileMenuOpen(false)}
+                                >
+                                    Facturacion
+                                </NavLink>
+                            )}
+
+                            {canAccess('reportes') && (
+                                <NavLink
+                                    to="/reportes"
+                                    icon="chart"
+                                    active={isActive('/reportes')}
+                                    onClick={() => setIsMobileMenuOpen(false)}
+                                >
+                                    Reportes
+                                </NavLink>
+                            )}
+
+                            {isMaster && (
+                                <NavLink
+                                    to="/configuraciones"
+                                    icon="gear"
+                                    active={isActive('/configuraciones')}
+                                    onClick={() => setIsMobileMenuOpen(false)}
+                                >
+                                    Configuraciones
+                                </NavLink>
                             )}
 
                             <button

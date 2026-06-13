@@ -1,11 +1,22 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { useAuth } from '../context/AuthContext';
+import { httpsCallable } from 'firebase/functions';
+import { functions as firebaseFunctions } from '../firebase';
 import { APP_BRAND_LOGO, APP_BRAND_NAME, DEFAULT_BRANCH_NAME, fmt } from '../constants';
 import CategoryManager from './CategoryManager';
 import { getDeviceSettings, saveDeviceSettings } from '../services/deviceSettings';
+import {
+    ACCESS_MODULES,
+    MASTER_USER_EMAIL,
+    emptyModuleAccess,
+    isMasterEmail,
+    normalizeModuleAccess,
+    normalizeUserEmail,
+} from '../services/userAccess';
 
 const Icons = {
     user: 'M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z',
+    users: 'M17 20h5v-2a4 4 0 00-3-3.87M9 20H4v-2a4 4 0 013-3.87m9-4.13a4 4 0 11-8 0 4 4 0 018 0zm6 4a4 4 0 10-3-3.87M7 10a4 4 0 11-3 3.87',
     tag: 'M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A1.994 1.994 0 013 12V7a4 4 0 014-4z',
     printer: 'M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z',
     scanner: 'M3 7a2 2 0 012-2h14a2 2 0 012 2v10H3V7zm2 10h14m-9 4h4',
@@ -33,6 +44,14 @@ const Field = ({ label, children, help }) => (
 
 const inputClass = 'w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-2.5 text-sm font-bold text-slate-800 outline-none transition focus:border-[#e30613] focus:ring-2 focus:ring-[#e30613]/15';
 
+const createEmptyUserForm = () => ({
+    email: '',
+    displayName: '',
+    password: '',
+    active: true,
+    modules: emptyModuleAccess(),
+});
+
 const TestTicket = ({ settings }) => (
     <div className="settings-test-ticket">
         <div className="ticket-logo">
@@ -52,16 +71,130 @@ const TestTicket = ({ settings }) => (
 
 export default function Settings() {
     const { user } = useAuth();
-    const [activeTab, setActiveTab] = useState('Dispositivos');
+    const isMaster = isMasterEmail(user?.email);
+    const [activeTab, setActiveTab] = useState('Usuarios');
     const [settings, setSettings] = useState(() => getDeviceSettings());
     const [saved, setSaved] = useState(false);
-    const userRole = user?.email === 'adriandiazc95@gmail.com' ? 'Operador limitado' : 'Administrador';
+    const [systemUsers, setSystemUsers] = useState([]);
+    const [usersLoading, setUsersLoading] = useState(false);
+    const [usersError, setUsersError] = useState('');
+    const [usersMessage, setUsersMessage] = useState('');
+    const [userForm, setUserForm] = useState(() => createEmptyUserForm());
+    const [savingUser, setSavingUser] = useState(false);
+    const [usersReloadKey, setUsersReloadKey] = useState(0);
+    const userRole = isMaster ? 'Usuario master' : 'Usuario operativo';
 
     const tabs = useMemo(() => [
+        ...(isMaster ? [{ id: 'Usuarios', icon: 'users' }] : []),
         { id: 'Usuario', icon: 'user' },
         { id: 'Categorias', icon: 'tag' },
         { id: 'Dispositivos', icon: 'printer' },
-    ], []);
+    ], [isMaster]);
+
+    useEffect(() => {
+        if (!tabs.some((tab) => tab.id === activeTab)) {
+            setActiveTab(tabs[0]?.id || 'Usuario');
+        }
+    }, [activeTab, tabs]);
+
+    useEffect(() => {
+        if (!isMaster || activeTab !== 'Usuarios') return undefined;
+
+        let mounted = true;
+        const loadUsers = async () => {
+            setUsersLoading(true);
+            setUsersError('');
+            try {
+                const listUsers = httpsCallable(firebaseFunctions, 'adminListAppUsers');
+                const result = await listUsers();
+                if (!mounted) return;
+                setSystemUsers(result.data?.users || []);
+            } catch (error) {
+                if (!mounted) return;
+                setUsersError(error.message || 'No se pudieron cargar los usuarios.');
+            } finally {
+                if (mounted) setUsersLoading(false);
+            }
+        };
+
+        loadUsers();
+        return () => {
+            mounted = false;
+        };
+    }, [activeTab, isMaster, usersReloadKey]);
+
+    const resetUserForm = () => {
+        setUserForm(createEmptyUserForm());
+        setUsersMessage('');
+        setUsersError('');
+    };
+
+    const toggleUserModule = (moduleId) => {
+        setUserForm((current) => ({
+            ...current,
+            modules: {
+                ...current.modules,
+                [moduleId]: !current.modules?.[moduleId],
+            },
+        }));
+    };
+
+    const editUser = (systemUser) => {
+        setUserForm({
+            email: normalizeUserEmail(systemUser.email),
+            displayName: systemUser.displayName || '',
+            password: '',
+            active: systemUser.active !== false && systemUser.disabled !== true,
+            modules: normalizeModuleAccess(systemUser.modules || {}),
+        });
+        setUsersMessage('');
+        setUsersError('');
+    };
+
+    const saveSystemUser = async (event) => {
+        event.preventDefault();
+
+        if (!isMaster) return;
+
+        const email = normalizeUserEmail(userForm.email);
+        if (!email) {
+            setUsersError('Indica el correo del usuario.');
+            return;
+        }
+
+        if (email === MASTER_USER_EMAIL) {
+            setUsersError('El usuario master no se edita desde este panel.');
+            return;
+        }
+
+        const existingUser = systemUsers.find((item) => normalizeUserEmail(item.email) === email);
+        if (!existingUser && userForm.password.trim().length < 6) {
+            setUsersError('Para usuarios nuevos, la contrasena debe tener al menos 6 caracteres.');
+            return;
+        }
+
+        setSavingUser(true);
+        setUsersError('');
+        setUsersMessage('');
+
+        try {
+            const saveUser = httpsCallable(firebaseFunctions, 'adminCreateAppUser');
+            await saveUser({
+                email,
+                displayName: userForm.displayName.trim(),
+                password: userForm.password.trim(),
+                active: userForm.active,
+                modules: normalizeModuleAccess(userForm.modules || {}),
+            });
+            setUsersMessage(existingUser ? 'Usuario actualizado correctamente.' : 'Usuario creado correctamente.');
+            setUserForm(createEmptyUserForm());
+            setUsersReloadKey((key) => key + 1);
+        } catch (error) {
+            setUsersError(error.message || 'No se pudo guardar el usuario.');
+        } finally {
+            setSavingUser(false);
+        }
+    };
 
     const updatePrinter = (field, value) => {
         setSettings((current) => ({
@@ -138,14 +271,16 @@ export default function Settings() {
                         <h1 className="mt-1 text-2xl font-black tracking-tight text-slate-950">Configuraciones</h1>
                         <p className="mt-1 text-sm font-semibold text-slate-500">Usuarios, catalogos fiscales y dispositivos locales.</p>
                     </div>
-                    <button
-                        type="button"
-                        onClick={handleSave}
-                        className="inline-flex items-center justify-center gap-2 rounded-xl bg-[#e30613] px-4 py-2.5 text-sm font-black text-white shadow-lg shadow-red-900/15 transition hover:bg-[#9f111a]"
-                    >
-                        <Icon path={Icons.save} className="h-4 w-4" />
-                        {saved ? 'Guardado' : 'Guardar configuracion'}
-                    </button>
+                    {activeTab === 'Dispositivos' && (
+                        <button
+                            type="button"
+                            onClick={handleSave}
+                            className="inline-flex items-center justify-center gap-2 rounded-xl bg-[#e30613] px-4 py-2.5 text-sm font-black text-white shadow-lg shadow-red-900/15 transition hover:bg-[#9f111a]"
+                        >
+                            <Icon path={Icons.save} className="h-4 w-4" />
+                            {saved ? 'Guardado' : 'Guardar configuracion'}
+                        </button>
+                    )}
                 </div>
             </Card>
 
@@ -166,6 +301,209 @@ export default function Settings() {
                     ))}
                 </div>
             </Card>
+
+            {activeTab === 'Usuarios' && isMaster && (
+                <div className="grid gap-5 xl:grid-cols-[420px_1fr]">
+                    <Card className="overflow-hidden">
+                        <div className="border-b border-slate-200 bg-slate-50 px-5 py-4">
+                            <div className="text-[10px] font-black uppercase tracking-[0.28em] text-[#e30613]">Control de acceso</div>
+                            <h2 className="mt-1 text-lg font-black text-slate-950">Crear / editar usuario</h2>
+                            <p className="mt-1 text-xs font-semibold text-slate-500">Solo el master puede administrar correos, contrasenas y modulos.</p>
+                        </div>
+
+                        <form className="space-y-4 p-5" onSubmit={saveSystemUser}>
+                            <Field label="Correo">
+                                <input
+                                    className={inputClass}
+                                    type="email"
+                                    value={userForm.email}
+                                    onChange={(event) => setUserForm((current) => ({ ...current, email: event.target.value }))}
+                                    placeholder="usuario@empresa.com"
+                                    autoComplete="off"
+                                />
+                            </Field>
+
+                            <Field label="Nombre">
+                                <input
+                                    className={inputClass}
+                                    value={userForm.displayName}
+                                    onChange={(event) => setUserForm((current) => ({ ...current, displayName: event.target.value }))}
+                                    placeholder="Nombre del colaborador"
+                                    autoComplete="off"
+                                />
+                            </Field>
+
+                            <Field label="Contrasena" help="Para actualizar un usuario existente puedes dejarla vacia. Para uno nuevo minimo 6 caracteres.">
+                                <input
+                                    className={inputClass}
+                                    type="password"
+                                    value={userForm.password}
+                                    onChange={(event) => setUserForm((current) => ({ ...current, password: event.target.value }))}
+                                    placeholder="Nueva contrasena"
+                                    autoComplete="new-password"
+                                />
+                            </Field>
+
+                            <label className="flex items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+                                <div>
+                                    <div className="text-sm font-black text-slate-900">Usuario activo</div>
+                                    <div className="text-xs font-semibold text-slate-400">Si lo apagas no podra iniciar sesion.</div>
+                                </div>
+                                <input
+                                    type="checkbox"
+                                    checked={userForm.active}
+                                    onChange={(event) => setUserForm((current) => ({ ...current, active: event.target.checked }))}
+                                    className="h-5 w-5 accent-[#e30613]"
+                                />
+                            </label>
+
+                            <div className="space-y-2">
+                                <div className="text-xs font-black uppercase tracking-[0.18em] text-slate-500">Modulos permitidos</div>
+                                <div className="grid gap-2">
+                                    {ACCESS_MODULES.map((module) => (
+                                        <label
+                                            key={module.id}
+                                            className={`flex cursor-pointer items-start gap-3 rounded-2xl border px-4 py-3 transition ${
+                                                userForm.modules?.[module.id]
+                                                    ? 'border-[#e30613]/30 bg-[#fff1f2]'
+                                                    : 'border-slate-200 bg-white hover:bg-slate-50'
+                                            }`}
+                                        >
+                                            <input
+                                                type="checkbox"
+                                                checked={userForm.modules?.[module.id] === true}
+                                                onChange={() => toggleUserModule(module.id)}
+                                                className="mt-1 h-4 w-4 accent-[#e30613]"
+                                            />
+                                            <span>
+                                                <span className="block text-sm font-black text-slate-900">{module.label}</span>
+                                                <span className="block text-xs font-semibold text-slate-500">{module.description}</span>
+                                            </span>
+                                        </label>
+                                    ))}
+                                </div>
+                            </div>
+
+                            {usersError && (
+                                <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-bold text-rose-700">
+                                    {usersError}
+                                </div>
+                            )}
+                            {usersMessage && (
+                                <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-bold text-emerald-700">
+                                    {usersMessage}
+                                </div>
+                            )}
+
+                            <div className="flex flex-col gap-2 sm:flex-row">
+                                <button
+                                    type="submit"
+                                    disabled={savingUser}
+                                    className="inline-flex flex-1 items-center justify-center rounded-xl bg-[#e30613] px-4 py-3 text-sm font-black text-white shadow-lg shadow-red-900/15 transition hover:bg-[#9f111a] disabled:cursor-not-allowed disabled:opacity-60"
+                                >
+                                    {savingUser ? 'Guardando...' : 'Guardar usuario'}
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={resetUserForm}
+                                    className="inline-flex items-center justify-center rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm font-black text-slate-700 transition hover:bg-slate-50"
+                                >
+                                    Nuevo
+                                </button>
+                            </div>
+                        </form>
+                    </Card>
+
+                    <Card className="overflow-hidden">
+                        <div className="flex flex-col gap-3 border-b border-slate-200 bg-slate-50 px-5 py-4 md:flex-row md:items-center md:justify-between">
+                            <div>
+                                <div className="text-[10px] font-black uppercase tracking-[0.28em] text-slate-400">Usuarios creados</div>
+                                <h2 className="mt-1 text-lg font-black text-slate-950">Accesos por modulo</h2>
+                            </div>
+                            <button
+                                type="button"
+                                onClick={() => setUsersReloadKey((key) => key + 1)}
+                                className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-xs font-black uppercase tracking-wider text-slate-700 transition hover:bg-slate-100"
+                            >
+                                Actualizar lista
+                            </button>
+                        </div>
+
+                        <div className="p-5">
+                            {usersLoading && (
+                                <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-6 text-center text-sm font-bold text-slate-500">
+                                    Cargando usuarios...
+                                </div>
+                            )}
+
+                            {!usersLoading && systemUsers.length === 0 && (
+                                <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 px-4 py-8 text-center text-sm font-bold text-slate-500">
+                                    No hay usuarios listados todavia. Si acabas de crear las Functions, despliegalas para poder leer Firebase Auth.
+                                </div>
+                            )}
+
+                            {!usersLoading && systemUsers.length > 0 && (
+                                <div className="overflow-hidden rounded-2xl border border-slate-200">
+                                    <div className="hidden grid-cols-[1.4fr_0.8fr_1.4fr_120px] gap-3 border-b border-slate-200 bg-slate-50 px-4 py-3 text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 md:grid">
+                                        <span>Usuario</span>
+                                        <span>Estado</span>
+                                        <span>Modulos</span>
+                                        <span className="text-right">Accion</span>
+                                    </div>
+                                    <div className="divide-y divide-slate-100">
+                                        {systemUsers.map((systemUser) => {
+                                            const email = normalizeUserEmail(systemUser.email);
+                                            const isProtectedMaster = email === MASTER_USER_EMAIL;
+                                            const enabledModules = ACCESS_MODULES.filter((module) => systemUser.modules?.[module.id] === true);
+
+                                            return (
+                                                <div key={email || systemUser.uid} className="grid gap-3 px-4 py-4 md:grid-cols-[1.4fr_0.8fr_1.4fr_120px] md:items-center">
+                                                    <div>
+                                                        <div className="text-sm font-black text-slate-950">{systemUser.displayName || email}</div>
+                                                        <div className="mt-0.5 text-xs font-semibold text-slate-500">{email}</div>
+                                                    </div>
+                                                    <div>
+                                                        <span className={`inline-flex rounded-full px-3 py-1 text-[10px] font-black uppercase tracking-wider ${
+                                                            isProtectedMaster
+                                                                ? 'bg-amber-100 text-amber-700'
+                                                                : systemUser.active
+                                                                    ? 'bg-emerald-100 text-emerald-700'
+                                                                    : 'bg-slate-200 text-slate-600'
+                                                        }`}>
+                                                            {isProtectedMaster ? 'Master' : systemUser.active ? 'Activo' : 'Inactivo'}
+                                                        </span>
+                                                    </div>
+                                                    <div className="flex flex-wrap gap-1.5">
+                                                        {isProtectedMaster ? (
+                                                            <span className="rounded-full bg-slate-900 px-2.5 py-1 text-[10px] font-black uppercase tracking-wider text-white">Todos</span>
+                                                        ) : enabledModules.length ? enabledModules.map((module) => (
+                                                            <span key={module.id} className="rounded-full bg-slate-100 px-2.5 py-1 text-[10px] font-black uppercase tracking-wider text-slate-600">
+                                                                {module.label}
+                                                            </span>
+                                                        )) : (
+                                                            <span className="text-xs font-bold text-rose-500">Sin modulos</span>
+                                                        )}
+                                                    </div>
+                                                    <div className="text-left md:text-right">
+                                                        <button
+                                                            type="button"
+                                                            disabled={isProtectedMaster}
+                                                            onClick={() => editUser(systemUser)}
+                                                            className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-xs font-black uppercase tracking-wider text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-45"
+                                                        >
+                                                            Editar
+                                                        </button>
+                                                    </div>
+                                                </div>
+                                            );
+                                        })}
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+                    </Card>
+                </div>
+            )}
 
             {activeTab === 'Usuario' && (
                 <Card className="overflow-hidden">
