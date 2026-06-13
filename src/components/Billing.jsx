@@ -2,7 +2,7 @@ import React, { useMemo, useState } from 'react';
 import { doc, serverTimestamp, setDoc } from 'firebase/firestore';
 import { db } from '../firebase';
 import { APP_BRAND_NAME, fmt } from '../constants';
-import { buildFiscalPayload, uploadFiscalSupportFiles, uploadInvoicePhoto } from '../services/fiscalUtils';
+import { buildFiscalPayload, uploadFiscalSupportFiles } from '../services/fiscalUtils';
 
 const PAYMENT_BANKS = [
     { key: 'bac', label: 'BAC' },
@@ -936,7 +936,7 @@ function StampedInvoices({ data }) {
         paymentMethod: '',
         sourceSicarInvoiceId: '',
     });
-    const [supportFile, setSupportFile] = useState(null);
+    const [supportFiles, setSupportFiles] = useState({});
     const [saving, setSaving] = useState(false);
     const [message, setMessage] = useState('');
 
@@ -1010,9 +1010,13 @@ function StampedInvoices({ data }) {
             if (!safeNumber(form.subtotal) && !safeNumber(form.total)) throw new Error('Ingresa subtotal o total.');
 
             const docId = `membretada_${slugify(form.invoiceNumber)}_${form.date.replace(/-/g, '')}`;
-            const supportPayload = supportFile
-                ? await uploadInvoicePhoto(supportFile, 'facturacion/facturas_membretadas', docId)
-                : {};
+            const existingInvoice = savedInvoices.find((item) => item.id === docId) || {};
+            const supportPayload = await uploadFiscalSupportFiles(
+                supportFiles,
+                'facturacion/facturas_membretadas',
+                docId,
+                existingInvoice
+            );
 
             if (form.customerName.trim()) {
                 await upsertClientRecord(form.customerName.trim(), 'factura_membretada');
@@ -1037,7 +1041,7 @@ function StampedInvoices({ data }) {
             }, { merge: true });
 
             setMessage('Factura membretada guardada e integrada al reporte tributario.');
-            setSupportFile(null);
+            setSupportFiles({});
             setForm({
                 date: todayString(),
                 invoiceNumber: '',
@@ -1106,8 +1110,14 @@ function StampedInvoices({ data }) {
                         <Field label="Retencion municipal 1%">
                             <input className={inputClass} type="number" step="0.01" min="0" value={form.retentionMunicipal1} onChange={(event) => update('retentionMunicipal1', event.target.value)} />
                         </Field>
-                        <Field label="Soporte foto / PDF">
-                            <input className={inputClass} type="file" accept="image/*,application/pdf" onChange={(event) => setSupportFile(event.target.files?.[0] || null)} />
+                        <Field label="Foto factura">
+                            <input className={inputClass} type="file" accept="image/*,application/pdf" onChange={(event) => setSupportFiles((prev) => ({ ...prev, invoice: event.target.files?.[0] || null }))} />
+                        </Field>
+                        <Field label="Soporte retencion IR 2%">
+                            <input className={inputClass} type="file" accept="image/*,application/pdf" onChange={(event) => setSupportFiles((prev) => ({ ...prev, retentionIr2: event.target.files?.[0] || null }))} />
+                        </Field>
+                        <Field label="Soporte retencion municipal 1%">
+                            <input className={inputClass} type="file" accept="image/*,application/pdf" onChange={(event) => setSupportFiles((prev) => ({ ...prev, retentionMunicipal1: event.target.files?.[0] || null }))} />
                         </Field>
                     </div>
 
