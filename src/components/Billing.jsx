@@ -39,6 +39,60 @@ const recordExistsByName = (records = [], name = '') => {
     return Boolean(normalized) && records.some((record) => normalizeText(record.name || record.nombre) === normalized);
 };
 
+const normalizeInvoiceMatchKey = (value = '') => (
+    normalizeText(value)
+        .replace(/[^A-Z0-9]/g, '')
+);
+
+const getInvoiceNumberForMatch = (invoice = {}) => normalizeInvoiceMatchKey(
+    invoice.numeroFactura || invoice.invoiceNumber || invoice.folio || invoice.factura || ''
+);
+
+const getSicarInvoiceKeys = (invoice = {}) => ([
+    invoice.id,
+    invoice.sourceSicarInvoiceId,
+    invoice.sourceSicarId,
+    invoice.sicarInvoiceId,
+    invoice.sourceRecordId,
+    invoice.rawId,
+    invoice.facId ? `sicar_factura_${invoice.facId}` : '',
+    invoice.facId ? `factura_membretada_${invoice.facId}` : '',
+    invoice.facId ? String(invoice.facId) : '',
+])
+    .map((value) => normalizeInvoiceMatchKey(value))
+    .filter(Boolean);
+
+const isAccountingLoadedStatus = (value = '') => (
+    ['CONTABILIZADA', 'CONTABILIZADO', 'CARGADA', 'CARGADO', 'LOADED', 'ACCOUNTED'].includes(normalizeText(value))
+);
+
+const buildLoadedInvoiceIndex = (savedInvoices = []) => {
+    const sourceKeys = new Set();
+    const invoiceNumbers = new Set();
+
+    savedInvoices
+        .filter((invoice) => !['ANULADA', 'ANULADO', 'CANCELADA', 'CANCELADO', 'DELETED'].includes(normalizeText(invoice.status)))
+        .forEach((invoice) => {
+            getSicarInvoiceKeys(invoice).forEach((key) => sourceKeys.add(key));
+            const numberKey = getInvoiceNumberForMatch(invoice);
+            if (numberKey) invoiceNumbers.add(numberKey);
+        });
+
+    return { sourceKeys, invoiceNumbers };
+};
+
+const isSicarInvoicePendingAccounting = (invoice = {}, loadedIndex = buildLoadedInvoiceIndex()) => {
+    if (invoice.accountingInvoiceId || invoice.contabilidadInvoiceId || invoice.membretadaInvoiceId) return false;
+    if (isAccountingLoadedStatus(invoice.accountingStatus || invoice.estadoContable)) return false;
+
+    if (getSicarInvoiceKeys(invoice).some((key) => loadedIndex.sourceKeys.has(key))) return false;
+
+    const numberKey = getInvoiceNumberForMatch(invoice);
+    if (numberKey && loadedIndex.invoiceNumbers.has(numberKey)) return false;
+
+    return true;
+};
+
 const getMonth = (date = '') => String(date || todayString()).substring(0, 7);
 
 const getRecordDate = (value) => {
@@ -1582,17 +1636,6 @@ const StampedInvoicePrintModal = ({
 };
 
 function StampedInvoices({ data }) {
-    const sicarInvoices = useMemo(() => (
-        [...(data.sicar_facturas_membretadas || [])]
-            .map((item) => ({
-                ...item,
-                date: item.date || getRecordDate(item.fecha || item.invoiceDate),
-                invoiceNumber: item.numeroFactura || item.invoiceNumber || item.folio || '',
-                items: item.items || [],
-            }))
-            .sort((a, b) => String(b.date).localeCompare(String(a.date)))
-    ), [data.sicar_facturas_membretadas]);
-
     const savedInvoices = useMemo(() => (
         [...(data.facturas_membretadas_ventas || [])]
             .map((item) => ({
@@ -1603,6 +1646,20 @@ function StampedInvoices({ data }) {
             }))
             .sort((a, b) => String(b.date).localeCompare(String(a.date)))
     ), [data.facturas_membretadas_ventas]);
+
+    const loadedInvoiceIndex = useMemo(() => buildLoadedInvoiceIndex(savedInvoices), [savedInvoices]);
+
+    const sicarInvoices = useMemo(() => (
+        [...(data.sicar_facturas_membretadas || [])]
+            .map((item) => ({
+                ...item,
+                date: item.date || getRecordDate(item.fecha || item.invoiceDate),
+                invoiceNumber: item.numeroFactura || item.invoiceNumber || item.folio || '',
+                items: item.items || [],
+            }))
+            .filter((invoice) => isSicarInvoicePendingAccounting(invoice, loadedInvoiceIndex))
+            .sort((a, b) => String(b.date).localeCompare(String(a.date)))
+    ), [data.sicar_facturas_membretadas, loadedInvoiceIndex]);
 
     const clients = useMemo(() => (
         [...(data.clientes_facturacion || [])]
@@ -1879,6 +1936,16 @@ function StampedInvoices({ data }) {
                 createdAt: serverTimestamp(),
             }, { merge: true });
 
+            if (form.sourceSicarInvoiceId) {
+                await setDoc(doc(db, 'sicar_facturas_membretadas', form.sourceSicarInvoiceId), {
+                    accountingStatus: 'contabilizada',
+                    accountingInvoiceId: docId,
+                    accountingInvoiceNumber: form.invoiceNumber.trim(),
+                    accountingLoadedAt: serverTimestamp(),
+                    updatedAt: serverTimestamp(),
+                }, { merge: true });
+            }
+
             setMessage('Factura membretada guardada e integrada al reporte tributario.');
             setSupportFiles({});
             setForm({
@@ -1997,7 +2064,7 @@ function StampedInvoices({ data }) {
             </Section>
 
             <div className="space-y-5">
-                <Section title="Facturas SICAR para cargar" eyebrow="Lectura MySQL" action={<Badge tone="blue">{sicarInvoices.length} registros</Badge>}>
+                <Section title="Facturas SICAR para cargar" eyebrow="Pendientes por facturar" action={<Badge tone="blue">{sicarInvoices.length} pendientes</Badge>}>
                     <div className="space-y-3">
                         <SearchBox
                             value={sicarInvoiceSearch}
@@ -2009,7 +2076,7 @@ function StampedInvoices({ data }) {
                     <div className="mt-3 space-y-2">
                         {sicarInvoices.length === 0 ? (
                             <div className="rounded-3xl border border-dashed border-slate-300 p-8 text-center text-sm font-bold text-slate-400">
-                                No hay facturas SICAR sincronizadas en este rango.
+                                No hay facturas SICAR pendientes por cargar.
                             </div>
                         ) : filteredSicarInvoices.length === 0 ? (
                             <div className="rounded-3xl border border-dashed border-slate-300 p-8 text-center text-sm font-bold text-slate-400">
