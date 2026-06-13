@@ -118,7 +118,7 @@ export default function Header({ moduleAccess = {}, isMaster = false, defaultPat
             className={`group flex items-center gap-2 rounded-2xl px-3 py-2 text-[13px] font-black transition duration-200 focus:outline-none focus:ring-2 focus:ring-[#f5b51b]/70 ${
                 isActive(item.to)
                     ? 'bg-white text-slate-950 shadow-lg shadow-black/10'
-                    : 'text-white/72 hover:bg-white/10 hover:text-white'
+                    : 'text-white/[0.82] hover:bg-white/10 hover:text-white'
             }`}
             title={item.label}
         >
@@ -135,7 +135,7 @@ export default function Header({ moduleAccess = {}, isMaster = false, defaultPat
                 className={`group flex items-center gap-2 rounded-2xl px-3 py-2 text-[13px] font-black transition duration-200 focus:outline-none focus:ring-2 focus:ring-[#f5b51b]/70 ${
                     openMenu === 'ingresar' || isActive('/ingresar')
                         ? 'bg-[#f5b51b] text-slate-950 shadow-lg shadow-[#f5b51b]/20'
-                        : 'text-white/72 hover:bg-white/10 hover:text-white'
+                        : 'text-white/[0.82] hover:bg-white/10 hover:text-white'
                 }`}
             >
                 <Icon path={Icons.plus} className="h-4 w-4" />
@@ -150,11 +150,11 @@ export default function Header({ moduleAccess = {}, isMaster = false, defaultPat
                         animate={{ opacity: 1, y: 0, scale: 1 }}
                         exit={{ opacity: 0, y: 8, scale: 0.98 }}
                         transition={{ duration: 0.18, ease: [0.22, 1, 0.36, 1] }}
-                        className="absolute left-0 top-full z-50 mt-3 w-[22rem] overflow-hidden rounded-[1.4rem] border border-white/12 bg-slate-950/96 p-2 shadow-2xl shadow-black/35 ring-1 ring-white/10 backdrop-blur-xl"
+                        className="absolute left-0 top-full z-50 mt-3 w-[22rem] overflow-hidden rounded-[1.4rem] border border-white/[0.12] bg-slate-950/[0.98] p-2 shadow-2xl shadow-black/[0.35] ring-1 ring-white/10 backdrop-blur-xl"
                     >
                         <div className="px-3 py-2">
                             <div className="text-[10px] font-black uppercase tracking-[0.3em] text-[#f5b51b]">Registro operativo</div>
-                            <div className="mt-1 text-xs font-semibold text-white/50">Selecciona el formulario que necesitas abrir.</div>
+                            <div className="mt-1 text-xs font-semibold text-white/[0.68]">Selecciona el formulario que necesitas abrir.</div>
                         </div>
                         <div className="grid grid-cols-2 gap-1.5 p-1">
                             {entryTabs.map((item) => (
@@ -162,13 +162,13 @@ export default function Header({ moduleAccess = {}, isMaster = false, defaultPat
                                     key={item.tab}
                                     type="button"
                                     onClick={() => goToEntry(item.tab)}
-                                    className="group rounded-2xl p-3 text-left transition hover:bg-white/8 focus:outline-none focus:ring-2 focus:ring-[#f5b51b]/60"
+                                    className="group rounded-2xl p-3 text-left transition hover:bg-white/[0.08] focus:outline-none focus:ring-2 focus:ring-[#f5b51b]/60"
                                 >
                                     <div className={`mb-2 grid h-9 w-9 place-items-center rounded-xl ${item.tone}`}>
                                         <Icon path={Icons[item.icon]} />
                                     </div>
                                     <div className="text-sm font-black text-white">{item.label}</div>
-                                    <div className="mt-0.5 text-[11px] font-semibold text-white/46">{item.hint}</div>
+                                    <div className="mt-0.5 text-[11px] font-semibold text-white/[0.62]">{item.hint}</div>
                                 </button>
                             ))}
                         </div>
@@ -194,14 +194,14 @@ export default function Header({ moduleAccess = {}, isMaster = false, defaultPat
                             exit={{ opacity: 0, y: 8, scale: 0.98 }}
                             transition={{ duration: 0.18, ease: [0.22, 1, 0.36, 1] }}
                             onMouseLeave={() => setOpenMenu(null)}
-                            className="absolute left-0 top-full z-40 mt-3 w-64 rounded-[1.25rem] border border-white/12 bg-slate-950/96 p-2 shadow-2xl shadow-black/30 ring-1 ring-white/10 backdrop-blur-xl"
+                            className="absolute left-0 top-full z-40 mt-3 w-64 rounded-[1.25rem] border border-white/[0.12] bg-slate-950/[0.98] p-2 shadow-2xl shadow-black/30 ring-1 ring-white/10 backdrop-blur-xl"
                         >
                             <div className="px-3 py-2 text-[10px] font-black uppercase tracking-[0.28em] text-[#f5b51b]">{item.label}</div>
                             {item.hintList.map((hint) => (
                                 <Link
                                     key={hint}
                                     to={item.to}
-                                    className="block rounded-xl px-3 py-2 text-xs font-bold text-white/64 transition hover:bg-white/8 hover:text-white focus:outline-none focus:ring-2 focus:ring-[#f5b51b]/60"
+                                    className="block rounded-xl px-3 py-2 text-xs font-bold text-white/[0.74] transition hover:bg-white/[0.08] hover:text-white focus:outline-none focus:ring-2 focus:ring-[#f5b51b]/60"
                                 >
                                     {hint}
                                 </Link>
@@ -217,7 +217,7 @@ export default function Header({ moduleAccess = {}, isMaster = false, defaultPat
         <Link
             to={item.to}
             className={`flex items-center gap-3 rounded-2xl px-4 py-3 text-sm font-black transition ${
-                isActive(item.to) ? 'bg-white text-slate-950' : 'text-white/78 hover:bg-white/10 hover:text-white'
+                isActive(item.to) ? 'bg-white text-slate-950' : 'text-white/[0.84] hover:bg-white/10 hover:text-white'
             }`}
         >
             <Icon path={Icons[item.icon]} className={`h-4 w-4 ${isActive(item.to) ? 'text-[#e30613]' : 'text-[#f5b51b]'}`} />
@@ -232,12 +232,12 @@ export default function Header({ moduleAccess = {}, isMaster = false, defaultPat
                 animate={{ y: 0, opacity: 1 }}
                 transition={{ duration: 0.38, ease: [0.22, 1, 0.36, 1] }}
                 className={`command-header fixed left-0 right-0 top-0 z-50 border-b transition-all duration-200 ${
-                    isScrolled ? 'border-white/14 bg-slate-950/92 shadow-2xl shadow-slate-950/25 backdrop-blur-xl' : 'border-white/10 bg-slate-950/88 backdrop-blur-lg'
+                    isScrolled ? 'border-white/[0.14] bg-slate-950/[0.94] shadow-2xl shadow-slate-950/25 backdrop-blur-xl' : 'border-white/10 bg-slate-950/[0.90] backdrop-blur-lg'
                 }`}
             >
                 <nav ref={navRef} className="mx-auto flex h-16 max-w-[1480px] items-center gap-3 px-3 sm:px-5">
                     <Link to={defaultPath} className="group flex min-w-0 items-center gap-3 rounded-2xl py-1 pr-2 focus:outline-none focus:ring-2 focus:ring-[#f5b51b]/70">
-                        <span className="grid h-11 w-11 shrink-0 place-items-center rounded-2xl border border-white/14 bg-white shadow-lg shadow-black/15 transition group-hover:scale-[1.02]">
+                        <span className="grid h-11 w-11 shrink-0 place-items-center rounded-2xl border border-white/[0.14] bg-white shadow-lg shadow-black/[0.15] transition group-hover:scale-[1.02]">
                             <img src={APP_BRAND_LOGO} alt={APP_BRAND_NAME} className="h-8 w-8 object-contain" />
                         </span>
                         <span className="hidden min-w-0 sm:block">
@@ -264,13 +264,13 @@ export default function Header({ moduleAccess = {}, isMaster = false, defaultPat
                                     </span>
                                     <span className="min-w-0">
                                         <span className="block max-w-[10rem] truncate text-xs font-black text-white">{user.email?.split('@')[0]}</span>
-                                        <span className="block max-w-[10rem] truncate text-[10px] font-semibold text-white/45">{user.email}</span>
+                                        <span className="block max-w-[10rem] truncate text-[10px] font-semibold text-white/[0.62]">{user.email}</span>
                                     </span>
                                 </div>
                                 <button
                                     type="button"
                                     onClick={handleLogout}
-                                    className="hidden items-center gap-2 rounded-2xl border border-red-300/20 bg-red-500/12 px-3 py-2 text-xs font-black text-red-100 transition hover:border-red-300/40 hover:bg-red-500/22 focus:outline-none focus:ring-2 focus:ring-red-300/60 lg:flex"
+                                    className="hidden items-center gap-2 rounded-2xl border border-red-300/20 bg-red-500/[0.12] px-3 py-2 text-xs font-black text-red-100 transition hover:border-red-300/40 hover:bg-red-500/[0.22] focus:outline-none focus:ring-2 focus:ring-red-300/60 lg:flex"
                                 >
                                     <Icon path={Icons.logout} />
                                     Salir
@@ -278,7 +278,7 @@ export default function Header({ moduleAccess = {}, isMaster = false, defaultPat
                                 <button
                                     type="button"
                                     onClick={() => setMobileOpen((value) => !value)}
-                                    className="grid h-11 w-11 place-items-center rounded-2xl border border-white/12 bg-white/[0.06] text-white transition hover:bg-white/12 focus:outline-none focus:ring-2 focus:ring-[#f5b51b]/70 lg:hidden"
+                                    className="grid h-11 w-11 place-items-center rounded-2xl border border-white/[0.12] bg-white/[0.06] text-white transition hover:bg-white/[0.12] focus:outline-none focus:ring-2 focus:ring-[#f5b51b]/70 lg:hidden"
                                 >
                                     <Icon path={mobileOpen ? Icons.x : Icons.menu} className="h-5 w-5" />
                                 </button>
@@ -298,7 +298,7 @@ export default function Header({ moduleAccess = {}, isMaster = false, defaultPat
                             animate={{ opacity: 1, height: 'auto' }}
                             exit={{ opacity: 0, height: 0 }}
                             transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
-                            className="overflow-hidden border-t border-white/10 bg-slate-950/96 backdrop-blur-xl lg:hidden"
+                            className="overflow-hidden border-t border-white/10 bg-slate-950/[0.98] backdrop-blur-xl lg:hidden"
                         >
                             <div className="space-y-3 px-3 pb-4 pt-3">
                                 <div className="rounded-3xl border border-white/10 bg-white/[0.06] p-4">
@@ -311,13 +311,13 @@ export default function Header({ moduleAccess = {}, isMaster = false, defaultPat
                                         <div className="px-2 pb-2 text-[10px] font-black uppercase tracking-[0.28em] text-[#f5b51b]">Ingresar Datos</div>
                                         <div className="grid gap-1 sm:grid-cols-2">
                                             {entryTabs.map((item) => (
-                                                <button key={item.tab} type="button" onClick={() => goToEntry(item.tab)} className="flex items-center gap-3 rounded-2xl px-3 py-3 text-left text-sm font-black text-white/78 transition hover:bg-white/10 hover:text-white">
+                                                <button key={item.tab} type="button" onClick={() => goToEntry(item.tab)} className="flex items-center gap-3 rounded-2xl px-3 py-3 text-left text-sm font-black text-white/[0.84] transition hover:bg-white/10 hover:text-white">
                                                     <span className={`grid h-9 w-9 place-items-center rounded-xl ${item.tone}`}>
                                                         <Icon path={Icons[item.icon]} />
                                                     </span>
                                                     <span>
                                                         <span className="block">{item.label}</span>
-                                                        <span className="block text-[10px] font-semibold text-white/42">{item.hint}</span>
+                                                        <span className="block text-[10px] font-semibold text-white/[0.58]">{item.hint}</span>
                                                     </span>
                                                 </button>
                                             ))}
@@ -332,7 +332,7 @@ export default function Header({ moduleAccess = {}, isMaster = false, defaultPat
                                 <button
                                     type="button"
                                     onClick={handleLogout}
-                                    className="flex w-full items-center justify-center gap-2 rounded-2xl border border-red-300/20 bg-red-500/12 px-4 py-3 text-sm font-black uppercase tracking-[0.18em] text-red-100 transition hover:bg-red-500/22"
+                                    className="flex w-full items-center justify-center gap-2 rounded-2xl border border-red-300/20 bg-red-500/[0.12] px-4 py-3 text-sm font-black uppercase tracking-[0.18em] text-red-100 transition hover:bg-red-500/[0.22]"
                                 >
                                     <Icon path={Icons.logout} />
                                     Cerrar sesion
