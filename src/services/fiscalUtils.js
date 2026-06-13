@@ -16,13 +16,14 @@ const SUPPORT_FILE_LABELS = SUPPORT_FILE_TYPES.reduce((acc, item) => {
 }, {});
 
 export const PAYMENT_METHODS = [
-    'BAC POS',
-    'Banpro POS',
-    'LAFISE POS',
-    'Transferencia BAC',
-    'Transferencia Banpro',
-    'Transferencia Lafise',
-    'Efectivo',
+    'POS BAC',
+    'POS BANPRO',
+    'POS LAFISE',
+    'TRANSFERENCIA BAC',
+    'TRANSFERENCIA LAFISE',
+    'TRANSFERENCIA BANPRO',
+    'EFECTIVO',
+    'OTRO',
 ];
 
 export const PURCHASE_PAYMENT_METHODS = [

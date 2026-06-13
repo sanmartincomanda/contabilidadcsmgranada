@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { doc, getDoc, serverTimestamp, setDoc } from 'firebase/firestore';
 import { db } from '../firebase';
 import { APP_BRAND_NAME, fmt } from '../constants';
-import { buildFiscalPayload, uploadFiscalSupportFiles } from '../services/fiscalUtils';
+import { PAYMENT_METHODS, buildFiscalPayload, uploadFiscalSupportFiles } from '../services/fiscalUtils';
 
 const PAYMENT_BANKS = [
     { key: 'bac', label: 'BAC' },
@@ -118,6 +118,15 @@ const Field = ({ label, children, span = '' }) => (
 );
 
 const inputClass = 'w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-bold text-slate-900 outline-none transition focus:border-[#e30613] focus:ring-4 focus:ring-red-100';
+
+const PaymentMethodSelect = ({ value, onChange, required = false }) => (
+    <select className={inputClass} value={value || ''} onChange={(event) => onChange(event.target.value)} required={required}>
+        <option value="">Seleccionar metodo...</option>
+        {PAYMENT_METHODS.map((method) => (
+            <option key={method} value={method}>{method}</option>
+        ))}
+    </select>
+);
 
 const STAMPED_PRINT_LAYOUT_DOC = 'factura_membretada_preimpresa';
 const DEFAULT_PRINT_TEMPLATE_ID = 'principal';
@@ -1052,7 +1061,7 @@ function CashClosure({ data }) {
                                         )}
                                     </Field>
                                     <Field label="Metodo de pago">
-                                        <input className={inputClass} value={invoice.paymentMethod} onChange={(event) => updateClosureInvoice(invoice.localId, 'paymentMethod', event.target.value)} placeholder="Transferencia, POS, efectivo..." />
+                                        <PaymentMethodSelect value={invoice.paymentMethod} onChange={(value) => updateClosureInvoice(invoice.localId, 'paymentMethod', value)} />
                                     </Field>
                                     <Field label="Subtotal">
                                         <input className={inputClass} type="number" step="0.01" min="0" value={invoice.subtotal} onChange={(event) => updateClosureInvoice(invoice.localId, 'subtotal', event.target.value)} />
@@ -1589,6 +1598,21 @@ function StampedInvoices({ data }) {
         setMessage(`Cliente agregado a la base: ${safeName}.`);
     };
 
+    const updateSavedInvoicePaymentMethod = async (invoice, paymentMethod) => {
+        const invoiceId = invoice.id || invoice.docId;
+        if (!invoiceId) return;
+        try {
+            await setDoc(doc(db, 'facturas_membretadas_ventas', invoiceId), {
+                paymentMethod,
+                updatedAt: serverTimestamp(),
+            }, { merge: true });
+            setMessage(`Metodo de pago actualizado para factura ${invoice.invoiceNumber || invoice.numeroFactura || invoiceId}.`);
+        } catch (error) {
+            console.error(error);
+            setMessage(error?.message || 'No se pudo actualizar el metodo de pago.');
+        }
+    };
+
     const saveInvoice = async (event) => {
         event.preventDefault();
         setSaving(true);
@@ -1694,7 +1718,7 @@ function StampedInvoices({ data }) {
                             <input className={inputClass} value={form.customerRfc} onChange={(event) => update('customerRfc', event.target.value)} placeholder="RUC / RFC del cliente" />
                         </Field>
                         <Field label="Metodo de pago">
-                            <input className={inputClass} value={form.paymentMethod} onChange={(event) => update('paymentMethod', event.target.value)} placeholder="Transferencia, POS, efectivo..." />
+                            <PaymentMethodSelect value={form.paymentMethod} onChange={(value) => update('paymentMethod', value)} required />
                         </Field>
                         <Field label="Subtotal">
                             <input className={inputClass} type="number" step="0.01" min="0" value={form.subtotal} onChange={(event) => update('subtotal', event.target.value)} required />
@@ -1784,6 +1808,16 @@ function StampedInvoices({ data }) {
                                     </div>
                                     <div className="flex shrink-0 items-center gap-2">
                                         <div className="font-mono text-sm font-black text-slate-900">{fmt(invoice.total)}</div>
+                                        <select
+                                            className="max-w-[190px] rounded-xl border border-slate-200 bg-white px-3 py-2 text-[10px] font-black uppercase tracking-[0.12em] text-slate-700 outline-none transition focus:border-[#e30613] focus:ring-2 focus:ring-red-100"
+                                            value={invoice.paymentMethod || ''}
+                                            onChange={(event) => updateSavedInvoicePaymentMethod(invoice, event.target.value)}
+                                        >
+                                            <option value="">Metodo...</option>
+                                            {PAYMENT_METHODS.map((method) => (
+                                                <option key={method} value={method}>{method}</option>
+                                            ))}
+                                        </select>
                                         <button
                                             type="button"
                                             onClick={() => setPrintTarget(invoice)}

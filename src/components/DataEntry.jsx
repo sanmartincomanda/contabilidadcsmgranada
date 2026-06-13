@@ -155,6 +155,17 @@ const Select = ({ label, icon, options, ...props }) => (
     </div>
 );
 
+const renderSelectOptions = (options = []) => (
+    <>
+        <option value="">Seleccionar...</option>
+        {options.map((option) => (
+            typeof option === 'string'
+                ? <option key={option} value={option}>{option}</option>
+                : <option key={option.value || option.id} value={option.value || option.id}>{option.label || option.name || option.value || option.id}</option>
+        ))}
+    </>
+);
+
 const Badge = ({ children, variant = 'default' }) => {
     const variants = {
         default: 'bg-stone-100 text-stone-600',
@@ -448,6 +459,19 @@ const EditRecordModal = ({ item, collectionName, fields, onClose, onSaved }) => 
             );
         }
 
+        if (field?.type === 'select') {
+            return (
+                <select
+                    value={value === null || value === undefined ? '' : String(value)}
+                    onChange={(e) => setEditData((prev) => ({ ...prev, [key]: e.target.value }))}
+                    className="w-full rounded-lg border border-stone-200 bg-stone-50 px-3 py-2 text-sm font-semibold text-stone-700 outline-none focus:border-[#e30613] focus:ring-2 focus:ring-[#e30613]/15"
+                    disabled={loading}
+                >
+                    {renderSelectOptions(field.options || [])}
+                </select>
+            );
+        }
+
         if (field?.type === 'branch') {
             return (
                 <select
@@ -711,6 +735,19 @@ const EditableRow = ({ item, collectionName, fields, onUpdate, onDelete }) => {
         const field = fields[key];
         if (key === 'timestamp') return <span className='text-stone-400 text-xs'>No editable</span>;
         if (field?.readonly) return <span className='text-stone-400 text-xs'>No editable</span>;
+
+        if (field?.type === 'select') {
+            return (
+                <select
+                    value={value === null || value === undefined ? '' : String(value)}
+                    onChange={(e) => setEditData({ ...editData, [key]: e.target.value })}
+                    className="w-full rounded border border-[#e30613]/40 px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-[#e30613]/30"
+                    disabled={loading}
+                >
+                    {renderSelectOptions(field.options || [])}
+                </select>
+            );
+        }
 
         if (field?.type === 'branch') {
             return (
@@ -1973,7 +2010,7 @@ const StampedSalesInvoiceForm = ({ data, loading, setLoading, onSuccess }) => {
     const [total, setTotal] = useState('');
     const [retentionIr2, setRetentionIr2] = useState('');
     const [retentionMunicipal1, setRetentionMunicipal1] = useState('');
-    const [paymentMethod, setPaymentMethod] = useState('BAC POS');
+    const [paymentMethod, setPaymentMethod] = useState('POS BAC');
 
     const dailySales = useMemo(() => (
         resolveIncomeEntries(data.ingresos || [])
@@ -2031,7 +2068,7 @@ const StampedSalesInvoiceForm = ({ data, loading, setLoading, onSuccess }) => {
             setTotal('');
             setRetentionIr2('');
             setRetentionMunicipal1('');
-            setPaymentMethod('BAC POS');
+            setPaymentMethod('POS BAC');
             onSuccess?.();
         } catch (error) {
             console.error('Error guardando factura membretada:', error);
@@ -2377,7 +2414,7 @@ export function DataEntry({ categories, data }) {
             saleDate: { label: 'Fecha Venta', type: 'date' },
             dailySaleCode: { label: 'Venta Diaria', type: 'text', readonly: true },
             numeroFactura: { label: 'Factura', type: 'text' },
-            paymentMethod: { label: 'Metodo Pago', type: 'text' },
+            paymentMethod: { label: 'Metodo Pago', type: 'select', options: PAYMENT_METHODS },
             subtotal: { label: 'Subtotal', type: 'currency' },
             iva: { label: 'IVA', type: 'currency' },
             total: { label: 'Total', type: 'currency' },
@@ -2411,7 +2448,7 @@ export function DataEntry({ categories, data }) {
             providerCode: { label: 'Codigo', type: 'text', readonly: true },
             supplier: { label: 'Proveedor', type: 'text' },
             invoiceNumber: { label: 'Factura', type: 'text' },
-            paymentType: { label: 'Tipo', type: 'text' },
+            paymentType: { label: 'Tipo', type: 'select', options: PURCHASE_PAYMENT_METHODS },
             subtotal: { label: 'Subtotal', type: 'currency' },
             iva: { label: 'IVA', type: 'currency' },
             total: { label: 'Total', type: 'currency' },

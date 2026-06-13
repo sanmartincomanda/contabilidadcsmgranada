@@ -661,10 +661,14 @@ const buildTaxReport = (data, selectedMonth) => {
                 retentionMunicipal1: 0,
                 retentionTotal: 0,
                 netTotal: 0,
+                paymentMethods: [],
             };
         }
 
         acc[key].invoiceCount += 1;
+        if (row.paymentMethod && !acc[key].paymentMethods.includes(row.paymentMethod)) {
+            acc[key].paymentMethods.push(row.paymentMethod);
+        }
         acc[key].subtotal += row.subtotal;
         acc[key].iva += row.iva;
         acc[key].total += row.total;
@@ -685,6 +689,7 @@ const buildTaxReport = (data, selectedMonth) => {
             retentionMunicipal1: peso(row.retentionMunicipal1),
             retentionTotal: peso(row.retentionTotal),
             netTotal: peso(row.netTotal),
+            paymentMethods: row.paymentMethods.join(' / '),
         }))
         .sort((a, b) => a.date.localeCompare(b.date));
 
@@ -798,6 +803,43 @@ const downloadCsv = (filename, rows) => {
     const escape = (value) => `"${String(value ?? '').replaceAll('"', '""')}"`;
     const csv = [headers.join(','), ...rows.map((row) => headers.map((header) => escape(row[header])).join(','))].join('\n');
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    link.click();
+    URL.revokeObjectURL(url);
+};
+
+const downloadXls = (filename, rows, sheetName = 'Reporte') => {
+    if (!rows.length) return;
+    const headers = Object.keys(rows[0]);
+    const escape = (value) => String(value ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+    const tableRows = [
+        `<tr>${headers.map((header) => `<th>${escape(header)}</th>`).join('')}</tr>`,
+        ...rows.map((row) => `<tr>${headers.map((header) => `<td>${escape(row[header])}</td>`).join('')}</tr>`),
+    ].join('');
+    const workbook = `<!doctype html>
+<html>
+<head>
+    <meta charset="utf-8" />
+    <style>
+        table { border-collapse: collapse; font-family: Arial, sans-serif; font-size: 12px; }
+        th { background: #9f111a; color: #fff; font-weight: 700; }
+        th, td { border: 1px solid #d8dee6; padding: 6px 8px; }
+    </style>
+</head>
+<body>
+    <table>
+        <caption>${escape(sheetName)}</caption>
+        ${tableRows}
+    </table>
+</body>
+</html>`;
+    const blob = new Blob([workbook], { type: 'application/vnd.ms-excel;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
@@ -1191,6 +1233,8 @@ const TaxReportsPanel = ({ taxReport, taxTab, setTaxTab, selectedMonth, setSelec
                             <div className="no-print flex flex-wrap gap-2">
                                 <button onClick={() => downloadCsv(`resumen-facturas-membretadas-${selectedMonth}.csv`, taxReport.stampedInvoiceDailyRows)} className="rounded-lg border border-[#e30613] px-3 py-1.5 text-xs font-bold text-[#e30613]">Exportar resumen</button>
                                 <button onClick={() => downloadCsv(`facturas-membretadas-${selectedMonth}.csv`, taxReport.stampedInvoiceRows)} className="rounded-lg border border-[#e30613] px-3 py-1.5 text-xs font-bold text-[#e30613]">Exportar detalle</button>
+                                <button onClick={() => downloadXls(`resumen-facturas-membretadas-${selectedMonth}.xls`, taxReport.stampedInvoiceDailyRows, 'Resumen facturas membretadas')} className="rounded-lg border border-emerald-600 px-3 py-1.5 text-xs font-bold text-emerald-700">Resumen XLS</button>
+                                <button onClick={() => downloadXls(`facturas-membretadas-${selectedMonth}.xls`, taxReport.stampedInvoiceRows, 'Detalle facturas membretadas')} className="rounded-lg border border-emerald-600 px-3 py-1.5 text-xs font-bold text-emerald-700">Detalle XLS</button>
                                 <button onClick={handlePrintStampedInvoices} className="rounded-lg bg-[#e30613] px-3 py-1.5 text-xs font-bold text-white">Imprimir membretado</button>
                             </div>
                         }
@@ -1246,6 +1290,7 @@ const TaxReportsPanel = ({ taxReport, taxTab, setTaxTab, selectedMonth, setSelec
                                     <tr>
                                         <th className={thClass}>Fecha</th>
                                         <th className={thClass}>Referencia venta diaria</th>
+                                        <th className={thClass}>Metodos</th>
                                         <th className={`${thClass} text-right`}>Facturas</th>
                                         <th className={`${thClass} text-right`}>Subtotal</th>
                                         <th className={`${thClass} text-right`}>IVA</th>
@@ -1256,11 +1301,12 @@ const TaxReportsPanel = ({ taxReport, taxTab, setTaxTab, selectedMonth, setSelec
                                 </thead>
                                 <tbody>
                                     {taxReport.stampedInvoiceDailyRows.length === 0 ? (
-                                        <tr><td colSpan="8" className="py-6 text-center text-sm font-semibold text-stone-400">No hay facturas membretadas en este periodo.</td></tr>
+                                        <tr><td colSpan="9" className="py-6 text-center text-sm font-semibold text-stone-400">No hay facturas membretadas en este periodo.</td></tr>
                                     ) : taxReport.stampedInvoiceDailyRows.map((row) => (
                                         <tr key={row.dailySaleCode}>
                                             <td className={tdClass}>{row.date}</td>
                                             <td className={tdClass}>{row.dailySaleCode}</td>
+                                            <td className={tdClass}>{row.paymentMethods || '-'}</td>
                                             <td className={`${tdClass} text-right font-semibold`}>{row.invoiceCount}</td>
                                             <td className={`${tdClass} text-right font-semibold`}>{fmt(row.subtotal)}</td>
                                             <td className={`${tdClass} text-right font-semibold`}>{fmt(row.iva)}</td>
