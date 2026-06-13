@@ -32,6 +32,14 @@ const Icon = ({ path, className = "w-5 h-5" }) => (
     </svg>
 );
 
+const normalizeReportText = (value = '') => (
+    String(value || '')
+        .trim()
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .toUpperCase()
+);
+
 // --- COMPONENTES UI ---
 
 const Card = ({ title, children, className = "", right, subtitle, icon, gradient = false }) => (
@@ -693,6 +701,31 @@ const buildTaxReport = (data, selectedMonth) => {
         }))
         .sort((a, b) => a.date.localeCompare(b.date));
 
+    const stampedInvoicePaymentSummaryRows = [
+        ['VENTAS POS BAC', 'POS BAC'],
+        ['VENTAS POS BANPRO', 'POS BANPRO'],
+        ['VENTAS POS LAFISE', 'POS LAFISE'],
+        ['VENTAS TRANSFERENCIA BAC', 'TRANSFERENCIA BAC'],
+        ['VENTAS TRANSFERENCIA BANPRO', 'TRANSFERENCIA BANPRO'],
+        ['VENTAS TRANSFERENCIA LAFISE', 'TRANSFERENCIA LAFISE'],
+    ].map(([label, method]) => ({
+        ITEM: label,
+        TOTAL: peso(stampedInvoiceRows
+            .filter((row) => normalizeReportText(row.paymentMethod) === normalizeReportText(method))
+            .reduce((sum, row) => sum + peso(row.total), 0)),
+    }));
+
+    stampedInvoicePaymentSummaryRows.push(
+        {
+            ITEM: 'TOTAL RETENCION MUNICIPAL',
+            TOTAL: peso(stampedInvoiceRows.reduce((sum, row) => sum + peso(row.retentionMunicipal1), 0)),
+        },
+        {
+            ITEM: 'TOTAL RETENCION IR 2',
+            TOTAL: peso(stampedInvoiceRows.reduce((sum, row) => sum + peso(row.retentionIr2), 0)),
+        }
+    );
+
     const salesRetentionRows = (data.facturas_membretadas_ventas || [])
         .filter(inMonth)
         .map((item) => ({
@@ -767,6 +800,7 @@ const buildTaxReport = (data, selectedMonth) => {
         retentionRows: [...salesRetentionRows, ...purchaseRetentionRows],
         stampedInvoiceRows,
         stampedInvoiceDailyRows,
+        stampedInvoicePaymentSummaryRows,
         purchaseCategoryRows: categoryTreeToRows(purchaseCategoryTree),
         operatingExpenseRows: categoryTreeToRows(operatingExpenseTree),
         totals: {
@@ -811,34 +845,91 @@ const downloadCsv = (filename, rows) => {
     URL.revokeObjectURL(url);
 };
 
-const downloadXls = (filename, rows, sheetName = 'Reporte') => {
-    if (!rows.length) return;
-    const headers = Object.keys(rows[0]);
-    const escape = (value) => String(value ?? '')
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;');
-    const tableRows = [
-        `<tr>${headers.map((header) => `<th>${escape(header)}</th>`).join('')}</tr>`,
-        ...rows.map((row) => `<tr>${headers.map((header) => `<td>${escape(row[header])}</td>`).join('')}</tr>`),
+const escapeXml = (value) => String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+
+const isCurrencyHeader = (header = '') => (
+    ['subtotal', 'iva', 'total', 'retentionir2', 'retentionmunicipal1', 'retentiontotal', 'nettotal'].includes(normalizeReportText(header).replace(/[^A-Z0-9]/g, '').toLowerCase())
+);
+
+const safeSheetName = (value = 'Reporte') => (
+    String(value || 'Reporte')
+        .replace(/[\\/?*[\]:]/g, ' ')
+        .trim()
+        .slice(0, 31) || 'Reporte'
+);
+
+const buildWorksheetXml = ({ name = 'Reporte', rows = [] }) => {
+    const headers = rows.length ? Object.keys(rows[0]) : [];
+    const rowXml = [
+        `<Row>${headers.map((header) => `<Cell ss:StyleID="Header"><Data ss:Type="String">${escapeXml(header)}</Data></Cell>`).join('')}</Row>`,
+        ...rows.map((row) => (
+            `<Row>${headers.map((header) => {
+                const value = row[header];
+                const isNumber = typeof value === 'number' && Number.isFinite(value);
+                const style = isNumber && isCurrencyHeader(header) ? 'Currency' : 'Text';
+                return `<Cell ss:StyleID="${style}"><Data ss:Type="${isNumber ? 'Number' : 'String'}">${escapeXml(value)}</Data></Cell>`;
+            }).join('')}</Row>`
+        )),
     ].join('');
-    const workbook = `<!doctype html>
-<html>
-<head>
-    <meta charset="utf-8" />
-    <style>
-        table { border-collapse: collapse; font-family: Arial, sans-serif; font-size: 12px; }
-        th { background: #9f111a; color: #fff; font-weight: 700; }
-        th, td { border: 1px solid #d8dee6; padding: 6px 8px; }
-    </style>
-</head>
-<body>
-    <table>
-        <caption>${escape(sheetName)}</caption>
-        ${tableRows}
-    </table>
-</body>
-</html>`;
+
+    return `<Worksheet ss:Name="${escapeXml(safeSheetName(name))}">
+        <Table>${rowXml}</Table>
+        <WorksheetOptions xmlns="urn:schemas-microsoft-com:office:excel">
+            <Selected/>
+            <Panes><Pane><Number>3</Number><ActiveRow>1</ActiveRow></Pane></Panes>
+        </WorksheetOptions>
+    </Worksheet>`;
+};
+
+const downloadXls = (filename, rowsOrSheets, sheetName = 'Reporte') => {
+    const sheets = Array.isArray(rowsOrSheets) && rowsOrSheets.some((item) => item?.rows)
+        ? rowsOrSheets
+        : [{ name: sheetName, rows: rowsOrSheets || [] }];
+    const filledSheets = sheets.filter((sheet) => (sheet.rows || []).length);
+    if (!filledSheets.length) return;
+
+    const workbook = `<?xml version="1.0" encoding="UTF-8"?>
+<?mso-application progid="Excel.Sheet"?>
+<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet"
+    xmlns:o="urn:schemas-microsoft-com:office:office"
+    xmlns:x="urn:schemas-microsoft-com:office:excel"
+    xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet"
+    xmlns:html="http://www.w3.org/TR/REC-html40">
+    <Styles>
+        <Style ss:ID="Header">
+            <Font ss:Bold="1" ss:Color="#FFFFFF"/>
+            <Interior ss:Color="#9F111A" ss:Pattern="Solid"/>
+            <Borders>
+                <Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#D8DEE6"/>
+                <Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#D8DEE6"/>
+                <Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#D8DEE6"/>
+                <Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#D8DEE6"/>
+            </Borders>
+        </Style>
+        <Style ss:ID="Text">
+            <Borders>
+                <Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#D8DEE6"/>
+                <Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#D8DEE6"/>
+                <Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#D8DEE6"/>
+                <Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#D8DEE6"/>
+            </Borders>
+        </Style>
+        <Style ss:ID="Currency">
+            <NumberFormat ss:Format="&quot;C$&quot; #,##0.00"/>
+            <Borders>
+                <Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#D8DEE6"/>
+                <Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#D8DEE6"/>
+                <Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#D8DEE6"/>
+                <Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#D8DEE6"/>
+            </Borders>
+        </Style>
+    </Styles>
+    ${filledSheets.map(buildWorksheetXml).join('')}
+</Workbook>`;
     const blob = new Blob([workbook], { type: 'application/vnd.ms-excel;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
@@ -1233,8 +1324,14 @@ const TaxReportsPanel = ({ taxReport, taxTab, setTaxTab, selectedMonth, setSelec
                             <div className="no-print flex flex-wrap gap-2">
                                 <button onClick={() => downloadCsv(`resumen-facturas-membretadas-${selectedMonth}.csv`, taxReport.stampedInvoiceDailyRows)} className="rounded-lg border border-[#e30613] px-3 py-1.5 text-xs font-bold text-[#e30613]">Exportar resumen</button>
                                 <button onClick={() => downloadCsv(`facturas-membretadas-${selectedMonth}.csv`, taxReport.stampedInvoiceRows)} className="rounded-lg border border-[#e30613] px-3 py-1.5 text-xs font-bold text-[#e30613]">Exportar detalle</button>
-                                <button onClick={() => downloadXls(`resumen-facturas-membretadas-${selectedMonth}.xls`, taxReport.stampedInvoiceDailyRows, 'Resumen facturas membretadas')} className="rounded-lg border border-emerald-600 px-3 py-1.5 text-xs font-bold text-emerald-700">Resumen XLS</button>
-                                <button onClick={() => downloadXls(`facturas-membretadas-${selectedMonth}.xls`, taxReport.stampedInvoiceRows, 'Detalle facturas membretadas')} className="rounded-lg border border-emerald-600 px-3 py-1.5 text-xs font-bold text-emerald-700">Detalle XLS</button>
+                                <button onClick={() => downloadXls(`resumen-facturas-membretadas-${selectedMonth}.xls`, [
+                                    { name: 'Resumen facturas', rows: taxReport.stampedInvoiceDailyRows },
+                                    { name: 'Resumen pagos', rows: taxReport.stampedInvoicePaymentSummaryRows },
+                                ])} className="rounded-lg border border-emerald-600 px-3 py-1.5 text-xs font-bold text-emerald-700">Resumen XLS</button>
+                                <button onClick={() => downloadXls(`facturas-membretadas-${selectedMonth}.xls`, [
+                                    { name: 'Detalle facturas', rows: taxReport.stampedInvoiceRows },
+                                    { name: 'Resumen pagos', rows: taxReport.stampedInvoicePaymentSummaryRows },
+                                ])} className="rounded-lg border border-emerald-600 px-3 py-1.5 text-xs font-bold text-emerald-700">Detalle XLS</button>
                                 <button onClick={handlePrintStampedInvoices} className="rounded-lg bg-[#e30613] px-3 py-1.5 text-xs font-bold text-white">Imprimir membretado</button>
                             </div>
                         }
