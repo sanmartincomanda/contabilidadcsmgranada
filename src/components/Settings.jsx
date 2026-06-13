@@ -1,13 +1,15 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { httpsCallable } from 'firebase/functions';
-import { functions as firebaseFunctions } from '../firebase';
+import { collection, getDocs } from 'firebase/firestore';
+import { db, functions as firebaseFunctions } from '../firebase';
 import { APP_BRAND_LOGO, APP_BRAND_NAME, DEFAULT_BRANCH_NAME, fmt } from '../constants';
 import CategoryManager from './CategoryManager';
 import { getDeviceSettings, saveDeviceSettings } from '../services/deviceSettings';
 import {
     ACCESS_MODULES,
     MASTER_USER_EMAIL,
+    USER_PROFILES_COLLECTION,
     emptyModuleAccess,
     isMasterEmail,
     normalizeModuleAccess,
@@ -52,6 +54,66 @@ const createEmptyUserForm = () => ({
     modules: emptyModuleAccess(),
 });
 
+const sortListedUsers = (users = []) => [...users].sort((a, b) => {
+    const aEmail = normalizeUserEmail(a.email);
+    const bEmail = normalizeUserEmail(b.email);
+    if (aEmail === MASTER_USER_EMAIL) return -1;
+    if (bEmail === MASTER_USER_EMAIL) return 1;
+    return (a.displayName || aEmail).localeCompare(b.displayName || bEmail, 'es');
+});
+
+const normalizeListedUser = (raw = {}) => {
+    const email = normalizeUserEmail(raw.email || raw.id || '');
+    const isProtectedMaster = email === MASTER_USER_EMAIL;
+
+    return {
+        uid: raw.uid || '',
+        email,
+        displayName: raw.displayName || raw.name || (isProtectedMaster ? 'Luis Saenz' : email),
+        active: isProtectedMaster ? true : raw.active !== false && raw.disabled !== true,
+        disabled: isProtectedMaster ? false : raw.disabled === true || raw.active === false,
+        modules: isProtectedMaster ? {} : normalizeModuleAccess(raw.modules || {}),
+        role: isProtectedMaster ? 'master' : raw.role || 'limited',
+        source: raw.source || 'auth',
+    };
+};
+
+const mergeListedUsers = (...groups) => {
+    const byEmail = new Map();
+
+    groups.flat().forEach((rawUser) => {
+        const user = normalizeListedUser(rawUser);
+        if (!user.email) return;
+        byEmail.set(user.email, {
+            ...(byEmail.get(user.email) || {}),
+            ...user,
+        });
+    });
+
+    return sortListedUsers([...byEmail.values()]);
+};
+
+const loadStoredUserProfiles = async () => {
+    const snapshot = await getDocs(collection(db, USER_PROFILES_COLLECTION));
+    const users = snapshot.docs.map((docSnap) => normalizeListedUser({
+        id: docSnap.id,
+        ...(docSnap.data() || {}),
+        source: 'firestore',
+    }));
+
+    if (!users.some((listedUser) => normalizeUserEmail(listedUser.email) === MASTER_USER_EMAIL)) {
+        users.unshift(normalizeListedUser({
+            email: MASTER_USER_EMAIL,
+            displayName: 'Luis Saenz',
+            active: true,
+            role: 'master',
+            source: 'local-master',
+        }));
+    }
+
+    return sortListedUsers(users.filter((listedUser) => listedUser.email));
+};
+
 const TestTicket = ({ settings }) => (
     <div className="settings-test-ticket">
         <div className="ticket-logo">
@@ -78,6 +140,7 @@ export default function Settings() {
     const [systemUsers, setSystemUsers] = useState([]);
     const [usersLoading, setUsersLoading] = useState(false);
     const [usersError, setUsersError] = useState('');
+    const [usersListNotice, setUsersListNotice] = useState('');
     const [usersMessage, setUsersMessage] = useState('');
     const [userForm, setUserForm] = useState(() => createEmptyUserForm());
     const [savingUser, setSavingUser] = useState(false);
@@ -104,14 +167,33 @@ export default function Settings() {
         const loadUsers = async () => {
             setUsersLoading(true);
             setUsersError('');
+            setUsersListNotice('');
             try {
                 const listUsers = httpsCallable(firebaseFunctions, 'adminListAppUsers');
                 const result = await listUsers();
                 if (!mounted) return;
-                setSystemUsers(result.data?.users || []);
-            } catch (error) {
+                const callableUsers = mergeListedUsers(result.data?.users || []);
+
+                if (callableUsers.length > 0) {
+                    setSystemUsers(callableUsers);
+                    return;
+                }
+
+                const storedUsers = await loadStoredUserProfiles();
                 if (!mounted) return;
-                setUsersError(error.message || 'No se pudieron cargar los usuarios.');
+                setSystemUsers(storedUsers);
+                setUsersListNotice('Mostrando usuarios guardados en perfiles del sistema.');
+            } catch (error) {
+                try {
+                    const storedUsers = await loadStoredUserProfiles();
+                    if (!mounted) return;
+                    setSystemUsers(storedUsers);
+                    setUsersListNotice(`Mostrando perfiles guardados. Firebase Auth no respondio: ${error.message || 'error desconocido'}`);
+                } catch (fallbackError) {
+                    if (!mounted) return;
+                    setSystemUsers([]);
+                    setUsersError(fallbackError.message || error.message || 'No se pudieron cargar los usuarios.');
+                }
             } finally {
                 if (mounted) setUsersLoading(false);
             }
@@ -127,6 +209,7 @@ export default function Settings() {
         setUserForm(createEmptyUserForm());
         setUsersMessage('');
         setUsersError('');
+        setUsersListNotice('');
     };
 
     const toggleUserModule = (moduleId) => {
@@ -149,6 +232,7 @@ export default function Settings() {
         });
         setUsersMessage('');
         setUsersError('');
+        setUsersListNotice('');
     };
 
     const saveSystemUser = async (event) => {
@@ -176,16 +260,26 @@ export default function Settings() {
         setSavingUser(true);
         setUsersError('');
         setUsersMessage('');
+        setUsersListNotice('');
 
         try {
             const saveUser = httpsCallable(firebaseFunctions, 'adminCreateAppUser');
-            await saveUser({
+            const payload = {
                 email,
                 displayName: userForm.displayName.trim(),
                 password: userForm.password.trim(),
                 active: userForm.active,
                 modules: normalizeModuleAccess(userForm.modules || {}),
+            };
+            const result = await saveUser(payload);
+            const savedUser = normalizeListedUser(result.data?.user || {
+                email,
+                displayName: payload.displayName,
+                active: payload.active,
+                modules: payload.modules,
+                source: 'optimistic-save',
             });
+            setSystemUsers((currentUsers) => mergeListedUsers(currentUsers, [savedUser]));
             setUsersMessage(existingUser ? 'Usuario actualizado correctamente.' : 'Usuario creado correctamente.');
             setUserForm(createEmptyUserForm());
             setUsersReloadKey((key) => key + 1);
@@ -430,6 +524,18 @@ export default function Settings() {
                         </div>
 
                         <div className="p-5">
+                            {usersListNotice && !usersLoading && (
+                                <div className="mb-4 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-bold text-amber-800">
+                                    {usersListNotice}
+                                </div>
+                            )}
+
+                            {usersError && !usersLoading && systemUsers.length === 0 && (
+                                <div className="mb-4 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-bold text-rose-700">
+                                    {usersError}
+                                </div>
+                            )}
+
                             {usersLoading && (
                                 <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-6 text-center text-sm font-bold text-slate-500">
                                     Cargando usuarios...
@@ -438,7 +544,7 @@ export default function Settings() {
 
                             {!usersLoading && systemUsers.length === 0 && (
                                 <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 px-4 py-8 text-center text-sm font-bold text-slate-500">
-                                    No hay usuarios listados todavia. Si acabas de crear las Functions, despliegalas para poder leer Firebase Auth.
+                                    No hay usuarios listados todavia. Crea el primer usuario operativo o usa Actualizar lista.
                                 </div>
                             )}
 
