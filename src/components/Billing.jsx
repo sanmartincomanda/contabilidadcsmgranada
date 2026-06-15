@@ -89,27 +89,36 @@ const isAccountingLoadedStatus = (value = '') => (
 
 const buildLoadedInvoiceIndex = (savedInvoices = []) => {
     const sourceKeys = new Set();
-    const invoiceNumbers = new Set();
+    const docSourceKeys = new Map();
 
     savedInvoices
         .filter((invoice) => !['ANULADA', 'ANULADO', 'CANCELADA', 'CANCELADO', 'DELETED'].includes(normalizeText(invoice.status)))
         .forEach((invoice) => {
-            getSicarInvoiceKeys(invoice).forEach((key) => sourceKeys.add(key));
-            const numberKey = getInvoiceNumberForMatch(invoice);
-            if (numberKey) invoiceNumbers.add(numberKey);
+            const invoiceSourceKeys = getSicarInvoiceKeys(invoice);
+            invoiceSourceKeys.forEach((key) => sourceKeys.add(key));
+            const docKey = normalizeInvoiceMatchKey(invoice.id || invoice.docId);
+            if (docKey) docSourceKeys.set(docKey, new Set(invoiceSourceKeys));
         });
 
-    return { sourceKeys, invoiceNumbers };
+    return { sourceKeys, docSourceKeys };
 };
 
 const isSicarInvoicePendingAccounting = (invoice = {}, loadedIndex = buildLoadedInvoiceIndex()) => {
-    if (invoice.accountingInvoiceId || invoice.contabilidadInvoiceId || invoice.membretadaInvoiceId) return false;
-    if (isAccountingLoadedStatus(invoice.accountingStatus || invoice.estadoContable)) return false;
+    const invoiceKeys = getSicarInvoiceKeys(invoice);
+    if (invoiceKeys.some((key) => loadedIndex.sourceKeys.has(key))) return false;
 
-    if (getSicarInvoiceKeys(invoice).some((key) => loadedIndex.sourceKeys.has(key))) return false;
+    const explicitAccountingSourceKey = normalizeInvoiceMatchKey(invoice.accountingSourceSicarInvoiceId || invoice.accountingSicarInvoiceId);
+    if (
+        explicitAccountingSourceKey
+        && isAccountingLoadedStatus(invoice.accountingStatus || invoice.estadoContable)
+        && invoiceKeys.includes(explicitAccountingSourceKey)
+    ) {
+        return false;
+    }
 
-    const numberKey = getInvoiceNumberForMatch(invoice);
-    if (numberKey && loadedIndex.invoiceNumbers.has(numberKey)) return false;
+    const accountingDocKey = normalizeInvoiceMatchKey(invoice.accountingInvoiceId || invoice.contabilidadInvoiceId || invoice.membretadaInvoiceId);
+    const accountingDocSources = accountingDocKey ? loadedIndex.docSourceKeys.get(accountingDocKey) : null;
+    if (accountingDocSources && invoiceKeys.some((key) => accountingDocSources.has(key))) return false;
 
     return true;
 };
@@ -1980,6 +1989,7 @@ function StampedInvoices({ data }) {
         retentionMunicipal1: '',
         paymentMethod: '',
         sourceSicarInvoiceId: '',
+        sourceSicarInvoiceNumber: '',
         items: [],
     });
     const [supportFiles, setSupportFiles] = useState({});
@@ -2033,7 +2043,7 @@ function StampedInvoices({ data }) {
     const loadSicarInvoice = (invoice) => {
         setForm({
             date: invoice.date || todayString(),
-            invoiceNumber: invoice.invoiceNumber || '',
+            invoiceNumber: '',
             customerName: invoice.customerName || invoice.cliente || '',
             customerAddress: invoice.customerAddress || invoice.address || '',
             customerRfc: invoice.customerRfc || invoice.rfc || '',
@@ -2044,9 +2054,10 @@ function StampedInvoices({ data }) {
             retentionMunicipal1: '',
             paymentMethod: invoice.paymentMethod || '',
             sourceSicarInvoiceId: invoice.id || '',
+            sourceSicarInvoiceNumber: invoice.invoiceNumber || invoice.numeroFactura || invoice.folio || '',
             items: invoice.items || [],
         });
-        setMessage(`Factura SICAR ${invoice.invoiceNumber || invoice.id} cargada con ${(invoice.items || []).length} articulo(s).`);
+        setMessage(`Factura SICAR ${invoice.invoiceNumber || invoice.id} cargada con ${(invoice.items || []).length} articulo(s). Ingresa el numero consecutivo de la factura membretada de la app.`);
     };
 
     const upsertClientRecord = async (name, source = 'factura_membretada') => {
@@ -2085,6 +2096,14 @@ function StampedInvoices({ data }) {
             if (!safeNumber(form.subtotal) && !safeNumber(form.total)) throw new Error('Ingresa subtotal o total.');
 
             const docId = `membretada_${slugify(form.invoiceNumber)}_${form.date.replace(/-/g, '')}`;
+            const duplicateAppInvoice = savedInvoices.find((item) => (
+                item.id !== docId
+                && getInvoiceNumberForMatch(item) === normalizeInvoiceMatchKey(form.invoiceNumber)
+                && !['ANULADA', 'ANULADO', 'CANCELADA', 'CANCELADO', 'DELETED'].includes(normalizeText(item.status))
+            ));
+            if (duplicateAppInvoice) {
+                throw new Error(`Ya existe una factura membretada en la app con el numero ${form.invoiceNumber}. Usa el consecutivo correcto.`);
+            }
             const existingInvoice = savedInvoices.find((item) => item.id === docId) || {};
             const supportPayload = await uploadFiscalSupportFiles(
                 supportFiles,
@@ -2112,6 +2131,7 @@ function StampedInvoices({ data }) {
                 source: form.sourceSicarInvoiceId ? 'sicar_factura' : 'manual',
                 sourceType: 'stamped_sale_invoice',
                 sourceSicarInvoiceId: form.sourceSicarInvoiceId || '',
+                sourceSicarInvoiceNumber: form.sourceSicarInvoiceNumber || '',
                 status: 'active',
                 ...supportPayload,
                 updatedAt: serverTimestamp(),
@@ -2123,6 +2143,8 @@ function StampedInvoices({ data }) {
                     accountingStatus: 'contabilizada',
                     accountingInvoiceId: docId,
                     accountingInvoiceNumber: form.invoiceNumber.trim(),
+                    accountingSourceSicarInvoiceId: form.sourceSicarInvoiceId,
+                    sourceSicarInvoiceNumber: form.sourceSicarInvoiceNumber || '',
                     accountingLoadedAt: serverTimestamp(),
                     updatedAt: serverTimestamp(),
                 }, { merge: true });
@@ -2143,6 +2165,7 @@ function StampedInvoices({ data }) {
                 retentionMunicipal1: '',
                 paymentMethod: '',
                 sourceSicarInvoiceId: '',
+                sourceSicarInvoiceNumber: '',
                 items: [],
             });
         } catch (error) {
@@ -2166,8 +2189,13 @@ function StampedInvoices({ data }) {
                         <Field label="Fecha">
                             <input className={inputClass} type="date" value={form.date} onChange={(event) => update('date', event.target.value)} required />
                         </Field>
-                        <Field label="Numero de factura">
+                        <Field label="Numero factura app / membretada">
                             <input className={inputClass} value={form.invoiceNumber} onChange={(event) => update('invoiceNumber', event.target.value)} required />
+                            {form.sourceSicarInvoiceId && (
+                                <div className="mt-2 rounded-2xl border border-sky-200 bg-sky-50 px-3 py-2 text-xs font-black text-sky-700">
+                                    Origen SICAR: factura {form.sourceSicarInvoiceNumber || form.sourceSicarInvoiceId}. Este numero no se copia como consecutivo de la app.
+                                </div>
+                            )}
                         </Field>
                         <Field label="Cliente">
                             <input className={inputClass} list="stamped-invoice-clients" value={form.customerName} onChange={(event) => update('customerName', event.target.value)} placeholder="Cliente / razon social" />
