@@ -125,7 +125,7 @@ function placeholders(values) {
   return values.map(() => '?').join(',');
 }
 
-async function fetchClosures(connection, startDate, endExclusive) {
+async function fetchClosuresWithFilter(connection, whereClause, params = []) {
   const [closures] = await connection.execute(`
     SELECT
       c.cor_id,
@@ -150,10 +150,9 @@ async function fetchClosures(connection, startDate, endExclusive) {
     FROM cortecaja c
     LEFT JOIN caja cj ON cj.caj_id = c.caj_id
     LEFT JOIN resumencortecaja r ON r.cor_id = c.cor_id
-    WHERE c.fecha >= ?
-      AND c.fecha < ?
+    WHERE ${whereClause}
     ORDER BY c.fecha, c.caj_id, c.cor_id
-  `, [startDate, endExclusive]);
+  `, params);
 
   const corIds = closures.map((row) => row.cor_id).filter(Boolean);
   if (corIds.length === 0) return [];
@@ -263,6 +262,16 @@ async function fetchClosures(connection, startDate, endExclusive) {
       ticketPaymentBreakdown: ticketPaymentsByCor.get(row.cor_id) || [],
     };
   });
+}
+
+async function fetchClosures(connection, startDate, endExclusive) {
+  return fetchClosuresWithFilter(connection, 'c.fecha >= ? AND c.fecha < ?', [startDate, endExclusive]);
+}
+
+async function fetchClosuresByIds(connection, corIds = []) {
+  const ids = [...new Set((corIds || []).map((id) => Number(id)).filter(Number.isFinite))];
+  if (ids.length === 0) return [];
+  return fetchClosuresWithFilter(connection, `c.cor_id IN (${placeholders(ids)})`, ids);
 }
 
 function normalizeInvoiceRow(row, sourceDate = '') {
@@ -508,6 +517,34 @@ async function fetchStampedInvoicesByIds(connection, facIds) {
   return [...map.values()].sort((a, b) => Number(a.facId || 0) - Number(b.facId || 0));
 }
 
+function stableStringify(value) {
+  if (Array.isArray(value)) return `[${value.map((item) => stableStringify(item)).join(',')}]`;
+  if (value && typeof value === 'object') {
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`).join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function buildClosureFingerprint(entry = {}) {
+  return stableStringify({
+    activeSalesSubtotal: entry.activeSalesSubtotal,
+    activeSalesTotal: entry.activeSalesTotal,
+    activeTicketCount: entry.activeTicketCount,
+    calculatedTotal: entry.calculatedTotal,
+    cancelledSalesTotal: entry.cancelledSalesTotal,
+    cashSalesTotal: entry.cashSalesTotal,
+    countedTotal: entry.countedTotal,
+    creditRecoveryTotal: entry.creditRecoveryTotal,
+    creditSalesTotal: entry.creditSalesTotal,
+    cutPaymentBreakdown: entry.cutPaymentBreakdown,
+    date: entry.date,
+    rccId: entry.rccId,
+    sicarDifference: entry.sicarDifference,
+    ticketPaymentBreakdown: entry.ticketPaymentBreakdown,
+    withdrawalTotal: entry.withdrawalTotal,
+  });
+}
+
 async function writeClosure(db, entry, options) {
   const FieldValue = admin.firestore.FieldValue;
   const batch = db.batch();
@@ -545,6 +582,24 @@ async function writeClosure(db, entry, options) {
   }
 
   await batch.commit();
+}
+
+async function writeClosureIfChanged(db, entry, options = {}) {
+  if (options.stageOnly) {
+    await writeClosure(db, entry, options);
+    return { written: true, reason: 'stage-only' };
+  }
+
+  const fingerprint = buildClosureFingerprint(entry);
+  const visibleRef = db.collection('sicar_cierres_caja').doc(entry.id);
+  const snapshot = await visibleRef.get();
+
+  if (snapshot.exists && snapshot.get('sicarFingerprint') === fingerprint) {
+    return { written: false, reason: 'unchanged' };
+  }
+
+  await writeClosure(db, { ...entry, sicarFingerprint: fingerprint }, options);
+  return { written: true, reason: snapshot.exists ? 'changed' : 'new' };
 }
 
 async function writeInvoice(db, entry, options) {
@@ -670,6 +725,7 @@ if (require.main === module) {
 module.exports = {
   addDays,
   fetchClosures,
+  fetchClosuresByIds,
   fetchStampedInvoices,
   fetchStampedInvoicesByIds,
   getMysqlConfig,
@@ -678,5 +734,6 @@ module.exports = {
   money,
   toDateString,
   writeClosure,
+  writeClosureIfChanged,
   writeInvoice,
 };

@@ -568,3 +568,37 @@ Si alguna vez necesitas reiniciar el punto de partida:
 cd functions
 npm run watch-stamped-invoices -- --once --reset-state
 ```
+
+## Cierres de caja SICAR casi en tiempo real
+
+Para cargar cierres de caja en el modulo de Facturacion, el servidor SICAR puede dejar corriendo un watcher local que revisa `cortecaja` cada 15 segundos.
+
+Control de costos:
+
+- MySQL se consulta localmente en `127.0.0.1`.
+- Firebase solo recibe escritura cuando hay un cierre nuevo o cuando un cierre cambio.
+- Cada cierre visible guarda una huella `sicarFingerprint`; si la huella no cambia, el watcher no reescribe el documento.
+- El estado local se guarda en `C:\SICAR\state\sicar-cash-closure-watch.json`.
+- Al iniciar verifica de forma idempotente los ultimos 3 dias para recuperar cierres recientes.
+
+Prueba manual una sola vez:
+
+```powershell
+cd functions
+npm run watch-cash-closures -- --once --preview
+```
+
+Ejecutar watcher en consola:
+
+```powershell
+cd functions
+npm run watch-cash-closures
+```
+
+Registrar tarea oculta al iniciar sesion:
+
+```powershell
+cd functions
+.\scripts\registerSicarCashClosureWatcherTask.ps1 -IntervalMs 15000
+Start-ScheduledTask -TaskName "SICAR Cash Closure Watcher"
+```

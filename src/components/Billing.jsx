@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { collection, doc, getDoc, serverTimestamp, setDoc, writeBatch } from 'firebase/firestore';
+import { collection, deleteDoc, doc, getDoc, serverTimestamp, setDoc, writeBatch } from 'firebase/firestore';
 import { db } from '../firebase';
 import { useAuth } from '../context/AuthContext';
 import { APP_BRAND_NAME, fmt } from '../constants';
@@ -13,7 +13,9 @@ const PAYMENT_BANKS = [
 ];
 
 const CASH_DENOMINATIONS = [1000, 500, 200, 100, 50, 20, 10, 5, 1];
+const USD_DENOMINATIONS = [100, 50, 20, 10, 5, 1];
 const CASH_DIFFERENCE_THRESHOLD = 30;
+const CASH_CLOSURE_EXCHANGE_RATE = 36.50;
 
 const CASHIER_OPTIONS = [
     'Dania Espinoza',
@@ -663,6 +665,8 @@ function CashClosure({ data }) {
     const [closureDate, setClosureDate] = useState(todayString());
     const [cashierName, setCashierName] = useState('');
     const [cashCount, setCashCount] = useState({});
+    const [dollarCashCount, setDollarCashCount] = useState({});
+    const [preCloseDeposit, setPreCloseDeposit] = useState({ cordobas: '', dollars: '' });
     const [transfers, setTransfers] = useState({ bac: [], banpro: [], lafise: [] });
     const [posDetails, setPosDetails] = useState({ bac: [], banpro: [], lafise: [] });
     const [closureInvoices, setClosureInvoices] = useState([]);
@@ -732,6 +736,16 @@ function CashClosure({ data }) {
         CASH_DENOMINATIONS.reduce((sum, denomination) => sum + denomination * safeNumber(cashCount[denomination]), 0)
     ), [cashCount]);
 
+    const dollarCashTotal = useMemo(() => (
+        USD_DENOMINATIONS.reduce((sum, denomination) => sum + denomination * safeNumber(dollarCashCount[denomination]), 0)
+    ), [dollarCashCount]);
+
+    const dollarCashTotalCordobas = safeNumber(dollarCashTotal * CASH_CLOSURE_EXCHANGE_RATE);
+    const preCloseDepositCordobas = safeNumber(preCloseDeposit.cordobas);
+    const preCloseDepositDollars = safeNumber(preCloseDeposit.dollars);
+    const preCloseDepositTotal = safeNumber(preCloseDepositCordobas + (preCloseDepositDollars * CASH_CLOSURE_EXCHANGE_RATE));
+    const cashClosureTotal = safeNumber(cashTotal + dollarCashTotalCordobas + preCloseDepositTotal);
+
     const transferTotals = useMemo(() => Object.fromEntries(PAYMENT_BANKS.map(({ key }) => [
         key,
         safeNumber((transfers[key] || []).reduce((sum, item) => sum + safeNumber(item.amount), 0)),
@@ -743,7 +757,7 @@ function CashClosure({ data }) {
     ])), [posDetails]);
 
     const manualTotal = safeNumber(
-        cashTotal
+        cashClosureTotal
         + Object.values(transferTotals).reduce((sum, value) => sum + value, 0)
         + Object.values(posTotals).reduce((sum, value) => sum + value, 0)
     );
@@ -768,6 +782,8 @@ function CashClosure({ data }) {
         setCashierName(closure.cashierName || '');
         setSelectedClosureId(closure.linkedSicarClosureId || '');
         setCashCount(closure.cashCount || {});
+        setDollarCashCount(closure.dollarCashCount || {});
+        setPreCloseDeposit(closure.preCloseDeposit || { cordobas: '', dollars: '' });
         setTransfers(closure.transferDetails || { bac: [], banpro: [], lafise: [] });
         setPosDetails(closure.posDetails || { bac: [], banpro: [], lafise: [] });
         setClosureInvoices((closure.stampedInvoiceDrafts || closure.stampedInvoices || []).map((invoice) => createInvoiceDraft(invoice, closure.date || todayString())));
@@ -874,6 +890,32 @@ function CashClosure({ data }) {
         }));
     };
 
+    const deleteWaitingClosure = async (closure) => {
+        if (!closure?.id) return;
+        if (!window.confirm(`Eliminar el cierre en espera de ${closure.date || 'sin fecha'}? Esta accion no afecta SICAR ni cierres ya cerrados.`)) return;
+        setSaving(true);
+        setMessage('');
+        try {
+            await deleteDoc(doc(db, 'cierres_caja', closure.id));
+            if (activeClosureDocId === closure.id) {
+                setActiveClosureDocId('');
+                setCashCount({});
+                setDollarCashCount({});
+                setPreCloseDeposit({ cordobas: '', dollars: '' });
+                setTransfers({ bac: [], banpro: [], lafise: [] });
+                setPosDetails({ bac: [], banpro: [], lafise: [] });
+                setClosureInvoices([]);
+                setNotes('');
+            }
+            setMessage('Cierre en espera eliminado.');
+        } catch (error) {
+            console.error(error);
+            setMessage(error?.message || 'No se pudo eliminar el cierre en espera.');
+        } finally {
+            setSaving(false);
+        }
+    };
+
     const ensurePeopleRecords = async () => {
         const touchedClients = new Set();
         Object.values(transfers).flat().forEach((row) => {
@@ -976,7 +1018,19 @@ function CashClosure({ data }) {
                 retentionAdjustment: retentionTotal,
                 expectedAfterRetentions,
                 cashCount,
-                cashTotal: safeNumber(cashTotal),
+                cashCordobasTotal: safeNumber(cashTotal),
+                dollarCashCount,
+                dollarCashTotal: safeNumber(dollarCashTotal),
+                exchangeRate: CASH_CLOSURE_EXCHANGE_RATE,
+                dollarCashTotalCordobas,
+                preCloseDeposit: {
+                    cordobas: preCloseDepositCordobas,
+                    dollars: preCloseDepositDollars,
+                    exchangeRate: CASH_CLOSURE_EXCHANGE_RATE,
+                    totalCordobas: preCloseDepositTotal,
+                },
+                preCloseDepositTotal,
+                cashTotal: safeNumber(cashClosureTotal),
                 transferDetails: transfers,
                 transferTotals,
                 posDetails,
@@ -1062,20 +1116,35 @@ function CashClosure({ data }) {
                             </div>
                             <div className="space-y-2">
                                 {waitingClosures.map((closure) => (
-                                    <button
+                                    <div
                                         key={closure.id}
-                                        type="button"
-                                        onClick={() => loadWaitingClosure(closure)}
-                                        className="w-full rounded-2xl border border-amber-200 bg-white p-3 text-left transition hover:border-amber-400"
+                                        className="rounded-2xl border border-amber-200 bg-white p-3 transition hover:border-amber-400"
                                     >
-                                        <div className="flex items-center justify-between gap-3">
+                                        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                                             <div>
                                                 <div className="text-sm font-black text-slate-950">{closure.cashierName || 'Sin cajero'}</div>
                                                 <div className="text-xs font-bold text-slate-500">{closure.date} · {closure.linkedSicarCorId ? `Corte ${closure.linkedSicarCorId}` : 'Manual'}</div>
                                             </div>
-                                            <div className="font-mono text-sm font-black text-amber-700">{fmt(closure.manualTotal || 0)}</div>
+                                            <div className="flex flex-wrap items-center gap-2">
+                                                <div className="font-mono text-sm font-black text-amber-700">{fmt(closure.manualTotal || 0)}</div>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => loadWaitingClosure(closure)}
+                                                    className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-[10px] font-black uppercase tracking-[0.16em] text-amber-800 transition hover:bg-amber-100"
+                                                >
+                                                    Continuar
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => deleteWaitingClosure(closure)}
+                                                    disabled={saving}
+                                                    className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-[10px] font-black uppercase tracking-[0.16em] text-red-700 transition hover:bg-red-100 disabled:opacity-60"
+                                                >
+                                                    Eliminar
+                                                </button>
+                                            </div>
                                         </div>
-                                    </button>
+                                    </div>
                                 ))}
                             </div>
                         </div>
@@ -1165,10 +1234,40 @@ function CashClosure({ data }) {
                         <div className="mb-3 flex items-center justify-between">
                             <div>
                                 <div className="text-sm font-black text-slate-950">Contador de dinero contado</div>
-                                <div className="text-xs font-semibold text-slate-500">Ingresa cantidad de billetes/monedas; el total se calcula solo.</div>
+                                <div className="text-xs font-semibold text-slate-500">Cordobas, dolares y deposito pre-cierre. Tasa fija: C$ {CASH_CLOSURE_EXCHANGE_RATE.toFixed(2)}</div>
                             </div>
-                            <div className="font-mono text-xl font-black text-slate-950">{fmt(cashTotal)}</div>
+                            <div className="text-right">
+                                <div className="font-mono text-xl font-black text-slate-950">{fmt(cashClosureTotal)}</div>
+                                <div className="text-[10px] font-black uppercase tracking-[0.18em] text-slate-400">Efectivo + pre-cierre</div>
+                            </div>
                         </div>
+                        <div className="mb-4 grid gap-3 md:grid-cols-2">
+                            <Field label="Deposito pre-cierre cordobas">
+                                <input
+                                    className={inputClass}
+                                    type="number"
+                                    step="0.01"
+                                    min="0"
+                                    value={preCloseDeposit.cordobas || ''}
+                                    onChange={(event) => setPreCloseDeposit((prev) => ({ ...prev, cordobas: event.target.value }))}
+                                    placeholder="0.00"
+                                />
+                            </Field>
+                            <Field label="Deposito pre-cierre dolares">
+                                <input
+                                    className={inputClass}
+                                    type="number"
+                                    step="0.01"
+                                    min="0"
+                                    value={preCloseDeposit.dollars || ''}
+                                    onChange={(event) => setPreCloseDeposit((prev) => ({ ...prev, dollars: event.target.value }))}
+                                    placeholder="0.00"
+                                />
+                            </Field>
+                            <SummaryCard label="Pre-cierre convertido" value={fmt(preCloseDepositTotal)} tone="blue" />
+                            <SummaryCard label="Dolares contado" value={`US$ ${dollarCashTotal.toFixed(2)} / ${fmt(dollarCashTotalCordobas)}`} tone="green" />
+                        </div>
+                        <div className="mb-2 text-[10px] font-black uppercase tracking-[0.22em] text-slate-500">Conteo en cordobas</div>
                         <div className="grid gap-2 sm:grid-cols-3 lg:grid-cols-5">
                             {CASH_DENOMINATIONS.map((denomination) => (
                                 <label key={denomination} className="rounded-2xl border border-slate-200 bg-white p-3">
@@ -1180,6 +1279,22 @@ function CashClosure({ data }) {
                                         step="1"
                                         value={cashCount[denomination] || ''}
                                         onChange={(event) => setCashCount((prev) => ({ ...prev, [denomination]: event.target.value }))}
+                                    />
+                                </label>
+                            ))}
+                        </div>
+                        <div className="mb-2 mt-4 text-[10px] font-black uppercase tracking-[0.22em] text-slate-500">Conteo en dolares</div>
+                        <div className="grid gap-2 sm:grid-cols-3 lg:grid-cols-6">
+                            {USD_DENOMINATIONS.map((denomination) => (
+                                <label key={denomination} className="rounded-2xl border border-emerald-200 bg-emerald-50/60 p-3">
+                                    <span className="text-[10px] font-black uppercase tracking-[0.2em] text-emerald-700">US$ {denomination}</span>
+                                    <input
+                                        className="mt-1 w-full rounded-xl border border-emerald-200 px-3 py-2 text-sm font-black outline-none focus:border-emerald-500"
+                                        type="number"
+                                        min="0"
+                                        step="1"
+                                        value={dollarCashCount[denomination] || ''}
+                                        onChange={(event) => setDollarCashCount((prev) => ({ ...prev, [denomination]: event.target.value }))}
                                     />
                                 </label>
                             ))}
