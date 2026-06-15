@@ -151,6 +151,41 @@ const getCashDifferencePendingAmount = (item = {}) => {
 
 const getCashDifferenceType = (amount = 0) => (safeNumber(amount) < 0 ? 'faltante' : 'sobrante');
 
+const isInvoiceExcludedFromCashClosureSelection = (invoice = {}) => {
+    const status = normalizeText(invoice.cashClosureLinkStatus || invoice.closureStatus || '');
+    return Boolean(
+        invoice.excludeFromCashClosure
+        || invoice.excludedFromCashClosure
+        || invoice.linkedCashClosureId
+        || invoice.linkedSicarClosureId
+        || ['SIN CIERRE', 'SIN_CIERRE', 'CONCILIADA', 'CONCILIADO', 'EN CIERRE', 'EN_CIERRE'].includes(status)
+    );
+};
+
+const getClosureLabel = (closure = {}) => {
+    if (!closure?.id) return '';
+    const code = closure.linkedSicarCorId || closure.sicar?.corId || closure.sicar?.cor_id || closure.id;
+    const date = closure.date || '-';
+    const cashbox = closure.sicar?.cashboxName || closure.sicar?.cajaName || closure.cashboxName || closure.cajaName || 'Caja';
+    return `Cierre ${code} · ${date} · ${cashbox}`;
+};
+
+const getInvoiceClosureInfo = (invoice = {}, closureIndex = new Map()) => {
+    const status = normalizeText(invoice.cashClosureLinkStatus || invoice.closureStatus);
+    if (['SIN CIERRE', 'SIN_CIERRE', 'SIN-CIERRE'].includes(status) || invoice.excludeFromCashClosure || invoice.excludedFromCashClosure) {
+        return { status: 'sin_cierre', label: 'Sin cierre de caja vinculado' };
+    }
+
+    const closureId = invoice.linkedCashClosureId || invoice.cashClosureId || '';
+    if (!closureId) return { status: 'pendiente', label: 'Pendiente de vincular' };
+
+    const closure = closureIndex.get(closureId);
+    return {
+        status: 'vinculada',
+        label: closure ? getClosureLabel(closure) : `Cierre ${closureId}`,
+    };
+};
+
 const emptyTransfer = () => ({ localId: createLineId('transfer'), clientName: '', amount: '', reference: '' });
 const emptyPos = () => ({ localId: createLineId('pos'), amount: '', reference: '' });
 
@@ -644,6 +679,7 @@ function CashClosure({ data }) {
                 invoiceNumber: item.numeroFactura || item.invoiceNumber || '',
                 retentionTotal: safeNumber(item.retentionTotal ?? (safeNumber(item.retentionIr2) + safeNumber(item.retentionMunicipal1))),
             }))
+            .filter((invoice) => !isInvoiceExcludedFromCashClosureSelection(invoice))
             .sort((a, b) => String(b.date).localeCompare(String(a.date)))
     ), [data.facturas_membretadas_ventas]);
 
@@ -2477,6 +2513,14 @@ function StampedInvoiceHistory({ data }) {
             .sort((a, b) => String(b.date).localeCompare(String(a.date)))
     ), [data.facturas_membretadas_ventas]);
 
+    const closureIndex = useMemo(() => {
+        const map = new Map();
+        (data.cierres_caja || []).forEach((closure) => {
+            if (closure.id) map.set(closure.id, closure);
+        });
+        return map;
+    }, [data.cierres_caja]);
+
     const searchedInvoices = useMemo(() => filterRecords(savedInvoices, search, [
         'date',
         'saleDate',
@@ -2539,6 +2583,40 @@ function StampedInvoiceHistory({ data }) {
         } catch (error) {
             console.error(error);
             setMessage(error?.message || 'No se pudo actualizar el metodo de pago.');
+        }
+    };
+
+    const markInvoiceWithoutClosure = async (invoice) => {
+        const invoiceId = invoice.id || invoice.docId;
+        if (!invoiceId) return;
+        if (!window.confirm(`Estas seguro que deseas dejar la factura ${invoice.invoiceNumber || invoice.numeroFactura || invoiceId} sin cierre de caja vinculado?`)) return;
+        try {
+            await setDoc(doc(db, 'facturas_membretadas_ventas', invoiceId), {
+                linkedCashClosureId: '',
+                linkedSicarClosureId: '',
+                linkedSicarCorId: null,
+                cashClosureLinkStatus: 'sin_cierre',
+                closureStatus: 'sin_cierre',
+                excludeFromCashClosure: true,
+                updatedAt: serverTimestamp(),
+            }, { merge: true });
+            setDetailTarget((current) => (
+                current && (current.id || current.docId) === invoiceId
+                    ? {
+                        ...current,
+                        linkedCashClosureId: '',
+                        linkedSicarClosureId: '',
+                        linkedSicarCorId: null,
+                        cashClosureLinkStatus: 'sin_cierre',
+                        closureStatus: 'sin_cierre',
+                        excludeFromCashClosure: true,
+                    }
+                    : current
+            ));
+            setMessage(`Factura ${invoice.invoiceNumber || invoice.numeroFactura || invoiceId} marcada sin cierre de caja vinculado.`);
+        } catch (error) {
+            console.error(error);
+            setMessage(error?.message || 'No se pudo actualizar el vinculo de cierre.');
         }
     };
 
@@ -2654,16 +2732,22 @@ function StampedInvoiceHistory({ data }) {
                             <div className="rounded-3xl border border-dashed border-slate-300 p-10 text-center text-sm font-bold text-slate-400">
                                 No hay facturas membretadas que coincidan con los filtros.
                             </div>
-                        ) : pagedInvoices.records.map((invoice) => (
+                        ) : pagedInvoices.records.map((invoice) => {
+                            const closureInfo = getInvoiceClosureInfo(invoice, closureIndex);
+                            return (
                             <div key={invoice.id || `${invoice.invoiceNumber}-${invoice.date}`} className="rounded-[1.6rem] border border-slate-200 bg-white p-4 shadow-sm transition hover:-translate-y-0.5 hover:border-red-200 hover:shadow-lg hover:shadow-slate-900/5">
                                 <div className="grid gap-4 xl:grid-cols-[1fr_0.58fr_0.8fr_auto] xl:items-center">
                                     <div className="min-w-0">
                                         <div className="flex flex-wrap items-center gap-2">
                                             <div className="truncate text-base font-black text-slate-950">Factura {invoice.invoiceNumber || '-'}</div>
                                             <Badge tone={invoice.source === 'sicar_factura' ? 'blue' : 'slate'}>{invoice.source === 'sicar_factura' ? 'SICAR' : 'Manual'}</Badge>
+                                            <Badge tone={closureInfo.status === 'vinculada' ? 'green' : closureInfo.status === 'sin_cierre' ? 'amber' : 'slate'}>{closureInfo.status === 'vinculada' ? 'Con cierre' : closureInfo.status === 'sin_cierre' ? 'Sin cierre' : 'Pendiente'}</Badge>
                                         </div>
                                         <div className="mt-1 text-sm font-bold text-slate-600">{invoice.customerName || invoice.cliente || 'Sin cliente'}</div>
                                         <div className="mt-1 text-xs font-bold text-slate-400">{invoice.date || '-'} · RUC {invoice.customerRfc || invoice.rfc || '-'} · {(invoice.items || []).length} articulo(s)</div>
+                                        <div className="mt-2 rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-black text-slate-600">
+                                            Cierre de caja vinculado: <span className="text-slate-950">{closureInfo.label}</span>
+                                        </div>
                                     </div>
 
                                     <div className="grid grid-cols-2 gap-2 text-xs font-bold text-slate-500">
@@ -2704,10 +2788,20 @@ function StampedInvoiceHistory({ data }) {
                                         >
                                             Imprimir
                                         </button>
+                                        {closureInfo.status !== 'sin_cierre' && (
+                                            <button
+                                                type="button"
+                                                onClick={() => markInvoiceWithoutClosure(invoice)}
+                                                className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs font-black uppercase tracking-[0.14em] text-amber-800 transition hover:bg-amber-100"
+                                            >
+                                                Sin cierre
+                                            </button>
+                                        )}
                                     </div>
                                 </div>
                             </div>
-                        ))}
+                            );
+                        })}
                     </div>
 
                     <div className="mt-4">
@@ -2938,6 +3032,345 @@ function CashDifferences({ data }) {
     );
 }
 
+function CashClosureHistory({ data }) {
+    const [search, setSearch] = useState('');
+    const [selectedMonth, setSelectedMonth] = useState(getMonth(todayString()));
+    const [statusFilter, setStatusFilter] = useState('');
+    const [page, setPage] = useState(1);
+
+    const closures = useMemo(() => (
+        [...(data.cierres_caja || [])]
+            .map((closure) => ({
+                ...closure,
+                date: closure.date || getRecordDate(closure.createdAt || closure.updatedAt),
+                invoiceCount: (closure.stampedInvoices || closure.stampedInvoiceDrafts || []).length,
+                cashboxName: closure.sicar?.cashboxName || closure.sicar?.cajaName || closure.cashboxName || closure.cajaName || 'Caja',
+                code: closure.linkedSicarCorId || closure.sicar?.corId || closure.sicar?.cor_id || closure.id,
+                manualTotal: safeNumber(closure.manualTotal),
+                cashTotal: safeNumber(closure.cashTotal),
+                difference: safeNumber(closure.difference),
+                retentionAdjustment: safeNumber(closure.retentionAdjustment),
+                status: closure.status || 'cerrado',
+            }))
+            .sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')))
+    ), [data.cierres_caja]);
+
+    const searchedClosures = useMemo(() => filterRecords(closures, search, [
+        'date',
+        'code',
+        'cashboxName',
+        'cashierName',
+        'status',
+        'manualTotal',
+        'difference',
+    ]), [closures, search]);
+
+    const filteredClosures = useMemo(() => (
+        searchedClosures.filter((closure) => {
+            const matchesMonth = !selectedMonth || getMonth(closure.date) === selectedMonth;
+            const matchesStatus = !statusFilter || normalizeText(closure.status) === normalizeText(statusFilter);
+            return matchesMonth && matchesStatus;
+        })
+    ), [searchedClosures, selectedMonth, statusFilter]);
+
+    const pagedClosures = useMemo(() => paginateRecords(filteredClosures, page), [filteredClosures, page]);
+
+    const stats = useMemo(() => (
+        filteredClosures.reduce((acc, closure) => {
+            acc.manualTotal = safeNumber(acc.manualTotal + closure.manualTotal);
+            acc.cashTotal = safeNumber(acc.cashTotal + closure.cashTotal);
+            acc.difference = safeNumber(acc.difference + closure.difference);
+            acc.retentionAdjustment = safeNumber(acc.retentionAdjustment + closure.retentionAdjustment);
+            acc.invoiceCount += closure.invoiceCount;
+            return acc;
+        }, { manualTotal: 0, cashTotal: 0, difference: 0, retentionAdjustment: 0, invoiceCount: 0 })
+    ), [filteredClosures]);
+
+    useEffect(() => {
+        setPage(1);
+    }, [search, selectedMonth, statusFilter]);
+
+    useEffect(() => {
+        if (page !== pagedClosures.page) setPage(pagedClosures.page);
+    }, [page, pagedClosures.page]);
+
+    return (
+        <div className="space-y-5">
+            <Section title="Historial de cierres de caja" eyebrow="Auditoria de caja" action={<Badge tone="blue">{filteredClosures.length} cierres</Badge>}>
+                <div className="grid gap-3 lg:grid-cols-[1.4fr_0.55fr_0.7fr_auto]">
+                    <SearchBox
+                        value={search}
+                        onChange={setSearch}
+                        placeholder="Buscar por codigo, fecha, caja, cajero o estado..."
+                        resultLabel={`${searchedClosures.length} encontrados`}
+                    />
+                    <Field label="Mes">
+                        <input className={inputClass} type="month" value={selectedMonth} onChange={(event) => setSelectedMonth(event.target.value)} />
+                    </Field>
+                    <Field label="Estado">
+                        <select className={inputClass} value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}>
+                            <option value="">Todos</option>
+                            <option value="cuadrado">Cuadrado</option>
+                            <option value="con_diferencia">Con diferencia</option>
+                            <option value="en_espera">En espera</option>
+                        </select>
+                    </Field>
+                    <div className="flex items-end">
+                        <button
+                            type="button"
+                            onClick={() => {
+                                setSearch('');
+                                setSelectedMonth('');
+                                setStatusFilter('');
+                            }}
+                            className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-xs font-black uppercase tracking-[0.16em] text-slate-600 transition hover:border-[#e30613] hover:text-[#e30613]"
+                        >
+                            Limpiar
+                        </button>
+                    </div>
+                </div>
+
+                <div className="mt-5 grid gap-3 md:grid-cols-5">
+                    <SummaryCard label="Cierres" value={filteredClosures.length} />
+                    <SummaryCard label="Total ingresado" value={fmt(stats.manualTotal)} tone="green" />
+                    <SummaryCard label="Efectivo contado" value={fmt(stats.cashTotal)} tone="blue" />
+                    <SummaryCard label="Diferencia" value={fmt(stats.difference)} tone={Math.abs(stats.difference) > 0.01 ? 'red' : 'green'} />
+                    <SummaryCard label="Retenciones" value={fmt(stats.retentionAdjustment)} tone="amber" />
+                </div>
+            </Section>
+
+            <Section title="Cierres registrados" eyebrow="Detalle">
+                <div className="overflow-x-auto rounded-3xl border border-slate-200 bg-white">
+                    <table className="min-w-full text-left text-sm">
+                        <thead>
+                            <tr className="border-b border-slate-200 bg-slate-50 text-[10px] font-black uppercase tracking-[0.22em] text-slate-400">
+                                <th className="px-4 py-3">Fecha</th>
+                                <th className="px-4 py-3">Codigo</th>
+                                <th className="px-4 py-3">Caja</th>
+                                <th className="px-4 py-3">Cajero</th>
+                                <th className="px-4 py-3">Estado</th>
+                                <th className="px-4 py-3 text-right">Facturas</th>
+                                <th className="px-4 py-3 text-right">Ingresado</th>
+                                <th className="px-4 py-3 text-right">Diferencia</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {pagedClosures.records.map((closure) => (
+                                <tr key={closure.id} className="border-b border-slate-100 last:border-b-0">
+                                    <td className="px-4 py-3 font-bold text-slate-700">{closure.date || '-'}</td>
+                                    <td className="px-4 py-3 font-black text-slate-950">{closure.code || '-'}</td>
+                                    <td className="px-4 py-3 font-bold text-slate-600">{closure.cashboxName}</td>
+                                    <td className="px-4 py-3 font-bold text-slate-600">{closure.cashierName || 'Sin cajero'}</td>
+                                    <td className="px-4 py-3">
+                                        <Badge tone={closure.status === 'con_diferencia' ? 'red' : closure.status === 'en_espera' ? 'amber' : 'green'}>
+                                            {String(closure.status || 'cerrado').replace(/_/g, ' ')}
+                                        </Badge>
+                                    </td>
+                                    <td className="px-4 py-3 text-right font-mono font-black text-slate-900">{closure.invoiceCount}</td>
+                                    <td className="px-4 py-3 text-right font-mono font-black text-emerald-700">{fmt(closure.manualTotal)}</td>
+                                    <td className={`px-4 py-3 text-right font-mono font-black ${Math.abs(closure.difference) > 0.01 ? 'text-red-700' : 'text-emerald-700'}`}>{fmt(closure.difference)}</td>
+                                </tr>
+                            ))}
+                            {pagedClosures.records.length === 0 && (
+                                <tr>
+                                    <td className="px-4 py-10 text-center text-sm font-bold text-slate-400" colSpan="8">
+                                        No hay cierres que coincidan con los filtros.
+                                    </td>
+                                </tr>
+                            )}
+                        </tbody>
+                    </table>
+                </div>
+                <div className="mt-4">
+                    <PaginationControls
+                        page={pagedClosures.page}
+                        totalPages={pagedClosures.totalPages}
+                        total={filteredClosures.length}
+                        start={pagedClosures.start}
+                        end={pagedClosures.end}
+                        onPageChange={setPage}
+                    />
+                </div>
+            </Section>
+        </div>
+    );
+}
+
+function RetentionHistory({ data, type }) {
+    const [search, setSearch] = useState('');
+    const [selectedMonth, setSelectedMonth] = useState(getMonth(todayString()));
+    const [page, setPage] = useState(1);
+    const isMunicipal = type === 'municipal';
+    const amountField = isMunicipal ? 'retentionMunicipal1' : 'retentionIr2';
+    const title = isMunicipal ? 'Retencion Municipal' : 'Anticipo de IR';
+    const eyebrow = isMunicipal ? '1% vinculado a facturas' : '2% vinculado a facturas';
+
+    const closureIndex = useMemo(() => {
+        const map = new Map();
+        (data.cierres_caja || []).forEach((closure) => {
+            if (closure.id) map.set(closure.id, closure);
+        });
+        return map;
+    }, [data.cierres_caja]);
+
+    const retentions = useMemo(() => (
+        [...(data.facturas_membretadas_ventas || [])]
+            .map(normalizeStampedInvoiceRecord)
+            .map((invoice) => ({
+                ...invoice,
+                retentionAmount: safeNumber(invoice[amountField]),
+                closureInfo: getInvoiceClosureInfo(invoice, closureIndex),
+            }))
+            .filter((invoice) => invoice.retentionAmount > 0)
+            .sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')))
+    ), [amountField, closureIndex, data.facturas_membretadas_ventas]);
+
+    const searchedRetentions = useMemo(() => filterRecords(retentions, search, [
+        'date',
+        'invoiceNumber',
+        'numeroFactura',
+        'customerName',
+        'cliente',
+        'paymentMethod',
+        (invoice) => invoice.closureInfo?.label,
+    ]), [retentions, search]);
+
+    const filteredRetentions = useMemo(() => (
+        searchedRetentions.filter((invoice) => !selectedMonth || getMonth(invoice.date) === selectedMonth)
+    ), [searchedRetentions, selectedMonth]);
+
+    const pagedRetentions = useMemo(() => paginateRecords(filteredRetentions, page), [filteredRetentions, page]);
+    const totalRetention = useMemo(() => (
+        filteredRetentions.reduce((sum, invoice) => safeNumber(sum + invoice.retentionAmount), 0)
+    ), [filteredRetentions]);
+
+    useEffect(() => {
+        setPage(1);
+    }, [search, selectedMonth]);
+
+    useEffect(() => {
+        if (page !== pagedRetentions.page) setPage(pagedRetentions.page);
+    }, [page, pagedRetentions.page]);
+
+    return (
+        <div className="space-y-5">
+            <Section title={title} eyebrow={eyebrow} action={<Badge tone="amber">No editable</Badge>}>
+                <div className="grid gap-3 md:grid-cols-[1fr_0.35fr_auto]">
+                    <SearchBox
+                        value={search}
+                        onChange={setSearch}
+                        placeholder="Buscar por factura, cliente, metodo o cierre..."
+                        resultLabel={`${searchedRetentions.length} encontrados`}
+                    />
+                    <Field label="Mes">
+                        <input className={inputClass} type="month" value={selectedMonth} onChange={(event) => setSelectedMonth(event.target.value)} />
+                    </Field>
+                    <div className="flex items-end">
+                        <button
+                            type="button"
+                            onClick={() => {
+                                setSearch('');
+                                setSelectedMonth('');
+                            }}
+                            className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-xs font-black uppercase tracking-[0.16em] text-slate-600 transition hover:border-[#e30613] hover:text-[#e30613]"
+                        >
+                            Limpiar
+                        </button>
+                    </div>
+                </div>
+
+                <div className="mt-5 grid gap-3 md:grid-cols-3">
+                    <SummaryCard label="Registros" value={filteredRetentions.length} />
+                    <SummaryCard label="Total retencion" value={fmt(totalRetention)} tone="amber" />
+                    <SummaryCard label="Origen" value="Facturas membretadas" tone="blue" />
+                </div>
+            </Section>
+
+            <Section title={`Detalle ${title}`} eyebrow="Fiscal">
+                <div className="overflow-x-auto rounded-3xl border border-slate-200 bg-white">
+                    <table className="min-w-full text-left text-sm">
+                        <thead>
+                            <tr className="border-b border-slate-200 bg-slate-50 text-[10px] font-black uppercase tracking-[0.22em] text-slate-400">
+                                <th className="px-4 py-3">Fecha</th>
+                                <th className="px-4 py-3">Factura</th>
+                                <th className="px-4 py-3">Cliente</th>
+                                <th className="px-4 py-3">Metodo</th>
+                                <th className="px-4 py-3">Cierre vinculado</th>
+                                <th className="px-4 py-3 text-right">Monto</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {pagedRetentions.records.map((invoice) => (
+                                <tr key={`${invoice.id || invoice.invoiceNumber}-${amountField}`} className="border-b border-slate-100 last:border-b-0">
+                                    <td className="px-4 py-3 font-bold text-slate-700">{invoice.date || '-'}</td>
+                                    <td className="px-4 py-3 font-black text-slate-950">{invoice.invoiceNumber || '-'}</td>
+                                    <td className="px-4 py-3 font-bold text-slate-600">{invoice.customerName || 'Sin cliente'}</td>
+                                    <td className="px-4 py-3 font-bold text-slate-600">{invoice.paymentMethod || '-'}</td>
+                                    <td className="px-4 py-3 font-bold text-slate-600">{invoice.closureInfo?.label || 'Pendiente'}</td>
+                                    <td className="px-4 py-3 text-right font-mono font-black text-amber-700">{fmt(invoice.retentionAmount)}</td>
+                                </tr>
+                            ))}
+                            {pagedRetentions.records.length === 0 && (
+                                <tr>
+                                    <td className="px-4 py-10 text-center text-sm font-bold text-slate-400" colSpan="6">
+                                        No hay retenciones para este filtro.
+                                    </td>
+                                </tr>
+                            )}
+                        </tbody>
+                    </table>
+                </div>
+                <div className="mt-4">
+                    <PaginationControls
+                        page={pagedRetentions.page}
+                        totalPages={pagedRetentions.totalPages}
+                        total={filteredRetentions.length}
+                        start={pagedRetentions.start}
+                        end={pagedRetentions.end}
+                        onPageChange={setPage}
+                    />
+                </div>
+            </Section>
+        </div>
+    );
+}
+
+function BillingHistory({ data }) {
+    const [activeHistoryTab, setActiveHistoryTab] = useState('membretadas');
+    const historyTabs = [
+        { key: 'membretadas', label: 'Facturas Membretadas' },
+        { key: 'cierres', label: 'Cierres de caja' },
+        { key: 'municipal', label: 'Municipal' },
+        { key: 'ir', label: 'Anticipo de IR' },
+    ];
+
+    return (
+        <div className="space-y-5">
+            <Section title="Historial" eyebrow="Facturacion y retenciones" action={<Badge tone="blue">Auditoria</Badge>}>
+                <div className="flex flex-wrap gap-2">
+                    {historyTabs.map((tab) => (
+                        <button
+                            key={tab.key}
+                            type="button"
+                            onClick={() => setActiveHistoryTab(tab.key)}
+                            className={`rounded-2xl px-4 py-3 text-xs font-black uppercase tracking-[0.16em] transition ${activeHistoryTab === tab.key
+                                ? 'bg-[#e30613] text-white shadow-lg shadow-red-900/15'
+                                : 'border border-slate-200 bg-white text-slate-600 hover:border-[#e30613] hover:text-[#e30613]'}`}
+                        >
+                            {tab.label}
+                        </button>
+                    ))}
+                </div>
+            </Section>
+
+            {activeHistoryTab === 'membretadas' && <StampedInvoiceHistory data={data} />}
+            {activeHistoryTab === 'cierres' && <CashClosureHistory data={data} />}
+            {activeHistoryTab === 'municipal' && <RetentionHistory data={data} type="municipal" />}
+            {activeHistoryTab === 'ir' && <RetentionHistory data={data} type="ir" />}
+        </div>
+    );
+}
+
 function ComingSoon() {
     return (
         <Section title="Depositos bancarios" eyebrow="Proximamente" action={<Badge tone="amber">En diseno</Badge>}>
@@ -2957,7 +3390,7 @@ export default function Billing({ data = {} }) {
     const tabs = [
         { key: 'cierre', label: 'Cierre de caja' },
         { key: 'membretadas', label: 'Facturas membretadas' },
-        { key: 'historial_membretadas', label: 'Historial Fact. Membretadas' },
+        { key: 'historial', label: 'Historial' },
         { key: 'diferencias', label: 'Diferencias de caja' },
         { key: 'depositos', label: 'Depositos bancarios' },
     ];
@@ -3004,7 +3437,7 @@ export default function Billing({ data = {} }) {
 
             {activeTab === 'cierre' && <CashClosure data={data} />}
             {activeTab === 'membretadas' && <StampedInvoices data={data} />}
-            {activeTab === 'historial_membretadas' && <StampedInvoiceHistory data={data} />}
+            {activeTab === 'historial' && <BillingHistory data={data} />}
             {activeTab === 'diferencias' && <CashDifferences data={data} />}
             {activeTab === 'depositos' && <ComingSoon />}
         </div>
