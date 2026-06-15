@@ -186,6 +186,32 @@ const getInvoiceClosureInfo = (invoice = {}, closureIndex = new Map()) => {
     };
 };
 
+const addClosureMatchKey = (set, type, value, date = '') => {
+    const normalizedValue = normalizeText(value);
+    if (!normalizedValue) return;
+    const normalizedDate = String(date || '').substring(0, 10);
+    set.add(`${type}:${normalizedValue}`);
+    if (normalizedDate) set.add(`${type}:${normalizedDate}:${normalizedValue}`);
+};
+
+const getSicarClosureMatchKeys = (closure = {}) => {
+    const keys = new Set();
+    const date = closure.date || getRecordDate(closure.closureDateTime || closure.fecha);
+    addClosureMatchKey(keys, 'id', closure.id, date);
+    addClosureMatchKey(keys, 'cor', closure.corId || closure.cor_id, date);
+    addClosureMatchKey(keys, 'rcc', closure.rccId || closure.rcc_id, date);
+    return keys;
+};
+
+const getSavedClosureSicarMatchKeys = (closure = {}) => {
+    const keys = new Set();
+    const date = closure.date || getRecordDate(closure.createdAt || closure.updatedAt);
+    addClosureMatchKey(keys, 'id', closure.linkedSicarClosureId || closure.sicar?.id, date);
+    addClosureMatchKey(keys, 'cor', closure.linkedSicarCorId || closure.sicar?.corId || closure.sicar?.cor_id, date);
+    addClosureMatchKey(keys, 'rcc', closure.linkedSicarRccId || closure.sicar?.rccId || closure.sicar?.rcc_id, date);
+    return keys;
+};
+
 const emptyTransfer = () => ({ localId: createLineId('transfer'), clientName: '', amount: '', reference: '' });
 const emptyPos = () => ({ localId: createLineId('pos'), amount: '', reference: '' });
 
@@ -665,11 +691,22 @@ const DetailRows = ({ title, rows, onChange, onAdd, onRemove, type, clients = []
 );
 
 function CashClosure({ data }) {
+    const closedSicarClosureKeys = useMemo(() => {
+        const keys = new Set();
+        (data.cierres_caja || [])
+            .filter((closure) => closure.status !== 'en_espera')
+            .forEach((closure) => {
+                getSavedClosureSicarMatchKeys(closure).forEach((key) => keys.add(key));
+            });
+        return keys;
+    }, [data.cierres_caja]);
+
     const sicarClosures = useMemo(() => (
         [...(data.sicar_cierres_caja || [])]
             .map((item) => ({ ...item, date: item.date || getRecordDate(item.closureDateTime || item.fecha) }))
+            .filter((closure) => ![...getSicarClosureMatchKeys(closure)].some((key) => closedSicarClosureKeys.has(key)))
             .sort((a, b) => String(b.closureDateTime || b.fecha || b.date).localeCompare(String(a.closureDateTime || a.fecha || a.date)))
-    ), [data.sicar_cierres_caja]);
+    ), [closedSicarClosureKeys, data.sicar_cierres_caja]);
 
     const stampedInvoices = useMemo(() => (
         [...(data.facturas_membretadas_ventas || [])]
