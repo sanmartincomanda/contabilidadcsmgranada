@@ -38,7 +38,12 @@ const parsePromptAmount = (value = '') => {
     return safeNumber(normalized);
 };
 
-const todayString = () => new Date().toISOString().substring(0, 10);
+const todayString = () => {
+    const date = new Date();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    return `${date.getFullYear()}-${month}-${day}`;
+};
 
 const normalizeText = (value = '') => (
     String(value || '')
@@ -1949,6 +1954,7 @@ function useStampedPrintTemplates(setMessage = () => {}) {
 }
 
 function StampedInvoices({ data }) {
+    const todaySicarInvoiceDate = todayString();
     const savedInvoices = useMemo(() => (
         [...(data.facturas_membretadas_ventas || [])]
             .map(normalizeStampedInvoiceRecord)
@@ -1965,9 +1971,10 @@ function StampedInvoices({ data }) {
                 invoiceNumber: item.numeroFactura || item.invoiceNumber || item.folio || '',
                 items: item.items || [],
             }))
+            .filter((invoice) => String(invoice.date || '').substring(0, 10) === todaySicarInvoiceDate)
             .filter((invoice) => isSicarInvoicePendingAccounting(invoice, loadedInvoiceIndex))
             .sort((a, b) => String(b.date).localeCompare(String(a.date)))
-    ), [data.sicar_facturas_membretadas, loadedInvoiceIndex]);
+    ), [data.sicar_facturas_membretadas, loadedInvoiceIndex, todaySicarInvoiceDate]);
 
     const clients = useMemo(() => (
         [...(data.clientes_facturacion || [])]
@@ -2274,7 +2281,7 @@ function StampedInvoices({ data }) {
             </Section>
 
             <div className="space-y-5">
-                <Section title="Facturas SICAR para cargar" eyebrow="Pendientes por facturar" action={<Badge tone="blue">{sicarInvoices.length} pendientes</Badge>}>
+                <Section title="Facturas SICAR para cargar" eyebrow={`Pendientes de hoy ${todaySicarInvoiceDate}`} action={<Badge tone="blue">{sicarInvoices.length} pendientes</Badge>}>
                     <div className="space-y-3">
                         <SearchBox
                             value={sicarInvoiceSearch}
@@ -2286,7 +2293,7 @@ function StampedInvoices({ data }) {
                     <div className="mt-3 space-y-2">
                         {sicarInvoices.length === 0 ? (
                             <div className="rounded-3xl border border-dashed border-slate-300 p-8 text-center text-sm font-bold text-slate-400">
-                                No hay facturas SICAR pendientes por cargar.
+                                No hay facturas SICAR pendientes por cargar para hoy.
                             </div>
                         ) : filteredSicarInvoices.length === 0 ? (
                             <div className="rounded-3xl border border-dashed border-slate-300 p-8 text-center text-sm font-bold text-slate-400">
