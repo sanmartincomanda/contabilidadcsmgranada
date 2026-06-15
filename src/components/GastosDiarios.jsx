@@ -126,7 +126,7 @@ const expenseCategoryOptions = (placeholder = 'Seleccionar categoria / subcatego
                 {group.subcategories.map((subcategory) => {
                     const payload = buildExpenseCategoryPayload({ category: group.category, subcategory });
                     return (
-                        <option key={payload.categoryLabel} value={payload.id}>
+                        <option key={payload.categoryLabel} value={payload.categoryId}>
                             {subcategory}
                         </option>
                     );
@@ -147,7 +147,7 @@ const purchaseCategoryOptions = () => {
                     subcategory,
                 }, DEFAULT_PURCHASE_CATEGORY_ID);
                 return (
-                    <option key={payload.categoryLabel} value={payload.id}>
+                    <option key={payload.categoryLabel} value={payload.categoryId}>
                         {subcategory}
                     </option>
                 );
