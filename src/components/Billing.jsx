@@ -3069,11 +3069,289 @@ function CashDifferences({ data }) {
     );
 }
 
+const buildDenominationRows = (count = {}, denominations = [], multiplier = 1) => (
+    denominations
+        .map((denomination) => {
+            const quantity = safeNumber(count?.[denomination]);
+            return {
+                denomination,
+                quantity,
+                total: safeNumber(denomination * quantity * multiplier),
+            };
+        })
+        .filter((row) => row.quantity > 0)
+);
+
+const getClosureRowsTotal = (rows = []) => (
+    rows.reduce((sum, row) => safeNumber(sum + safeNumber(row.amount || row.total || row.value)), 0)
+);
+
+const getClosureBankRows = (details = {}, bankKey) => (
+    Array.isArray(details?.[bankKey]) ? details[bankKey] : []
+);
+
+const getCashClosureInvoices = (closure = {}) => {
+    const detailedInvoices = Array.isArray(closure.stampedInvoices) ? closure.stampedInvoices : [];
+    const draftInvoices = Array.isArray(closure.stampedInvoiceDrafts) ? closure.stampedInvoiceDrafts : [];
+    if (detailedInvoices.length) return detailedInvoices;
+    if (draftInvoices.length) return draftInvoices;
+    return (closure.stampedInvoiceIds || []).map((id) => ({ id, invoiceNumber: id }));
+};
+
+const ClosureInfoItem = ({ label, value }) => (
+    <div className="rounded-2xl border border-slate-200 bg-slate-50/80 p-4">
+        <div className="text-[10px] font-black uppercase tracking-[0.22em] text-slate-400">{label}</div>
+        <div className="mt-1 text-sm font-black text-slate-950">{value || '-'}</div>
+    </div>
+);
+
+const CashClosureDetailModal = ({ closure, onClose }) => {
+    if (!closure) return null;
+
+    const exchangeRate = safeNumber(closure.exchangeRate || closure.preCloseDeposit?.exchangeRate || CASH_CLOSURE_EXCHANGE_RATE);
+    const cordobaRows = buildDenominationRows(closure.cashCount, CASH_DENOMINATIONS);
+    const dollarRows = buildDenominationRows(closure.dollarCashCount, USD_DENOMINATIONS);
+    const linkedInvoices = getCashClosureInvoices(closure);
+    const transferRows = PAYMENT_BANKS.flatMap((bank) => (
+        getClosureBankRows(closure.transferDetails, bank.key).map((row, index) => ({
+            ...row,
+            bank: bank.label,
+            id: row.localId || row.id || `${bank.key}-transfer-${index}`,
+        }))
+    ));
+    const posRows = PAYMENT_BANKS.flatMap((bank) => (
+        getClosureBankRows(closure.posDetails, bank.key).map((row, index) => ({
+            ...row,
+            bank: bank.label,
+            id: row.localId || row.id || `${bank.key}-pos-${index}`,
+        }))
+    ));
+    const transferTotal = getClosureRowsTotal(transferRows);
+    const posTotal = getClosureRowsTotal(posRows);
+    const dollarTotal = dollarRows.reduce((sum, row) => safeNumber(sum + safeNumber(row.denomination * row.quantity)), 0);
+    const status = closure.status || 'cerrado';
+    const statusTone = status === 'con_diferencia' ? 'red' : status === 'en_espera' ? 'amber' : 'green';
+    const sicar = closure.sicar || {};
+    const code = closure.code || closure.linkedSicarCorId || sicar.corId || sicar.cor_id || closure.id;
+    const cashboxName = closure.cashboxName || sicar.cashboxName || sicar.cajaName || sicar.caja || 'Caja';
+    const preClose = closure.preCloseDeposit || {};
+
+    return (
+        <div className="fixed inset-0 z-[120] flex items-center justify-center p-3 sm:p-6">
+            <button
+                type="button"
+                aria-label="Cerrar detalle"
+                className="absolute inset-0 bg-slate-950/65 backdrop-blur-sm"
+                onClick={onClose}
+            />
+            <div className="relative flex max-h-[92vh] w-full max-w-6xl flex-col overflow-hidden rounded-[2rem] border border-white/30 bg-white shadow-2xl shadow-slate-950/30">
+                <div className="flex flex-col gap-4 border-b border-slate-200 bg-slate-950 px-5 py-5 text-white sm:flex-row sm:items-center sm:justify-between">
+                    <div>
+                        <div className="text-[10px] font-black uppercase tracking-[0.28em] text-[#ffc400]">Historial de cierre</div>
+                        <h3 className="text-2xl font-black">Detalle de cierre de caja</h3>
+                        <div className="mt-1 text-sm font-bold text-slate-300">
+                            {closure.date || '-'} / {cashboxName} / Corte {code || '-'}
+                        </div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                        <Badge tone={statusTone}>{String(status).replace(/_/g, ' ')}</Badge>
+                        <button
+                            type="button"
+                            onClick={onClose}
+                            className="rounded-2xl border border-white/15 bg-white/10 px-4 py-2 text-xs font-black uppercase tracking-[0.18em] text-white transition hover:bg-white hover:text-slate-950"
+                        >
+                            Cerrar
+                        </button>
+                    </div>
+                </div>
+
+                <div className="overflow-y-auto p-5">
+                    <div className="grid gap-3 md:grid-cols-3 xl:grid-cols-6">
+                        <SummaryCard label="SICAR esperado" value={fmt(closure.sicarExpected)} tone="blue" />
+                        <SummaryCard label="Retenciones" value={fmt(closure.retentionAdjustment)} tone="amber" />
+                        <SummaryCard label="Ingresado app" value={fmt(closure.manualTotal)} tone="green" />
+                        <SummaryCard label="Diferencia" value={fmt(closure.difference)} tone={Math.abs(safeNumber(closure.difference)) > 0.01 ? 'red' : 'green'} />
+                        <SummaryCard label="Efectivo total" value={fmt(closure.cashTotal)} tone="slate" />
+                        <SummaryCard label="Pre-cierre" value={fmt(closure.preCloseDepositTotal)} tone="blue" />
+                    </div>
+
+                    <div className="mt-5 grid gap-4 lg:grid-cols-3">
+                        <ClosureInfoItem label="Fecha" value={closure.date} />
+                        <ClosureInfoItem label="Caja" value={cashboxName} />
+                        <ClosureInfoItem label="Cajero" value={closure.cashierName || 'Sin cajero'} />
+                        <ClosureInfoItem label="Codigo cierre" value={code} />
+                        <ClosureInfoItem label="RCC" value={closure.linkedSicarRccId || sicar.rccId || sicar.rcc_id} />
+                        <ClosureInfoItem label="Tasa cambio" value={`C$ ${exchangeRate.toFixed(2)}`} />
+                    </div>
+
+                    <div className="mt-5 grid gap-4 xl:grid-cols-2">
+                        <div className="rounded-3xl border border-slate-200 bg-white p-4">
+                            <div className="mb-3 flex items-center justify-between gap-3">
+                                <div>
+                                    <div className="text-[10px] font-black uppercase tracking-[0.24em] text-[#e30613]">Conteo efectivo</div>
+                                    <div className="text-lg font-black text-slate-950">Cordobas</div>
+                                </div>
+                                <Badge tone="blue">{fmt(closure.cashCordobasTotal)}</Badge>
+                            </div>
+                            {cordobaRows.length ? (
+                                <div className="grid gap-2 sm:grid-cols-2">
+                                    {cordobaRows.map((row) => (
+                                        <div key={row.denomination} className="flex items-center justify-between rounded-2xl bg-slate-50 px-4 py-3 text-sm">
+                                            <span className="font-black text-slate-600">C$ {row.denomination} x {row.quantity}</span>
+                                            <span className="font-mono font-black text-slate-950">{fmt(row.total)}</span>
+                                        </div>
+                                    ))}
+                                </div>
+                            ) : (
+                                <div className="rounded-2xl border border-dashed border-slate-300 p-6 text-center text-sm font-bold text-slate-400">Sin desglose de cordobas.</div>
+                            )}
+                        </div>
+
+                        <div className="rounded-3xl border border-emerald-200 bg-emerald-50/40 p-4">
+                            <div className="mb-3 flex items-center justify-between gap-3">
+                                <div>
+                                    <div className="text-[10px] font-black uppercase tracking-[0.24em] text-emerald-700">Conteo efectivo</div>
+                                    <div className="text-lg font-black text-slate-950">Dolares</div>
+                                </div>
+                                <Badge tone="green">US$ {dollarTotal.toFixed(2)}</Badge>
+                            </div>
+                            {dollarRows.length ? (
+                                <div className="grid gap-2 sm:grid-cols-2">
+                                    {dollarRows.map((row) => (
+                                        <div key={row.denomination} className="flex items-center justify-between rounded-2xl bg-white px-4 py-3 text-sm">
+                                            <span className="font-black text-slate-600">US$ {row.denomination} x {row.quantity}</span>
+                                            <span className="font-mono font-black text-slate-950">{fmt(row.total)}</span>
+                                        </div>
+                                    ))}
+                                </div>
+                            ) : (
+                                <div className="rounded-2xl border border-dashed border-emerald-300 p-6 text-center text-sm font-bold text-emerald-500">Sin desglose de dolares.</div>
+                            )}
+                            <div className="mt-3 rounded-2xl bg-white px-4 py-3 text-sm font-black text-slate-700">
+                                Convertido: {fmt(closure.dollarCashTotalCordobas || (dollarTotal * exchangeRate))}
+                            </div>
+                        </div>
+                    </div>
+
+                    <div className="mt-5 rounded-3xl border border-slate-200 bg-slate-50/70 p-4">
+                        <div className="mb-3 text-[10px] font-black uppercase tracking-[0.24em] text-slate-400">Deposito pre-cierre</div>
+                        <div className="grid gap-3 md:grid-cols-3">
+                            <SummaryCard label="Cordobas" value={fmt(preClose.cordobas)} />
+                            <SummaryCard label="Dolares" value={`US$ ${safeNumber(preClose.dollars).toFixed(2)}`} tone="green" />
+                            <SummaryCard label="Total convertido" value={fmt(preClose.totalCordobas || closure.preCloseDepositTotal)} tone="blue" />
+                        </div>
+                    </div>
+
+                    <div className="mt-5 grid gap-4 xl:grid-cols-2">
+                        <div className="rounded-3xl border border-slate-200 bg-white p-4">
+                            <div className="mb-3 flex items-center justify-between gap-3">
+                                <div>
+                                    <div className="text-[10px] font-black uppercase tracking-[0.24em] text-[#e30613]">Transferencias</div>
+                                    <div className="text-lg font-black text-slate-950">Detalle por cliente</div>
+                                </div>
+                                <Badge tone="green">{fmt(transferTotal)}</Badge>
+                            </div>
+                            <div className="space-y-2">
+                                {transferRows.length ? transferRows.map((row) => (
+                                    <div key={row.id} className="grid gap-2 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm sm:grid-cols-[0.5fr_1.2fr_1fr_0.8fr]">
+                                        <span className="font-black text-slate-950">{row.bank}</span>
+                                        <span className="font-bold text-slate-600">{row.clientName || row.customerName || 'Sin cliente'}</span>
+                                        <span className="font-bold text-slate-500">{row.reference || row.ref || 'Sin referencia'}</span>
+                                        <span className="text-right font-mono font-black text-emerald-700">{fmt(row.amount || row.total)}</span>
+                                    </div>
+                                )) : (
+                                    <div className="rounded-2xl border border-dashed border-slate-300 p-6 text-center text-sm font-bold text-slate-400">Sin transferencias registradas.</div>
+                                )}
+                            </div>
+                        </div>
+
+                        <div className="rounded-3xl border border-slate-200 bg-white p-4">
+                            <div className="mb-3 flex items-center justify-between gap-3">
+                                <div>
+                                    <div className="text-[10px] font-black uppercase tracking-[0.24em] text-[#e30613]">POS</div>
+                                    <div className="text-lg font-black text-slate-950">Cierres de POS</div>
+                                </div>
+                                <Badge tone="blue">{fmt(posTotal)}</Badge>
+                            </div>
+                            <div className="space-y-2">
+                                {posRows.length ? posRows.map((row) => (
+                                    <div key={row.id} className="grid gap-2 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm sm:grid-cols-[0.5fr_1fr_0.8fr]">
+                                        <span className="font-black text-slate-950">{row.bank}</span>
+                                        <span className="font-bold text-slate-500">{row.reference || row.ref || 'Sin referencia'}</span>
+                                        <span className="text-right font-mono font-black text-sky-700">{fmt(row.amount || row.total)}</span>
+                                    </div>
+                                )) : (
+                                    <div className="rounded-2xl border border-dashed border-slate-300 p-6 text-center text-sm font-bold text-slate-400">Sin POS registrados.</div>
+                                )}
+                            </div>
+                        </div>
+                    </div>
+
+                    <div className="mt-5 rounded-3xl border border-slate-200 bg-white p-4">
+                        <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                            <div>
+                                <div className="text-[10px] font-black uppercase tracking-[0.24em] text-[#e30613]">Facturas membretadas</div>
+                                <div className="text-lg font-black text-slate-950">Vinculadas a este cierre</div>
+                            </div>
+                            <Badge tone="amber">{linkedInvoices.length} factura(s)</Badge>
+                        </div>
+                        <div className="overflow-x-auto">
+                            <table className="min-w-full text-left text-sm">
+                                <thead>
+                                    <tr className="border-b border-slate-200 text-[10px] font-black uppercase tracking-[0.22em] text-slate-400">
+                                        <th className="py-3 pr-4">Factura</th>
+                                        <th className="py-3 pr-4">Fecha</th>
+                                        <th className="py-3 pr-4">Cliente</th>
+                                        <th className="py-3 pr-4">Metodo</th>
+                                        <th className="py-3 pr-4 text-right">Subtotal</th>
+                                        <th className="py-3 pr-4 text-right">IVA</th>
+                                        <th className="py-3 pr-4 text-right">Retencion</th>
+                                        <th className="py-3 text-right">Total</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {linkedInvoices.map((invoice, index) => (
+                                        <tr key={invoice.id || invoice.docId || `${invoice.invoiceNumber}-${index}`} className="border-b border-slate-100 last:border-b-0">
+                                            <td className="py-3 pr-4 font-black text-slate-950">{invoice.invoiceNumber || invoice.numeroFactura || '-'}</td>
+                                            <td className="py-3 pr-4 font-bold text-slate-600">{invoice.date || invoice.saleDate || '-'}</td>
+                                            <td className="py-3 pr-4 font-bold text-slate-600">{invoice.customerName || invoice.cliente || '-'}</td>
+                                            <td className="py-3 pr-4 font-bold text-slate-500">{invoice.paymentMethod || '-'}</td>
+                                            <td className="py-3 pr-4 text-right font-mono font-black text-slate-900">{fmt(invoice.subtotal)}</td>
+                                            <td className="py-3 pr-4 text-right font-mono font-black text-sky-700">{fmt(invoice.iva)}</td>
+                                            <td className="py-3 pr-4 text-right font-mono font-black text-amber-700">{fmt(invoice.retentionTotal || (safeNumber(invoice.retentionIr2) + safeNumber(invoice.retentionMunicipal1)))}</td>
+                                            <td className="py-3 text-right font-mono font-black text-emerald-700">{fmt(invoice.total)}</td>
+                                        </tr>
+                                    ))}
+                                    {linkedInvoices.length === 0 && (
+                                        <tr>
+                                            <td className="py-10 text-center text-sm font-bold text-slate-400" colSpan="8">
+                                                Este cierre no tiene facturas membretadas vinculadas.
+                                            </td>
+                                        </tr>
+                                    )}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    {closure.notes && (
+                        <div className="mt-5 rounded-3xl border border-slate-200 bg-slate-50 p-4">
+                            <div className="text-[10px] font-black uppercase tracking-[0.24em] text-slate-400">Notas</div>
+                            <div className="mt-2 whitespace-pre-wrap text-sm font-bold text-slate-700">{closure.notes}</div>
+                        </div>
+                    )}
+                </div>
+            </div>
+        </div>
+    );
+};
+
 function CashClosureHistory({ data }) {
     const [search, setSearch] = useState('');
     const [selectedMonth, setSelectedMonth] = useState(getMonth(todayString()));
     const [statusFilter, setStatusFilter] = useState('');
     const [page, setPage] = useState(1);
+    const [detailClosure, setDetailClosure] = useState(null);
 
     const closures = useMemo(() => (
         [...(data.cierres_caja || [])]
@@ -3189,6 +3467,7 @@ function CashClosureHistory({ data }) {
                                 <th className="px-4 py-3 text-right">Facturas</th>
                                 <th className="px-4 py-3 text-right">Ingresado</th>
                                 <th className="px-4 py-3 text-right">Diferencia</th>
+                                <th className="px-4 py-3 text-right">Detalle</th>
                             </tr>
                         </thead>
                         <tbody>
@@ -3206,11 +3485,20 @@ function CashClosureHistory({ data }) {
                                     <td className="px-4 py-3 text-right font-mono font-black text-slate-900">{closure.invoiceCount}</td>
                                     <td className="px-4 py-3 text-right font-mono font-black text-emerald-700">{fmt(closure.manualTotal)}</td>
                                     <td className={`px-4 py-3 text-right font-mono font-black ${Math.abs(closure.difference) > 0.01 ? 'text-red-700' : 'text-emerald-700'}`}>{fmt(closure.difference)}</td>
+                                    <td className="px-4 py-3 text-right">
+                                        <button
+                                            type="button"
+                                            onClick={() => setDetailClosure(closure)}
+                                            className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-[10px] font-black uppercase tracking-[0.16em] text-slate-700 transition hover:border-[#e30613] hover:bg-red-50 hover:text-[#e30613]"
+                                        >
+                                            Ver detalle
+                                        </button>
+                                    </td>
                                 </tr>
                             ))}
                             {pagedClosures.records.length === 0 && (
                                 <tr>
-                                    <td className="px-4 py-10 text-center text-sm font-bold text-slate-400" colSpan="8">
+                                    <td className="px-4 py-10 text-center text-sm font-bold text-slate-400" colSpan="9">
                                         No hay cierres que coincidan con los filtros.
                                     </td>
                                 </tr>
@@ -3229,6 +3517,7 @@ function CashClosureHistory({ data }) {
                     />
                 </div>
             </Section>
+            <CashClosureDetailModal closure={detailClosure} onClose={() => setDetailClosure(null)} />
         </div>
     );
 }
