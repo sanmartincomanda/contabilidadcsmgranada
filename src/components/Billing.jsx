@@ -1598,6 +1598,124 @@ const InvoiceItemsTable = ({ items = [] }) => (
     </div>
 );
 
+const createManualInvoiceItem = () => ({
+    localId: `manual_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+    code: '',
+    description: '',
+    quantity: '',
+    unit: 'UND',
+    unitPriceWithoutTax: '',
+    totalWithoutTax: '',
+    taxAmount: '',
+    totalWithTax: '',
+});
+
+const getInvoiceItemSubtotal = (item = {}) => {
+    const explicitTotal = item.totalWithoutTax ?? item.importeSin;
+    if (explicitTotal !== undefined && explicitTotal !== '') return safeNumber(explicitTotal);
+    return safeNumber(safeNumber(item.quantity ?? item.cantidad) * safeNumber(item.unitPriceWithoutTax ?? item.precioSin));
+};
+
+const getInvoiceItemTax = (item = {}) => {
+    if (item.taxAmount !== undefined && item.taxAmount !== '') return safeNumber(item.taxAmount);
+    if (item.iva !== undefined && item.iva !== '') return safeNumber(item.iva);
+    const subtotal = getInvoiceItemSubtotal(item);
+    const totalWithTax = item.totalWithTax ?? item.importeCon;
+    if (totalWithTax !== undefined && totalWithTax !== '') return safeNumber(safeNumber(totalWithTax) - subtotal);
+    return 0;
+};
+
+const calculateInvoiceItemsFiscal = (items = []) => {
+    const subtotal = safeNumber(items.reduce((sum, item) => sum + getInvoiceItemSubtotal(item), 0));
+    const iva = safeNumber(items.reduce((sum, item) => sum + getInvoiceItemTax(item), 0));
+    return {
+        subtotal,
+        iva,
+        total: safeNumber(subtotal + iva),
+    };
+};
+
+const normalizeInvoiceItemsForSave = (items = []) => (
+    items
+        .map((item, index) => {
+            const quantity = safeNumber(item.quantity ?? item.cantidad);
+            const subtotal = getInvoiceItemSubtotal(item);
+            const taxAmount = getInvoiceItemTax(item);
+            const unitPriceWithoutTax = item.unitPriceWithoutTax ?? item.precioSin;
+            return {
+                saleId: item.saleId || item.ven_id || '',
+                articleId: item.articleId || item.art_id || '',
+                code: item.code || item.clave || '',
+                description: item.description || item.descripcion || '',
+                quantity,
+                unit: item.unit || item.unidad || 'UND',
+                unitPriceWithoutTax: safeNumber(unitPriceWithoutTax || (quantity ? subtotal / quantity : subtotal)),
+                unitPriceWithTax: safeNumber(item.unitPriceWithTax ?? item.precioCon ?? (quantity ? (subtotal + taxAmount) / quantity : subtotal + taxAmount)),
+                totalWithoutTax: subtotal,
+                taxAmount,
+                totalWithTax: safeNumber(item.totalWithTax ?? item.importeCon ?? subtotal + taxAmount),
+                taxable: taxAmount > 0 || Boolean(item.taxable),
+                order: Number(item.order ?? item.orden ?? index),
+            };
+        })
+        .filter((item) => item.description || item.quantity || item.totalWithoutTax)
+);
+
+const ManualInvoiceItemsEditor = ({ items = [], onAdd, onChange, onRemove }) => (
+    <div className="overflow-hidden rounded-3xl border border-slate-200 bg-white">
+        <div className="grid grid-cols-[0.55fr_1.4fr_0.7fr_0.75fr_0.75fr_0.75fr_auto] gap-2 border-b border-slate-200 bg-slate-50 px-3 py-3 text-[9px] font-black uppercase tracking-[0.18em] text-slate-400">
+            <span>Cant.</span>
+            <span>Producto</span>
+            <span>Unidad</span>
+            <span className="text-right">Precio s/IVA</span>
+            <span className="text-right">IVA</span>
+            <span className="text-right">Total s/IVA</span>
+            <span />
+        </div>
+        <div className="divide-y divide-slate-100">
+            {items.length === 0 ? (
+                <div className="p-5 text-center text-sm font-bold text-slate-400">
+                    Agrega articulos manuales para imprimir la factura.
+                </div>
+            ) : items.map((item, index) => (
+                <div key={item.localId || index} className="grid grid-cols-[0.55fr_1.4fr_0.7fr_0.75fr_0.75fr_0.75fr_auto] gap-2 px-3 py-3">
+                    <input className="rounded-xl border border-slate-200 px-2 py-2 text-sm font-bold text-slate-900 outline-none focus:border-[#e30613]" type="number" step="0.01" min="0" value={item.quantity || ''} onChange={(event) => onChange(index, 'quantity', event.target.value)} placeholder="0" />
+                    <input className="rounded-xl border border-slate-200 px-2 py-2 text-sm font-bold text-slate-900 outline-none focus:border-[#e30613]" value={item.description || ''} onChange={(event) => onChange(index, 'description', event.target.value)} placeholder="Descripcion del articulo" />
+                    <input className="rounded-xl border border-slate-200 px-2 py-2 text-sm font-bold text-slate-900 outline-none focus:border-[#e30613]" value={item.unit || ''} onChange={(event) => onChange(index, 'unit', event.target.value)} placeholder="UND" />
+                    <input className="rounded-xl border border-slate-200 px-2 py-2 text-right text-sm font-bold text-slate-900 outline-none focus:border-[#e30613]" type="number" step="0.01" min="0" value={item.unitPriceWithoutTax || ''} onChange={(event) => onChange(index, 'unitPriceWithoutTax', event.target.value)} placeholder="0.00" />
+                    <input className="rounded-xl border border-slate-200 px-2 py-2 text-right text-sm font-bold text-slate-900 outline-none focus:border-[#e30613]" type="number" step="0.01" min="0" value={item.taxAmount || ''} onChange={(event) => onChange(index, 'taxAmount', event.target.value)} placeholder="0.00" />
+                    <input className="rounded-xl border border-slate-200 px-2 py-2 text-right text-sm font-bold text-slate-900 outline-none focus:border-[#e30613]" type="number" step="0.01" min="0" value={item.totalWithoutTax || ''} onChange={(event) => onChange(index, 'totalWithoutTax', event.target.value)} placeholder="0.00" />
+                    <button type="button" onClick={() => onRemove(index)} className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-[10px] font-black uppercase tracking-[0.16em] text-red-700 transition hover:bg-red-100">
+                        Quitar
+                    </button>
+                </div>
+            ))}
+        </div>
+        <div className="border-t border-slate-200 bg-slate-50/70 p-3">
+            <button type="button" onClick={onAdd} className="rounded-xl bg-slate-950 px-4 py-2 text-xs font-black uppercase tracking-[0.16em] text-white transition hover:bg-[#e30613]">
+                Agregar articulo
+            </button>
+        </div>
+    </div>
+);
+
+const createStampedInvoiceForm = () => ({
+    date: todayString(),
+    invoiceNumber: '',
+    customerName: '',
+    customerAddress: '',
+    customerRfc: '',
+    subtotal: '',
+    iva: '',
+    total: '',
+    retentionIr2: '',
+    retentionMunicipal1: '',
+    paymentMethod: '',
+    sourceSicarInvoiceId: '',
+    sourceSicarInvoiceNumber: '',
+    items: [],
+});
+
 const PrintText = ({ field, layout, children, align = 'left', mono = false, className = '' }) => (
     <div
         className={`absolute leading-tight text-slate-950 ${mono ? 'font-mono' : 'font-sans'} ${className}`}
@@ -1983,22 +2101,9 @@ function StampedInvoices({ data }) {
             .sort((a, b) => a.name.localeCompare(b.name, 'es'))
     ), [data.clientes_facturacion]);
 
-    const [form, setForm] = useState({
-        date: todayString(),
-        invoiceNumber: '',
-        customerName: '',
-        customerAddress: '',
-        customerRfc: '',
-        subtotal: '',
-        iva: '',
-        total: '',
-        retentionIr2: '',
-        retentionMunicipal1: '',
-        paymentMethod: '',
-        sourceSicarInvoiceId: '',
-        sourceSicarInvoiceNumber: '',
-        items: [],
-    });
+    const [entryMode, setEntryMode] = useState('sicar');
+    const [form, setForm] = useState(createStampedInvoiceForm);
+    const [splitInvoice, setSplitInvoice] = useState(null);
     const [supportFiles, setSupportFiles] = useState({});
     const [saving, setSaving] = useState(false);
     const [message, setMessage] = useState('');
@@ -2047,7 +2152,42 @@ function StampedInvoices({ data }) {
         });
     };
 
+    const applyItemTotals = (items = []) => {
+        const totals = calculateInvoiceItemsFiscal(items);
+        return {
+            items,
+            subtotal: String(totals.subtotal),
+            iva: String(totals.iva),
+            total: String(totals.total),
+        };
+    };
+
+    const setMode = (mode) => {
+        setEntryMode(mode);
+        setSplitInvoice(null);
+        setSupportFiles({});
+        setForm((prev) => {
+            if (mode === 'manual') {
+                const items = prev.sourceSicarInvoiceId ? [createManualInvoiceItem()] : (prev.items?.length ? prev.items : [createManualInvoiceItem()]);
+                return {
+                    ...prev,
+                    sourceSicarInvoiceId: '',
+                    sourceSicarInvoiceNumber: '',
+                    ...applyItemTotals(items),
+                };
+            }
+            return {
+                ...createStampedInvoiceForm(),
+                date: prev.date || todayString(),
+                paymentMethod: prev.paymentMethod || '',
+            };
+        });
+        setMessage(mode === 'manual' ? 'Modo manual activo: podes escribir articulos, cantidades y precios.' : 'Modo SICAR activo: carga una factura pendiente desde MySQL.');
+    };
+
     const loadSicarInvoice = (invoice) => {
+        setEntryMode('sicar');
+        setSplitInvoice(null);
         setForm({
             date: invoice.date || todayString(),
             invoiceNumber: '',
@@ -2065,6 +2205,84 @@ function StampedInvoices({ data }) {
             items: invoice.items || [],
         });
         setMessage(`Factura SICAR ${invoice.invoiceNumber || invoice.id} cargada con ${(invoice.items || []).length} articulo(s). Ingresa el numero consecutivo de la factura membretada de la app.`);
+    };
+
+    const updateManualItem = (index, key, value) => {
+        setSplitInvoice(null);
+        setForm((prev) => {
+            const items = [...(prev.items || [])];
+            const current = { ...(items[index] || createManualInvoiceItem()), [key]: value };
+            if (['quantity', 'unitPriceWithoutTax'].includes(key)) {
+                current.totalWithoutTax = String(safeNumber(safeNumber(current.quantity) * safeNumber(current.unitPriceWithoutTax)));
+            }
+            if (['quantity', 'unitPriceWithoutTax', 'totalWithoutTax', 'taxAmount'].includes(key)) {
+                current.totalWithTax = String(safeNumber(getInvoiceItemSubtotal(current) + getInvoiceItemTax(current)));
+            }
+            items[index] = current;
+            return { ...prev, ...applyItemTotals(items) };
+        });
+    };
+
+    const addManualItem = () => {
+        setSplitInvoice(null);
+        setForm((prev) => {
+            const items = [...(prev.items || []), createManualInvoiceItem()];
+            return { ...prev, ...applyItemTotals(items) };
+        });
+    };
+
+    const removeManualItem = (index) => {
+        setSplitInvoice(null);
+        setForm((prev) => {
+            const items = (prev.items || []).filter((_, itemIndex) => itemIndex !== index);
+            return { ...prev, ...applyItemTotals(items) };
+        });
+    };
+
+    const splitCurrentInvoice = () => {
+        const items = form.items || [];
+        if (items.length <= 10) {
+            setMessage('La factura solo se divide cuando tiene mas de 10 articulos.');
+            return;
+        }
+        if (!String(form.invoiceNumber || '').trim()) {
+            setMessage('Ingresa primero el numero de la factura principal de la app.');
+            return;
+        }
+        const secondInvoiceNumber = window.prompt('Numero de factura para la segunda factura membretada:');
+        if (!String(secondInvoiceNumber || '').trim()) return;
+        if (normalizeInvoiceMatchKey(secondInvoiceNumber) === normalizeInvoiceMatchKey(form.invoiceNumber)) {
+            setMessage('El numero de la segunda factura debe ser diferente al de la primera.');
+            return;
+        }
+
+        const firstItems = items.slice(0, 10);
+        const secondItems = items.slice(10);
+        const firstTotals = calculateInvoiceItemsFiscal(firstItems);
+        const secondTotals = calculateInvoiceItemsFiscal(secondItems);
+        setForm((prev) => ({
+            ...prev,
+            items: firstItems,
+            subtotal: String(firstTotals.subtotal),
+            iva: String(firstTotals.iva),
+            total: String(firstTotals.total),
+        }));
+        setSplitInvoice({
+            ...form,
+            invoiceNumber: String(secondInvoiceNumber).trim(),
+            items: secondItems,
+            subtotal: String(secondTotals.subtotal),
+            iva: String(secondTotals.iva),
+            total: String(secondTotals.total),
+            retentionIr2: '',
+            retentionMunicipal1: '',
+            splitPart: 2,
+        });
+        setMessage(`Factura dividida: 10 articulos quedan en ${form.invoiceNumber}; ${secondItems.length} articulos pasan a ${String(secondInvoiceNumber).trim()}. Al guardar se crean ambas.`);
+    };
+
+    const updateSplitInvoiceNumber = (value) => {
+        setSplitInvoice((prev) => prev ? { ...prev, invoiceNumber: value } : prev);
     };
 
     const upsertClientRecord = async (name, source = 'factura_membretada') => {
@@ -2099,23 +2317,49 @@ function StampedInvoices({ data }) {
         setSaving(true);
         setMessage('');
         try {
-            if (!form.invoiceNumber.trim()) throw new Error('Ingresa el numero de factura.');
-            if (!safeNumber(form.subtotal) && !safeNumber(form.total)) throw new Error('Ingresa subtotal o total.');
+            const invoicesToSave = [form, splitInvoice].filter(Boolean).map((invoice, index, list) => ({
+                ...invoice,
+                splitPart: list.length > 1 ? index + 1 : null,
+                splitTotalParts: list.length > 1 ? list.length : null,
+                items: normalizeInvoiceItemsForSave(invoice.items || []),
+            }));
 
-            const docId = `membretada_${slugify(form.invoiceNumber)}_${form.date.replace(/-/g, '')}`;
-            const duplicateAppInvoice = savedInvoices.find((item) => (
-                item.id !== docId
-                && getInvoiceNumberForMatch(item) === normalizeInvoiceMatchKey(form.invoiceNumber)
-                && !['ANULADA', 'ANULADO', 'CANCELADA', 'CANCELADO', 'DELETED'].includes(normalizeText(item.status))
-            ));
-            if (duplicateAppInvoice) {
-                throw new Error(`Ya existe una factura membretada en la app con el numero ${form.invoiceNumber}. Usa el consecutivo correcto.`);
+            if (entryMode === 'manual' && invoicesToSave[0]?.items.length === 0) {
+                throw new Error('Agrega al menos un articulo manual.');
             }
-            const existingInvoice = savedInvoices.find((item) => item.id === docId) || {};
+
+            invoicesToSave.forEach((invoice) => {
+                if (!String(invoice.invoiceNumber || '').trim()) throw new Error('Ingresa el numero de factura.');
+                if (!safeNumber(invoice.subtotal) && !safeNumber(invoice.total)) throw new Error(`Ingresa subtotal o total para la factura ${invoice.invoiceNumber}.`);
+            });
+
+            const invoiceNumberKeys = invoicesToSave.map((invoice) => normalizeInvoiceMatchKey(invoice.invoiceNumber)).filter(Boolean);
+            if (new Set(invoiceNumberKeys).size !== invoiceNumberKeys.length) {
+                throw new Error('Las facturas divididas deben tener numeros diferentes.');
+            }
+
+            const invoiceMeta = invoicesToSave.map((invoice) => ({
+                invoice,
+                docId: `membretada_${slugify(invoice.invoiceNumber)}_${invoice.date.replace(/-/g, '')}`,
+            }));
+
+            for (const { invoice, docId } of invoiceMeta) {
+                const duplicateAppInvoice = savedInvoices.find((item) => (
+                    item.id !== docId
+                    && getInvoiceNumberForMatch(item) === normalizeInvoiceMatchKey(invoice.invoiceNumber)
+                    && !['ANULADA', 'ANULADO', 'CANCELADA', 'CANCELADO', 'DELETED'].includes(normalizeText(item.status))
+                ));
+                if (duplicateAppInvoice) {
+                    throw new Error(`Ya existe una factura membretada en la app con el numero ${invoice.invoiceNumber}. Usa el consecutivo correcto.`);
+                }
+            }
+
+            const primaryDocId = invoiceMeta[0].docId;
+            const existingInvoice = savedInvoices.find((item) => item.id === primaryDocId) || {};
             const supportPayload = await uploadFiscalSupportFiles(
                 supportFiles,
                 'facturacion/facturas_membretadas',
-                docId,
+                primaryDocId,
                 existingInvoice
             );
 
@@ -2123,33 +2367,49 @@ function StampedInvoices({ data }) {
                 await upsertClientRecord(form.customerName.trim(), 'factura_membretada');
             }
 
-            await setDoc(doc(db, 'facturas_membretadas_ventas', docId), {
-                date: form.date,
-                saleDate: form.date,
-                month: getMonth(form.date),
-                numeroFactura: form.invoiceNumber.trim(),
-                invoiceNumber: form.invoiceNumber.trim(),
-                customerName: form.customerName.trim(),
-                customerAddress: form.customerAddress.trim(),
-                customerRfc: form.customerRfc.trim(),
-                paymentMethod: form.paymentMethod.trim(),
-                items: form.items || [],
-                ...fiscal,
-                source: form.sourceSicarInvoiceId ? 'sicar_factura' : 'manual',
-                sourceType: 'stamped_sale_invoice',
-                sourceSicarInvoiceId: form.sourceSicarInvoiceId || '',
-                sourceSicarInvoiceNumber: form.sourceSicarInvoiceNumber || '',
-                status: 'active',
-                ...supportPayload,
-                updatedAt: serverTimestamp(),
-                createdAt: serverTimestamp(),
-            }, { merge: true });
+            for (const { invoice, docId } of invoiceMeta) {
+                const itemFiscal = calculateInvoiceItemsFiscal(invoice.items || []);
+                const invoiceFiscal = buildFiscalPayload({
+                    subtotal: itemFiscal.subtotal || safeNumber(invoice.subtotal),
+                    iva: itemFiscal.iva || safeNumber(invoice.iva),
+                    total: itemFiscal.total || safeNumber(invoice.total) || safeNumber(invoice.subtotal) + safeNumber(invoice.iva),
+                    retentionIr2: safeNumber(invoice.retentionIr2),
+                    retentionMunicipal1: safeNumber(invoice.retentionMunicipal1),
+                });
+
+                await setDoc(doc(db, 'facturas_membretadas_ventas', docId), {
+                    date: invoice.date,
+                    saleDate: invoice.date,
+                    month: getMonth(invoice.date),
+                    numeroFactura: String(invoice.invoiceNumber || '').trim(),
+                    invoiceNumber: String(invoice.invoiceNumber || '').trim(),
+                    customerName: String(invoice.customerName || '').trim(),
+                    customerAddress: String(invoice.customerAddress || '').trim(),
+                    customerRfc: String(invoice.customerRfc || '').trim(),
+                    paymentMethod: String(invoice.paymentMethod || '').trim(),
+                    items: invoice.items || [],
+                    ...invoiceFiscal,
+                    source: invoice.sourceSicarInvoiceId ? 'sicar_factura' : 'manual',
+                    sourceType: 'stamped_sale_invoice',
+                    sourceSicarInvoiceId: invoice.sourceSicarInvoiceId || '',
+                    sourceSicarInvoiceNumber: invoice.sourceSicarInvoiceNumber || '',
+                    splitGroupId: invoiceMeta.length > 1 ? primaryDocId : '',
+                    splitPart: invoice.splitPart || null,
+                    splitTotalParts: invoice.splitTotalParts || null,
+                    status: 'active',
+                    ...supportPayload,
+                    updatedAt: serverTimestamp(),
+                    createdAt: serverTimestamp(),
+                }, { merge: true });
+            }
 
             if (form.sourceSicarInvoiceId) {
                 await setDoc(doc(db, 'sicar_facturas_membretadas', form.sourceSicarInvoiceId), {
                     accountingStatus: 'contabilizada',
-                    accountingInvoiceId: docId,
+                    accountingInvoiceId: primaryDocId,
+                    accountingInvoiceIds: invoiceMeta.map(({ docId }) => docId),
                     accountingInvoiceNumber: form.invoiceNumber.trim(),
+                    accountingInvoiceNumbers: invoicesToSave.map((invoice) => String(invoice.invoiceNumber || '').trim()),
                     accountingSourceSicarInvoiceId: form.sourceSicarInvoiceId,
                     sourceSicarInvoiceNumber: form.sourceSicarInvoiceNumber || '',
                     accountingLoadedAt: serverTimestamp(),
@@ -2157,24 +2417,10 @@ function StampedInvoices({ data }) {
                 }, { merge: true });
             }
 
-            setMessage('Factura membretada guardada e integrada al reporte tributario.');
+            setMessage(invoiceMeta.length > 1 ? 'Facturas membretadas divididas guardadas e integradas al reporte tributario.' : 'Factura membretada guardada e integrada al reporte tributario.');
             setSupportFiles({});
-            setForm({
-                date: todayString(),
-                invoiceNumber: '',
-                customerName: '',
-                customerAddress: '',
-                customerRfc: '',
-                subtotal: '',
-                iva: '',
-                total: '',
-                retentionIr2: '',
-                retentionMunicipal1: '',
-                paymentMethod: '',
-                sourceSicarInvoiceId: '',
-                sourceSicarInvoiceNumber: '',
-                items: [],
-            });
+            setSplitInvoice(null);
+            setForm(createStampedInvoiceForm());
         } catch (error) {
             console.error(error);
             setMessage(error?.message || 'No se pudo guardar la factura membretada.');
@@ -2192,6 +2438,26 @@ function StampedInvoices({ data }) {
                 action={<Badge tone="green">Reporte tributario</Badge>}
             >
                 <form onSubmit={saveInvoice} className="space-y-5">
+                    <div className="rounded-[1.8rem] border border-slate-200 bg-slate-50/70 p-3">
+                        <div className="mb-2 text-[10px] font-black uppercase tracking-[0.24em] text-slate-400">Modo de captura</div>
+                        <div className="grid gap-3 sm:grid-cols-2">
+                            <button
+                                type="button"
+                                onClick={() => setMode('sicar')}
+                                className={`rounded-2xl border px-4 py-3 text-sm font-black uppercase tracking-[0.18em] transition ${entryMode === 'sicar' ? 'border-[#e30613] bg-[#e30613] text-white shadow-lg shadow-red-950/20' : 'border-slate-200 bg-white text-slate-700 hover:border-[#e30613] hover:text-[#e30613]'}`}
+                            >
+                                SICAR
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => setMode('manual')}
+                                className={`rounded-2xl border px-4 py-3 text-sm font-black uppercase tracking-[0.18em] transition ${entryMode === 'manual' ? 'border-slate-950 bg-slate-950 text-white shadow-lg shadow-slate-950/20' : 'border-slate-200 bg-white text-slate-700 hover:border-slate-950 hover:text-slate-950'}`}
+                            >
+                                Manual
+                            </button>
+                        </div>
+                    </div>
+
                     <div className="grid gap-4 md:grid-cols-2">
                         <Field label="Fecha">
                             <input className={inputClass} type="date" value={form.date} onChange={(event) => update('date', event.target.value)} required />
@@ -2255,15 +2521,71 @@ function StampedInvoices({ data }) {
                     </div>
 
                     <div className="rounded-[1.8rem] border border-slate-200 bg-slate-50/70 p-4">
-                        <div className="mb-3 flex items-center justify-between gap-3">
+                        <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                             <div>
-                                <div className="text-sm font-black text-slate-950">Detalle de articulos SICAR</div>
+                                <div className="text-sm font-black text-slate-950">{entryMode === 'manual' ? 'Detalle de articulos manuales' : 'Detalle de articulos SICAR'}</div>
                                 <div className="text-xs font-semibold text-slate-500">Se imprimen cantidad, producto, precio sin IVA y total sin IVA.</div>
                             </div>
-                            <Badge tone={form.items?.length ? 'green' : 'slate'}>{form.items?.length || 0} lineas</Badge>
+                            <div className="flex flex-wrap items-center gap-2">
+                                {form.items?.length > 10 && !splitInvoice && (
+                                    <button
+                                        type="button"
+                                        onClick={splitCurrentInvoice}
+                                        className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-[10px] font-black uppercase tracking-[0.16em] text-amber-700 transition hover:bg-amber-100"
+                                    >
+                                        Dividir
+                                    </button>
+                                )}
+                                {splitInvoice && (
+                                    <button
+                                        type="button"
+                                        onClick={() => setSplitInvoice(null)}
+                                        className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-[10px] font-black uppercase tracking-[0.16em] text-slate-600 transition hover:border-[#e30613] hover:text-[#e30613]"
+                                    >
+                                        Cancelar division
+                                    </button>
+                                )}
+                                <Badge tone={form.items?.length ? 'green' : 'slate'}>{form.items?.length || 0} lineas</Badge>
+                            </div>
                         </div>
-                        <InvoiceItemsTable items={form.items || []} />
+                        {entryMode === 'manual' ? (
+                            <ManualInvoiceItemsEditor
+                                items={form.items || []}
+                                onAdd={addManualItem}
+                                onChange={updateManualItem}
+                                onRemove={removeManualItem}
+                            />
+                        ) : (
+                            <InvoiceItemsTable items={form.items || []} />
+                        )}
                     </div>
+
+                    {splitInvoice && (
+                        <div className="rounded-[1.8rem] border border-amber-200 bg-amber-50/70 p-4">
+                            <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                                <div>
+                                    <div className="text-[10px] font-black uppercase tracking-[0.24em] text-amber-700">Factura dividida</div>
+                                    <div className="text-sm font-black text-slate-950">Segunda factura con articulos restantes</div>
+                                    <div className="text-xs font-semibold text-slate-500">{splitInvoice.items?.length || 0} articulos se guardaran como otra factura.</div>
+                                </div>
+                                <div className="w-full sm:w-64">
+                                    <input
+                                        className={inputClass}
+                                        value={splitInvoice.invoiceNumber || ''}
+                                        onChange={(event) => updateSplitInvoiceNumber(event.target.value)}
+                                        placeholder="Numero segunda factura"
+                                        required
+                                    />
+                                </div>
+                            </div>
+                            <InvoiceItemsTable items={splitInvoice.items || []} />
+                            <div className="mt-3 grid gap-3 md:grid-cols-3">
+                                <SummaryCard label="Subtotal factura 2" value={fmt(splitInvoice.subtotal)} />
+                                <SummaryCard label="IVA factura 2" value={fmt(splitInvoice.iva)} tone="blue" />
+                                <SummaryCard label="Total factura 2" value={fmt(splitInvoice.total)} tone="green" />
+                            </div>
+                        </div>
+                    )}
 
                     <div className="grid gap-3 md:grid-cols-4">
                         <SummaryCard label="Subtotal" value={fmt(fiscal.subtotal)} />
@@ -2280,6 +2602,7 @@ function StampedInvoices({ data }) {
                 </form>
             </Section>
 
+            {entryMode === 'sicar' ? (
             <div className="space-y-5">
                 <Section title="Facturas SICAR para cargar" eyebrow={`Pendientes de hoy ${todaySicarInvoiceDate}`} action={<Badge tone="blue">{sicarInvoices.length} pendientes</Badge>}>
                     <div className="space-y-3">
@@ -2322,6 +2645,19 @@ function StampedInvoices({ data }) {
                         />
                     </div>
                 </Section>
+            </div>
+            ) : (
+            <div className="space-y-5">
+                <Section title="Captura manual" eyebrow="Factura sin origen SICAR" action={<Badge tone="amber">Manual</Badge>}>
+                    <div className="rounded-3xl border border-dashed border-slate-300 bg-slate-50/70 p-8 text-center">
+                        <div className="text-lg font-black text-slate-950">Escritura manual habilitada</div>
+                        <div className="mx-auto mt-2 max-w-md text-sm font-bold text-slate-500">
+                            Ingresa cliente, numero de factura y articulos. La app recalcula subtotal, IVA y total desde las lineas.
+                        </div>
+                    </div>
+                </Section>
+            </div>
+            )}
 
                 {false && (
                 <Section title="Guardadas" eyebrow="Facturas membretadas" action={<Badge tone="green">{savedInvoices.length} registros</Badge>}>
@@ -2385,7 +2721,6 @@ function StampedInvoices({ data }) {
                     </div>
                 </Section>
                 )}
-            </div>
         </div>
         {false && <StampedInvoicePrintModal
             invoice={printTarget}
