@@ -6,7 +6,14 @@ import { APP_BRAND_NAME, fmt } from '../constants';
 import { PAYMENT_METHODS, buildFiscalPayload, getSupportFiles, uploadFiscalSupportFiles } from '../services/fiscalUtils';
 import { isMasterEmail } from '../services/userAccess';
 
-const PAYMENT_BANKS = [
+const TRANSFER_BANKS = [
+    { key: 'bac', label: 'BAC' },
+    { key: 'bac2', label: 'BAC (2)' },
+    { key: 'banpro', label: 'Banpro' },
+    { key: 'lafise', label: 'Lafise' },
+];
+
+const POS_BANKS = [
     { key: 'bac', label: 'BAC' },
     { key: 'banpro', label: 'Banpro' },
     { key: 'lafise', label: 'Lafise' },
@@ -167,6 +174,19 @@ const normalizeStampedInvoiceRecord = (item = {}) => ({
     items: Array.isArray(item.items) ? item.items : [],
 });
 
+const normalizeCashReceiptRecord = (item = {}) => ({
+    ...item,
+    date: item.date || item.receiptDate || '',
+    month: item.month || getMonth(item.date || item.receiptDate || todayString()),
+    receiptNumber: item.receiptNumber || item.numeroRecibo || '',
+    customerName: item.customerName || item.recibiDe || item.cliente || '',
+    amount: safeNumber(item.amount || item.cantidad),
+    retentionIr2: safeNumber(item.retentionIr2 || item.retencionIr2),
+    concept: item.concept || item.concepto || '',
+    paymentMethod: item.paymentMethod || item.metodoPago || '',
+    netAmount: safeNumber(item.netAmount || safeNumber(item.amount || item.cantidad) - safeNumber(item.retentionIr2 || item.retencionIr2)),
+});
+
 const isPdfSupportFile = (support = {}) => (
     `${support.url || ''} ${support.path || ''} ${support.contentType || ''}`.toLowerCase().includes('.pdf')
     || String(support.contentType || '').toLowerCase().includes('pdf')
@@ -192,6 +212,77 @@ const getCashDifferencePendingAmount = (item = {}) => {
 };
 
 const getCashDifferenceType = (amount = 0) => (safeNumber(amount) < 0 ? 'faltante' : 'sobrante');
+
+const isCreditPaymentMethod = (method = '') => normalizeText(method).includes('CREDITO');
+
+const buildClosureAccountingSummary = ({
+    cashSalesTotal = 0,
+    creditSalesTotal = 0,
+    creditRecoveryTotal = 0,
+    stampedInvoices = [],
+    cashReceipts = [],
+    transferTotals = {},
+    posTotals = {},
+    cashCordobasTotal = 0,
+    dollarCashTotalCordobas = 0,
+} = {}) => {
+    const stampedCashTotal = safeNumber(stampedInvoices.reduce((sum, invoice) => (
+        sum + (!isCreditPaymentMethod(invoice.paymentMethod) ? safeNumber(invoice.total) : 0)
+    ), 0));
+    const stampedCreditTotal = safeNumber(stampedInvoices.reduce((sum, invoice) => (
+        sum + (isCreditPaymentMethod(invoice.paymentMethod) ? safeNumber(invoice.total) : 0)
+    ), 0));
+    const cashReceiptTotal = safeNumber(cashReceipts.reduce((sum, receipt) => sum + safeNumber(receipt.amount), 0));
+    const ticketCashSales = safeNumber(cashSalesTotal - stampedCashTotal);
+    const ticketCreditSales = safeNumber(creditSalesTotal - stampedCreditTotal);
+    const ticketCashReceipts = safeNumber(creditRecoveryTotal - cashReceiptTotal);
+    const cardTotal = safeNumber((posTotals.bac || 0) + (posTotals.banpro || 0) + (posTotals.lafise || 0));
+    const transferTotal = safeNumber(
+        (transferTotals.bac || 0)
+        + (transferTotals.bac2 || 0)
+        + (transferTotals.banpro || 0)
+        + (transferTotals.lafise || 0)
+    );
+    const transferTotalWithoutBac2 = safeNumber(transferTotal - safeNumber(transferTotals.bac2));
+    const cashTotal = safeNumber(cashCordobasTotal + dollarCashTotalCordobas);
+    const rc = safeNumber(cardTotal + transferTotalWithoutBac2 - stampedCashTotal - cashReceiptTotal);
+
+    return {
+        general: {
+            cashSalesTotal: safeNumber(cashSalesTotal),
+            creditSalesTotal: safeNumber(creditSalesTotal),
+            creditRecoveryTotal: safeNumber(creditRecoveryTotal),
+        },
+        stampedDocuments: {
+            stampedCashInvoices: stampedCashTotal,
+            stampedCreditInvoices: stampedCreditTotal,
+            stampedCashReceipts: cashReceiptTotal,
+        },
+        sicarTickets: {
+            cashSalesTickets: ticketCashSales,
+            creditSalesTickets: ticketCreditSales,
+            cashReceiptTickets: ticketCashReceipts,
+        },
+        paymentBreakdown: {
+            cardTotal,
+            posBac: safeNumber(posTotals.bac),
+            posBanpro: safeNumber(posTotals.banpro),
+            posLafise: safeNumber(posTotals.lafise),
+            transferTotal,
+            transferBac: safeNumber(transferTotals.bac),
+            transferBac2: safeNumber(transferTotals.bac2),
+            transferBanpro: safeNumber(transferTotals.banpro),
+            transferLafise: safeNumber(transferTotals.lafise),
+            cashTotal,
+            cashCordobas: safeNumber(cashCordobasTotal),
+            cashDollarsConverted: safeNumber(dollarCashTotalCordobas),
+        },
+        internalRatio: {
+            rc,
+            formula: 'Tarjeta + transferencia sin BAC (2) - facturas membretadas contado - recibos de caja membretados',
+        },
+    };
+};
 
 const isInvoiceExcludedFromCashClosureSelection = (invoice = {}) => {
     const status = normalizeText(invoice.cashClosureLinkStatus || invoice.closureStatus || '');
@@ -618,6 +709,80 @@ const buildStampedInvoicePrintHtml = (invoice, layout) => {
 </html>`;
 };
 
+const getReceiptPaymentBank = (method = '') => {
+    const normalized = normalizeText(method);
+    if (normalized.includes('BAC')) return 'BAC';
+    if (normalized.includes('BANPRO')) return 'BANPRO';
+    if (normalized.includes('LAFISE')) return 'LAFISE';
+    return method || '';
+};
+
+const buildCashReceiptPrintHtml = (receipt = {}) => {
+    const amount = safeNumber(receipt.amount);
+    const retention = safeNumber(receipt.retentionIr2);
+    const paymentMethod = receipt.paymentMethod || '';
+    const isCash = normalizeText(paymentMethod) === 'EFECTIVO';
+    const bank = getReceiptPaymentBank(paymentMethod);
+    const pageWidth = 21.59;
+    const pageHeight = 13.97;
+    const text = (x, y, width, content, options = {}) => buildPrintTextHtml(
+        { x, y, width },
+        content,
+        { fontSizePt: options.fontSizePt || 10 },
+        { align: options.align || 'left', mono: options.mono, fontSizePt: options.fontSizePt || 10 }
+    );
+
+    return `<!doctype html>
+<html>
+<head>
+    <meta charset="utf-8" />
+    <title></title>
+    <style>
+        @page { size: ${cm(pageWidth)} ${cm(pageHeight)}; margin: 0; }
+        html, body {
+            width: ${cm(pageWidth)};
+            height: ${cm(pageHeight)};
+            margin: 0 !important;
+            padding: 0 !important;
+            overflow: hidden !important;
+            background: transparent !important;
+        }
+        * { box-sizing: border-box; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+        .sheet {
+            position: relative;
+            width: ${cm(pageWidth)};
+            height: ${cm(pageHeight)};
+            margin: 0 !important;
+            padding: 0 !important;
+            overflow: hidden;
+            background: transparent;
+        }
+        .txt {
+            position: absolute;
+            color: #000;
+            font-weight: 700;
+            line-height: 1.05;
+            white-space: nowrap;
+            overflow: hidden;
+        }
+    </style>
+</head>
+<body>
+    <main class="sheet">
+        ${text(1.45, 4.82, 6.2, formatInvoiceDate(receipt.date), { fontSizePt: 10 })}
+        ${text(15.75, 4.82, 4.2, formatInvoiceMoney(amount), { align: 'right', mono: true, fontSizePt: 10 })}
+        ${text(1.95, 5.72, 17.4, receipt.customerName || receipt.recibiDe || '', { fontSizePt: 10 })}
+        ${text(2.85, 6.62, 8.7, `C$ ${formatInvoiceMoney(amount)}`, { fontSizePt: 10 })}
+        ${text(17.55, 7.35, 2.2, formatInvoiceMoney(retention), { align: 'right', mono: true, fontSizePt: 10 })}
+        ${text(3.15, 8.28, 16.4, receipt.concept || receipt.concepto || '', { fontSizePt: 10 })}
+        ${text(3.88, 9.95, 0.35, isCash ? 'X' : '', { align: 'center', fontSizePt: 14 })}
+        ${text(6.25, 10.02, 3.7, receipt.reference || receipt.referencia || '', { fontSizePt: 9 })}
+        ${text(11.65, 10.02, 5.4, bank, { fontSizePt: 9 })}
+    </main>
+</body>
+</html>`;
+};
+
 const Section = ({ title, eyebrow, action, children }) => (
     <section className="overflow-hidden rounded-[1.8rem] border border-slate-200 bg-white shadow-xl shadow-slate-900/5">
         <div className="flex flex-col gap-3 border-b border-slate-200 bg-slate-50/80 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
@@ -732,6 +897,66 @@ const DetailRows = ({ title, rows, onChange, onAdd, onRemove, type, clients = []
     </div>
 );
 
+const ClosureAccountingSummaryPanel = ({ summary = {} }) => {
+    const general = summary.general || {};
+    const stamped = summary.stampedDocuments || {};
+    const tickets = summary.sicarTickets || {};
+    const payment = summary.paymentBreakdown || {};
+    const ratio = summary.internalRatio || {};
+
+    return (
+        <div className="rounded-[1.8rem] border border-slate-200 bg-white p-4 shadow-sm">
+            <div className="mb-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                    <div className="text-[10px] font-black uppercase tracking-[0.28em] text-[#e30613]">Resumen final del cierre</div>
+                    <div className="text-lg font-black text-slate-950">Cuadre contable y ratio RC</div>
+                </div>
+                <Badge tone={safeNumber(ratio.rc) >= 0 ? 'green' : 'red'}>RC {fmt(ratio.rc)}</Badge>
+            </div>
+            <div className="grid gap-4 xl:grid-cols-5">
+                <div className="rounded-3xl border border-slate-200 bg-slate-50 p-4">
+                    <div className="mb-3 text-[10px] font-black uppercase tracking-[0.22em] text-slate-500">1.1 Total general</div>
+                    <SummaryCard label="Ventas contado" value={fmt(general.cashSalesTotal)} tone="green" />
+                    <div className="mt-2"><SummaryCard label="Ventas credito" value={fmt(general.creditSalesTotal)} tone="blue" /></div>
+                    <div className="mt-2"><SummaryCard label="Recup. credito" value={fmt(general.creditRecoveryTotal)} tone="amber" /></div>
+                </div>
+                <div className="rounded-3xl border border-slate-200 bg-slate-50 p-4">
+                    <div className="mb-3 text-[10px] font-black uppercase tracking-[0.22em] text-slate-500">1.2 Documentos membretados</div>
+                    <SummaryCard label="Fact. contado" value={fmt(stamped.stampedCashInvoices)} tone="green" />
+                    <div className="mt-2"><SummaryCard label="Fact. credito" value={fmt(stamped.stampedCreditInvoices)} tone="blue" /></div>
+                    <div className="mt-2"><SummaryCard label="Recibos caja" value={fmt(stamped.stampedCashReceipts)} tone="amber" /></div>
+                </div>
+                <div className="rounded-3xl border border-slate-200 bg-slate-50 p-4">
+                    <div className="mb-3 text-[10px] font-black uppercase tracking-[0.22em] text-slate-500">1.3 Ticket SICAR</div>
+                    <SummaryCard label="Ventas ticket" value={fmt(tickets.cashSalesTickets)} tone="green" />
+                    <div className="mt-2"><SummaryCard label="Ventas credito ticket" value={fmt(tickets.creditSalesTickets)} tone="blue" /></div>
+                    <div className="mt-2"><SummaryCard label="Recibos ticket" value={fmt(tickets.cashReceiptTickets)} tone="amber" /></div>
+                </div>
+                <div className="rounded-3xl border border-slate-200 bg-slate-50 p-4">
+                    <div className="mb-3 text-[10px] font-black uppercase tracking-[0.22em] text-slate-500">1.4 Metodos de pago</div>
+                    <SummaryCard label="Tarjeta total" value={fmt(payment.cardTotal)} tone="blue" />
+                    <div className="mt-2 text-xs font-black text-slate-600">POS BAC {fmt(payment.posBac)}</div>
+                    <div className="text-xs font-black text-slate-600">POS Banpro {fmt(payment.posBanpro)}</div>
+                    <div className="text-xs font-black text-slate-600">POS Lafise {fmt(payment.posLafise)}</div>
+                    <div className="mt-3"><SummaryCard label="Transferencias" value={fmt(payment.transferTotal)} tone="green" /></div>
+                    <div className="mt-2 text-xs font-black text-slate-600">BAC {fmt(payment.transferBac)}</div>
+                    <div className="text-xs font-black text-slate-600">BAC (2) {fmt(payment.transferBac2)}</div>
+                    <div className="text-xs font-black text-slate-600">Banpro {fmt(payment.transferBanpro)}</div>
+                    <div className="text-xs font-black text-slate-600">Lafise {fmt(payment.transferLafise)}</div>
+                </div>
+                <div className="rounded-3xl border border-slate-200 bg-slate-50 p-4">
+                    <div className="mb-3 text-[10px] font-black uppercase tracking-[0.22em] text-slate-500">1.5 Calculo interno</div>
+                    <SummaryCard label="Efectivo total" value={fmt(payment.cashTotal)} />
+                    <div className="mt-2 text-xs font-black text-slate-600">Cordobas {fmt(payment.cashCordobas)}</div>
+                    <div className="text-xs font-black text-slate-600">Dolares {fmt(payment.cashDollarsConverted)}</div>
+                    <div className="mt-3"><SummaryCard label="RC" value={fmt(ratio.rc)} tone={safeNumber(ratio.rc) >= 0 ? 'green' : 'red'} /></div>
+                    <div className="mt-2 text-[11px] font-bold text-slate-500">{ratio.formula}</div>
+                </div>
+            </div>
+        </div>
+    );
+};
+
 function CashClosure({ data }) {
     const closedSicarClosureKeys = useMemo(() => {
         const keys = new Set();
@@ -762,6 +987,13 @@ function CashClosure({ data }) {
             .sort((a, b) => String(b.date).localeCompare(String(a.date)))
     ), [data.facturas_membretadas_ventas]);
 
+    const cashReceipts = useMemo(() => (
+        [...(data.recibos_caja_membretados || [])]
+            .map(normalizeCashReceiptRecord)
+            .filter((receipt) => normalizeText(receipt.status) !== 'ANULADO')
+            .sort((a, b) => String(b.date).localeCompare(String(a.date)))
+    ), [data.recibos_caja_membretados]);
+
     const clients = useMemo(() => (
         [...(data.clientes_facturacion || [])]
             .map((item) => ({ ...item, name: item.name || item.nombre || '' }))
@@ -782,7 +1014,7 @@ function CashClosure({ data }) {
     const [cashCount, setCashCount] = useState({});
     const [dollarCashCount, setDollarCashCount] = useState({});
     const [preCloseDeposit, setPreCloseDeposit] = useState({ cordobas: '', dollars: '' });
-    const [transfers, setTransfers] = useState({ bac: [], banpro: [], lafise: [] });
+    const [transfers, setTransfers] = useState({ bac: [], bac2: [], banpro: [], lafise: [] });
     const [posDetails, setPosDetails] = useState({ bac: [], banpro: [], lafise: [] });
     const [closureInvoices, setClosureInvoices] = useState([]);
     const [notes, setNotes] = useState('');
@@ -861,12 +1093,12 @@ function CashClosure({ data }) {
     const preCloseDepositTotal = safeNumber(preCloseDepositCordobas + (preCloseDepositDollars * CASH_CLOSURE_EXCHANGE_RATE));
     const cashClosureTotal = safeNumber(cashTotal + dollarCashTotalCordobas + preCloseDepositTotal);
 
-    const transferTotals = useMemo(() => Object.fromEntries(PAYMENT_BANKS.map(({ key }) => [
+    const transferTotals = useMemo(() => Object.fromEntries(TRANSFER_BANKS.map(({ key }) => [
         key,
         safeNumber((transfers[key] || []).reduce((sum, item) => sum + safeNumber(item.amount), 0)),
     ])), [transfers]);
 
-    const posTotals = useMemo(() => Object.fromEntries(PAYMENT_BANKS.map(({ key }) => [
+    const posTotals = useMemo(() => Object.fromEntries(POS_BANKS.map(({ key }) => [
         key,
         safeNumber((posDetails[key] || []).reduce((sum, item) => sum + safeNumber(item.amount), 0)),
     ])), [posDetails]);
@@ -880,6 +1112,23 @@ function CashClosure({ data }) {
         sum + safeNumber(invoice.retentionIr2) + safeNumber(invoice.retentionMunicipal1)
     ), 0));
     const sicarExpected = safeNumber(selectedClosure?.calculatedTotal ?? selectedClosure?.calculado ?? selectedClosure?.totalDineroIngresado);
+    const sicarCashSalesTotal = safeNumber(selectedClosure?.cashSalesTotal ?? selectedClosure?.ventasContado ?? selectedClosure?.venCon);
+    const sicarCreditRecoveryTotal = safeNumber(selectedClosure?.creditRecoveryTotal ?? selectedClosure?.recuperacionCredito ?? selectedClosure?.entCre);
+    const sicarCreditSalesTotal = safeNumber(selectedClosure?.creditSalesTotal ?? selectedClosure?.ventasCredito ?? selectedClosure?.venCre);
+    const sameDayCashReceipts = useMemo(() => (
+        cashReceipts.filter((receipt) => String(receipt.date || '').substring(0, 10) === closureDate)
+    ), [cashReceipts, closureDate]);
+    const closureAccountingSummary = useMemo(() => buildClosureAccountingSummary({
+        cashSalesTotal: sicarCashSalesTotal,
+        creditSalesTotal: sicarCreditSalesTotal,
+        creditRecoveryTotal: sicarCreditRecoveryTotal,
+        stampedInvoices: closureInvoices,
+        cashReceipts: sameDayCashReceipts,
+        transferTotals,
+        posTotals,
+        cashCordobasTotal: cashTotal,
+        dollarCashTotalCordobas,
+    }), [sicarCashSalesTotal, sicarCreditSalesTotal, sicarCreditRecoveryTotal, closureInvoices, sameDayCashReceipts, transferTotals, posTotals, cashTotal, dollarCashTotalCordobas]);
     const expectedAfterRetentions = safeNumber(sicarExpected - retentionTotal);
     const difference = safeNumber(manualTotal - expectedAfterRetentions);
     const shouldTrackDifference = Math.abs(difference) > CASH_DIFFERENCE_THRESHOLD;
@@ -899,7 +1148,7 @@ function CashClosure({ data }) {
         setCashCount(closure.cashCount || {});
         setDollarCashCount(closure.dollarCashCount || {});
         setPreCloseDeposit(closure.preCloseDeposit || { cordobas: '', dollars: '' });
-        setTransfers(closure.transferDetails || { bac: [], banpro: [], lafise: [] });
+        setTransfers({ bac: [], bac2: [], banpro: [], lafise: [], ...(closure.transferDetails || {}) });
         setPosDetails(closure.posDetails || { bac: [], banpro: [], lafise: [] });
         setClosureInvoices((closure.stampedInvoiceDrafts || closure.stampedInvoices || []).map((invoice) => createInvoiceDraft(invoice, closure.date || todayString())));
         setNotes(closure.notes || '');
@@ -1017,7 +1266,7 @@ function CashClosure({ data }) {
                 setCashCount({});
                 setDollarCashCount({});
                 setPreCloseDeposit({ cordobas: '', dollars: '' });
-                setTransfers({ bac: [], banpro: [], lafise: [] });
+                setTransfers({ bac: [], bac2: [], banpro: [], lafise: [] });
                 setPosDetails({ bac: [], banpro: [], lafise: [] });
                 setClosureInvoices([]);
                 setNotes('');
@@ -1130,8 +1379,12 @@ function CashClosure({ data }) {
                 linkedSicarRccId: selectedClosure?.rccId || selectedClosure?.rcc_id || null,
                 sicar: selectedClosure || null,
                 sicarExpected,
+                cashSalesTotal: sicarCashSalesTotal,
+                creditSalesTotal: sicarCreditSalesTotal,
+                creditRecoveryTotal: sicarCreditRecoveryTotal,
                 retentionAdjustment: retentionTotal,
                 expectedAfterRetentions,
+                accountingSummary: closureAccountingSummary,
                 cashCount,
                 cashCordobasTotal: safeNumber(cashTotal),
                 dollarCashCount,
@@ -1345,6 +1598,10 @@ function CashClosure({ data }) {
                         <SummaryCard label="Diferencia" value={fmt(difference)} tone={shouldTrackDifference ? 'red' : 'green'} />
                     </div>
 
+                    <div className="mt-5">
+                        <ClosureAccountingSummaryPanel summary={closureAccountingSummary} />
+                    </div>
+
                     <div className="mt-5 rounded-3xl border border-slate-200 bg-slate-50/70 p-4">
                         <div className="mb-3 flex items-center justify-between">
                             <div>
@@ -1419,7 +1676,7 @@ function CashClosure({ data }) {
 
                 <Section title="Transferencias por cliente" eyebrow="Detalle bancario">
                     <div className="grid gap-4">
-                        {PAYMENT_BANKS.map((bank) => (
+                        {TRANSFER_BANKS.map((bank) => (
                             <DetailRows
                                 key={bank.key}
                                 title={`Transferencia ${bank.label} · ${fmt(transferTotals[bank.key])}`}
@@ -1437,7 +1694,7 @@ function CashClosure({ data }) {
 
                 <Section title="Cierres POS" eyebrow="Baucher / lote POS">
                     <div className="grid gap-4">
-                        {PAYMENT_BANKS.map((bank) => (
+                        {POS_BANKS.map((bank) => (
                             <DetailRows
                                 key={bank.key}
                                 title={`POS ${bank.label} · ${fmt(posTotals[bank.key])}`}
@@ -2141,6 +2398,399 @@ function useStampedPrintTemplates(setMessage = () => {}) {
         savePrintLayout,
         saveNewPrintLayout,
     };
+}
+
+function CashReceipts({ data }) {
+    const clients = useMemo(() => (
+        [...(data.clientes_facturacion || [])]
+            .map((item) => ({ ...item, name: item.name || item.nombre || '' }))
+            .filter((item) => item.name)
+            .sort((a, b) => a.name.localeCompare(b.name, 'es'))
+    ), [data.clientes_facturacion]);
+
+    const receipts = useMemo(() => (
+        [...(data.recibos_caja_membretados || [])]
+            .map(normalizeCashReceiptRecord)
+            .sort((a, b) => String(b.date).localeCompare(String(a.date)))
+    ), [data.recibos_caja_membretados]);
+
+    const [form, setForm] = useState({
+        date: todayString(),
+        receiptNumber: '',
+        customerName: '',
+        amount: '',
+        retentionIr2: '',
+        concept: '',
+        paymentMethod: '',
+        reference: '',
+    });
+    const [search, setSearch] = useState('');
+    const [page, setPage] = useState(1);
+    const [saving, setSaving] = useState(false);
+    const [message, setMessage] = useState('');
+
+    const filteredReceipts = useMemo(() => filterRecords(receipts, search, [
+        'date',
+        'receiptNumber',
+        'customerName',
+        'concept',
+        'paymentMethod',
+        'amount',
+    ]), [receipts, search]);
+
+    const pagedReceipts = useMemo(() => paginateRecords(filteredReceipts, page), [filteredReceipts, page]);
+
+    useEffect(() => {
+        setPage(1);
+    }, [search]);
+
+    useEffect(() => {
+        if (page !== pagedReceipts.page) setPage(pagedReceipts.page);
+    }, [page, pagedReceipts.page]);
+
+    const update = (key, value) => {
+        setForm((prev) => ({ ...prev, [key]: value }));
+    };
+
+    const upsertClientRecord = async (name, source = 'recibo_caja') => {
+        const safeName = String(name || '').trim();
+        if (!safeName) return '';
+        const code = `CLI-${slugify(safeName)}`;
+        await setDoc(doc(db, 'clientes_facturacion', code), {
+            code,
+            name: safeName,
+            normalizedName: normalizeText(safeName),
+            source,
+            updatedAt: serverTimestamp(),
+            createdAt: serverTimestamp(),
+        }, { merge: true });
+        return code;
+    };
+
+    const saveReceipt = async (event) => {
+        event.preventDefault();
+        setSaving(true);
+        setMessage('');
+        try {
+            if (!String(form.customerName || '').trim()) throw new Error('Selecciona o escribe el cliente.');
+            if (!safeNumber(form.amount)) throw new Error('Ingresa la cantidad del recibo.');
+            if (!String(form.paymentMethod || '').trim()) throw new Error('Selecciona metodo de pago.');
+
+            await upsertClientRecord(form.customerName, 'recibo_caja');
+            const receiptId = form.receiptNumber
+                ? `recibo_${slugify(form.receiptNumber)}_${String(form.date || todayString()).replace(/-/g, '')}`
+                : `recibo_${String(form.date || todayString()).replace(/-/g, '')}_${Date.now()}`;
+            const amount = safeNumber(form.amount);
+            const retentionIr2 = safeNumber(form.retentionIr2);
+
+            await setDoc(doc(db, 'recibos_caja_membretados', receiptId), {
+                date: form.date || todayString(),
+                receiptDate: form.date || todayString(),
+                month: getMonth(form.date || todayString()),
+                receiptNumber: String(form.receiptNumber || '').trim(),
+                numeroRecibo: String(form.receiptNumber || '').trim(),
+                customerName: String(form.customerName || '').trim(),
+                recibiDe: String(form.customerName || '').trim(),
+                amount,
+                cantidad: amount,
+                retentionIr2,
+                retencionIr2: retentionIr2,
+                netAmount: safeNumber(amount - retentionIr2),
+                concept: String(form.concept || '').trim(),
+                concepto: String(form.concept || '').trim(),
+                paymentMethod: String(form.paymentMethod || '').trim(),
+                metodoPago: String(form.paymentMethod || '').trim(),
+                reference: String(form.reference || '').trim(),
+                source: 'manual_app',
+                sourceType: 'cash_receipt',
+                status: 'active',
+                updatedAt: serverTimestamp(),
+                createdAt: serverTimestamp(),
+            }, { merge: true });
+
+            setForm({
+                date: todayString(),
+                receiptNumber: '',
+                customerName: '',
+                amount: '',
+                retentionIr2: '',
+                concept: '',
+                paymentMethod: '',
+                reference: '',
+            });
+            setMessage('Recibo de caja guardado correctamente.');
+        } catch (error) {
+            console.error(error);
+            setMessage(error?.message || 'No se pudo guardar el recibo de caja.');
+        } finally {
+            setSaving(false);
+        }
+    };
+
+    const printReceipt = (receipt) => {
+        const iframe = document.createElement('iframe');
+        iframe.title = '';
+        iframe.setAttribute('aria-hidden', 'true');
+        iframe.style.position = 'fixed';
+        iframe.style.right = '0';
+        iframe.style.bottom = '0';
+        iframe.style.width = '0';
+        iframe.style.height = '0';
+        iframe.style.border = '0';
+        iframe.style.opacity = '0';
+        document.body.appendChild(iframe);
+
+        const iframeWindow = iframe.contentWindow;
+        const iframeDocument = iframe.contentDocument || iframeWindow?.document;
+        if (!iframeWindow || !iframeDocument) {
+            iframe.remove();
+            return;
+        }
+
+        iframeDocument.open();
+        iframeDocument.write(buildCashReceiptPrintHtml(receipt));
+        iframeDocument.close();
+
+        const cleanup = () => setTimeout(() => iframe.remove(), 500);
+        iframeWindow.onafterprint = cleanup;
+        setTimeout(() => {
+            iframeWindow.focus();
+            iframeWindow.print();
+            cleanup();
+        }, 180);
+    };
+
+    return (
+        <div className="grid gap-5 xl:grid-cols-[0.85fr_1.15fr]">
+            <Section title="Nuevo recibo de caja" eyebrow="Registro contable" action={<Badge tone="green">Media carta</Badge>}>
+                <form onSubmit={saveReceipt} className="space-y-4">
+                    <div className="grid gap-4 md:grid-cols-2">
+                        <Field label="Fecha">
+                            <input className={inputClass} type="date" value={form.date} onChange={(event) => update('date', event.target.value)} required />
+                        </Field>
+                        <Field label="Numero de recibo">
+                            <input className={inputClass} value={form.receiptNumber} onChange={(event) => update('receiptNumber', event.target.value)} placeholder="Opcional / preimpreso" />
+                        </Field>
+                        <Field label="Recibi de">
+                            <input className={inputClass} list="cash-receipt-clients" value={form.customerName} onChange={(event) => update('customerName', event.target.value)} placeholder="Cliente" required />
+                            <datalist id="cash-receipt-clients">
+                                {clients.map((client) => (
+                                    <option key={client.id || client.code || client.name} value={client.name || client.nombre || ''} />
+                                ))}
+                            </datalist>
+                        </Field>
+                        <Field label="Metodo de pago">
+                            <PaymentMethodSelect value={form.paymentMethod} onChange={(value) => update('paymentMethod', value)} required />
+                        </Field>
+                        <Field label="Cantidad">
+                            <input className={inputClass} type="number" step="0.01" min="0" value={form.amount} onChange={(event) => update('amount', event.target.value)} required />
+                        </Field>
+                        <Field label="Retencion 2%">
+                            <input className={inputClass} type="number" step="0.01" min="0" value={form.retentionIr2} onChange={(event) => update('retentionIr2', event.target.value)} />
+                        </Field>
+                        <Field label="Referencia / CK No.">
+                            <input className={inputClass} value={form.reference} onChange={(event) => update('reference', event.target.value)} placeholder="Opcional" />
+                        </Field>
+                        <Field label="Neto">
+                            <input className={inputClass} readOnly value={formatInvoiceMoney(safeNumber(form.amount) - safeNumber(form.retentionIr2))} />
+                        </Field>
+                        <Field label="En concepto de" span="md:col-span-2">
+                            <textarea className={`${inputClass} min-h-[110px]`} value={form.concept} onChange={(event) => update('concept', event.target.value)} placeholder="Concepto del pago o recuperacion de credito" />
+                        </Field>
+                    </div>
+                    {message && <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-bold text-slate-700">{message}</div>}
+                    <button type="submit" disabled={saving} className="w-full rounded-2xl bg-[#e30613] px-5 py-4 text-sm font-black uppercase tracking-[0.2em] text-white shadow-lg shadow-red-950/20 transition hover:bg-[#9f111a] disabled:cursor-not-allowed disabled:opacity-60">
+                        {saving ? 'Guardando...' : 'Guardar recibo de caja'}
+                    </button>
+                </form>
+            </Section>
+
+            <Section title="Historial de recibos" eyebrow="Recibos de caja membretados" action={<Badge tone="blue">{filteredReceipts.length} registros</Badge>}>
+                <SearchBox
+                    value={search}
+                    onChange={setSearch}
+                    placeholder="Buscar por fecha, cliente, concepto, metodo o monto..."
+                    resultLabel={`${filteredReceipts.length} de ${receipts.length}`}
+                />
+                <div className="mt-4 overflow-x-auto rounded-3xl border border-slate-200 bg-white">
+                    <table className="min-w-full text-left text-sm">
+                        <thead>
+                            <tr className="border-b border-slate-200 bg-slate-50 text-[10px] font-black uppercase tracking-[0.22em] text-slate-400">
+                                <th className="px-4 py-3">Fecha</th>
+                                <th className="px-4 py-3">Recibo</th>
+                                <th className="px-4 py-3">Cliente</th>
+                                <th className="px-4 py-3">Metodo</th>
+                                <th className="px-4 py-3 text-right">Cantidad</th>
+                                <th className="px-4 py-3 text-right">Ret. 2%</th>
+                                <th className="px-4 py-3 text-right">Accion</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {pagedReceipts.records.map((receipt) => (
+                                <tr key={receipt.id} className="border-b border-slate-100 last:border-b-0">
+                                    <td className="px-4 py-3 font-bold text-slate-700">{receipt.date || '-'}</td>
+                                    <td className="px-4 py-3 font-black text-slate-950">{receipt.receiptNumber || '-'}</td>
+                                    <td className="px-4 py-3 font-bold text-slate-600">{receipt.customerName || '-'}</td>
+                                    <td className="px-4 py-3 font-bold text-slate-500">{receipt.paymentMethod || '-'}</td>
+                                    <td className="px-4 py-3 text-right font-mono font-black text-emerald-700">{fmt(receipt.amount)}</td>
+                                    <td className="px-4 py-3 text-right font-mono font-black text-amber-700">{fmt(receipt.retentionIr2)}</td>
+                                    <td className="px-4 py-3 text-right">
+                                        <button type="button" onClick={() => printReceipt(receipt)} className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-[10px] font-black uppercase tracking-[0.16em] text-slate-700 transition hover:border-[#e30613] hover:text-[#e30613]">
+                                            Imprimir
+                                        </button>
+                                    </td>
+                                </tr>
+                            ))}
+                            {pagedReceipts.records.length === 0 && (
+                                <tr>
+                                    <td className="px-4 py-10 text-center text-sm font-bold text-slate-400" colSpan="7">
+                                        No hay recibos de caja para mostrar.
+                                    </td>
+                                </tr>
+                            )}
+                        </tbody>
+                    </table>
+                </div>
+                <div className="mt-4">
+                    <PaginationControls
+                        page={pagedReceipts.page}
+                        totalPages={pagedReceipts.totalPages}
+                        total={filteredReceipts.length}
+                        start={pagedReceipts.start}
+                        end={pagedReceipts.end}
+                        onPageChange={setPage}
+                    />
+                </div>
+            </Section>
+        </div>
+    );
+}
+
+function CashReceiptHistory({ data }) {
+    const [search, setSearch] = useState('');
+    const [selectedMonth, setSelectedMonth] = useState(getMonth(todayString()));
+    const [page, setPage] = useState(1);
+
+    const receipts = useMemo(() => (
+        [...(data.recibos_caja_membretados || [])]
+            .map(normalizeCashReceiptRecord)
+            .sort((a, b) => String(b.date).localeCompare(String(a.date)))
+    ), [data.recibos_caja_membretados]);
+
+    const searchedReceipts = useMemo(() => filterRecords(receipts, search, [
+        'date',
+        'receiptNumber',
+        'customerName',
+        'concept',
+        'paymentMethod',
+        'amount',
+    ]), [receipts, search]);
+
+    const filteredReceipts = useMemo(() => (
+        searchedReceipts.filter((receipt) => !selectedMonth || getMonth(receipt.date) === selectedMonth)
+    ), [searchedReceipts, selectedMonth]);
+
+    const pagedReceipts = useMemo(() => paginateRecords(filteredReceipts, page), [filteredReceipts, page]);
+    const totals = useMemo(() => (
+        filteredReceipts.reduce((acc, receipt) => ({
+            amount: safeNumber(acc.amount + safeNumber(receipt.amount)),
+            retentionIr2: safeNumber(acc.retentionIr2 + safeNumber(receipt.retentionIr2)),
+            count: acc.count + 1,
+        }), { amount: 0, retentionIr2: 0, count: 0 })
+    ), [filteredReceipts]);
+
+    useEffect(() => setPage(1), [search, selectedMonth]);
+    useEffect(() => {
+        if (page !== pagedReceipts.page) setPage(pagedReceipts.page);
+    }, [page, pagedReceipts.page]);
+
+    const printReceipt = (receipt) => {
+        const iframe = document.createElement('iframe');
+        iframe.title = '';
+        iframe.setAttribute('aria-hidden', 'true');
+        iframe.style.position = 'fixed';
+        iframe.style.right = '0';
+        iframe.style.bottom = '0';
+        iframe.style.width = '0';
+        iframe.style.height = '0';
+        iframe.style.border = '0';
+        iframe.style.opacity = '0';
+        document.body.appendChild(iframe);
+        const iframeWindow = iframe.contentWindow;
+        const iframeDocument = iframe.contentDocument || iframeWindow?.document;
+        if (!iframeWindow || !iframeDocument) {
+            iframe.remove();
+            return;
+        }
+        iframeDocument.open();
+        iframeDocument.write(buildCashReceiptPrintHtml(receipt));
+        iframeDocument.close();
+        const cleanup = () => setTimeout(() => iframe.remove(), 500);
+        iframeWindow.onafterprint = cleanup;
+        setTimeout(() => {
+            iframeWindow.focus();
+            iframeWindow.print();
+            cleanup();
+        }, 180);
+    };
+
+    return (
+        <div className="space-y-5">
+            <Section title="Historial de recibos de caja" eyebrow="Recibos membretados" action={<Badge tone="blue">{filteredReceipts.length} recibos</Badge>}>
+                <div className="grid gap-3 lg:grid-cols-[1fr_0.35fr]">
+                    <SearchBox value={search} onChange={setSearch} placeholder="Buscar recibo, cliente, concepto o metodo..." resultLabel={`${searchedReceipts.length} encontrados`} />
+                    <Field label="Mes">
+                        <input className={inputClass} type="month" value={selectedMonth} onChange={(event) => setSelectedMonth(event.target.value)} />
+                    </Field>
+                </div>
+                <div className="mt-5 grid gap-3 md:grid-cols-3">
+                    <SummaryCard label="Recibos" value={totals.count} />
+                    <SummaryCard label="Cantidad total" value={fmt(totals.amount)} tone="green" />
+                    <SummaryCard label="Retencion 2%" value={fmt(totals.retentionIr2)} tone="amber" />
+                </div>
+            </Section>
+            <Section title="Recibos registrados" eyebrow="Detalle">
+                <div className="overflow-x-auto rounded-3xl border border-slate-200 bg-white">
+                    <table className="min-w-full text-left text-sm">
+                        <thead>
+                            <tr className="border-b border-slate-200 bg-slate-50 text-[10px] font-black uppercase tracking-[0.22em] text-slate-400">
+                                <th className="px-4 py-3">Fecha</th>
+                                <th className="px-4 py-3">Recibo</th>
+                                <th className="px-4 py-3">Cliente</th>
+                                <th className="px-4 py-3">Concepto</th>
+                                <th className="px-4 py-3">Metodo</th>
+                                <th className="px-4 py-3 text-right">Cantidad</th>
+                                <th className="px-4 py-3 text-right">Retencion</th>
+                                <th className="px-4 py-3 text-right">Accion</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {pagedReceipts.records.map((receipt) => (
+                                <tr key={receipt.id} className="border-b border-slate-100 last:border-b-0">
+                                    <td className="px-4 py-3 font-bold text-slate-700">{receipt.date || '-'}</td>
+                                    <td className="px-4 py-3 font-black text-slate-950">{receipt.receiptNumber || '-'}</td>
+                                    <td className="px-4 py-3 font-bold text-slate-600">{receipt.customerName || '-'}</td>
+                                    <td className="px-4 py-3 font-bold text-slate-500">{receipt.concept || '-'}</td>
+                                    <td className="px-4 py-3 font-bold text-slate-500">{receipt.paymentMethod || '-'}</td>
+                                    <td className="px-4 py-3 text-right font-mono font-black text-emerald-700">{fmt(receipt.amount)}</td>
+                                    <td className="px-4 py-3 text-right font-mono font-black text-amber-700">{fmt(receipt.retentionIr2)}</td>
+                                    <td className="px-4 py-3 text-right">
+                                        <button type="button" onClick={() => printReceipt(receipt)} className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-[10px] font-black uppercase tracking-[0.16em] text-slate-700 transition hover:border-[#e30613] hover:text-[#e30613]">Imprimir</button>
+                                    </td>
+                                </tr>
+                            ))}
+                            {pagedReceipts.records.length === 0 && (
+                                <tr><td className="px-4 py-10 text-center text-sm font-bold text-slate-400" colSpan="8">No hay recibos para este filtro.</td></tr>
+                            )}
+                        </tbody>
+                    </table>
+                </div>
+                <div className="mt-4">
+                    <PaginationControls page={pagedReceipts.page} totalPages={pagedReceipts.totalPages} total={filteredReceipts.length} start={pagedReceipts.start} end={pagedReceipts.end} onPageChange={setPage} />
+                </div>
+            </Section>
+        </div>
+    );
 }
 
 function StampedInvoices({ data }) {
@@ -4007,7 +4657,7 @@ const getClosureBankRows = (details = {}, bankKey) => (
 );
 
 const normalizeClosureBankDetails = (details = {}, type = 'transfer') => (
-    Object.fromEntries(PAYMENT_BANKS.map(({ key }) => [
+    Object.fromEntries((type === 'transfer' ? TRANSFER_BANKS : POS_BANKS).map(({ key }) => [
         key,
         (Array.isArray(details?.[key]) ? details[key] : []).map((row, index) => ({
             localId: row.localId || row.id || createLineId(`${type}_${key}_${index}`),
@@ -4030,11 +4680,11 @@ const calculateClosureEditTotals = (form = {}) => {
     const preCloseDepositDollars = safeNumber(form.preCloseDeposit?.dollars);
     const preCloseDepositTotal = safeNumber(preCloseDepositCordobas + preCloseDepositDollars * CASH_CLOSURE_EXCHANGE_RATE);
     const cashTotal = safeNumber(cashCordobasTotal + dollarCashTotalCordobas + preCloseDepositTotal);
-    const transferTotals = Object.fromEntries(PAYMENT_BANKS.map(({ key }) => [
+    const transferTotals = Object.fromEntries(TRANSFER_BANKS.map(({ key }) => [
         key,
         safeNumber((form.transferDetails?.[key] || []).reduce((sum, row) => sum + safeNumber(row.amount), 0)),
     ]));
-    const posTotals = Object.fromEntries(PAYMENT_BANKS.map(({ key }) => [
+    const posTotals = Object.fromEntries(POS_BANKS.map(({ key }) => [
         key,
         safeNumber((form.posDetails?.[key] || []).reduce((sum, row) => sum + safeNumber(row.amount), 0)),
     ]));
@@ -4083,6 +4733,9 @@ const createCashClosureEditForm = (closure = {}) => ({
     transferDetails: normalizeClosureBankDetails(closure.transferDetails, 'transfer'),
     posDetails: normalizeClosureBankDetails(closure.posDetails, 'pos'),
     sicarExpected: String(safeNumber(closure.sicarExpected)),
+    cashSalesTotal: String(safeNumber(closure.cashSalesTotal || closure.sicar?.cashSalesTotal || closure.sicar?.ventasContado || closure.sicar?.venCon)),
+    creditSalesTotal: String(safeNumber(closure.creditSalesTotal || closure.sicar?.creditSalesTotal || closure.sicar?.ventasCredito || closure.sicar?.venCre)),
+    creditRecoveryTotal: String(safeNumber(closure.creditRecoveryTotal || closure.sicar?.creditRecoveryTotal || closure.sicar?.recuperacionCredito || closure.sicar?.entCre)),
     retentionAdjustment: String(safeNumber(closure.retentionAdjustment)),
     notes: closure.notes || '',
     linkedSicarClosureId: closure.linkedSicarClosureId || closure.sicar?.id || '',
@@ -4229,7 +4882,7 @@ const CashClosureEditModal = ({
                     <div className="grid gap-5 xl:grid-cols-2">
                         <Section title="Transferencias por cliente" eyebrow="Detalle bancario">
                             <div className="grid gap-4">
-                                {PAYMENT_BANKS.map((bank) => (
+                                {TRANSFER_BANKS.map((bank) => (
                                     <DetailRows
                                         key={bank.key}
                                         title={`Transferencia ${bank.label} · ${fmt(totals.transferTotals[bank.key])}`}
@@ -4246,7 +4899,7 @@ const CashClosureEditModal = ({
 
                         <Section title="POS por banco" eyebrow="Cierres de tarjeta">
                             <div className="grid gap-4">
-                                {PAYMENT_BANKS.map((bank) => (
+                                {POS_BANKS.map((bank) => (
                                     <DetailRows
                                         key={bank.key}
                                         title={`POS ${bank.label} · ${fmt(totals.posTotals[bank.key])}`}
@@ -4277,14 +4930,14 @@ const CashClosureDetailModal = ({ closure, onClose, onEdit }) => {
     const cordobaRows = buildDenominationRows(closure.cashCount, CASH_DENOMINATIONS);
     const dollarRows = buildDenominationRows(closure.dollarCashCount, USD_DENOMINATIONS);
     const linkedInvoices = getCashClosureInvoices(closure);
-    const transferRows = PAYMENT_BANKS.flatMap((bank) => (
+    const transferRows = TRANSFER_BANKS.flatMap((bank) => (
         getClosureBankRows(closure.transferDetails, bank.key).map((row, index) => ({
             ...row,
             bank: bank.label,
             id: row.localId || row.id || `${bank.key}-transfer-${index}`,
         }))
     ));
-    const posRows = PAYMENT_BANKS.flatMap((bank) => (
+    const posRows = POS_BANKS.flatMap((bank) => (
         getClosureBankRows(closure.posDetails, bank.key).map((row, index) => ({
             ...row,
             bank: bank.label,
@@ -4300,6 +4953,17 @@ const CashClosureDetailModal = ({ closure, onClose, onEdit }) => {
     const code = closure.code || closure.linkedSicarCorId || sicar.corId || sicar.cor_id || closure.id;
     const cashboxName = closure.cashboxName || sicar.cashboxName || sicar.cajaName || sicar.caja || 'Caja';
     const preClose = closure.preCloseDeposit || {};
+    const detailAccountingSummary = closure.accountingSummary || buildClosureAccountingSummary({
+        cashSalesTotal: closure.cashSalesTotal || sicar.cashSalesTotal || sicar.ventasContado || sicar.venCon,
+        creditSalesTotal: closure.creditSalesTotal || sicar.creditSalesTotal || sicar.ventasCredito || sicar.venCre,
+        creditRecoveryTotal: closure.creditRecoveryTotal || sicar.creditRecoveryTotal || sicar.recuperacionCredito || sicar.entCre,
+        stampedInvoices: linkedInvoices,
+        cashReceipts: [],
+        transferTotals: closure.transferTotals || {},
+        posTotals: closure.posTotals || {},
+        cashCordobasTotal: closure.cashCordobasTotal,
+        dollarCashTotalCordobas: closure.dollarCashTotalCordobas,
+    });
 
     return (
         <div className="fixed inset-0 z-[120] flex items-center justify-center p-3 sm:p-6">
@@ -4345,6 +5009,10 @@ const CashClosureDetailModal = ({ closure, onClose, onEdit }) => {
                         <SummaryCard label="Diferencia" value={fmt(closure.difference)} tone={Math.abs(safeNumber(closure.difference)) > 0.01 ? 'red' : 'green'} />
                         <SummaryCard label="Efectivo total" value={fmt(closure.cashTotal)} tone="slate" />
                         <SummaryCard label="Pre-cierre" value={fmt(closure.preCloseDepositTotal)} tone="blue" />
+                    </div>
+
+                    <div className="mt-5">
+                        <ClosureAccountingSummaryPanel summary={detailAccountingSummary} />
                     </div>
 
                     <div className="mt-5 grid gap-4 lg:grid-cols-3">
@@ -4565,6 +5233,12 @@ function CashClosureHistory({ data }) {
         return map;
     }, [data.diferencias_caja]);
 
+    const cashReceipts = useMemo(() => (
+        [...(data.recibos_caja_membretados || [])]
+            .map(normalizeCashReceiptRecord)
+            .filter((receipt) => normalizeText(receipt.status) !== 'ANULADO')
+    ), [data.recibos_caja_membretados]);
+
     const searchedClosures = useMemo(() => filterRecords(closures, search, [
         'date',
         'code',
@@ -4714,10 +5388,23 @@ function CashClosureHistory({ data }) {
                 : totals.shouldTrackDifference ? 'con_diferencia' : 'cuadrado';
             const batch = writeBatch(db);
             const nextDifferenceId = `${editForm.id}_${cashierCode}`;
+            const editedClosureDate = editForm.date || todayString();
+            const linkedCashReceipts = cashReceipts.filter((receipt) => String(receipt.date || '').substring(0, 10) === editedClosureDate);
+            const accountingSummary = buildClosureAccountingSummary({
+                cashSalesTotal: safeNumber(editForm.cashSalesTotal),
+                creditSalesTotal: safeNumber(editForm.creditSalesTotal),
+                creditRecoveryTotal: safeNumber(editForm.creditRecoveryTotal),
+                stampedInvoices: getCashClosureInvoices(editClosure),
+                cashReceipts: linkedCashReceipts,
+                transferTotals: totals.transferTotals,
+                posTotals: totals.posTotals,
+                cashCordobasTotal: totals.cashCordobasTotal,
+                dollarCashTotalCordobas: totals.dollarCashTotalCordobas,
+            });
 
             batch.set(doc(db, 'cierres_caja', editForm.id), {
-                date: editForm.date || todayString(),
-                month: getMonth(editForm.date || todayString()),
+                date: editedClosureDate,
+                month: getMonth(editedClosureDate),
                 status: nextStatus,
                 cashierName: editForm.cashierName || '',
                 cashierCode,
@@ -4726,6 +5413,9 @@ function CashClosureHistory({ data }) {
                 linkedSicarRccId: editForm.linkedSicarRccId || null,
                 sicar: editForm.sicar || null,
                 sicarExpected: totals.sicarExpected,
+                cashSalesTotal: safeNumber(editForm.cashSalesTotal),
+                creditSalesTotal: safeNumber(editForm.creditSalesTotal),
+                creditRecoveryTotal: safeNumber(editForm.creditRecoveryTotal),
                 retentionAdjustment: totals.retentionAdjustment,
                 expectedAfterRetentions: totals.expectedAfterRetentions,
                 cashCount: editForm.cashCount || {},
@@ -4748,6 +5438,7 @@ function CashClosureHistory({ data }) {
                 posTotals: totals.posTotals,
                 manualTotal: totals.manualTotal,
                 difference: totals.difference,
+                accountingSummary,
                 notes: editForm.notes || '',
                 editedWithPinAt: serverTimestamp(),
                 updatedAt: serverTimestamp(),
@@ -5144,7 +5835,9 @@ function BillingHistory({ data }) {
     const [activeHistoryTab, setActiveHistoryTab] = useState('membretadas');
     const historyTabs = [
         { key: 'membretadas', label: 'Facturas Membretadas' },
+        { key: 'recibos', label: 'Recibos de Caja' },
         { key: 'cierres', label: 'Cierres de caja' },
+        { key: 'diferencias', label: 'Diferencias de caja' },
         { key: 'municipal', label: 'Municipal' },
         { key: 'ir', label: 'Anticipo de IR' },
     ];
@@ -5169,9 +5862,43 @@ function BillingHistory({ data }) {
             </Section>
 
             {activeHistoryTab === 'membretadas' && <StampedInvoiceHistory data={data} />}
+            {activeHistoryTab === 'recibos' && <CashReceiptHistory data={data} />}
             {activeHistoryTab === 'cierres' && <CashClosureHistory data={data} />}
+            {activeHistoryTab === 'diferencias' && <CashDifferences data={data} />}
             {activeHistoryTab === 'municipal' && <RetentionHistory data={data} type="municipal" />}
             {activeHistoryTab === 'ir' && <RetentionHistory data={data} type="ir" />}
+        </div>
+    );
+}
+
+function AccountingRegister({ data }) {
+    const [activeRegisterTab, setActiveRegisterTab] = useState('membretadas');
+    const registerTabs = [
+        { key: 'membretadas', label: 'Facturas membretadas' },
+        { key: 'recibos', label: 'Recibo de Caja' },
+    ];
+
+    return (
+        <div className="space-y-5">
+            <Section title="Registro Contables" eyebrow="Documentos oficiales" action={<Badge tone="green">Membretados</Badge>}>
+                <div className="flex flex-wrap gap-2">
+                    {registerTabs.map((tab) => (
+                        <button
+                            key={tab.key}
+                            type="button"
+                            onClick={() => setActiveRegisterTab(tab.key)}
+                            className={`rounded-2xl px-4 py-3 text-xs font-black uppercase tracking-[0.16em] transition ${activeRegisterTab === tab.key
+                                ? 'bg-[#e30613] text-white shadow-lg shadow-red-900/15'
+                                : 'border border-slate-200 bg-white text-slate-600 hover:border-[#e30613] hover:text-[#e30613]'}`}
+                        >
+                            {tab.label}
+                        </button>
+                    ))}
+                </div>
+            </Section>
+
+            {activeRegisterTab === 'membretadas' && <StampedInvoices data={data} />}
+            {activeRegisterTab === 'recibos' && <CashReceipts data={data} />}
         </div>
     );
 }
@@ -5194,9 +5921,8 @@ export default function Billing({ data = {} }) {
 
     const tabs = [
         { key: 'cierre', label: 'Cierre de caja' },
-        { key: 'membretadas', label: 'Facturas membretadas' },
+        { key: 'registro', label: 'Registro Contables' },
         { key: 'historial', label: 'Historial' },
-        { key: 'diferencias', label: 'Diferencias de caja' },
         { key: 'depositos', label: 'Depositos bancarios' },
     ];
 
@@ -5241,9 +5967,8 @@ export default function Billing({ data = {} }) {
             </section>
 
             {activeTab === 'cierre' && <CashClosure data={data} />}
-            {activeTab === 'membretadas' && <StampedInvoices data={data} />}
+            {activeTab === 'registro' && <AccountingRegister data={data} />}
             {activeTab === 'historial' && <BillingHistory data={data} />}
-            {activeTab === 'diferencias' && <CashDifferences data={data} />}
             {activeTab === 'depositos' && <ComingSoon />}
         </div>
     );

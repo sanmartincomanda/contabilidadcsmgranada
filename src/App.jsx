@@ -1142,6 +1142,7 @@ function AppContent() {
         collectionConfig('cierres_caja', [where('date', '>=', `${accountStartMonth}-01`)]),
         collectionConfig('diferencias_caja', [where('date', '>=', `${accountStartMonth}-01`)]),
         collectionConfig('facturas_membretadas_ventas', [where('saleDate', '>=', `${accountStartMonth}-01`)]),
+        collectionConfig('recibos_caja_membretados', [where('date', '>=', `${accountStartMonth}-01`)]),
         'clientes_facturacion',
         'cajeros',
     ], [accountStartMonth]);
