@@ -102,6 +102,62 @@ const getInvoiceNumberForMatch = (invoice = {}) => normalizeInvoiceMatchKey(
     invoice.numeroFactura || invoice.invoiceNumber || invoice.folio || invoice.factura || ''
 );
 
+const INACTIVE_STAMPED_INVOICE_STATUSES = ['ANULADA', 'ANULADO', 'CANCELADA', 'CANCELADO', 'DELETED'];
+
+const isActiveStampedInvoice = (invoice = {}) => (
+    !INACTIVE_STAMPED_INVOICE_STATUSES.includes(normalizeText(invoice.status))
+);
+
+const getInvoiceRecordIdentityKeys = (invoice = {}) => ([
+    invoice.id,
+    invoice.docId,
+    invoice.accountingInvoiceId,
+    invoice.contabilidadInvoiceId,
+    invoice.membretadaInvoiceId,
+])
+    .map((value) => normalizeInvoiceMatchKey(value))
+    .filter(Boolean);
+
+const findStampedInvoiceNumberDuplicate = (invoices = [], invoiceNumber = '', ignoredIds = []) => {
+    const target = normalizeInvoiceMatchKey(invoiceNumber);
+    if (!target) return null;
+    const ignored = new Set(ignoredIds.map((value) => normalizeInvoiceMatchKey(value)).filter(Boolean));
+    return invoices.find((invoice) => (
+        isActiveStampedInvoice(invoice)
+        && getInvoiceNumberForMatch(invoice) === target
+        && !getInvoiceRecordIdentityKeys(invoice).some((key) => ignored.has(key))
+    )) || null;
+};
+
+const buildDuplicateInvoiceNumberMessage = (invoiceNumber, duplicate = {}) => {
+    const details = [
+        duplicate.invoiceNumber || duplicate.numeroFactura ? `factura ${duplicate.invoiceNumber || duplicate.numeroFactura}` : '',
+        duplicate.customerName ? duplicate.customerName : '',
+        safeNumber(duplicate.total) ? fmt(safeNumber(duplicate.total)) : '',
+    ].filter(Boolean).join(' - ');
+    return `Este numero de factura ya existe: ${invoiceNumber}. ${details ? `${details}. ` : ''}No se puede guardar una factura membretada duplicada.`;
+};
+
+const assertUniqueStampedInvoiceNumbers = (drafts = [], existingInvoices = []) => {
+    const seen = new Map();
+    drafts.forEach((draft) => {
+        const invoiceNumber = String(draft.invoiceNumber || draft.numeroFactura || '').trim();
+        const key = normalizeInvoiceMatchKey(invoiceNumber);
+        if (!key) return;
+        const ownIds = getInvoiceRecordIdentityKeys(draft);
+        const previous = seen.get(key);
+        if (previous && !getInvoiceRecordIdentityKeys(previous).some((id) => ownIds.includes(id))) {
+            throw new Error(`Este numero de factura ya existe: ${invoiceNumber}. No se puede guardar la misma factura dos veces en el mismo proceso.`);
+        }
+        seen.set(key, draft);
+
+        const duplicate = findStampedInvoiceNumberDuplicate(existingInvoices, invoiceNumber, ownIds);
+        if (duplicate) {
+            throw new Error(buildDuplicateInvoiceNumberMessage(invoiceNumber, duplicate));
+        }
+    });
+};
+
 const getSicarInvoiceKeys = (invoice = {}) => ([
     invoice.id,
     invoice.sourceSicarInvoiceId,
@@ -1405,6 +1461,19 @@ function CashClosure({ data }) {
     };
 
     const updateClosureInvoice = (localId, key, value) => {
+        if (key === 'invoiceNumber') {
+            const currentInvoice = closureInvoices.find((invoice) => invoice.localId === localId) || {};
+            const duplicate = findStampedInvoiceNumberDuplicate(
+                stampedInvoices,
+                value,
+                getInvoiceRecordIdentityKeys(currentInvoice)
+            );
+            if (duplicate) {
+                setMessage(buildDuplicateInvoiceNumberMessage(value, duplicate));
+                return;
+            }
+        }
+
         setClosureInvoices((prev) => prev.map((invoice) => {
             if (invoice.localId !== localId) return invoice;
             const next = { ...invoice, [key]: value };
@@ -1567,6 +1636,8 @@ function CashClosure({ data }) {
             const validCashReceiptDrafts = closureCashReceipts.filter((receipt) => receipt.docId || receipt.id || safeNumber(receipt.amount));
             const savedInvoices = [];
             const savedCashReceipts = [];
+
+            assertUniqueStampedInvoiceNumbers(validInvoiceDrafts, stampedInvoices);
 
             for (const invoice of validInvoiceDrafts) {
                 if (!String(invoice.invoiceNumber || '').trim()) {
@@ -3419,6 +3490,11 @@ function StampedInvoices({ data }) {
             setMessage('El numero de la segunda factura debe ser diferente al de la primera.');
             return;
         }
+        const duplicateAppInvoice = findStampedInvoiceNumberDuplicate(savedInvoices, secondInvoiceNumber);
+        if (duplicateAppInvoice) {
+            setMessage(buildDuplicateInvoiceNumberMessage(secondInvoiceNumber, duplicateAppInvoice));
+            return;
+        }
 
         const firstItems = items.slice(0, 10);
         const secondItems = items.slice(10);
@@ -3495,7 +3571,7 @@ function StampedInvoices({ data }) {
 
             const invoiceNumberKeys = invoicesToSave.map((invoice) => normalizeInvoiceMatchKey(invoice.invoiceNumber)).filter(Boolean);
             if (new Set(invoiceNumberKeys).size !== invoiceNumberKeys.length) {
-                throw new Error('Las facturas divididas deben tener numeros diferentes.');
+                throw new Error('Este numero de factura ya existe en la division. Las facturas divididas deben tener numeros diferentes.');
             }
 
             const invoiceMeta = invoicesToSave.map((invoice) => ({
@@ -3503,16 +3579,7 @@ function StampedInvoices({ data }) {
                 docId: `membretada_${slugify(invoice.invoiceNumber)}_${invoice.date.replace(/-/g, '')}`,
             }));
 
-            for (const { invoice, docId } of invoiceMeta) {
-                const duplicateAppInvoice = savedInvoices.find((item) => (
-                    item.id !== docId
-                    && getInvoiceNumberForMatch(item) === normalizeInvoiceMatchKey(invoice.invoiceNumber)
-                    && !['ANULADA', 'ANULADO', 'CANCELADA', 'CANCELADO', 'DELETED'].includes(normalizeText(item.status))
-                ));
-                if (duplicateAppInvoice) {
-                    throw new Error(`Ya existe una factura membretada en la app con el numero ${invoice.invoiceNumber}. Usa el consecutivo correcto.`);
-                }
-            }
+            assertUniqueStampedInvoiceNumbers(invoicesToSave, savedInvoices);
 
             const primaryDocId = invoiceMeta[0].docId;
             const existingInvoice = savedInvoices.find((item) => item.id === primaryDocId) || {};
@@ -4455,13 +4522,13 @@ function StampedInvoiceHistory({ data }) {
             setMessage('El numero de la segunda factura debe ser diferente.');
             return;
         }
-        const duplicateAppInvoice = savedInvoices.find((item) => (
-            normalizeInvoiceMatchKey(item.id || item.docId) !== normalizeInvoiceMatchKey(editForm.id || editForm.docId)
-            && getInvoiceNumberForMatch(item) === normalizeInvoiceMatchKey(secondInvoiceNumber)
-            && !['ANULADA', 'ANULADO', 'CANCELADA', 'CANCELADO', 'DELETED'].includes(normalizeText(item.status))
-        ));
+        const duplicateAppInvoice = findStampedInvoiceNumberDuplicate(
+            savedInvoices,
+            secondInvoiceNumber,
+            getInvoiceRecordIdentityKeys(editForm)
+        );
         if (duplicateAppInvoice) {
-            setMessage(`Ya existe una factura membretada con el numero ${secondInvoiceNumber}. Usa otro consecutivo.`);
+            setMessage(buildDuplicateInvoiceNumberMessage(secondInvoiceNumber, duplicateAppInvoice));
             return;
         }
 
@@ -4523,7 +4590,7 @@ function StampedInvoiceHistory({ data }) {
 
             const invoiceNumberKeys = invoicesToSave.map((invoice) => normalizeInvoiceMatchKey(invoice.invoiceNumber)).filter(Boolean);
             if (new Set(invoiceNumberKeys).size !== invoiceNumberKeys.length) {
-                throw new Error('Las facturas divididas deben tener numeros diferentes.');
+                throw new Error('Este numero de factura ya existe en la division. Las facturas divididas deben tener numeros diferentes.');
             }
 
             const invoiceMeta = invoicesToSave.map((invoice, index) => ({
@@ -4532,17 +4599,16 @@ function StampedInvoiceHistory({ data }) {
             }));
             const docIdsBeingSaved = new Set(invoiceMeta.map(({ docId }) => normalizeInvoiceMatchKey(docId)));
 
-            for (const { invoice, docId } of invoiceMeta) {
-                const duplicateAppInvoice = savedInvoices.find((item) => (
-                    !docIdsBeingSaved.has(normalizeInvoiceMatchKey(item.id || item.docId))
-                    && getInvoiceNumberForMatch(item) === normalizeInvoiceMatchKey(invoice.invoiceNumber)
-                    && !['ANULADA', 'ANULADO', 'CANCELADA', 'CANCELADO', 'DELETED'].includes(normalizeText(item.status))
-                ));
-                if (duplicateAppInvoice) {
-                    throw new Error(`Ya existe una factura membretada en la app con el numero ${invoice.invoiceNumber}. Usa el consecutivo correcto.`);
-                }
+            for (const { docId } of invoiceMeta) {
                 if (!docId) throw new Error('No se pudo generar el identificador de la factura.');
             }
+
+            assertUniqueStampedInvoiceNumbers(
+                invoiceMeta.map(({ invoice }, index) => (
+                    index === 0 ? { ...invoice, id: originalDocId, docId: originalDocId } : invoice
+                )),
+                savedInvoices
+            );
 
             const splitGroupId = invoiceMeta.length > 1 ? originalDocId : editForm.splitGroupId || '';
             const batch = writeBatch(db);
