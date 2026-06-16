@@ -2133,6 +2133,7 @@ function StampedInvoices({ data }) {
     const pagedSicarInvoices = useMemo(() => (
         paginateRecords(filteredSicarInvoices, sicarInvoicePage)
     ), [filteredSicarInvoices, sicarInvoicePage]);
+    const canSplitCurrentInvoice = (form.items || []).length > 10 && !splitInvoice;
 
     useEffect(() => {
         setSicarInvoicePage(1);
@@ -2527,13 +2528,13 @@ function StampedInvoices({ data }) {
                                 <div className="text-xs font-semibold text-slate-500">Se imprimen cantidad, producto, precio sin IVA y total sin IVA.</div>
                             </div>
                             <div className="flex flex-wrap items-center gap-2">
-                                {form.items?.length > 10 && !splitInvoice && (
+                                {canSplitCurrentInvoice && (
                                     <button
                                         type="button"
                                         onClick={splitCurrentInvoice}
-                                        className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-[10px] font-black uppercase tracking-[0.16em] text-amber-700 transition hover:bg-amber-100"
+                                        className="rounded-xl border border-amber-300 bg-amber-100 px-4 py-2 text-[10px] font-black uppercase tracking-[0.16em] text-amber-800 shadow-sm transition hover:bg-amber-200"
                                     >
-                                        Dividir
+                                        Dividir factura
                                     </button>
                                 )}
                                 {splitInvoice && (
@@ -2548,6 +2549,23 @@ function StampedInvoices({ data }) {
                                 <Badge tone={form.items?.length ? 'green' : 'slate'}>{form.items?.length || 0} lineas</Badge>
                             </div>
                         </div>
+                        {canSplitCurrentInvoice && (
+                            <div className="mb-3 flex flex-col gap-3 rounded-3xl border border-amber-300 bg-amber-50 p-4 sm:flex-row sm:items-center sm:justify-between">
+                                <div>
+                                    <div className="text-sm font-black text-amber-900">Esta factura tiene {(form.items || []).length} articulos.</div>
+                                    <div className="text-xs font-bold text-amber-700">
+                                        Puede dividirse tambien cuando viene desde SICAR: 10 articulos quedan en la primera factura y el resto pasa a una segunda.
+                                    </div>
+                                </div>
+                                <button
+                                    type="button"
+                                    onClick={splitCurrentInvoice}
+                                    className="rounded-2xl bg-amber-600 px-5 py-3 text-xs font-black uppercase tracking-[0.18em] text-white shadow-lg shadow-amber-900/20 transition hover:bg-amber-700"
+                                >
+                                    Dividir factura
+                                </button>
+                            </div>
+                        )}
                         {entryMode === 'manual' ? (
                             <ManualInvoiceItemsEditor
                                 items={form.items || []}
