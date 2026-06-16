@@ -16,6 +16,7 @@ const CASH_DENOMINATIONS = [1000, 500, 200, 100, 50, 20, 10, 5, 1];
 const USD_DENOMINATIONS = [100, 50, 20, 10, 5, 1];
 const CASH_DIFFERENCE_THRESHOLD = 30;
 const CASH_CLOSURE_EXCHANGE_RATE = 36.50;
+const CASH_CLOSURE_EDIT_PIN = '210397';
 
 const CASHIER_OPTIONS = [
     'Dania Espinoza',
@@ -36,6 +37,16 @@ const parsePromptAmount = (value = '') => {
         ? raw.replace(/\./g, '').replace(',', '.')
         : raw.replace(',', '.');
     return safeNumber(normalized);
+};
+
+const requestCashClosureEditPin = (action = 'editar cierre') => {
+    const pin = window.prompt(`PIN secreto para ${action}:`);
+    if (pin === null) return false;
+    if (String(pin).trim() !== CASH_CLOSURE_EDIT_PIN) {
+        window.alert('PIN incorrecto. No se autorizo la operacion.');
+        return false;
+    }
+    return true;
 };
 
 const todayString = () => {
@@ -1692,7 +1703,7 @@ const ManualInvoiceItemsEditor = ({ items = [], onAdd, onChange, onRemove }) => 
         <div className="divide-y divide-slate-100">
             {items.length === 0 ? (
                 <div className="p-5 text-center text-sm font-bold text-slate-400">
-                    Agrega articulos manuales para imprimir la factura.
+                    Los articulos son opcionales en captura manual. Podes guardar solo los montos fiscales.
                 </div>
             ) : items.map((item, index) => (
                 <div key={item.localId || index} className="grid grid-cols-[0.55fr_1.4fr_0.7fr_0.75fr_0.75fr_0.75fr_auto] gap-2 px-3 py-3">
@@ -2386,10 +2397,6 @@ function StampedInvoices({ data }) {
                 items: normalizeInvoiceItemsForSave(invoice.items || []),
             }));
 
-            if (entryMode === 'manual' && invoicesToSave[0]?.items.length === 0) {
-                throw new Error('Agrega al menos un articulo manual.');
-            }
-
             invoicesToSave.forEach((invoice) => {
                 if (!String(invoice.invoiceNumber || '').trim()) throw new Error('Ingresa el numero de factura.');
                 if (!safeNumber(invoice.subtotal) && !safeNumber(invoice.total)) throw new Error(`Ingresa subtotal o total para la factura ${invoice.invoiceNumber}.`);
@@ -2586,7 +2593,11 @@ function StampedInvoices({ data }) {
                         <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                             <div>
                                 <div className="text-sm font-black text-slate-950">{entryMode === 'manual' ? 'Detalle de articulos manuales' : 'Detalle de articulos SICAR'}</div>
-                                <div className="text-xs font-semibold text-slate-500">Se imprimen cantidad, producto, precio sin IVA y total sin IVA.</div>
+                                <div className="text-xs font-semibold text-slate-500">
+                                    {entryMode === 'manual'
+                                        ? 'Opcional: si solo queres registrar subtotal, IVA, total y retenciones, podes dejar articulos vacios.'
+                                        : 'Se imprimen cantidad, producto, precio sin IVA y total sin IVA.'}
+                                </div>
                             </div>
                             <div className="flex flex-wrap items-center gap-2">
                                 {canSplitCurrentInvoice && (
@@ -3995,6 +4006,91 @@ const getClosureBankRows = (details = {}, bankKey) => (
     Array.isArray(details?.[bankKey]) ? details[bankKey] : []
 );
 
+const normalizeClosureBankDetails = (details = {}, type = 'transfer') => (
+    Object.fromEntries(PAYMENT_BANKS.map(({ key }) => [
+        key,
+        (Array.isArray(details?.[key]) ? details[key] : []).map((row, index) => ({
+            localId: row.localId || row.id || createLineId(`${type}_${key}_${index}`),
+            clientName: row.clientName || row.customerName || '',
+            amount: row.amount ?? row.total ?? '',
+            reference: row.reference || row.ref || '',
+        })),
+    ]))
+);
+
+const calculateClosureEditTotals = (form = {}) => {
+    const cashCordobasTotal = CASH_DENOMINATIONS.reduce((sum, denomination) => (
+        safeNumber(sum + denomination * safeNumber(form.cashCount?.[denomination]))
+    ), 0);
+    const dollarCashTotal = USD_DENOMINATIONS.reduce((sum, denomination) => (
+        safeNumber(sum + denomination * safeNumber(form.dollarCashCount?.[denomination]))
+    ), 0);
+    const dollarCashTotalCordobas = safeNumber(dollarCashTotal * CASH_CLOSURE_EXCHANGE_RATE);
+    const preCloseDepositCordobas = safeNumber(form.preCloseDeposit?.cordobas);
+    const preCloseDepositDollars = safeNumber(form.preCloseDeposit?.dollars);
+    const preCloseDepositTotal = safeNumber(preCloseDepositCordobas + preCloseDepositDollars * CASH_CLOSURE_EXCHANGE_RATE);
+    const cashTotal = safeNumber(cashCordobasTotal + dollarCashTotalCordobas + preCloseDepositTotal);
+    const transferTotals = Object.fromEntries(PAYMENT_BANKS.map(({ key }) => [
+        key,
+        safeNumber((form.transferDetails?.[key] || []).reduce((sum, row) => sum + safeNumber(row.amount), 0)),
+    ]));
+    const posTotals = Object.fromEntries(PAYMENT_BANKS.map(({ key }) => [
+        key,
+        safeNumber((form.posDetails?.[key] || []).reduce((sum, row) => sum + safeNumber(row.amount), 0)),
+    ]));
+    const manualTotal = safeNumber(
+        cashTotal
+        + Object.values(transferTotals).reduce((sum, value) => safeNumber(sum + value), 0)
+        + Object.values(posTotals).reduce((sum, value) => safeNumber(sum + value), 0)
+    );
+    const retentionAdjustment = safeNumber(form.retentionAdjustment);
+    const sicarExpected = safeNumber(form.sicarExpected);
+    const expectedAfterRetentions = safeNumber(sicarExpected - retentionAdjustment);
+    const difference = safeNumber(manualTotal - expectedAfterRetentions);
+    const shouldTrackDifference = Math.abs(difference) > CASH_DIFFERENCE_THRESHOLD;
+
+    return {
+        cashCordobasTotal,
+        dollarCashTotal,
+        dollarCashTotalCordobas,
+        preCloseDepositCordobas,
+        preCloseDepositDollars,
+        preCloseDepositTotal,
+        cashTotal,
+        transferTotals,
+        posTotals,
+        manualTotal,
+        retentionAdjustment,
+        sicarExpected,
+        expectedAfterRetentions,
+        difference,
+        shouldTrackDifference,
+    };
+};
+
+const createCashClosureEditForm = (closure = {}) => ({
+    id: closure.id || '',
+    date: closure.date || todayString(),
+    cashierName: closure.cashierName || '',
+    cashierCode: closure.cashierCode || (closure.cashierName ? `CAJ-${slugify(closure.cashierName)}` : ''),
+    status: closure.status || 'cuadrado',
+    cashCount: { ...(closure.cashCount || {}) },
+    dollarCashCount: { ...(closure.dollarCashCount || {}) },
+    preCloseDeposit: {
+        cordobas: closure.preCloseDeposit?.cordobas ?? '',
+        dollars: closure.preCloseDeposit?.dollars ?? '',
+    },
+    transferDetails: normalizeClosureBankDetails(closure.transferDetails, 'transfer'),
+    posDetails: normalizeClosureBankDetails(closure.posDetails, 'pos'),
+    sicarExpected: String(safeNumber(closure.sicarExpected)),
+    retentionAdjustment: String(safeNumber(closure.retentionAdjustment)),
+    notes: closure.notes || '',
+    linkedSicarClosureId: closure.linkedSicarClosureId || closure.sicar?.id || '',
+    linkedSicarCorId: closure.linkedSicarCorId || closure.sicar?.corId || closure.sicar?.cor_id || null,
+    linkedSicarRccId: closure.linkedSicarRccId || closure.sicar?.rccId || closure.sicar?.rcc_id || null,
+    sicar: closure.sicar || null,
+});
+
 const getCashClosureInvoices = (closure = {}) => {
     const detailedInvoices = Array.isArray(closure.stampedInvoices) ? closure.stampedInvoices : [];
     const draftInvoices = Array.isArray(closure.stampedInvoiceDrafts) ? closure.stampedInvoiceDrafts : [];
@@ -4010,7 +4106,171 @@ const ClosureInfoItem = ({ label, value }) => (
     </div>
 );
 
-const CashClosureDetailModal = ({ closure, onClose }) => {
+const DenominationCountEditor = ({ title, denominations, count = {}, currencyLabel, tone = 'slate', onChange }) => (
+    <div>
+        <div className={`mb-2 text-[10px] font-black uppercase tracking-[0.22em] ${tone === 'green' ? 'text-emerald-700' : 'text-slate-500'}`}>{title}</div>
+        <div className="grid gap-2 sm:grid-cols-3 lg:grid-cols-5">
+            {denominations.map((denomination) => (
+                <label key={denomination} className={`rounded-2xl border p-3 ${tone === 'green' ? 'border-emerald-200 bg-emerald-50/60' : 'border-slate-200 bg-white'}`}>
+                    <span className={`text-[10px] font-black uppercase tracking-[0.2em] ${tone === 'green' ? 'text-emerald-700' : 'text-slate-400'}`}>{currencyLabel} {denomination}</span>
+                    <input
+                        className={`mt-1 w-full rounded-xl border px-3 py-2 text-sm font-black outline-none ${tone === 'green' ? 'border-emerald-200 focus:border-emerald-500' : 'border-slate-200 focus:border-[#e30613]'}`}
+                        type="number"
+                        min="0"
+                        step="1"
+                        value={count?.[denomination] || ''}
+                        onChange={(event) => onChange(denomination, event.target.value)}
+                    />
+                </label>
+            ))}
+        </div>
+    </div>
+);
+
+const CashClosureEditModal = ({
+    form,
+    clients = [],
+    saving = false,
+    onClose,
+    onSave,
+    onUndoConciliation,
+    onFieldChange,
+    onCashCountChange,
+    onDollarCashCountChange,
+    onPreCloseChange,
+    onBankRowAdd,
+    onBankRowRemove,
+    onBankRowChange,
+}) => {
+    if (!form) return null;
+    const totals = calculateClosureEditTotals(form);
+
+    return (
+        <div className="fixed inset-0 z-[130] flex items-start justify-center overflow-y-auto bg-slate-950/75 p-4 backdrop-blur-sm">
+            <div className="w-full max-w-7xl overflow-hidden rounded-[2rem] border border-white/10 bg-white shadow-2xl">
+                <div className="flex flex-col gap-3 border-b border-slate-200 bg-slate-950 px-5 py-4 text-white lg:flex-row lg:items-center lg:justify-between">
+                    <div>
+                        <div className="text-[10px] font-black uppercase tracking-[0.28em] text-[#ffc400]">Edicion protegida con PIN</div>
+                        <h3 className="text-xl font-black">Editar cierre de caja</h3>
+                        <p className="mt-1 text-sm font-semibold text-slate-300">
+                            Puedes corregir conteos, POS, transferencias y notas. Deshacer conciliacion libera facturas y diferencias vinculadas.
+                        </p>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                        <button type="button" onClick={onUndoConciliation} disabled={saving} className="rounded-2xl border border-amber-300 bg-amber-400 px-4 py-2 text-xs font-black uppercase tracking-[0.16em] text-amber-950 transition hover:bg-amber-300 disabled:opacity-60">
+                            Deshacer conciliacion
+                        </button>
+                        <button type="button" onClick={onSave} disabled={saving} className="rounded-2xl bg-[#e30613] px-4 py-2 text-xs font-black uppercase tracking-[0.16em] text-white transition hover:bg-red-700 disabled:opacity-60">
+                            {saving ? 'Guardando...' : 'Guardar edicion'}
+                        </button>
+                        <button type="button" onClick={onClose} className="rounded-2xl bg-white px-4 py-2 text-xs font-black uppercase tracking-[0.16em] text-slate-950 transition hover:bg-slate-200">
+                            Cerrar
+                        </button>
+                    </div>
+                </div>
+
+                <div className="space-y-5 p-5">
+                    <div className="grid gap-4 lg:grid-cols-4">
+                        <Field label="Fecha">
+                            <input className={inputClass} type="date" value={form.date || ''} onChange={(event) => onFieldChange('date', event.target.value)} />
+                        </Field>
+                        <Field label="Cajero">
+                            <select className={inputClass} value={form.cashierName || ''} onChange={(event) => onFieldChange('cashierName', event.target.value)}>
+                                <option value="">Seleccionar cajero...</option>
+                                {CASHIER_OPTIONS.map((name) => <option key={name} value={name}>{name}</option>)}
+                            </select>
+                        </Field>
+                        <Field label="SICAR esperado">
+                            <input className={inputClass} type="number" step="0.01" value={form.sicarExpected || ''} onChange={(event) => onFieldChange('sicarExpected', event.target.value)} />
+                        </Field>
+                        <Field label="Retenciones">
+                            <input className={inputClass} type="number" step="0.01" value={form.retentionAdjustment || ''} onChange={(event) => onFieldChange('retentionAdjustment', event.target.value)} />
+                        </Field>
+                    </div>
+
+                    <div className="grid gap-3 md:grid-cols-5">
+                        <SummaryCard label="Ingresado app" value={fmt(totals.manualTotal)} tone="green" />
+                        <SummaryCard label="Esperado neto" value={fmt(totals.expectedAfterRetentions)} tone="blue" />
+                        <SummaryCard label="Diferencia" value={fmt(totals.difference)} tone={Math.abs(totals.difference) > 0.01 ? 'red' : 'green'} />
+                        <SummaryCard label="Efectivo total" value={fmt(totals.cashTotal)} />
+                        <SummaryCard label="Estado sugerido" value={form.status === 'en_espera' ? 'En espera' : totals.shouldTrackDifference ? 'Con diferencia' : 'Cuadrado'} tone={form.status === 'en_espera' ? 'amber' : totals.shouldTrackDifference ? 'red' : 'green'} />
+                    </div>
+
+                    <Section title="Efectivo y deposito pre-cierre" eyebrow="Conteo editable">
+                        <div className="mb-4 grid gap-3 md:grid-cols-4">
+                            <Field label="Deposito pre-cierre cordobas">
+                                <input className={inputClass} type="number" step="0.01" min="0" value={form.preCloseDeposit?.cordobas || ''} onChange={(event) => onPreCloseChange('cordobas', event.target.value)} />
+                            </Field>
+                            <Field label="Deposito pre-cierre dolares">
+                                <input className={inputClass} type="number" step="0.01" min="0" value={form.preCloseDeposit?.dollars || ''} onChange={(event) => onPreCloseChange('dollars', event.target.value)} />
+                            </Field>
+                            <SummaryCard label="Pre-cierre convertido" value={fmt(totals.preCloseDepositTotal)} tone="blue" />
+                            <SummaryCard label="Dolares contado" value={`US$ ${totals.dollarCashTotal.toFixed(2)} / ${fmt(totals.dollarCashTotalCordobas)}`} tone="green" />
+                        </div>
+                        <DenominationCountEditor
+                            title="Conteo en cordobas"
+                            denominations={CASH_DENOMINATIONS}
+                            count={form.cashCount}
+                            currencyLabel="C$"
+                            onChange={onCashCountChange}
+                        />
+                        <div className="mt-4">
+                            <DenominationCountEditor
+                                title="Conteo en dolares"
+                                denominations={USD_DENOMINATIONS}
+                                count={form.dollarCashCount}
+                                currencyLabel="US$"
+                                tone="green"
+                                onChange={onDollarCashCountChange}
+                            />
+                        </div>
+                    </Section>
+
+                    <div className="grid gap-5 xl:grid-cols-2">
+                        <Section title="Transferencias por cliente" eyebrow="Detalle bancario">
+                            <div className="grid gap-4">
+                                {PAYMENT_BANKS.map((bank) => (
+                                    <DetailRows
+                                        key={bank.key}
+                                        title={`Transferencia ${bank.label} · ${fmt(totals.transferTotals[bank.key])}`}
+                                        rows={form.transferDetails?.[bank.key] || []}
+                                        type="transfer"
+                                        clients={clients}
+                                        onAdd={() => onBankRowAdd('transferDetails', bank.key)}
+                                        onRemove={(index) => onBankRowRemove('transferDetails', bank.key, index)}
+                                        onChange={(index, field, value) => onBankRowChange('transferDetails', bank.key, index, field, value)}
+                                    />
+                                ))}
+                            </div>
+                        </Section>
+
+                        <Section title="POS por banco" eyebrow="Cierres de tarjeta">
+                            <div className="grid gap-4">
+                                {PAYMENT_BANKS.map((bank) => (
+                                    <DetailRows
+                                        key={bank.key}
+                                        title={`POS ${bank.label} · ${fmt(totals.posTotals[bank.key])}`}
+                                        rows={form.posDetails?.[bank.key] || []}
+                                        type="pos"
+                                        onAdd={() => onBankRowAdd('posDetails', bank.key)}
+                                        onRemove={(index) => onBankRowRemove('posDetails', bank.key, index)}
+                                        onChange={(index, field, value) => onBankRowChange('posDetails', bank.key, index, field, value)}
+                                    />
+                                ))}
+                            </div>
+                        </Section>
+                    </div>
+
+                    <Field label="Notas">
+                        <textarea className={`${inputClass} min-h-[120px]`} value={form.notes || ''} onChange={(event) => onFieldChange('notes', event.target.value)} />
+                    </Field>
+                </div>
+            </div>
+        </div>
+    );
+};
+
+const CashClosureDetailModal = ({ closure, onClose, onEdit }) => {
     if (!closure) return null;
 
     const exchangeRate = safeNumber(closure.exchangeRate || closure.preCloseDeposit?.exchangeRate || CASH_CLOSURE_EXCHANGE_RATE);
@@ -4060,6 +4320,13 @@ const CashClosureDetailModal = ({ closure, onClose }) => {
                     </div>
                     <div className="flex items-center gap-2">
                         <Badge tone={statusTone}>{String(status).replace(/_/g, ' ')}</Badge>
+                        <button
+                            type="button"
+                            onClick={() => onEdit?.(closure)}
+                            className="rounded-2xl border border-white/15 bg-white/10 px-4 py-2 text-xs font-black uppercase tracking-[0.18em] text-white transition hover:bg-white hover:text-slate-950"
+                        >
+                            Editar
+                        </button>
                         <button
                             type="button"
                             onClick={onClose}
@@ -4257,6 +4524,10 @@ function CashClosureHistory({ data }) {
     const [statusFilter, setStatusFilter] = useState('');
     const [page, setPage] = useState(1);
     const [detailClosure, setDetailClosure] = useState(null);
+    const [editClosure, setEditClosure] = useState(null);
+    const [editForm, setEditForm] = useState(null);
+    const [editSaving, setEditSaving] = useState(false);
+    const [message, setMessage] = useState('');
 
     const closures = useMemo(() => (
         [...(data.cierres_caja || [])]
@@ -4274,6 +4545,25 @@ function CashClosureHistory({ data }) {
             }))
             .sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')))
     ), [data.cierres_caja]);
+
+    const clients = useMemo(() => (
+        [...(data.clientes_facturacion || [])]
+            .map((item) => ({ ...item, name: item.name || item.nombre || '' }))
+            .filter((item) => item.name)
+            .sort((a, b) => a.name.localeCompare(b.name, 'es'))
+    ), [data.clientes_facturacion]);
+
+    const differencesByClosureId = useMemo(() => {
+        const map = new Map();
+        (data.diferencias_caja || []).forEach((item) => {
+            const closureId = item.closureId || '';
+            if (!closureId) return;
+            const rows = map.get(closureId) || [];
+            rows.push(item);
+            map.set(closureId, rows);
+        });
+        return map;
+    }, [data.diferencias_caja]);
 
     const searchedClosures = useMemo(() => filterRecords(closures, search, [
         'date',
@@ -4313,6 +4603,257 @@ function CashClosureHistory({ data }) {
     useEffect(() => {
         if (page !== pagedClosures.page) setPage(pagedClosures.page);
     }, [page, pagedClosures.page]);
+
+    const openEditClosure = (closure) => {
+        if (!closure?.id) return;
+        if (!requestCashClosureEditPin('editar cierre de caja')) return;
+        setDetailClosure(null);
+        setEditClosure(closure);
+        setEditForm(createCashClosureEditForm(closure));
+        setMessage('');
+    };
+
+    const closeEditClosure = () => {
+        setEditClosure(null);
+        setEditForm(null);
+    };
+
+    const updateEditField = (key, value) => {
+        setEditForm((prev) => {
+            if (!prev) return prev;
+            const next = { ...prev, [key]: value };
+            if (key === 'cashierName') next.cashierCode = value ? `CAJ-${slugify(value)}` : '';
+            return next;
+        });
+    };
+
+    const updateCashCount = (denomination, value) => {
+        setEditForm((prev) => prev ? ({
+            ...prev,
+            cashCount: { ...(prev.cashCount || {}), [denomination]: value },
+        }) : prev);
+    };
+
+    const updateDollarCashCount = (denomination, value) => {
+        setEditForm((prev) => prev ? ({
+            ...prev,
+            dollarCashCount: { ...(prev.dollarCashCount || {}), [denomination]: value },
+        }) : prev);
+    };
+
+    const updatePreClose = (key, value) => {
+        setEditForm((prev) => prev ? ({
+            ...prev,
+            preCloseDeposit: { ...(prev.preCloseDeposit || {}), [key]: value },
+        }) : prev);
+    };
+
+    const addBankRow = (groupKey, bankKey) => {
+        setEditForm((prev) => {
+            if (!prev) return prev;
+            const emptyRow = groupKey === 'transferDetails' ? emptyTransfer() : emptyPos();
+            return {
+                ...prev,
+                [groupKey]: {
+                    ...(prev[groupKey] || {}),
+                    [bankKey]: [...(prev[groupKey]?.[bankKey] || []), emptyRow],
+                },
+            };
+        });
+    };
+
+    const removeBankRow = (groupKey, bankKey, index) => {
+        setEditForm((prev) => prev ? ({
+            ...prev,
+            [groupKey]: {
+                ...(prev[groupKey] || {}),
+                [bankKey]: (prev[groupKey]?.[bankKey] || []).filter((_, rowIndex) => rowIndex !== index),
+            },
+        }) : prev);
+    };
+
+    const updateBankRow = (groupKey, bankKey, index, field, value) => {
+        setEditForm((prev) => {
+            if (!prev) return prev;
+            const rows = [...(prev[groupKey]?.[bankKey] || [])];
+            rows[index] = { ...(rows[index] || {}), [field]: value };
+            return {
+                ...prev,
+                [groupKey]: {
+                    ...(prev[groupKey] || {}),
+                    [bankKey]: rows,
+                },
+            };
+        });
+    };
+
+    const markClosureDifferencesVoided = (batch, closureId, reason = 'Edicion de cierre', skipIds = new Set()) => {
+        (differencesByClosureId.get(closureId) || []).forEach((item) => {
+            if (!item.id) return;
+            if (skipIds.has(item.id)) return;
+            batch.set(doc(db, 'diferencias_caja', item.id), {
+                pendingAmount: 0,
+                saldo: 0,
+                status: 'anulado',
+                voidReason: reason,
+                voidedAt: serverTimestamp(),
+                updatedAt: serverTimestamp(),
+            }, { merge: true });
+        });
+    };
+
+    const saveEditedClosure = async () => {
+        if (!editForm?.id) return;
+        setEditSaving(true);
+        setMessage('');
+        try {
+            const totals = calculateClosureEditTotals(editForm);
+            const cashierCode = editForm.cashierName ? `CAJ-${slugify(editForm.cashierName)}` : '';
+            const nextStatus = editForm.status === 'en_espera'
+                ? 'en_espera'
+                : totals.shouldTrackDifference ? 'con_diferencia' : 'cuadrado';
+            const batch = writeBatch(db);
+            const nextDifferenceId = `${editForm.id}_${cashierCode}`;
+
+            batch.set(doc(db, 'cierres_caja', editForm.id), {
+                date: editForm.date || todayString(),
+                month: getMonth(editForm.date || todayString()),
+                status: nextStatus,
+                cashierName: editForm.cashierName || '',
+                cashierCode,
+                linkedSicarClosureId: editForm.linkedSicarClosureId || '',
+                linkedSicarCorId: editForm.linkedSicarCorId || null,
+                linkedSicarRccId: editForm.linkedSicarRccId || null,
+                sicar: editForm.sicar || null,
+                sicarExpected: totals.sicarExpected,
+                retentionAdjustment: totals.retentionAdjustment,
+                expectedAfterRetentions: totals.expectedAfterRetentions,
+                cashCount: editForm.cashCount || {},
+                cashCordobasTotal: totals.cashCordobasTotal,
+                dollarCashCount: editForm.dollarCashCount || {},
+                dollarCashTotal: totals.dollarCashTotal,
+                exchangeRate: CASH_CLOSURE_EXCHANGE_RATE,
+                dollarCashTotalCordobas: totals.dollarCashTotalCordobas,
+                preCloseDeposit: {
+                    cordobas: totals.preCloseDepositCordobas,
+                    dollars: totals.preCloseDepositDollars,
+                    exchangeRate: CASH_CLOSURE_EXCHANGE_RATE,
+                    totalCordobas: totals.preCloseDepositTotal,
+                },
+                preCloseDepositTotal: totals.preCloseDepositTotal,
+                cashTotal: totals.cashTotal,
+                transferDetails: editForm.transferDetails || {},
+                transferTotals: totals.transferTotals,
+                posDetails: editForm.posDetails || {},
+                posTotals: totals.posTotals,
+                manualTotal: totals.manualTotal,
+                difference: totals.difference,
+                notes: editForm.notes || '',
+                editedWithPinAt: serverTimestamp(),
+                updatedAt: serverTimestamp(),
+            }, { merge: true });
+
+            markClosureDifferencesVoided(
+                batch,
+                editForm.id,
+                'Recalculado por edicion de cierre',
+                nextStatus !== 'en_espera' && cashierCode && totals.shouldTrackDifference ? new Set([nextDifferenceId]) : new Set()
+            );
+            if (nextStatus !== 'en_espera' && cashierCode && totals.shouldTrackDifference) {
+                const pendingAmount = Math.abs(totals.difference);
+                batch.set(doc(db, 'diferencias_caja', nextDifferenceId), {
+                    closureId: editForm.id,
+                    date: editForm.date || todayString(),
+                    month: getMonth(editForm.date || todayString()),
+                    cashierName: editForm.cashierName || '',
+                    cashierCode,
+                    amount: totals.difference,
+                    pendingAmount,
+                    saldo: pendingAmount,
+                    paidAmount: 0,
+                    differenceType: getCashDifferenceType(totals.difference),
+                    threshold: CASH_DIFFERENCE_THRESHOLD,
+                    status: 'pendiente',
+                    source: 'cierre_caja',
+                    recalculatedFromEdit: true,
+                    updatedAt: serverTimestamp(),
+                    createdAt: serverTimestamp(),
+                }, { merge: true });
+            }
+
+            await batch.commit();
+            setMessage('Cierre editado correctamente.');
+            closeEditClosure();
+        } catch (error) {
+            console.error(error);
+            setMessage(error?.message || 'No se pudo editar el cierre.');
+        } finally {
+            setEditSaving(false);
+        }
+    };
+
+    const undoClosureConciliation = async () => {
+        if (!editForm?.id || !editClosure) return;
+        if (!requestCashClosureEditPin('deshacer conciliacion del cierre')) return;
+        if (!window.confirm('Esto dejara el cierre en espera, liberara sus facturas membretadas y anulara la diferencia de caja vinculada. Deseas continuar?')) return;
+
+        setEditSaving(true);
+        setMessage('');
+        try {
+            const batch = writeBatch(db);
+            const linkedInvoices = getCashClosureInvoices(editClosure);
+            const invoiceIds = [
+                ...(Array.isArray(editClosure.stampedInvoiceIds) ? editClosure.stampedInvoiceIds : []),
+                ...linkedInvoices.map((invoice) => invoice.id || invoice.docId).filter(Boolean),
+            ];
+            const uniqueInvoiceIds = [...new Set(invoiceIds.filter(Boolean))];
+            const draftInvoices = (Array.isArray(editClosure.stampedInvoiceDrafts) && editClosure.stampedInvoiceDrafts.length
+                ? editClosure.stampedInvoiceDrafts
+                : linkedInvoices
+            ).map((invoice) => ({
+                ...invoice,
+                docId: invoice.docId || invoice.id || '',
+                supportFiles: {},
+            }));
+
+            uniqueInvoiceIds.forEach((invoiceId) => {
+                batch.set(doc(db, 'facturas_membretadas_ventas', invoiceId), {
+                    status: 'active',
+                    closureStatus: '',
+                    cashClosureLinkStatus: '',
+                    linkedCashClosureId: '',
+                    linkedSicarClosureId: '',
+                    linkedSicarCorId: null,
+                    reconciledAt: null,
+                    excludeFromCashClosure: false,
+                    unlinkedFromCashClosureId: editForm.id,
+                    unlinkedFromCashClosureAt: serverTimestamp(),
+                    updatedAt: serverTimestamp(),
+                }, { merge: true });
+            });
+
+            markClosureDifferencesVoided(batch, editForm.id, 'Conciliacion deshecha');
+            batch.set(doc(db, 'cierres_caja', editForm.id), {
+                status: 'en_espera',
+                stampedInvoiceIds: [],
+                stampedInvoices: [],
+                stampedInvoiceDrafts: draftInvoices,
+                reconciledAt: null,
+                conciliationUndoneAt: serverTimestamp(),
+                conciliationUndoneWithPin: true,
+                updatedAt: serverTimestamp(),
+            }, { merge: true });
+
+            await batch.commit();
+            setMessage('Conciliacion deshecha. El cierre quedo en espera y las facturas quedaron libres.');
+            closeEditClosure();
+        } catch (error) {
+            console.error(error);
+            setMessage(error?.message || 'No se pudo deshacer la conciliacion.');
+        } finally {
+            setEditSaving(false);
+        }
+    };
 
     return (
         <div className="space-y-5">
@@ -4357,6 +4898,11 @@ function CashClosureHistory({ data }) {
                     <SummaryCard label="Diferencia" value={fmt(stats.difference)} tone={Math.abs(stats.difference) > 0.01 ? 'red' : 'green'} />
                     <SummaryCard label="Retenciones" value={fmt(stats.retentionAdjustment)} tone="amber" />
                 </div>
+                {message && (
+                    <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-bold text-slate-700">
+                        {message}
+                    </div>
+                )}
             </Section>
 
             <Section title="Cierres registrados" eyebrow="Detalle">
@@ -4372,7 +4918,7 @@ function CashClosureHistory({ data }) {
                                 <th className="px-4 py-3 text-right">Facturas</th>
                                 <th className="px-4 py-3 text-right">Ingresado</th>
                                 <th className="px-4 py-3 text-right">Diferencia</th>
-                                <th className="px-4 py-3 text-right">Detalle</th>
+                                <th className="px-4 py-3 text-right">Acciones</th>
                             </tr>
                         </thead>
                         <tbody>
@@ -4391,13 +4937,22 @@ function CashClosureHistory({ data }) {
                                     <td className="px-4 py-3 text-right font-mono font-black text-emerald-700">{fmt(closure.manualTotal)}</td>
                                     <td className={`px-4 py-3 text-right font-mono font-black ${Math.abs(closure.difference) > 0.01 ? 'text-red-700' : 'text-emerald-700'}`}>{fmt(closure.difference)}</td>
                                     <td className="px-4 py-3 text-right">
-                                        <button
-                                            type="button"
-                                            onClick={() => setDetailClosure(closure)}
-                                            className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-[10px] font-black uppercase tracking-[0.16em] text-slate-700 transition hover:border-[#e30613] hover:bg-red-50 hover:text-[#e30613]"
-                                        >
-                                            Ver detalle
-                                        </button>
+                                        <div className="flex justify-end gap-2">
+                                            <button
+                                                type="button"
+                                                onClick={() => setDetailClosure(closure)}
+                                                className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-[10px] font-black uppercase tracking-[0.16em] text-slate-700 transition hover:border-[#e30613] hover:bg-red-50 hover:text-[#e30613]"
+                                            >
+                                                Ver
+                                            </button>
+                                            <button
+                                                type="button"
+                                                onClick={() => openEditClosure(closure)}
+                                                className="rounded-xl bg-slate-950 px-3 py-2 text-[10px] font-black uppercase tracking-[0.16em] text-white transition hover:bg-[#e30613]"
+                                            >
+                                                Editar
+                                            </button>
+                                        </div>
                                     </td>
                                 </tr>
                             ))}
@@ -4422,7 +4977,26 @@ function CashClosureHistory({ data }) {
                     />
                 </div>
             </Section>
-            <CashClosureDetailModal closure={detailClosure} onClose={() => setDetailClosure(null)} />
+            <CashClosureDetailModal
+                closure={detailClosure}
+                onClose={() => setDetailClosure(null)}
+                onEdit={openEditClosure}
+            />
+            <CashClosureEditModal
+                form={editForm}
+                clients={clients}
+                saving={editSaving}
+                onClose={closeEditClosure}
+                onSave={saveEditedClosure}
+                onUndoConciliation={undoClosureConciliation}
+                onFieldChange={updateEditField}
+                onCashCountChange={updateCashCount}
+                onDollarCashCountChange={updateDollarCashCount}
+                onPreCloseChange={updatePreClose}
+                onBankRowAdd={addBankRow}
+                onBankRowRemove={removeBankRow}
+                onBankRowChange={updateBankRow}
+            />
         </div>
     );
 }
