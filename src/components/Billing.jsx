@@ -215,6 +215,35 @@ const getCashDifferenceType = (amount = 0) => (safeNumber(amount) < 0 ? 'faltant
 
 const isCreditPaymentMethod = (method = '') => normalizeText(method).includes('CREDITO');
 
+const hasNumericValue = (value) => value !== undefined && value !== null && value !== '';
+
+const firstNumber = (...values) => {
+    const found = values.find(hasNumericValue);
+    return safeNumber(found);
+};
+
+const getNetSicarSalesTotals = (closure = {}) => {
+    const cashGross = firstNumber(closure.cashSalesGrossTotal, closure.grossCashSalesTotal, closure.ventasContadoBruto, closure.cashSalesTotal, closure.ventasContado, closure.venCon);
+    const cashCancelled = firstNumber(closure.cancelledCashSalesTotal, closure.cashSalesCancelledTotal, closure.ventasCanceladas, closure.venConC);
+    const creditGross = firstNumber(closure.creditSalesGrossTotal, closure.grossCreditSalesTotal, closure.ventasCreditoBruto, closure.creditSalesTotal, closure.ventasCredito, closure.venCre);
+    const creditCancelled = firstNumber(closure.cancelledCreditSalesTotal, closure.creditSalesCancelledTotal, closure.ventasCreditoCanceladas, closure.venCreC);
+    const cashNet = hasNumericValue(closure.cashSalesNetTotal)
+        ? safeNumber(closure.cashSalesNetTotal)
+        : safeNumber(cashGross - cashCancelled);
+    const creditNet = hasNumericValue(closure.creditSalesNetTotal)
+        ? safeNumber(closure.creditSalesNetTotal)
+        : safeNumber(creditGross - creditCancelled);
+
+    return {
+        cashSalesGrossTotal: cashGross,
+        cancelledCashSalesTotal: cashCancelled,
+        cashSalesNetTotal: cashNet,
+        creditSalesGrossTotal: creditGross,
+        cancelledCreditSalesTotal: creditCancelled,
+        creditSalesNetTotal: creditNet,
+    };
+};
+
 const buildClosureAccountingSummary = ({
     cashSalesTotal = 0,
     creditSalesTotal = 0,
@@ -280,6 +309,31 @@ const buildClosureAccountingSummary = ({
         internalRatio: {
             rc,
             formula: 'Tarjeta + transferencia sin BAC (2) - facturas membretadas contado - recibos de caja membretados',
+        },
+    };
+};
+
+const normalizeClosureAccountingSummarySales = (summary = {}, netSalesTotals = {}) => {
+    const stamped = summary.stampedDocuments || {};
+    const creditRecoveryTotal = safeNumber(summary.general?.creditRecoveryTotal);
+    const cashSalesTotal = safeNumber(netSalesTotals.cashSalesNetTotal);
+    const creditSalesTotal = safeNumber(netSalesTotals.creditSalesNetTotal);
+    const stampedCashInvoices = safeNumber(stamped.stampedCashInvoices);
+    const stampedCreditInvoices = safeNumber(stamped.stampedCreditInvoices);
+    const stampedCashReceipts = safeNumber(stamped.stampedCashReceipts);
+
+    return {
+        ...summary,
+        general: {
+            ...(summary.general || {}),
+            cashSalesTotal,
+            creditSalesTotal,
+        },
+        sicarTickets: {
+            ...(summary.sicarTickets || {}),
+            cashSalesTickets: safeNumber(cashSalesTotal - stampedCashInvoices),
+            creditSalesTickets: safeNumber(creditSalesTotal - stampedCreditInvoices),
+            cashReceiptTickets: safeNumber(creditRecoveryTotal - stampedCashReceipts),
         },
     };
 };
@@ -970,7 +1024,10 @@ function CashClosure({ data }) {
 
     const sicarClosures = useMemo(() => (
         [...(data.sicar_cierres_caja || [])]
-            .map((item) => ({ ...item, date: item.date || getRecordDate(item.closureDateTime || item.fecha) }))
+            .map((item) => {
+                const datedClosure = { ...item, date: item.date || getRecordDate(item.closureDateTime || item.fecha) };
+                return { ...datedClosure, ...getNetSicarSalesTotals(datedClosure) };
+            })
             .filter((closure) => ![...getSicarClosureMatchKeys(closure)].some((key) => closedSicarClosureKeys.has(key)))
             .sort((a, b) => String(b.closureDateTime || b.fecha || b.date).localeCompare(String(a.closureDateTime || a.fecha || a.date)))
     ), [closedSicarClosureKeys, data.sicar_cierres_caja]);
@@ -1118,9 +1175,10 @@ function CashClosure({ data }) {
         sum + safeNumber(invoice.retentionIr2) + safeNumber(invoice.retentionMunicipal1)
     ), 0));
     const sicarExpected = safeNumber(selectedClosure?.calculatedTotal ?? selectedClosure?.calculado ?? selectedClosure?.totalDineroIngresado);
-    const sicarCashSalesTotal = safeNumber(selectedClosure?.cashSalesTotal ?? selectedClosure?.ventasContado ?? selectedClosure?.venCon);
+    const sicarNetSalesTotals = useMemo(() => getNetSicarSalesTotals(selectedClosure || {}), [selectedClosure]);
+    const sicarCashSalesTotal = sicarNetSalesTotals.cashSalesNetTotal;
     const sicarCreditRecoveryTotal = safeNumber(selectedClosure?.creditRecoveryTotal ?? selectedClosure?.recuperacionCredito ?? selectedClosure?.entCre);
-    const sicarCreditSalesTotal = safeNumber(selectedClosure?.creditSalesTotal ?? selectedClosure?.ventasCredito ?? selectedClosure?.venCre);
+    const sicarCreditSalesTotal = sicarNetSalesTotals.creditSalesNetTotal;
     const sameDayCashReceipts = useMemo(() => (
         cashReceipts.filter((receipt) => String(receipt.date || '').substring(0, 10) === closureDate)
     ), [cashReceipts, closureDate]);
@@ -1418,7 +1476,13 @@ function CashClosure({ data }) {
                 linkedSicarRccId: selectedClosure?.rccId || selectedClosure?.rcc_id || null,
                 sicar: selectedClosure || null,
                 sicarExpected,
+                cashSalesGrossTotal: sicarNetSalesTotals.cashSalesGrossTotal,
+                cancelledCashSalesTotal: sicarNetSalesTotals.cancelledCashSalesTotal,
+                cashSalesNetTotal: sicarNetSalesTotals.cashSalesNetTotal,
                 cashSalesTotal: sicarCashSalesTotal,
+                creditSalesGrossTotal: sicarNetSalesTotals.creditSalesGrossTotal,
+                cancelledCreditSalesTotal: sicarNetSalesTotals.cancelledCreditSalesTotal,
+                creditSalesNetTotal: sicarNetSalesTotals.creditSalesNetTotal,
                 creditSalesTotal: sicarCreditSalesTotal,
                 creditRecoveryTotal: sicarCreditRecoveryTotal,
                 retentionAdjustment: retentionTotal,
@@ -1585,8 +1649,9 @@ function CashClosure({ data }) {
                                 <div className="font-mono text-sm font-black text-[#e30613]">{fmt(closure.calculatedTotal ?? closure.calculado ?? 0)}</div>
                             </div>
                             <div className="mt-3 grid grid-cols-2 gap-2 text-xs font-bold text-slate-500">
-                                <span>Ventas contado: {fmt(closure.cashSalesTotal ?? closure.ventasContado ?? 0)}</span>
+                                <span>Ventas contado neta: {fmt(closure.cashSalesNetTotal ?? closure.cashSalesTotal ?? closure.ventasContado ?? 0)}</span>
                                 <span>Recup. credito: {fmt(closure.creditRecoveryTotal ?? closure.recuperacionCredito ?? 0)}</span>
+                                <span>Ventas credito neta: {fmt(closure.creditSalesNetTotal ?? closure.creditSalesTotal ?? closure.ventasCredito ?? 0)}</span>
                                 <span>Diferencia SICAR: {fmt(closure.sicarDifference ?? closure.diferencia ?? 0)}</span>
                                 <span>RCC: {closure.rccId || closure.rcc_id || '-'}</span>
                             </div>
@@ -4802,31 +4867,34 @@ const calculateClosureEditTotals = (form = {}) => {
     };
 };
 
-const createCashClosureEditForm = (closure = {}) => ({
-    id: closure.id || '',
-    date: closure.date || todayString(),
-    cashierName: closure.cashierName || '',
-    cashierCode: closure.cashierCode || (closure.cashierName ? `CAJ-${slugify(closure.cashierName)}` : ''),
-    status: closure.status || 'cuadrado',
-    cashCount: { ...(closure.cashCount || {}) },
-    dollarCashCount: { ...(closure.dollarCashCount || {}) },
-    preCloseDeposit: {
-        cordobas: closure.preCloseDeposit?.cordobas ?? '',
-        dollars: closure.preCloseDeposit?.dollars ?? '',
-    },
-    transferDetails: normalizeClosureBankDetails(closure.transferDetails, 'transfer'),
-    posDetails: normalizeClosureBankDetails(closure.posDetails, 'pos'),
-    sicarExpected: String(safeNumber(closure.sicarExpected)),
-    cashSalesTotal: String(safeNumber(closure.cashSalesTotal || closure.sicar?.cashSalesTotal || closure.sicar?.ventasContado || closure.sicar?.venCon)),
-    creditSalesTotal: String(safeNumber(closure.creditSalesTotal || closure.sicar?.creditSalesTotal || closure.sicar?.ventasCredito || closure.sicar?.venCre)),
-    creditRecoveryTotal: String(safeNumber(closure.creditRecoveryTotal || closure.sicar?.creditRecoveryTotal || closure.sicar?.recuperacionCredito || closure.sicar?.entCre)),
-    retentionAdjustment: String(safeNumber(closure.retentionAdjustment)),
-    notes: closure.notes || '',
-    linkedSicarClosureId: closure.linkedSicarClosureId || closure.sicar?.id || '',
-    linkedSicarCorId: closure.linkedSicarCorId || closure.sicar?.corId || closure.sicar?.cor_id || null,
-    linkedSicarRccId: closure.linkedSicarRccId || closure.sicar?.rccId || closure.sicar?.rcc_id || null,
-    sicar: closure.sicar || null,
-});
+const createCashClosureEditForm = (closure = {}) => {
+    const netSalesTotals = getNetSicarSalesTotals({ ...(closure.sicar || {}), ...closure });
+    return {
+        id: closure.id || '',
+        date: closure.date || todayString(),
+        cashierName: closure.cashierName || '',
+        cashierCode: closure.cashierCode || (closure.cashierName ? `CAJ-${slugify(closure.cashierName)}` : ''),
+        status: closure.status || 'cuadrado',
+        cashCount: { ...(closure.cashCount || {}) },
+        dollarCashCount: { ...(closure.dollarCashCount || {}) },
+        preCloseDeposit: {
+            cordobas: closure.preCloseDeposit?.cordobas ?? '',
+            dollars: closure.preCloseDeposit?.dollars ?? '',
+        },
+        transferDetails: normalizeClosureBankDetails(closure.transferDetails, 'transfer'),
+        posDetails: normalizeClosureBankDetails(closure.posDetails, 'pos'),
+        sicarExpected: String(safeNumber(closure.sicarExpected)),
+        cashSalesTotal: String(netSalesTotals.cashSalesNetTotal),
+        creditSalesTotal: String(netSalesTotals.creditSalesNetTotal),
+        creditRecoveryTotal: String(safeNumber(closure.creditRecoveryTotal || closure.sicar?.creditRecoveryTotal || closure.sicar?.recuperacionCredito || closure.sicar?.entCre)),
+        retentionAdjustment: String(safeNumber(closure.retentionAdjustment)),
+        notes: closure.notes || '',
+        linkedSicarClosureId: closure.linkedSicarClosureId || closure.sicar?.id || '',
+        linkedSicarCorId: closure.linkedSicarCorId || closure.sicar?.corId || closure.sicar?.cor_id || null,
+        linkedSicarRccId: closure.linkedSicarRccId || closure.sicar?.rccId || closure.sicar?.rcc_id || null,
+        sicar: closure.sicar || null,
+    };
+};
 
 const getCashClosureInvoices = (closure = {}) => {
     const detailedInvoices = Array.isArray(closure.stampedInvoices) ? closure.stampedInvoices : [];
@@ -5037,17 +5105,20 @@ const CashClosureDetailModal = ({ closure, onClose, onEdit }) => {
     const code = closure.code || closure.linkedSicarCorId || sicar.corId || sicar.cor_id || closure.id;
     const cashboxName = closure.cashboxName || sicar.cashboxName || sicar.cajaName || sicar.caja || 'Caja';
     const preClose = closure.preCloseDeposit || {};
-    const detailAccountingSummary = closure.accountingSummary || buildClosureAccountingSummary({
-        cashSalesTotal: closure.cashSalesTotal || sicar.cashSalesTotal || sicar.ventasContado || sicar.venCon,
-        creditSalesTotal: closure.creditSalesTotal || sicar.creditSalesTotal || sicar.ventasCredito || sicar.venCre,
-        creditRecoveryTotal: closure.creditRecoveryTotal || sicar.creditRecoveryTotal || sicar.recuperacionCredito || sicar.entCre,
-        stampedInvoices: linkedInvoices,
-        cashReceipts: [],
-        transferTotals: closure.transferTotals || {},
-        posTotals: closure.posTotals || {},
-        cashCordobasTotal: closure.cashCordobasTotal,
-        dollarCashTotalCordobas: closure.dollarCashTotalCordobas,
-    });
+    const detailNetSalesTotals = getNetSicarSalesTotals({ ...sicar, ...closure });
+    const detailAccountingSummary = closure.accountingSummary
+        ? normalizeClosureAccountingSummarySales(closure.accountingSummary, detailNetSalesTotals)
+        : buildClosureAccountingSummary({
+            cashSalesTotal: detailNetSalesTotals.cashSalesNetTotal,
+            creditSalesTotal: detailNetSalesTotals.creditSalesNetTotal,
+            creditRecoveryTotal: closure.creditRecoveryTotal || sicar.creditRecoveryTotal || sicar.recuperacionCredito || sicar.entCre,
+            stampedInvoices: linkedInvoices,
+            cashReceipts: [],
+            transferTotals: closure.transferTotals || {},
+            posTotals: closure.posTotals || {},
+            cashCordobasTotal: closure.cashCordobasTotal,
+            dollarCashTotalCordobas: closure.dollarCashTotalCordobas,
+        });
 
     return (
         <div className="fixed inset-0 z-[120] flex items-center justify-center p-3 sm:p-6">

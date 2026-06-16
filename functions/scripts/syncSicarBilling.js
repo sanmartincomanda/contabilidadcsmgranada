@@ -233,6 +233,12 @@ async function fetchClosuresWithFilter(connection, whereClause, params = []) {
     const date = toDateString(row.fecha);
     const rawId = `cierre_caja_${row.cor_id}`;
     const summary = summaryByCor.get(row.cor_id) || {};
+    const cashSalesGrossTotal = money(row.venCon);
+    const cancelledCashSalesTotal = money(row.venConC);
+    const creditSalesGrossTotal = money(row.venCre);
+    const cancelledCreditSalesTotal = money(row.venCreC);
+    const cashSalesNetTotal = money(cashSalesGrossTotal - cancelledCashSalesTotal);
+    const creditSalesNetTotal = money(creditSalesGrossTotal - cancelledCreditSalesTotal);
     return {
       id: `sicar_cierre_${row.cor_id}`,
       rawId,
@@ -247,10 +253,14 @@ async function fetchClosuresWithFilter(connection, whereClause, params = []) {
       calculatedTotal: money(row.calculado),
       sicarDifference: money(row.diferencia),
       withdrawalTotal: money(row.retiro),
-      cashSalesTotal: money(row.venCon),
-      creditSalesTotal: money(row.venCre),
-      cancelledCashSalesTotal: money(row.venConC),
-      cancelledCreditSalesTotal: money(row.venCreC),
+      cashSalesGrossTotal,
+      cashSalesTotal: cashSalesNetTotal,
+      cashSalesNetTotal,
+      creditSalesGrossTotal,
+      creditSalesTotal: creditSalesNetTotal,
+      creditSalesNetTotal,
+      cancelledCashSalesTotal,
+      cancelledCreditSalesTotal,
       salesIncomeTotal: money(row.entVen),
       creditRecoveryTotal: money(row.entCre),
       salesCancellationOutTotal: money(row.salVenC),
@@ -531,10 +541,16 @@ function buildClosureFingerprint(entry = {}) {
     activeSalesTotal: entry.activeSalesTotal,
     activeTicketCount: entry.activeTicketCount,
     calculatedTotal: entry.calculatedTotal,
+    cancelledCashSalesTotal: entry.cancelledCashSalesTotal,
+    cancelledCreditSalesTotal: entry.cancelledCreditSalesTotal,
     cancelledSalesTotal: entry.cancelledSalesTotal,
+    cashSalesGrossTotal: entry.cashSalesGrossTotal,
+    cashSalesNetTotal: entry.cashSalesNetTotal,
     cashSalesTotal: entry.cashSalesTotal,
     countedTotal: entry.countedTotal,
     creditRecoveryTotal: entry.creditRecoveryTotal,
+    creditSalesGrossTotal: entry.creditSalesGrossTotal,
+    creditSalesNetTotal: entry.creditSalesNetTotal,
     creditSalesTotal: entry.creditSalesTotal,
     cutPaymentBreakdown: entry.cutPaymentBreakdown,
     date: entry.date,
