@@ -88,6 +88,15 @@ const getSicarInvoiceKeys = (invoice = {}) => ([
     .map((value) => normalizeInvoiceMatchKey(value))
     .filter(Boolean);
 
+const getAccountingInvoiceDocKeys = (invoice = {}) => ([
+    invoice.accountingInvoiceId,
+    invoice.contabilidadInvoiceId,
+    invoice.membretadaInvoiceId,
+    ...(Array.isArray(invoice.accountingInvoiceIds) ? invoice.accountingInvoiceIds : []),
+])
+    .map((value) => normalizeInvoiceMatchKey(value))
+    .filter(Boolean);
+
 const isAccountingLoadedStatus = (value = '') => (
     ['CONTABILIZADA', 'CONTABILIZADO', 'CARGADA', 'CARGADO', 'LOADED', 'ACCOUNTED'].includes(normalizeText(value))
 );
@@ -95,6 +104,7 @@ const isAccountingLoadedStatus = (value = '') => (
 const buildLoadedInvoiceIndex = (savedInvoices = []) => {
     const sourceKeys = new Set();
     const docSourceKeys = new Map();
+    const docIds = new Set();
 
     savedInvoices
         .filter((invoice) => !['ANULADA', 'ANULADO', 'CANCELADA', 'CANCELADO', 'DELETED'].includes(normalizeText(invoice.status)))
@@ -102,28 +112,35 @@ const buildLoadedInvoiceIndex = (savedInvoices = []) => {
             const invoiceSourceKeys = getSicarInvoiceKeys(invoice);
             invoiceSourceKeys.forEach((key) => sourceKeys.add(key));
             const docKey = normalizeInvoiceMatchKey(invoice.id || invoice.docId);
-            if (docKey) docSourceKeys.set(docKey, new Set(invoiceSourceKeys));
+            if (docKey) {
+                docIds.add(docKey);
+                docSourceKeys.set(docKey, new Set(invoiceSourceKeys));
+            }
         });
 
-    return { sourceKeys, docSourceKeys };
+    return { sourceKeys, docSourceKeys, docIds };
 };
 
 const isSicarInvoicePendingAccounting = (invoice = {}, loadedIndex = buildLoadedInvoiceIndex()) => {
     const invoiceKeys = getSicarInvoiceKeys(invoice);
     if (invoiceKeys.some((key) => loadedIndex.sourceKeys.has(key))) return false;
 
+    const accountingDocKeys = getAccountingInvoiceDocKeys(invoice);
+    const accountingDocSources = accountingDocKeys
+        .map((key) => loadedIndex.docSourceKeys.get(key))
+        .filter(Boolean);
+    if (accountingDocSources.some((sources) => invoiceKeys.some((key) => sources.has(key)))) return false;
+
     const explicitAccountingSourceKey = normalizeInvoiceMatchKey(invoice.accountingSourceSicarInvoiceId || invoice.accountingSicarInvoiceId);
+    const hasActiveAccountingDoc = accountingDocKeys.some((key) => loadedIndex.docIds?.has(key));
     if (
         explicitAccountingSourceKey
         && isAccountingLoadedStatus(invoice.accountingStatus || invoice.estadoContable)
         && invoiceKeys.includes(explicitAccountingSourceKey)
+        && hasActiveAccountingDoc
     ) {
         return false;
     }
-
-    const accountingDocKey = normalizeInvoiceMatchKey(invoice.accountingInvoiceId || invoice.contabilidadInvoiceId || invoice.membretadaInvoiceId);
-    const accountingDocSources = accountingDocKey ? loadedIndex.docSourceKeys.get(accountingDocKey) : null;
-    if (accountingDocSources && invoiceKeys.some((key) => accountingDocSources.has(key))) return false;
 
     return true;
 };
