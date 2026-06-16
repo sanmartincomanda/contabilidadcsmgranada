@@ -1024,6 +1024,8 @@ function CashClosure({ data }) {
     const [sicarClosurePage, setSicarClosurePage] = useState(1);
     const [closureInvoiceSearch, setClosureInvoiceSearch] = useState('');
     const [closureInvoicePage, setClosureInvoicePage] = useState(1);
+    const [quickInvoiceNumber, setQuickInvoiceNumber] = useState('');
+    const [activeClosureInvoiceLocalId, setActiveClosureInvoiceLocalId] = useState('');
 
     const selectedClosure = useMemo(() => (
         sicarClosures.find((closure) => closure.id === selectedClosureId) || null
@@ -1046,17 +1048,21 @@ function CashClosure({ data }) {
         paginateRecords(filteredSicarClosures, sicarClosurePage)
     ), [filteredSicarClosures, sicarClosurePage]);
 
-    const filteredStampedInvoices = useMemo(() => filterRecords(stampedInvoices, closureInvoiceSearch, [
+    const dayStampedInvoices = useMemo(() => (
+        stampedInvoices.filter((invoice) => String(invoice.date || '').substring(0, 10) === closureDate)
+    ), [stampedInvoices, closureDate]);
+
+    const filteredStampedInvoices = useMemo(() => filterRecords(dayStampedInvoices, closureInvoiceSearch, [
         'date',
         'invoiceNumber',
         'numeroFactura',
         'customerName',
         'cliente',
         'total',
-    ]), [stampedInvoices, closureInvoiceSearch]);
+    ]), [dayStampedInvoices, closureInvoiceSearch]);
 
     const pagedStampedInvoices = useMemo(() => (
-        paginateRecords(filteredStampedInvoices, closureInvoicePage)
+        paginateRecords(filteredStampedInvoices, closureInvoicePage, 6)
     ), [filteredStampedInvoices, closureInvoicePage]);
 
     useEffect(() => {
@@ -1065,7 +1071,7 @@ function CashClosure({ data }) {
 
     useEffect(() => {
         setClosureInvoicePage(1);
-    }, [closureInvoiceSearch]);
+    }, [closureInvoiceSearch, closureDate]);
 
     useEffect(() => {
         if (sicarClosurePage !== pagedSicarClosures.page) setSicarClosurePage(pagedSicarClosures.page);
@@ -1150,17 +1156,23 @@ function CashClosure({ data }) {
         setPreCloseDeposit(closure.preCloseDeposit || { cordobas: '', dollars: '' });
         setTransfers({ bac: [], bac2: [], banpro: [], lafise: [], ...(closure.transferDetails || {}) });
         setPosDetails(closure.posDetails || { bac: [], banpro: [], lafise: [] });
-        setClosureInvoices((closure.stampedInvoiceDrafts || closure.stampedInvoices || []).map((invoice) => createInvoiceDraft(invoice, closure.date || todayString())));
+        const loadedInvoices = (closure.stampedInvoiceDrafts || closure.stampedInvoices || []).map((invoice) => createInvoiceDraft(invoice, closure.date || todayString()));
+        setClosureInvoices(loadedInvoices);
+        setActiveClosureInvoiceLocalId(loadedInvoices[0]?.localId || '');
         setNotes(closure.notes || '');
         setMessage(`Cierre en espera cargado: ${closure.date || ''}.`);
     };
 
     const addClosureInvoice = (invoice) => {
         const draft = createInvoiceDraft(invoice, closureDate);
-        setClosureInvoices((prev) => {
-            if (draft.docId && prev.some((item) => item.docId === draft.docId)) return prev;
-            return [...prev, draft];
-        });
+        const existing = draft.docId ? closureInvoices.find((item) => item.docId === draft.docId) : null;
+        if (existing) {
+            setActiveClosureInvoiceLocalId(existing.localId);
+            setMessage(`Factura ${existing.invoiceNumber || invoice.invoiceNumber || ''} ya estaba agregada al cierre.`);
+            return;
+        }
+        setClosureInvoices((prev) => [...prev, draft]);
+        setActiveClosureInvoiceLocalId(draft.localId);
     };
 
     const toggleClosureInvoice = (invoice, checked) => {
@@ -1168,15 +1180,40 @@ function CashClosure({ data }) {
             addClosureInvoice(invoice);
             return;
         }
-        setClosureInvoices((prev) => prev.filter((item) => item.docId !== invoice.id));
+        const removed = closureInvoices.find((item) => item.docId === invoice.id);
+        const next = closureInvoices.filter((item) => item.docId !== invoice.id);
+        setClosureInvoices(next);
+        if (removed?.localId === activeClosureInvoiceLocalId) {
+            setActiveClosureInvoiceLocalId(next[0]?.localId || '');
+        }
     };
 
     const addBlankClosureInvoice = () => {
-        setClosureInvoices((prev) => [...prev, createInvoiceDraft({ date: closureDate }, closureDate)]);
+        const draft = createInvoiceDraft({ date: closureDate }, closureDate);
+        setClosureInvoices((prev) => [...prev, draft]);
+        setActiveClosureInvoiceLocalId(draft.localId);
     };
 
     const removeClosureInvoice = (localId) => {
-        setClosureInvoices((prev) => prev.filter((invoice) => invoice.localId !== localId));
+        const next = closureInvoices.filter((invoice) => invoice.localId !== localId);
+        setClosureInvoices(next);
+        if (localId === activeClosureInvoiceLocalId) {
+            setActiveClosureInvoiceLocalId(next[0]?.localId || '');
+        }
+    };
+
+    const addQuickClosureInvoice = () => {
+        const query = String(quickInvoiceNumber || '').trim();
+        if (!query) return;
+        const normalizedQuery = normalizeText(query);
+        const invoice = dayStampedInvoices.find((item) => normalizeText(item.invoiceNumber || item.numeroFactura || '') === normalizedQuery);
+        if (!invoice) {
+            setMessage(`No encontre la factura ${query} en las membretadas del dia ${closureDate}.`);
+            return;
+        }
+        addClosureInvoice(invoice);
+        setQuickInvoiceNumber('');
+        setMessage(`Factura ${invoice.invoiceNumber || query} agregada al cierre.`);
     };
 
     const updateClosureInvoice = (localId, key, value) => {
@@ -1269,6 +1306,8 @@ function CashClosure({ data }) {
                 setTransfers({ bac: [], bac2: [], banpro: [], lafise: [] });
                 setPosDetails({ bac: [], banpro: [], lafise: [] });
                 setClosureInvoices([]);
+                setActiveClosureInvoiceLocalId('');
+                setQuickInvoiceNumber('');
                 setNotes('');
             }
             setMessage('Cierre en espera eliminado.');
@@ -1462,11 +1501,12 @@ function CashClosure({ data }) {
 
     return (
         <div className="grid gap-5 xl:grid-cols-[0.9fr_1.3fr]">
-            <Section
-                title="Cierres SICAR disponibles"
-                eyebrow="Integracion"
-                action={<Badge tone="blue">{sicarClosures.length} cierres</Badge>}
-            >
+            <div className="space-y-5">
+                <Section
+                    title="Cierres SICAR disponibles"
+                    eyebrow="Integracion"
+                    action={<Badge tone="blue">{sicarClosures.length} cierres</Badge>}
+                >
                 <div className="space-y-3">
                     <SearchBox
                         value={sicarClosureSearch}
@@ -1563,7 +1603,43 @@ function CashClosure({ data }) {
                         onPageChange={setSicarClosurePage}
                     />
                 </div>
-            </Section>
+                </Section>
+
+                <Section title="Transferencias por cliente" eyebrow="Detalle bancario">
+                    <div className="grid gap-4">
+                        {TRANSFER_BANKS.map((bank) => (
+                            <DetailRows
+                                key={bank.key}
+                                title={`Transferencia ${bank.label} · ${fmt(transferTotals[bank.key])}`}
+                                rows={transfers[bank.key] || []}
+                                type="transfer"
+                                clients={clients}
+                                onCreateClient={requestCreateClient}
+                                onAdd={() => setTransfers((prev) => ({ ...prev, [bank.key]: [...(prev[bank.key] || []), emptyTransfer()] }))}
+                                onRemove={(index) => setTransfers((prev) => ({ ...prev, [bank.key]: (prev[bank.key] || []).filter((_, rowIndex) => rowIndex !== index) }))}
+                                onChange={(index, field, value) => updateTransfer(bank.key, index, field, value)}
+                            />
+                        ))}
+                    </div>
+                </Section>
+
+                <Section title="Cierres POS" eyebrow="Baucher / lote POS">
+                    <div className="grid gap-4">
+                        {POS_BANKS.map((bank) => (
+                            <DetailRows
+                                key={bank.key}
+                                title={`POS ${bank.label} · ${fmt(posTotals[bank.key])}`}
+                                rows={posDetails[bank.key] || []}
+                                type="pos"
+                                onAdd={() => setPosDetails((prev) => ({ ...prev, [bank.key]: [...(prev[bank.key] || []), emptyPos()] }))}
+                                onRemove={(index) => setPosDetails((prev) => ({ ...prev, [bank.key]: (prev[bank.key] || []).filter((_, rowIndex) => rowIndex !== index) }))}
+                                onChange={(index, field, value) => updatePos(bank.key, index, field, value)}
+                            />
+                        ))}
+                    </div>
+                </Section>
+
+            </div>
 
             <div className="space-y-5">
                 <Section title="Cierre de caja" eyebrow="Formulario operativo" action={<Badge tone={shouldTrackDifference ? 'red' : 'green'}>{shouldTrackDifference ? 'Con diferencia' : 'Cuadrado'}</Badge>}>
@@ -1674,57 +1750,40 @@ function CashClosure({ data }) {
                     </div>
                 </Section>
 
-                <Section title="Transferencias por cliente" eyebrow="Detalle bancario">
-                    <div className="grid gap-4">
-                        {TRANSFER_BANKS.map((bank) => (
-                            <DetailRows
-                                key={bank.key}
-                                title={`Transferencia ${bank.label} · ${fmt(transferTotals[bank.key])}`}
-                                rows={transfers[bank.key] || []}
-                                type="transfer"
-                                clients={clients}
-                                onCreateClient={requestCreateClient}
-                                onAdd={() => setTransfers((prev) => ({ ...prev, [bank.key]: [...(prev[bank.key] || []), emptyTransfer()] }))}
-                                onRemove={(index) => setTransfers((prev) => ({ ...prev, [bank.key]: (prev[bank.key] || []).filter((_, rowIndex) => rowIndex !== index) }))}
-                                onChange={(index, field, value) => updateTransfer(bank.key, index, field, value)}
-                            />
-                        ))}
-                    </div>
-                </Section>
-
-                <Section title="Cierres POS" eyebrow="Baucher / lote POS">
-                    <div className="grid gap-4">
-                        {POS_BANKS.map((bank) => (
-                            <DetailRows
-                                key={bank.key}
-                                title={`POS ${bank.label} · ${fmt(posTotals[bank.key])}`}
-                                rows={posDetails[bank.key] || []}
-                                type="pos"
-                                onAdd={() => setPosDetails((prev) => ({ ...prev, [bank.key]: [...(prev[bank.key] || []), emptyPos()] }))}
-                                onRemove={(index) => setPosDetails((prev) => ({ ...prev, [bank.key]: (prev[bank.key] || []).filter((_, rowIndex) => rowIndex !== index) }))}
-                                onChange={(index, field, value) => updatePos(bank.key, index, field, value)}
-                            />
-                        ))}
-                    </div>
-                </Section>
-
                 <Section title="Facturas membretadas del cierre" eyebrow="Retenciones que reducen caja">
-                    <div className="mb-4 flex flex-col gap-3 rounded-3xl border border-slate-200 bg-slate-50/70 p-4 sm:flex-row sm:items-center sm:justify-between">
+                    <div className="mb-4 flex flex-col gap-3 rounded-3xl border border-slate-200 bg-slate-50/70 p-4 xl:flex-row xl:items-center xl:justify-between">
                         <div>
                             <div className="text-sm font-black text-slate-950">Facturas aplicadas al cierre</div>
-                            <div className="text-xs font-semibold text-slate-500">Marca una existente o crea una nueva si SICAR todavia no la cargo.</div>
+                            <div className="text-xs font-semibold text-slate-500">Solo se muestran facturas del dia {closureDate}. Agrega por numero y Enter para trabajar rapido.</div>
                         </div>
-                        <button type="button" onClick={addBlankClosureInvoice} className="rounded-xl bg-slate-950 px-4 py-2.5 text-xs font-black uppercase tracking-[0.16em] text-white transition hover:bg-[#e30613]">
-                            Agregar nueva
-                        </button>
+                        <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                            <input
+                                className={`${inputClass} min-w-0 sm:w-64`}
+                                value={quickInvoiceNumber}
+                                onChange={(event) => setQuickInvoiceNumber(event.target.value)}
+                                onKeyDown={(event) => {
+                                    if (event.key === 'Enter') {
+                                        event.preventDefault();
+                                        addQuickClosureInvoice();
+                                    }
+                                }}
+                                placeholder="Numero factura + Enter"
+                            />
+                            <button type="button" onClick={addQuickClosureInvoice} className="rounded-xl border border-[#e30613] bg-white px-4 py-2.5 text-xs font-black uppercase tracking-[0.16em] text-[#e30613] transition hover:bg-red-50">
+                                Agregar rapido
+                            </button>
+                            <button type="button" onClick={addBlankClosureInvoice} className="rounded-xl bg-slate-950 px-4 py-2.5 text-xs font-black uppercase tracking-[0.16em] text-white transition hover:bg-[#e30613]">
+                                Manual
+                            </button>
+                        </div>
                     </div>
 
                     <div className="mb-4">
                         <SearchBox
                             value={closureInvoiceSearch}
                             onChange={setClosureInvoiceSearch}
-                            placeholder="Buscar factura membretada por fecha, numero o cliente..."
-                            resultLabel={`${filteredStampedInvoices.length} de ${stampedInvoices.length}`}
+                            placeholder="Buscar factura del dia por numero o cliente..."
+                            resultLabel={`${filteredStampedInvoices.length} de ${dayStampedInvoices.length} del dia`}
                         />
                     </div>
 
@@ -1735,7 +1794,7 @@ function CashClosure({ data }) {
                             </div>
                         ) : filteredStampedInvoices.length === 0 ? (
                             <div className="rounded-3xl border border-dashed border-slate-300 p-8 text-center text-sm font-bold text-slate-400 md:col-span-2">
-                                No hay facturas membretadas que coincidan con la busqueda.
+                                No hay facturas membretadas del dia {closureDate} que coincidan con la busqueda.
                             </div>
                         ) : pagedStampedInvoices.records.map((invoice) => (
                             <label key={invoice.id} className="flex cursor-pointer items-center gap-3 rounded-2xl border border-slate-200 bg-white p-3 transition hover:border-[#e30613]">
@@ -1768,70 +1827,95 @@ function CashClosure({ data }) {
                             <div className="rounded-3xl border border-dashed border-slate-300 bg-white p-8 text-center text-sm font-bold text-slate-400">
                                 No hay facturas aplicadas al cierre todavia.
                             </div>
-                        ) : closureInvoices.map((invoice, index) => (
-                            <div key={invoice.localId} className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm">
-                                <div className="mb-3 flex items-center justify-between gap-3">
-                                    <div>
-                                        <div className="text-sm font-black text-slate-950">Factura aplicada #{index + 1}</div>
-                                        <div className="text-xs font-bold text-slate-500">Editable antes de guardar en espera o cerrar caja.</div>
-                                    </div>
-                                    <button type="button" onClick={() => removeClosureInvoice(invoice.localId)} className="rounded-xl border border-red-200 px-3 py-2 text-xs font-black text-red-700 transition hover:bg-red-50">
-                                        Quitar
-                                    </button>
-                                </div>
-
-                                <div className="grid gap-3 md:grid-cols-2">
-                                    <Field label="Numero de factura">
-                                        <input className={inputClass} value={invoice.invoiceNumber} onChange={(event) => updateClosureInvoice(invoice.localId, 'invoiceNumber', event.target.value)} />
-                                    </Field>
-                                    <Field label="Fecha">
-                                        <input className={inputClass} type="date" value={invoice.date} onChange={(event) => updateClosureInvoice(invoice.localId, 'date', event.target.value)} />
-                                    </Field>
-                                    <Field label="Cliente">
-                                        <input className={inputClass} list="billing-clients" value={invoice.customerName} onChange={(event) => updateClosureInvoice(invoice.localId, 'customerName', event.target.value)} placeholder="Cliente / razon social" />
-                                        {String(invoice.customerName || '').trim() && !recordExistsByName(clients, invoice.customerName) && (
+                        ) : closureInvoices.map((invoice, index) => {
+                            const isActive = activeClosureInvoiceLocalId === invoice.localId;
+                            return (
+                                <div key={invoice.localId} className={`rounded-3xl border bg-white p-4 shadow-sm transition ${isActive ? 'border-[#e30613] shadow-red-950/10' : 'border-slate-200'}`}>
+                                    <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                                        <div className="min-w-0">
+                                            <div className="text-sm font-black text-slate-950">#{index + 1} · Factura {invoice.invoiceNumber || 'sin numero'}</div>
+                                            <div className="mt-1 flex flex-wrap gap-2 text-xs font-bold text-slate-500">
+                                                <span>{invoice.date || closureDate}</span>
+                                                <span>{invoice.customerName || 'Sin cliente'}</span>
+                                                <span>{invoice.paymentMethod || 'Sin metodo'}</span>
+                                            </div>
+                                        </div>
+                                        <div className="flex flex-wrap items-center gap-2">
+                                            <div className="rounded-2xl bg-slate-50 px-3 py-2 text-right">
+                                                <div className="font-mono text-sm font-black text-slate-950">{fmt(invoice.total)}</div>
+                                                <div className="text-[10px] font-black uppercase tracking-[0.16em] text-slate-400">Ret. {fmt(safeNumber(invoice.retentionIr2) + safeNumber(invoice.retentionMunicipal1))}</div>
+                                            </div>
                                             <button
                                                 type="button"
-                                                onClick={() => requestCreateClient(invoice.customerName)}
-                                                className="mt-2 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-[10px] font-black uppercase tracking-[0.16em] text-emerald-700 transition hover:bg-emerald-100"
+                                                onClick={() => setActiveClosureInvoiceLocalId(invoice.localId)}
+                                                className={`rounded-xl px-3 py-2 text-xs font-black uppercase tracking-[0.16em] transition ${isActive ? 'bg-[#e30613] text-white' : 'border border-slate-200 text-slate-700 hover:border-[#e30613] hover:text-[#e30613]'}`}
                                             >
-                                                Agregar cliente
+                                                {isActive ? 'Editando' : 'Editar'}
                                             </button>
-                                        )}
-                                    </Field>
-                                    <Field label="Metodo de pago">
-                                        <PaymentMethodSelect value={invoice.paymentMethod} onChange={(value) => updateClosureInvoice(invoice.localId, 'paymentMethod', value)} />
-                                    </Field>
-                                    <Field label="Subtotal">
-                                        <input className={inputClass} type="number" step="0.01" min="0" value={invoice.subtotal} onChange={(event) => updateClosureInvoice(invoice.localId, 'subtotal', event.target.value)} />
-                                    </Field>
-                                    <Field label="IVA">
-                                        <input className={inputClass} type="number" step="0.01" min="0" value={invoice.iva} onChange={(event) => updateClosureInvoice(invoice.localId, 'iva', event.target.value)} />
-                                    </Field>
-                                    <Field label="Total">
-                                        <input className={inputClass} type="number" step="0.01" min="0" value={invoice.total} onChange={(event) => updateClosureInvoice(invoice.localId, 'total', event.target.value)} />
-                                    </Field>
-                                    <Field label="Retencion IR 2%">
-                                        <input className={inputClass} type="number" step="0.01" min="0" value={invoice.retentionIr2} onChange={(event) => updateClosureInvoice(invoice.localId, 'retentionIr2', event.target.value)} />
-                                    </Field>
-                                    <Field label="Retencion municipal 1%">
-                                        <input className={inputClass} type="number" step="0.01" min="0" value={invoice.retentionMunicipal1} onChange={(event) => updateClosureInvoice(invoice.localId, 'retentionMunicipal1', event.target.value)} />
-                                    </Field>
-                                </div>
+                                            <button type="button" onClick={() => removeClosureInvoice(invoice.localId)} className="rounded-xl border border-red-200 px-3 py-2 text-xs font-black text-red-700 transition hover:bg-red-50">
+                                                Quitar
+                                            </button>
+                                        </div>
+                                    </div>
 
-                                <div className="mt-4 grid gap-3 md:grid-cols-3">
-                                    <Field label="Foto factura">
-                                        <input className={inputClass} type="file" accept="image/*,application/pdf" onChange={(event) => updateClosureInvoiceFile(invoice.localId, 'invoice', event.target.files?.[0] || null)} />
-                                    </Field>
-                                    <Field label="Soporte IR 2%">
-                                        <input className={inputClass} type="file" accept="image/*,application/pdf" onChange={(event) => updateClosureInvoiceFile(invoice.localId, 'retentionIr2', event.target.files?.[0] || null)} />
-                                    </Field>
-                                    <Field label="Soporte municipal 1%">
-                                        <input className={inputClass} type="file" accept="image/*,application/pdf" onChange={(event) => updateClosureInvoiceFile(invoice.localId, 'retentionMunicipal1', event.target.files?.[0] || null)} />
-                                    </Field>
+                                    {isActive && (
+                                        <div className="mt-4 rounded-3xl border border-red-100 bg-red-50/30 p-4">
+                                            <div className="mb-3 text-xs font-black uppercase tracking-[0.18em] text-[#e30613]">Edicion detallada</div>
+                                            <div className="grid gap-3 md:grid-cols-2">
+                                                <Field label="Numero de factura">
+                                                    <input className={inputClass} value={invoice.invoiceNumber} onChange={(event) => updateClosureInvoice(invoice.localId, 'invoiceNumber', event.target.value)} />
+                                                </Field>
+                                                <Field label="Fecha">
+                                                    <input className={inputClass} type="date" value={invoice.date} onChange={(event) => updateClosureInvoice(invoice.localId, 'date', event.target.value)} />
+                                                </Field>
+                                                <Field label="Cliente">
+                                                    <input className={inputClass} list="billing-clients" value={invoice.customerName} onChange={(event) => updateClosureInvoice(invoice.localId, 'customerName', event.target.value)} placeholder="Cliente / razon social" />
+                                                    {String(invoice.customerName || '').trim() && !recordExistsByName(clients, invoice.customerName) && (
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => requestCreateClient(invoice.customerName)}
+                                                            className="mt-2 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-[10px] font-black uppercase tracking-[0.16em] text-emerald-700 transition hover:bg-emerald-100"
+                                                        >
+                                                            Agregar cliente
+                                                        </button>
+                                                    )}
+                                                </Field>
+                                                <Field label="Metodo de pago">
+                                                    <PaymentMethodSelect value={invoice.paymentMethod} onChange={(value) => updateClosureInvoice(invoice.localId, 'paymentMethod', value)} />
+                                                </Field>
+                                                <Field label="Subtotal">
+                                                    <input className={inputClass} type="number" step="0.01" min="0" value={invoice.subtotal} onChange={(event) => updateClosureInvoice(invoice.localId, 'subtotal', event.target.value)} />
+                                                </Field>
+                                                <Field label="IVA">
+                                                    <input className={inputClass} type="number" step="0.01" min="0" value={invoice.iva} onChange={(event) => updateClosureInvoice(invoice.localId, 'iva', event.target.value)} />
+                                                </Field>
+                                                <Field label="Total">
+                                                    <input className={inputClass} type="number" step="0.01" min="0" value={invoice.total} onChange={(event) => updateClosureInvoice(invoice.localId, 'total', event.target.value)} />
+                                                </Field>
+                                                <Field label="Retencion IR 2%">
+                                                    <input className={inputClass} type="number" step="0.01" min="0" value={invoice.retentionIr2} onChange={(event) => updateClosureInvoice(invoice.localId, 'retentionIr2', event.target.value)} />
+                                                </Field>
+                                                <Field label="Retencion municipal 1%">
+                                                    <input className={inputClass} type="number" step="0.01" min="0" value={invoice.retentionMunicipal1} onChange={(event) => updateClosureInvoice(invoice.localId, 'retentionMunicipal1', event.target.value)} />
+                                                </Field>
+                                            </div>
+
+                                            <div className="mt-4 grid gap-3 md:grid-cols-3">
+                                                <Field label="Foto factura">
+                                                    <input className={inputClass} type="file" accept="image/*,application/pdf" onChange={(event) => updateClosureInvoiceFile(invoice.localId, 'invoice', event.target.files?.[0] || null)} />
+                                                </Field>
+                                                <Field label="Soporte IR 2%">
+                                                    <input className={inputClass} type="file" accept="image/*,application/pdf" onChange={(event) => updateClosureInvoiceFile(invoice.localId, 'retentionIr2', event.target.files?.[0] || null)} />
+                                                </Field>
+                                                <Field label="Soporte municipal 1%">
+                                                    <input className={inputClass} type="file" accept="image/*,application/pdf" onChange={(event) => updateClosureInvoiceFile(invoice.localId, 'retentionMunicipal1', event.target.files?.[0] || null)} />
+                                                </Field>
+                                            </div>
+                                        </div>
+                                    )}
                                 </div>
-                            </div>
-                        ))}
+                            );
+                        })}
                     </div>
 
                     <textarea
