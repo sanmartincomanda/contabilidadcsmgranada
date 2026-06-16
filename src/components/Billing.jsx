@@ -27,6 +27,7 @@ const CASH_DIFFERENCE_THRESHOLD = 30;
 const CASH_CLOSURE_EXCHANGE_RATE = 36.50;
 const TRANSFER_USD_EXCHANGE_RATE = 36.62;
 const CASH_CLOSURE_EDIT_PIN = '210397';
+const SICAR_CASH_CLOSURE_AVAILABLE_FROM_DATE = '2026-06-14';
 
 const CASHIER_OPTIONS = [
     'Dania Espinoza',
@@ -1092,6 +1093,7 @@ function CashClosure({ data }) {
                 const datedClosure = { ...item, date: item.date || getRecordDate(item.closureDateTime || item.fecha) };
                 return { ...datedClosure, ...getNetSicarSalesTotals(datedClosure) };
             })
+            .filter((closure) => String(closure.date || '').substring(0, 10) >= SICAR_CASH_CLOSURE_AVAILABLE_FROM_DATE)
             .filter((closure) => ![...getSicarClosureMatchKeys(closure)].some((key) => closedSicarClosureKeys.has(key)))
             .sort((a, b) => String(b.closureDateTime || b.fecha || b.date).localeCompare(String(a.closureDateTime || a.fecha || a.date)))
     ), [closedSicarClosureKeys, data.sicar_cierres_caja]);
@@ -1823,7 +1825,7 @@ function CashClosure({ data }) {
                     )}
                     {sicarClosures.length === 0 ? (
                         <div className="rounded-3xl border border-dashed border-slate-300 p-8 text-center text-sm font-bold text-slate-400">
-                            Aun no hay cierres sincronizados. Ejecuta el worker de facturacion para cargar SICAR.
+                            No hay cierres SICAR pendientes desde 14/06/2026. Si acabas de cerrar caja, espera el refresco automatico.
                         </div>
                     ) : filteredSicarClosures.length === 0 ? (
                         <div className="rounded-3xl border border-dashed border-slate-300 p-8 text-center text-sm font-bold text-slate-400">

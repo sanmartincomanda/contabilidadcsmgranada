@@ -17,6 +17,7 @@ const DEFAULT_STATE_PATH = 'C:\\SICAR\\state\\sicar-cash-closure-watch.json';
 const DEFAULT_INTERVAL_MS = 15000;
 const DEFAULT_BATCH_SIZE = 20;
 const DEFAULT_STARTUP_BACKFILL_DAYS = 3;
+const DEFAULT_POLL_BACKFILL_DAYS = 2;
 
 function parseArgs(argv) {
   return argv.reduce((acc, arg) => {
@@ -27,6 +28,7 @@ function parseArgs(argv) {
     else if (arg === '--skipStartupBackfill') acc.skipStartupBackfill = true;
     else if (arg.startsWith('--intervalMs=')) acc.intervalMs = Number(arg.slice('--intervalMs='.length));
     else if (arg.startsWith('--batchSize=')) acc.batchSize = Number(arg.slice('--batchSize='.length));
+    else if (arg.startsWith('--pollBackfillDays=')) acc.pollBackfillDays = Number(arg.slice('--pollBackfillDays='.length));
     else if (arg.startsWith('--statePath=')) acc.statePath = arg.slice('--statePath='.length);
     else if (arg.startsWith('--startCorId=')) acc.startCorId = Number(arg.slice('--startCorId='.length));
     else if (arg.startsWith('--startupBackfillDays=')) acc.startupBackfillDays = Number(arg.slice('--startupBackfillDays='.length));
@@ -36,12 +38,45 @@ function parseArgs(argv) {
     intervalMs: Number(process.env.SICAR_CASH_CLOSURE_WATCH_INTERVAL_MS || DEFAULT_INTERVAL_MS),
     once: false,
     preview: false,
+    pollBackfillDays: Number(process.env.SICAR_CASH_CLOSURE_WATCH_POLL_BACKFILL_DAYS || DEFAULT_POLL_BACKFILL_DAYS),
     resetState: false,
     skipStartupBackfill: String(process.env.SICAR_CASH_CLOSURE_SKIP_STARTUP_BACKFILL || '').toLowerCase() === 'true',
     stageOnly: false,
     statePath: process.env.SICAR_CASH_CLOSURE_WATCH_STATE_PATH || DEFAULT_STATE_PATH,
     startupBackfillDays: Number(process.env.SICAR_CASH_CLOSURE_WATCH_BACKFILL_DAYS || DEFAULT_STARTUP_BACKFILL_DAYS),
   });
+}
+
+async function processRecentBackfill({ connection, db, options }) {
+  const pollDays = Math.max(1, Math.min(Number(options.pollBackfillDays || DEFAULT_POLL_BACKFILL_DAYS), 31));
+  const { startDate, endDate } = getBackfillRange(pollDays);
+  const closures = await fetchClosures(connection, startDate, addDays(endDate, 1));
+  const maxCorId = closures.reduce((max, closure) => Math.max(max, Number(closure.corId || 0)), 0);
+
+  if (options.preview) {
+    console.log(JSON.stringify({
+      preview: true,
+      recentBackfill: true,
+      startDate,
+      endDate,
+      closureCount: closures.length,
+      maxCorId,
+      closures: closures.map((closure) => ({
+        corId: closure.corId,
+        date: closure.date,
+        cashboxName: closure.cashboxName,
+        calculatedTotal: closure.calculatedTotal,
+        sicarDifference: closure.sicarDifference,
+      })),
+    }, null, 2));
+    return { count: closures.length, maxCorId, writtenCount: 0, skippedCount: 0 };
+  }
+
+  const result = await writeClosures(db, closures, options);
+  if (result.writtenCount > 0) {
+    console.log(`[${new Date().toISOString()}] Backfill vivo cierres ${startDate} a ${endDate}: ${closures.length} revisado/s, ${result.writtenCount} escrito/s, ${result.skippedCount} sin cambios.`);
+  }
+  return { count: closures.length, maxCorId, ...result };
 }
 
 function sleep(ms) {
@@ -228,10 +263,18 @@ async function main() {
 
     do {
       try {
+        if (!options.once) {
+          const recentBackfill = await processRecentBackfill({ connection, db, options });
+          if (recentBackfill.maxCorId > lastCorId) {
+            lastCorId = recentBackfill.maxCorId;
+            writeState(options.statePath, { ...readState(options.statePath), lastCorId });
+          }
+        }
+
         const result = await processNewClosures({ connection, db, lastCorId, options });
         if (result.lastCorId !== lastCorId) {
           lastCorId = result.lastCorId;
-          writeState(options.statePath, { ...state, lastCorId });
+          writeState(options.statePath, { ...readState(options.statePath), lastCorId });
         }
       } catch (error) {
         console.error(`[${new Date().toISOString()}] Error sincronizando cierres SICAR:`, error.message || error);

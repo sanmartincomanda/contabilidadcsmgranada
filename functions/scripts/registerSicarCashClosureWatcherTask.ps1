@@ -2,6 +2,7 @@ param(
     [string]$TaskName = 'SICAR Cash Closure Watcher',
     [int]$IntervalMs = 15000,
     [int]$StartupBackfillDays = 3,
+    [int]$PollBackfillDays = 2,
     [string]$NodePath = ''
 )
 
@@ -20,11 +21,12 @@ if (-not (Test-Path -LiteralPath $hiddenRunnerPath)) {
 
 $safeInterval = [Math]::Max(15000, [Math]::Min($IntervalMs, 300000))
 $safeBackfillDays = [Math]::Max(1, [Math]::Min($StartupBackfillDays, 31))
+$safePollBackfillDays = [Math]::Max(1, [Math]::Min($PollBackfillDays, 31))
 $nodePathArgument = if ($NodePath) { " -NodePath `"$NodePath`"" } else { "" }
 
 $taskAction = New-ScheduledTaskAction `
     -Execute 'wscript.exe' `
-    -Argument "`"$hiddenRunnerPath`" `"runSicarCashClosureWatcher.ps1`" -IntervalMs $safeInterval -StartupBackfillDays $safeBackfillDays$nodePathArgument"
+    -Argument "`"$hiddenRunnerPath`" `"runSicarCashClosureWatcher.ps1`" -IntervalMs $safeInterval -StartupBackfillDays $safeBackfillDays -PollBackfillDays $safePollBackfillDays$nodePathArgument"
 
 $taskTrigger = New-ScheduledTaskTrigger -AtLogOn
 
@@ -40,9 +42,9 @@ Register-ScheduledTask `
     -Action $taskAction `
     -Trigger $taskTrigger `
     -Settings $taskSettings `
-    -Description "Escucha cierres de caja SICAR en MySQL cada $safeInterval ms, recupera $safeBackfillDays dia/s recientes al iniciar y escribe en Firebase solo si hay cierres nuevos o cambios." `
+    -Description "Escucha cierres de caja SICAR en MySQL cada $safeInterval ms, recupera $safeBackfillDays dia/s al iniciar, revalida $safePollBackfillDays dia/s en cada ciclo y escribe en Firebase solo si hay cierres nuevos o cambios." `
     -Force | Out-Null
 
-Write-Host "Tarea '$TaskName' creada correctamente. Intervalo interno: $safeInterval ms. Backfill al iniciar: $safeBackfillDays dia/s."
+Write-Host "Tarea '$TaskName' creada correctamente. Intervalo interno: $safeInterval ms. Backfill al iniciar: $safeBackfillDays dia/s. Backfill vivo: $safePollBackfillDays dia/s."
 Write-Host "Inicia automaticamente al iniciar sesion. Para iniciar ahora: Start-ScheduledTask -TaskName '$TaskName'"
 Get-ScheduledTask -TaskName $TaskName | Format-List TaskName,State

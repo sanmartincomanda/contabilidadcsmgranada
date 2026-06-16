@@ -2,6 +2,7 @@ param(
     [int]$IntervalMs = 15000,
     [string]$StatePath = 'C:\SICAR\state\sicar-cash-closure-watch.json',
     [int]$StartupBackfillDays = 3,
+    [int]$PollBackfillDays = 2,
     [string]$NodePath = '',
     [string]$ServiceKeyPath = $env:GOOGLE_APPLICATION_CREDENTIALS
 )
@@ -51,7 +52,7 @@ $env:GOOGLE_APPLICATION_CREDENTIALS = $ServiceKeyPath
 
 Push-Location $functionsDir
 try {
-    & $nodePath '.\scripts\watchSicarCashClosures.js' "--intervalMs=$IntervalMs" "--statePath=$StatePath" "--startupBackfillDays=$StartupBackfillDays"
+    & $nodePath '.\scripts\watchSicarCashClosures.js' "--intervalMs=$IntervalMs" "--statePath=$StatePath" "--startupBackfillDays=$StartupBackfillDays" "--pollBackfillDays=$PollBackfillDays"
 } finally {
     Pop-Location
 }

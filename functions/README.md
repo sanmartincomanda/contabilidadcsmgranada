@@ -580,6 +580,7 @@ Control de costos:
 - Cada cierre visible guarda una huella `sicarFingerprint`; si la huella no cambia, el watcher no reescribe el documento.
 - El estado local se guarda en `C:\SICAR\state\sicar-cash-closure-watch.json`.
 - Al iniciar verifica de forma idempotente los ultimos 3 dias para recuperar cierres recientes.
+- En cada ciclo vuelve a revalidar una ventana reciente, por defecto 2 dias, para recuperar cierres que SICAR haya terminado o modificado despues. Esto no reescribe Firebase si la huella del cierre no cambio.
 
 Prueba manual una sola vez:
 
@@ -599,6 +600,6 @@ Registrar tarea oculta al iniciar sesion:
 
 ```powershell
 cd functions
-.\scripts\registerSicarCashClosureWatcherTask.ps1 -IntervalMs 15000
+.\scripts\registerSicarCashClosureWatcherTask.ps1 -IntervalMs 15000 -PollBackfillDays 2
 Start-ScheduledTask -TaskName "SICAR Cash Closure Watcher"
 ```
