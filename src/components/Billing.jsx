@@ -1073,6 +1073,9 @@ const ClosureAccountingSummaryPanel = ({ summary = {} }) => {
 };
 
 function CashClosure({ data }) {
+    const { user } = useAuth();
+    const isMaster = isMasterEmail(user?.email);
+
     const closedSicarClosureKeys = useMemo(() => {
         const keys = new Set();
         (data.cierres_caja || [])
@@ -1938,9 +1941,11 @@ function CashClosure({ data }) {
                         <SummaryCard label="Diferencia" value={fmt(difference)} tone={shouldTrackDifference ? 'red' : 'green'} />
                     </div>
 
+                    {isMaster && (
                     <div className="mt-5">
                         <ClosureAccountingSummaryPanel summary={closureAccountingSummary} />
                     </div>
+                    )}
 
                     <div className="mt-5 rounded-3xl border border-slate-200 bg-slate-50/70 p-4">
                         <div className="mb-3 flex items-center justify-between">
@@ -5371,7 +5376,10 @@ const CashClosureEditModal = ({
 };
 
 const CashClosureDetailModal = ({ closure, onClose, onEdit }) => {
-    if (!closure) return null;
+    const { user } = useAuth();
+    const isMaster = isMasterEmail(user?.email);
+
+    if (!closure || !isMaster) return null;
 
     const exchangeRate = safeNumber(closure.exchangeRate || closure.preCloseDeposit?.exchangeRate || CASH_CLOSURE_EXCHANGE_RATE);
     const cordobaRows = buildDenominationRows(closure.cashCount, CASH_DENOMINATIONS);
@@ -5691,6 +5699,8 @@ const CashClosureDetailModal = ({ closure, onClose, onEdit }) => {
 };
 
 function CashClosureHistory({ data }) {
+    const { user } = useAuth();
+    const isMaster = isMasterEmail(user?.email);
     const [search, setSearch] = useState('');
     const [selectedMonth, setSelectedMonth] = useState(getMonth(todayString()));
     const [statusFilter, setStatusFilter] = useState('');
@@ -6161,13 +6171,15 @@ function CashClosureHistory({ data }) {
                                     <td className={`px-4 py-3 text-right font-mono font-black ${Math.abs(closure.difference) > 0.01 ? 'text-red-700' : 'text-emerald-700'}`}>{fmt(closure.difference)}</td>
                                     <td className="px-4 py-3 text-right">
                                         <div className="flex justify-end gap-2">
-                                            <button
-                                                type="button"
-                                                onClick={() => setDetailClosure(closure)}
-                                                className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-[10px] font-black uppercase tracking-[0.16em] text-slate-700 transition hover:border-[#e30613] hover:bg-red-50 hover:text-[#e30613]"
-                                            >
-                                                Ver
-                                            </button>
+                                            {isMaster && (
+                                                <button
+                                                    type="button"
+                                                    onClick={() => setDetailClosure(closure)}
+                                                    className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-[10px] font-black uppercase tracking-[0.16em] text-slate-700 transition hover:border-[#e30613] hover:bg-red-50 hover:text-[#e30613]"
+                                                >
+                                                    Ver
+                                                </button>
+                                            )}
                                             <button
                                                 type="button"
                                                 onClick={() => openEditClosure(closure)}
