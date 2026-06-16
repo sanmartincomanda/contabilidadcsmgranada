@@ -1733,6 +1733,50 @@ const createStampedInvoiceForm = () => ({
     items: [],
 });
 
+const createStampedInvoiceEditForm = (invoice = {}) => ({
+    id: invoice.id || invoice.docId || '',
+    docId: invoice.docId || invoice.id || '',
+    date: invoice.date || invoice.saleDate || todayString(),
+    invoiceNumber: invoice.invoiceNumber || invoice.numeroFactura || '',
+    customerName: invoice.customerName || invoice.cliente || '',
+    customerAddress: invoice.customerAddress || invoice.address || '',
+    customerRfc: invoice.customerRfc || invoice.rfc || '',
+    subtotal: String(safeNumber(invoice.subtotal)),
+    iva: String(safeNumber(invoice.iva)),
+    total: String(safeNumber(invoice.total) || safeNumber(invoice.subtotal) + safeNumber(invoice.iva)),
+    retentionIr2: String(safeNumber(invoice.retentionIr2)),
+    retentionMunicipal1: String(safeNumber(invoice.retentionMunicipal1)),
+    paymentMethod: invoice.paymentMethod || '',
+    source: invoice.source || 'manual',
+    sourceSicarInvoiceId: invoice.sourceSicarInvoiceId || '',
+    sourceSicarInvoiceNumber: invoice.sourceSicarInvoiceNumber || '',
+    linkedCashClosureId: invoice.linkedCashClosureId || '',
+    linkedSicarClosureId: invoice.linkedSicarClosureId || '',
+    linkedSicarCorId: invoice.linkedSicarCorId || null,
+    cashClosureLinkStatus: invoice.cashClosureLinkStatus || '',
+    closureStatus: invoice.closureStatus || '',
+    excludeFromCashClosure: Boolean(invoice.excludeFromCashClosure),
+    splitGroupId: invoice.splitGroupId || '',
+    splitPart: invoice.splitPart || null,
+    splitTotalParts: invoice.splitTotalParts || null,
+    items: (invoice.items || []).map((item, index) => ({
+        localId: item.localId || createLineId('edit_line'),
+        saleId: item.saleId || item.ven_id || '',
+        articleId: item.articleId || item.art_id || '',
+        code: item.code || item.clave || '',
+        description: item.description || item.descripcion || '',
+        quantity: item.quantity ?? item.cantidad ?? '',
+        unit: item.unit || item.unidad || 'UND',
+        unitPriceWithoutTax: item.unitPriceWithoutTax ?? item.precioSin ?? '',
+        unitPriceWithTax: item.unitPriceWithTax ?? item.precioCon ?? '',
+        totalWithoutTax: item.totalWithoutTax ?? item.importeSin ?? '',
+        taxAmount: item.taxAmount ?? item.iva ?? '',
+        totalWithTax: item.totalWithTax ?? item.importeCon ?? '',
+        taxable: item.taxable || false,
+        order: Number(item.order ?? item.orden ?? index),
+    })),
+});
+
 const PrintText = ({ field, layout, children, align = 'left', mono = false, className = '' }) => (
     <div
         className={`absolute leading-tight text-slate-950 ${mono ? 'font-mono' : 'font-sans'} ${className}`}
@@ -2778,6 +2822,7 @@ const StampedInvoiceDetailModal = ({
     invoice,
     onClose,
     onPrint,
+    onEdit,
     onPaymentMethodChange,
     supportUploadFiles = {},
     onSupportFileChange,
@@ -2800,6 +2845,9 @@ const StampedInvoiceDetailModal = ({
                     <div className="flex flex-wrap gap-2">
                         <button type="button" onClick={() => onPrint(invoice)} className="rounded-2xl bg-[#e30613] px-4 py-2 text-xs font-black uppercase tracking-[0.16em] text-white transition hover:bg-red-700">
                             Imprimir
+                        </button>
+                        <button type="button" onClick={() => onEdit(invoice)} className="rounded-2xl border border-white/20 bg-white/10 px-4 py-2 text-xs font-black uppercase tracking-[0.16em] text-white transition hover:bg-white/20">
+                            Editar
                         </button>
                         <button type="button" onClick={onClose} className="rounded-2xl bg-white px-4 py-2 text-xs font-black uppercase tracking-[0.16em] text-slate-950 transition hover:bg-slate-200">
                             Cerrar
@@ -2927,6 +2975,154 @@ const StampedInvoiceDetailModal = ({
     );
 };
 
+const StampedInvoiceEditModal = ({
+    form,
+    splitInvoice,
+    saving = false,
+    onClose,
+    onSave,
+    onUpdate,
+    onItemChange,
+    onAddItem,
+    onRemoveItem,
+    onSplit,
+    onSplitInvoiceNumberChange,
+}) => {
+    if (!form) return null;
+    const fiscal = buildFiscalPayload({
+        subtotal: safeNumber(form.subtotal),
+        iva: safeNumber(form.iva),
+        total: safeNumber(form.total) || safeNumber(form.subtotal) + safeNumber(form.iva),
+        retentionIr2: safeNumber(form.retentionIr2),
+        retentionMunicipal1: safeNumber(form.retentionMunicipal1),
+    });
+    const canSplit = (form.items || []).length > 10 && !splitInvoice;
+
+    return (
+        <div className="fixed inset-0 z-[80] flex items-start justify-center overflow-y-auto bg-slate-950/75 p-4 backdrop-blur-sm">
+            <div className="w-full max-w-7xl overflow-hidden rounded-[2rem] border border-white/10 bg-white shadow-2xl">
+                <div className="flex flex-col gap-3 border-b border-slate-200 bg-slate-950 px-5 py-4 text-white sm:flex-row sm:items-center sm:justify-between">
+                    <div>
+                        <div className="text-[10px] font-black uppercase tracking-[0.28em] text-red-300">Edicion fiscal</div>
+                        <h3 className="text-xl font-black">Editar factura membretada</h3>
+                        <p className="mt-1 text-sm font-semibold text-slate-300">
+                            Ajusta numero, cliente, metodo, retenciones y articulos. Si tiene mas de 10 lineas podes dividirla desde aqui.
+                        </p>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                        <button type="button" onClick={onSave} disabled={saving} className="rounded-2xl bg-[#e30613] px-4 py-2 text-xs font-black uppercase tracking-[0.16em] text-white transition hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-60">
+                            {saving ? 'Guardando...' : 'Guardar cambios'}
+                        </button>
+                        <button type="button" onClick={onClose} className="rounded-2xl bg-white px-4 py-2 text-xs font-black uppercase tracking-[0.16em] text-slate-950 transition hover:bg-slate-200">
+                            Cerrar
+                        </button>
+                    </div>
+                </div>
+
+                <div className="space-y-5 p-5">
+                    <div className="grid gap-4 lg:grid-cols-2">
+                        <Field label="Fecha">
+                            <input className={inputClass} type="date" value={form.date || ''} onChange={(event) => onUpdate('date', event.target.value)} />
+                        </Field>
+                        <Field label="Numero factura app / membretada">
+                            <input className={inputClass} value={form.invoiceNumber || ''} onChange={(event) => onUpdate('invoiceNumber', event.target.value)} />
+                        </Field>
+                        <Field label="Cliente">
+                            <input className={inputClass} value={form.customerName || ''} onChange={(event) => onUpdate('customerName', event.target.value)} />
+                        </Field>
+                        <Field label="Metodo de pago">
+                            <PaymentMethodSelect value={form.paymentMethod || ''} onChange={(value) => onUpdate('paymentMethod', value)} />
+                        </Field>
+                        <Field label="Direccion cliente">
+                            <input className={inputClass} value={form.customerAddress || ''} onChange={(event) => onUpdate('customerAddress', event.target.value)} />
+                        </Field>
+                        <Field label="R.F.C / RUC">
+                            <input className={inputClass} value={form.customerRfc || ''} onChange={(event) => onUpdate('customerRfc', event.target.value)} />
+                        </Field>
+                    </div>
+
+                    <div className="grid gap-4 lg:grid-cols-5">
+                        <Field label="Subtotal">
+                            <input className={inputClass} type="number" step="0.01" min="0" value={form.subtotal || ''} onChange={(event) => onUpdate('subtotal', event.target.value)} />
+                        </Field>
+                        <Field label="IVA">
+                            <input className={inputClass} type="number" step="0.01" min="0" value={form.iva || ''} onChange={(event) => onUpdate('iva', event.target.value)} />
+                        </Field>
+                        <Field label="Total">
+                            <input className={inputClass} type="number" step="0.01" min="0" value={form.total || ''} onChange={(event) => onUpdate('total', event.target.value)} />
+                        </Field>
+                        <Field label="Retencion IR 2%">
+                            <input className={inputClass} type="number" step="0.01" min="0" value={form.retentionIr2 || ''} onChange={(event) => onUpdate('retentionIr2', event.target.value)} />
+                        </Field>
+                        <Field label="Retencion municipal 1%">
+                            <input className={inputClass} type="number" step="0.01" min="0" value={form.retentionMunicipal1 || ''} onChange={(event) => onUpdate('retentionMunicipal1', event.target.value)} />
+                        </Field>
+                    </div>
+
+                    <div className="grid gap-3 md:grid-cols-4">
+                        <SummaryCard label="Subtotal" value={fmt(fiscal.subtotal)} />
+                        <SummaryCard label="IVA" value={fmt(fiscal.iva)} tone="blue" />
+                        <SummaryCard label="Total" value={fmt(fiscal.total)} tone="green" />
+                        <SummaryCard label="Retenciones" value={fmt(fiscal.retentionTotal)} tone="amber" />
+                    </div>
+
+                    <div className="rounded-3xl border border-slate-200 bg-slate-50/70 p-4">
+                        <div className="mb-3 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                            <div>
+                                <div className="text-sm font-black text-slate-950">Articulos de factura</div>
+                                <div className="text-xs font-semibold text-slate-500">Edita cantidades, productos, IVA y totales. Se recalculan los importes principales.</div>
+                            </div>
+                            <div className="flex flex-wrap gap-2">
+                                <Badge tone={(form.items || []).length ? 'green' : 'slate'}>{(form.items || []).length} lineas</Badge>
+                                {canSplit && (
+                                    <button
+                                        type="button"
+                                        onClick={onSplit}
+                                        className="rounded-2xl bg-amber-500 px-4 py-2 text-xs font-black uppercase tracking-[0.16em] text-white shadow-lg shadow-amber-900/10 transition hover:bg-amber-600"
+                                    >
+                                        Dividir factura
+                                    </button>
+                                )}
+                            </div>
+                        </div>
+                        {canSplit && (
+                            <div className="mb-3 rounded-2xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm font-bold text-amber-900">
+                                Esta factura tiene {(form.items || []).length} articulos. Al dividir, 10 quedan en esta factura y el resto pasa a una segunda factura con otro numero.
+                            </div>
+                        )}
+                        <ManualInvoiceItemsEditor
+                            items={form.items || []}
+                            onAdd={onAddItem}
+                            onChange={onItemChange}
+                            onRemove={onRemoveItem}
+                        />
+                    </div>
+
+                    {splitInvoice && (
+                        <div className="rounded-3xl border border-amber-300 bg-amber-50 p-4">
+                            <div className="mb-3 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                                <div>
+                                    <div className="text-sm font-black text-amber-950">Segunda factura creada por division</div>
+                                    <div className="text-xs font-semibold text-amber-800">{splitInvoice.items?.length || 0} articulos se guardaran como factura separada.</div>
+                                </div>
+                                <Field label="Numero factura 2">
+                                    <input className={inputClass} value={splitInvoice.invoiceNumber || ''} onChange={(event) => onSplitInvoiceNumberChange(event.target.value)} />
+                                </Field>
+                            </div>
+                            <InvoiceItemsTable items={splitInvoice.items || []} />
+                            <div className="mt-3 grid gap-3 md:grid-cols-3">
+                                <SummaryCard label="Subtotal factura 2" value={fmt(splitInvoice.subtotal)} />
+                                <SummaryCard label="IVA factura 2" value={fmt(splitInvoice.iva)} tone="blue" />
+                                <SummaryCard label="Total factura 2" value={fmt(splitInvoice.total)} tone="green" />
+                            </div>
+                        </div>
+                    )}
+                </div>
+            </div>
+        </div>
+    );
+};
+
 function StampedInvoiceHistory({ data }) {
     const [search, setSearch] = useState('');
     const [selectedMonth, setSelectedMonth] = useState(getMonth(todayString()));
@@ -2934,6 +3130,10 @@ function StampedInvoiceHistory({ data }) {
     const [page, setPage] = useState(1);
     const [message, setMessage] = useState('');
     const [detailTarget, setDetailTarget] = useState(null);
+    const [editTarget, setEditTarget] = useState(null);
+    const [editForm, setEditForm] = useState(null);
+    const [splitEditInvoice, setSplitEditInvoice] = useState(null);
+    const [editSaving, setEditSaving] = useState(false);
     const [printTarget, setPrintTarget] = useState(null);
     const [supportUploadFiles, setSupportUploadFiles] = useState({});
     const [supportSaving, setSupportSaving] = useState(false);
@@ -3065,6 +3265,285 @@ function StampedInvoiceHistory({ data }) {
     const openInvoiceDetail = (invoice) => {
         setDetailTarget(invoice);
         setSupportUploadFiles({});
+    };
+
+    const openInvoiceEdit = (invoice) => {
+        setDetailTarget(null);
+        setEditTarget(invoice);
+        setEditForm(createStampedInvoiceEditForm(invoice));
+        setSplitEditInvoice(null);
+    };
+
+    const closeInvoiceEdit = () => {
+        setEditTarget(null);
+        setEditForm(null);
+        setSplitEditInvoice(null);
+    };
+
+    const updateEditField = (key, value) => {
+        setEditForm((prev) => {
+            if (!prev) return prev;
+            const next = { ...prev, [key]: value };
+            if (key === 'subtotal' || key === 'iva') {
+                next.total = String(safeNumber(next.subtotal) + safeNumber(next.iva));
+            }
+            return next;
+        });
+    };
+
+    const applyEditItemTotals = (items = []) => {
+        const totals = calculateInvoiceItemsFiscal(items);
+        return {
+            items,
+            subtotal: String(totals.subtotal),
+            iva: String(totals.iva),
+            total: String(totals.total),
+        };
+    };
+
+    const updateEditItem = (index, key, value) => {
+        setSplitEditInvoice(null);
+        setEditForm((prev) => {
+            if (!prev) return prev;
+            const items = [...(prev.items || [])];
+            const current = { ...(items[index] || createManualInvoiceItem()), [key]: value };
+            if (['quantity', 'unitPriceWithoutTax'].includes(key)) {
+                current.totalWithoutTax = String(safeNumber(safeNumber(current.quantity) * safeNumber(current.unitPriceWithoutTax)));
+            }
+            if (['quantity', 'unitPriceWithoutTax', 'totalWithoutTax', 'taxAmount'].includes(key)) {
+                current.totalWithTax = String(safeNumber(getInvoiceItemSubtotal(current) + getInvoiceItemTax(current)));
+            }
+            items[index] = current;
+            return { ...prev, ...applyEditItemTotals(items) };
+        });
+    };
+
+    const addEditItem = () => {
+        setSplitEditInvoice(null);
+        setEditForm((prev) => {
+            if (!prev) return prev;
+            const items = [...(prev.items || []), createManualInvoiceItem()];
+            return { ...prev, ...applyEditItemTotals(items) };
+        });
+    };
+
+    const removeEditItem = (index) => {
+        setSplitEditInvoice(null);
+        setEditForm((prev) => {
+            if (!prev) return prev;
+            const items = (prev.items || []).filter((_, itemIndex) => itemIndex !== index);
+            return { ...prev, ...applyEditItemTotals(items) };
+        });
+    };
+
+    const splitEditedInvoice = () => {
+        if (!editForm) return;
+        const items = editForm.items || [];
+        if (items.length <= 10) {
+            setMessage('La factura solo se divide cuando tiene mas de 10 articulos.');
+            return;
+        }
+        if (!String(editForm.invoiceNumber || '').trim()) {
+            setMessage('Ingresa primero el numero de factura principal.');
+            return;
+        }
+        const secondInvoiceNumber = window.prompt('Numero de factura para la segunda factura membretada:');
+        if (!String(secondInvoiceNumber || '').trim()) return;
+        if (normalizeInvoiceMatchKey(secondInvoiceNumber) === normalizeInvoiceMatchKey(editForm.invoiceNumber)) {
+            setMessage('El numero de la segunda factura debe ser diferente.');
+            return;
+        }
+        const duplicateAppInvoice = savedInvoices.find((item) => (
+            normalizeInvoiceMatchKey(item.id || item.docId) !== normalizeInvoiceMatchKey(editForm.id || editForm.docId)
+            && getInvoiceNumberForMatch(item) === normalizeInvoiceMatchKey(secondInvoiceNumber)
+            && !['ANULADA', 'ANULADO', 'CANCELADA', 'CANCELADO', 'DELETED'].includes(normalizeText(item.status))
+        ));
+        if (duplicateAppInvoice) {
+            setMessage(`Ya existe una factura membretada con el numero ${secondInvoiceNumber}. Usa otro consecutivo.`);
+            return;
+        }
+
+        const firstItems = items.slice(0, 10);
+        const secondItems = items.slice(10);
+        const firstTotals = calculateInvoiceItemsFiscal(firstItems);
+        const secondTotals = calculateInvoiceItemsFiscal(secondItems);
+        setEditForm((prev) => ({
+            ...prev,
+            items: firstItems,
+            subtotal: String(firstTotals.subtotal),
+            iva: String(firstTotals.iva),
+            total: String(firstTotals.total),
+            splitPart: 1,
+            splitTotalParts: 2,
+        }));
+        setSplitEditInvoice({
+            ...editForm,
+            id: '',
+            docId: '',
+            invoiceNumber: String(secondInvoiceNumber).trim(),
+            items: secondItems,
+            subtotal: String(secondTotals.subtotal),
+            iva: String(secondTotals.iva),
+            total: String(secondTotals.total),
+            retentionIr2: '',
+            retentionMunicipal1: '',
+            splitPart: 2,
+            splitTotalParts: 2,
+        });
+        setMessage(`Factura preparada para dividir: 10 articulos quedan en ${editForm.invoiceNumber}; ${secondItems.length} pasan a ${String(secondInvoiceNumber).trim()}.`);
+    };
+
+    const updateSplitEditInvoiceNumber = (value) => {
+        setSplitEditInvoice((prev) => prev ? { ...prev, invoiceNumber: value } : prev);
+    };
+
+    const saveEditedInvoice = async () => {
+        if (!editForm) return;
+        const originalDocId = editForm.id || editForm.docId || editTarget?.id || editTarget?.docId;
+        if (!originalDocId) {
+            setMessage('No se pudo identificar la factura para editar.');
+            return;
+        }
+
+        setEditSaving(true);
+        try {
+            const invoicesToSave = [editForm, splitEditInvoice].filter(Boolean).map((invoice, index, list) => ({
+                ...invoice,
+                splitPart: list.length > 1 ? index + 1 : invoice.splitPart || null,
+                splitTotalParts: list.length > 1 ? list.length : invoice.splitTotalParts || null,
+                items: normalizeInvoiceItemsForSave(invoice.items || []),
+            }));
+
+            invoicesToSave.forEach((invoice) => {
+                if (!String(invoice.invoiceNumber || '').trim()) throw new Error('Ingresa el numero de factura.');
+                if (!safeNumber(invoice.subtotal) && !safeNumber(invoice.total)) throw new Error(`Ingresa subtotal o total para la factura ${invoice.invoiceNumber}.`);
+            });
+
+            const invoiceNumberKeys = invoicesToSave.map((invoice) => normalizeInvoiceMatchKey(invoice.invoiceNumber)).filter(Boolean);
+            if (new Set(invoiceNumberKeys).size !== invoiceNumberKeys.length) {
+                throw new Error('Las facturas divididas deben tener numeros diferentes.');
+            }
+
+            const invoiceMeta = invoicesToSave.map((invoice, index) => ({
+                invoice,
+                docId: index === 0 ? originalDocId : `membretada_${slugify(invoice.invoiceNumber)}_${(invoice.date || todayString()).replace(/-/g, '')}`,
+            }));
+            const docIdsBeingSaved = new Set(invoiceMeta.map(({ docId }) => normalizeInvoiceMatchKey(docId)));
+
+            for (const { invoice, docId } of invoiceMeta) {
+                const duplicateAppInvoice = savedInvoices.find((item) => (
+                    !docIdsBeingSaved.has(normalizeInvoiceMatchKey(item.id || item.docId))
+                    && getInvoiceNumberForMatch(item) === normalizeInvoiceMatchKey(invoice.invoiceNumber)
+                    && !['ANULADA', 'ANULADO', 'CANCELADA', 'CANCELADO', 'DELETED'].includes(normalizeText(item.status))
+                ));
+                if (duplicateAppInvoice) {
+                    throw new Error(`Ya existe una factura membretada en la app con el numero ${invoice.invoiceNumber}. Usa el consecutivo correcto.`);
+                }
+                if (!docId) throw new Error('No se pudo generar el identificador de la factura.');
+            }
+
+            const splitGroupId = invoiceMeta.length > 1 ? originalDocId : editForm.splitGroupId || '';
+            const batch = writeBatch(db);
+
+            invoiceMeta.forEach(({ invoice, docId }) => {
+                const itemFiscal = calculateInvoiceItemsFiscal(invoice.items || []);
+                const invoiceFiscal = buildFiscalPayload({
+                    subtotal: itemFiscal.subtotal || safeNumber(invoice.subtotal),
+                    iva: itemFiscal.iva || safeNumber(invoice.iva),
+                    total: itemFiscal.total || safeNumber(invoice.total) || safeNumber(invoice.subtotal) + safeNumber(invoice.iva),
+                    retentionIr2: safeNumber(invoice.retentionIr2),
+                    retentionMunicipal1: safeNumber(invoice.retentionMunicipal1),
+                });
+                batch.set(doc(db, 'facturas_membretadas_ventas', docId), {
+                    date: invoice.date || todayString(),
+                    saleDate: invoice.date || todayString(),
+                    month: getMonth(invoice.date || todayString()),
+                    numeroFactura: String(invoice.invoiceNumber || '').trim(),
+                    invoiceNumber: String(invoice.invoiceNumber || '').trim(),
+                    customerName: String(invoice.customerName || '').trim(),
+                    customerAddress: String(invoice.customerAddress || '').trim(),
+                    customerRfc: String(invoice.customerRfc || '').trim(),
+                    paymentMethod: String(invoice.paymentMethod || '').trim(),
+                    items: invoice.items || [],
+                    ...invoiceFiscal,
+                    source: invoice.source || (invoice.sourceSicarInvoiceId ? 'sicar_factura' : 'manual'),
+                    sourceType: 'stamped_sale_invoice',
+                    sourceSicarInvoiceId: invoice.sourceSicarInvoiceId || '',
+                    sourceSicarInvoiceNumber: invoice.sourceSicarInvoiceNumber || '',
+                    linkedCashClosureId: invoice.linkedCashClosureId || '',
+                    linkedSicarClosureId: invoice.linkedSicarClosureId || '',
+                    linkedSicarCorId: invoice.linkedSicarCorId || null,
+                    cashClosureLinkStatus: invoice.cashClosureLinkStatus || '',
+                    closureStatus: invoice.closureStatus || '',
+                    excludeFromCashClosure: Boolean(invoice.excludeFromCashClosure),
+                    splitGroupId,
+                    splitPart: invoice.splitPart || null,
+                    splitTotalParts: invoice.splitTotalParts || null,
+                    status: 'active',
+                    updatedAt: serverTimestamp(),
+                    ...(docId === originalDocId ? {} : { createdAt: serverTimestamp() }),
+                }, { merge: true });
+            });
+
+            if (editForm.sourceSicarInvoiceId) {
+                batch.set(doc(db, 'sicar_facturas_membretadas', editForm.sourceSicarInvoiceId), {
+                    accountingStatus: 'contabilizada',
+                    accountingInvoiceId: originalDocId,
+                    accountingInvoiceIds: invoiceMeta.map(({ docId }) => docId),
+                    accountingInvoiceNumber: String(editForm.invoiceNumber || '').trim(),
+                    accountingInvoiceNumbers: invoicesToSave.map((invoice) => String(invoice.invoiceNumber || '').trim()),
+                    accountingSourceSicarInvoiceId: editForm.sourceSicarInvoiceId,
+                    sourceSicarInvoiceNumber: editForm.sourceSicarInvoiceNumber || '',
+                    accountingLoadedAt: serverTimestamp(),
+                    updatedAt: serverTimestamp(),
+                }, { merge: true });
+            }
+
+            if (editForm.linkedCashClosureId && closureIndex.has(editForm.linkedCashClosureId)) {
+                const closure = closureIndex.get(editForm.linkedCashClosureId) || {};
+                const editedDocIds = invoiceMeta.map(({ docId }) => docId);
+                const editedDocKeySet = new Set(editedDocIds.map((id) => normalizeInvoiceMatchKey(id)));
+                const previousIds = Array.isArray(closure.stampedInvoiceIds) ? closure.stampedInvoiceIds : [];
+                const nextIds = [...new Set([...previousIds, ...editedDocIds].filter(Boolean))];
+                const previousInvoices = Array.isArray(closure.stampedInvoices) ? closure.stampedInvoices : [];
+                const nextSummaries = invoiceMeta.map(({ invoice, docId }) => {
+                    const itemFiscal = calculateInvoiceItemsFiscal(invoice.items || []);
+                    const invoiceFiscal = buildFiscalPayload({
+                        subtotal: itemFiscal.subtotal || safeNumber(invoice.subtotal),
+                        iva: itemFiscal.iva || safeNumber(invoice.iva),
+                        total: itemFiscal.total || safeNumber(invoice.total) || safeNumber(invoice.subtotal) + safeNumber(invoice.iva),
+                        retentionIr2: safeNumber(invoice.retentionIr2),
+                        retentionMunicipal1: safeNumber(invoice.retentionMunicipal1),
+                    });
+                    return {
+                        id: docId,
+                        invoiceNumber: String(invoice.invoiceNumber || '').trim(),
+                        date: invoice.saleDate || invoice.date,
+                        subtotal: safeNumber(invoiceFiscal.subtotal),
+                        iva: safeNumber(invoiceFiscal.iva),
+                        total: safeNumber(invoiceFiscal.total),
+                        retentionTotal: safeNumber(invoiceFiscal.retentionTotal),
+                    };
+                });
+                batch.set(doc(db, 'cierres_caja', editForm.linkedCashClosureId), {
+                    stampedInvoiceIds: nextIds,
+                    stampedInvoices: [
+                        ...previousInvoices.filter((invoice) => !editedDocKeySet.has(normalizeInvoiceMatchKey(invoice.id || invoice.docId))),
+                        ...nextSummaries,
+                    ],
+                    updatedAt: serverTimestamp(),
+                }, { merge: true });
+            }
+
+            await batch.commit();
+            setMessage(invoiceMeta.length > 1 ? 'Factura actualizada y dividida correctamente desde historial.' : 'Factura actualizada correctamente desde historial.');
+            closeInvoiceEdit();
+        } catch (error) {
+            console.error(error);
+            setMessage(error?.message || 'No se pudo guardar la edicion de la factura.');
+        } finally {
+            setEditSaving(false);
+        }
     };
 
     const updateSupportUploadFile = (type, file) => {
@@ -3225,6 +3704,13 @@ function StampedInvoiceHistory({ data }) {
                                         </button>
                                         <button
                                             type="button"
+                                            onClick={() => openInvoiceEdit(invoice)}
+                                            className="rounded-xl bg-[#e30613] px-4 py-3 text-xs font-black uppercase tracking-[0.14em] text-white transition hover:bg-red-700"
+                                        >
+                                            Editar
+                                        </button>
+                                        <button
+                                            type="button"
                                             onClick={() => setPrintTarget(invoice)}
                                             className="rounded-xl border border-slate-200 bg-white px-4 py-3 text-xs font-black uppercase tracking-[0.14em] text-slate-700 transition hover:border-[#e30613] hover:text-[#e30613]"
                                         >
@@ -3266,11 +3752,25 @@ function StampedInvoiceHistory({ data }) {
                     setSupportUploadFiles({});
                 }}
                 onPrint={setPrintTarget}
+                onEdit={openInvoiceEdit}
                 onPaymentMethodChange={updatePaymentMethod}
                 supportUploadFiles={supportUploadFiles}
                 onSupportFileChange={updateSupportUploadFile}
                 onSupportUpload={uploadDetailSupports}
                 supportSaving={supportSaving}
+            />
+            <StampedInvoiceEditModal
+                form={editForm}
+                splitInvoice={splitEditInvoice}
+                saving={editSaving}
+                onClose={closeInvoiceEdit}
+                onSave={saveEditedInvoice}
+                onUpdate={updateEditField}
+                onItemChange={updateEditItem}
+                onAddItem={addEditItem}
+                onRemoveItem={removeEditItem}
+                onSplit={splitEditedInvoice}
+                onSplitInvoiceNumberChange={updateSplitEditInvoiceNumber}
             />
             <StampedInvoicePrintModal
                 invoice={printTarget}
