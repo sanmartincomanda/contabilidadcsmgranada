@@ -453,6 +453,26 @@ const createInvoiceDraft = (invoice = {}, fallbackDate = todayString()) => {
     };
 };
 
+const createCashReceiptDraft = (receipt = {}, fallbackDate = todayString()) => {
+    const normalized = normalizeCashReceiptRecord(receipt);
+    const docId = receipt.id || receipt.docId || receipt.receiptId || '';
+
+    return {
+        ...normalized,
+        localId: receipt.localId || createLineId('receipt'),
+        id: docId,
+        docId,
+        date: normalized.date || fallbackDate,
+        receiptNumber: normalized.receiptNumber || receipt.numeroRecibo || '',
+        customerName: normalized.customerName || receipt.recibiDe || '',
+        amount: safeNumber(normalized.amount),
+        retentionIr2: safeNumber(normalized.retentionIr2),
+        concept: normalized.concept || '',
+        paymentMethod: normalized.paymentMethod || '',
+        netAmount: safeNumber(normalized.netAmount),
+    };
+};
+
 const hasInvoiceDraftContent = (invoice = {}) => (
     Boolean(
         String(invoice.invoiceNumber || '').trim()
@@ -1115,6 +1135,7 @@ function CashClosure({ data }) {
     const [transfers, setTransfers] = useState({ bac: [], bac2: [], banpro: [], lafise: [], bacUsd: [], lafiseUsd: [] });
     const [posDetails, setPosDetails] = useState({ bac: [], banpro: [], lafise: [] });
     const [closureInvoices, setClosureInvoices] = useState([]);
+    const [closureCashReceipts, setClosureCashReceipts] = useState([]);
     const [notes, setNotes] = useState('');
     const [saving, setSaving] = useState(false);
     const [message, setMessage] = useState('');
@@ -1122,6 +1143,8 @@ function CashClosure({ data }) {
     const [sicarClosurePage, setSicarClosurePage] = useState(1);
     const [closureInvoiceSearch, setClosureInvoiceSearch] = useState('');
     const [closureInvoicePage, setClosureInvoicePage] = useState(1);
+    const [closureReceiptSearch, setClosureReceiptSearch] = useState('');
+    const [closureReceiptPage, setClosureReceiptPage] = useState(1);
     const [quickInvoiceNumber, setQuickInvoiceNumber] = useState('');
     const [activeClosureInvoiceLocalId, setActiveClosureInvoiceLocalId] = useState('');
 
@@ -1163,6 +1186,35 @@ function CashClosure({ data }) {
         paginateRecords(filteredStampedInvoices, closureInvoicePage, 6)
     ), [filteredStampedInvoices, closureInvoicePage]);
 
+    const selectedReceiptIds = useMemo(() => (
+        closureCashReceipts.map((receipt) => receipt.docId || receipt.id).filter(Boolean)
+    ), [closureCashReceipts]);
+
+    const dayCashReceipts = useMemo(() => (
+        cashReceipts.filter((receipt) => {
+            const receiptId = receipt.docId || receipt.id;
+            const isSameDay = String(receipt.date || '').substring(0, 10) === closureDate;
+            const linkedClosureId = receipt.linkedCashClosureId || receipt.cashClosureId || '';
+            const canUse = !linkedClosureId || linkedClosureId === activeClosureDocId || selectedReceiptIds.includes(receiptId);
+            return isSameDay && canUse;
+        })
+    ), [activeClosureDocId, cashReceipts, closureDate, selectedReceiptIds]);
+
+    const filteredCashReceipts = useMemo(() => filterRecords(dayCashReceipts, closureReceiptSearch, [
+        'date',
+        'receiptNumber',
+        'numeroRecibo',
+        'customerName',
+        'recibiDe',
+        'concept',
+        'paymentMethod',
+        'amount',
+    ]), [dayCashReceipts, closureReceiptSearch]);
+
+    const pagedCashReceipts = useMemo(() => (
+        paginateRecords(filteredCashReceipts, closureReceiptPage, 6)
+    ), [filteredCashReceipts, closureReceiptPage]);
+
     useEffect(() => {
         setSicarClosurePage(1);
     }, [sicarClosureSearch]);
@@ -1172,12 +1224,20 @@ function CashClosure({ data }) {
     }, [closureInvoiceSearch, closureDate]);
 
     useEffect(() => {
+        setClosureReceiptPage(1);
+    }, [closureReceiptSearch, closureDate]);
+
+    useEffect(() => {
         if (sicarClosurePage !== pagedSicarClosures.page) setSicarClosurePage(pagedSicarClosures.page);
     }, [sicarClosurePage, pagedSicarClosures.page]);
 
     useEffect(() => {
         if (closureInvoicePage !== pagedStampedInvoices.page) setClosureInvoicePage(pagedStampedInvoices.page);
     }, [closureInvoicePage, pagedStampedInvoices.page]);
+
+    useEffect(() => {
+        if (closureReceiptPage !== pagedCashReceipts.page) setClosureReceiptPage(pagedCashReceipts.page);
+    }, [closureReceiptPage, pagedCashReceipts.page]);
 
     const selectedInvoiceIds = useMemo(() => (
         closureInvoices.map((invoice) => invoice.docId).filter(Boolean)
@@ -1220,21 +1280,18 @@ function CashClosure({ data }) {
     const sicarCashSalesTotal = sicarNetSalesTotals.cashSalesNetTotal;
     const sicarCreditRecoveryTotal = safeNumber(selectedClosure?.creditRecoveryTotal ?? selectedClosure?.recuperacionCredito ?? selectedClosure?.entCre);
     const sicarCreditSalesTotal = sicarNetSalesTotals.creditSalesNetTotal;
-    const sameDayCashReceipts = useMemo(() => (
-        cashReceipts.filter((receipt) => String(receipt.date || '').substring(0, 10) === closureDate)
-    ), [cashReceipts, closureDate]);
     const closureAccountingSummary = useMemo(() => buildClosureAccountingSummary({
         cashSalesTotal: sicarCashSalesTotal,
         creditSalesTotal: sicarCreditSalesTotal,
         creditRecoveryTotal: sicarCreditRecoveryTotal,
         stampedInvoices: closureInvoices,
-        cashReceipts: sameDayCashReceipts,
+        cashReceipts: closureCashReceipts,
         transferTotals,
         posTotals,
         cashCordobasTotal: cashTotal,
         dollarCashTotalCordobas,
         preCloseDepositTotal,
-    }), [sicarCashSalesTotal, sicarCreditSalesTotal, sicarCreditRecoveryTotal, closureInvoices, sameDayCashReceipts, transferTotals, posTotals, cashTotal, dollarCashTotalCordobas, preCloseDepositTotal]);
+    }), [sicarCashSalesTotal, sicarCreditSalesTotal, sicarCreditRecoveryTotal, closureInvoices, closureCashReceipts, transferTotals, posTotals, cashTotal, dollarCashTotalCordobas, preCloseDepositTotal]);
     const expectedAfterRetentions = safeNumber(sicarExpected - retentionTotal);
     const difference = safeNumber(manualTotal - expectedAfterRetentions);
     const shouldTrackDifference = Math.abs(difference) > CASH_DIFFERENCE_THRESHOLD;
@@ -1258,6 +1315,8 @@ function CashClosure({ data }) {
         setPosDetails(closure.posDetails || { bac: [], banpro: [], lafise: [] });
         const loadedInvoices = (closure.stampedInvoiceDrafts || closure.stampedInvoices || []).map((invoice) => createInvoiceDraft(invoice, closure.date || todayString()));
         setClosureInvoices(loadedInvoices);
+        const loadedReceipts = (closure.cashReceiptDrafts || closure.cashReceipts || []).map((receipt) => createCashReceiptDraft(receipt, closure.date || todayString()));
+        setClosureCashReceipts(loadedReceipts);
         setActiveClosureInvoiceLocalId(loadedInvoices[0]?.localId || '');
         setNotes(closure.notes || '');
         setMessage(`Cierre en espera cargado: ${closure.date || ''}.`);
@@ -1286,6 +1345,30 @@ function CashClosure({ data }) {
         if (removed?.localId === activeClosureInvoiceLocalId) {
             setActiveClosureInvoiceLocalId(next[0]?.localId || '');
         }
+    };
+
+    const addClosureCashReceipt = (receipt) => {
+        const draft = createCashReceiptDraft(receipt, closureDate);
+        const receiptId = draft.docId || draft.id;
+        const existing = receiptId ? closureCashReceipts.find((item) => (item.docId || item.id) === receiptId) : null;
+        if (existing) {
+            setMessage(`Recibo ${existing.receiptNumber || receipt.receiptNumber || ''} ya estaba agregado al cierre.`);
+            return;
+        }
+        setClosureCashReceipts((prev) => [...prev, draft]);
+    };
+
+    const toggleClosureCashReceipt = (receipt, checked) => {
+        const receiptId = receipt.docId || receipt.id;
+        if (checked) {
+            addClosureCashReceipt(receipt);
+            return;
+        }
+        setClosureCashReceipts((prev) => prev.filter((item) => (item.docId || item.id) !== receiptId));
+    };
+
+    const removeClosureCashReceipt = (receiptId) => {
+        setClosureCashReceipts((prev) => prev.filter((item) => (item.docId || item.id || item.localId) !== receiptId));
     };
 
     const addBlankClosureInvoice = () => {
@@ -1397,6 +1480,26 @@ function CashClosure({ data }) {
         setSaving(true);
         setMessage('');
         try {
+            const receiptIds = [
+                ...(Array.isArray(closure.cashReceiptIds) ? closure.cashReceiptIds : []),
+                ...(Array.isArray(closure.cashReceipts) ? closure.cashReceipts : []),
+                ...(Array.isArray(closure.cashReceiptDrafts) ? closure.cashReceiptDrafts : []),
+            ]
+                .map((receipt) => (typeof receipt === 'string' ? receipt : receipt.id || receipt.docId))
+                .filter(Boolean);
+
+            await Promise.all([...new Set(receiptIds)].map((receiptId) => setDoc(doc(db, 'recibos_caja_membretados', receiptId), {
+                status: 'active',
+                closureStatus: '',
+                linkedCashClosureId: '',
+                linkedSicarClosureId: '',
+                linkedSicarCorId: null,
+                reconciledAt: null,
+                unlinkedFromCashClosureId: closure.id,
+                unlinkedFromCashClosureAt: serverTimestamp(),
+                updatedAt: serverTimestamp(),
+            }, { merge: true })));
+
             await deleteDoc(doc(db, 'cierres_caja', closure.id));
             if (activeClosureDocId === closure.id) {
                 setActiveClosureDocId('');
@@ -1406,6 +1509,7 @@ function CashClosure({ data }) {
                 setTransfers({ bac: [], bac2: [], banpro: [], lafise: [], bacUsd: [], lafiseUsd: [] });
                 setPosDetails({ bac: [], banpro: [], lafise: [] });
                 setClosureInvoices([]);
+                setClosureCashReceipts([]);
                 setActiveClosureInvoiceLocalId('');
                 setQuickInvoiceNumber('');
                 setNotes('');
@@ -1431,6 +1535,11 @@ function CashClosure({ data }) {
             if (name) touchedClients.add(name);
         });
 
+        closureCashReceipts.forEach((receipt) => {
+            const name = String(receipt.customerName || '').trim();
+            if (name) touchedClients.add(name);
+        });
+
         await Promise.all([...touchedClients].map((name) => upsertClientRecord(name, 'cierre_caja')));
 
         const safeCashierName = String(cashierName || '').trim();
@@ -1450,7 +1559,9 @@ function CashClosure({ data }) {
                 : `cierre_${closureDate}_${Date.now()}`);
             const isWaiting = mode === 'waiting';
             const validInvoiceDrafts = closureInvoices.filter(hasInvoiceDraftContent);
+            const validCashReceiptDrafts = closureCashReceipts.filter((receipt) => receipt.docId || receipt.id || safeNumber(receipt.amount));
             const savedInvoices = [];
+            const savedCashReceipts = [];
 
             for (const invoice of validInvoiceDrafts) {
                 if (!String(invoice.invoiceNumber || '').trim()) {
@@ -1504,6 +1615,30 @@ function CashClosure({ data }) {
                     ...invoicePayload,
                     total: fiscal.total,
                     retentionTotal: fiscal.retentionTotal,
+                });
+            }
+
+            for (const receipt of validCashReceiptDrafts) {
+                const receiptDocId = receipt.docId || receipt.id;
+                if (!receiptDocId) continue;
+                const normalizedReceipt = createCashReceiptDraft(receipt, closureDate);
+                const receiptPayload = {
+                    status: isWaiting ? 'en_cierre' : 'conciliado',
+                    closureStatus: isWaiting ? 'en_espera' : 'conciliado',
+                    linkedCashClosureId: docId,
+                    linkedSicarClosureId: selectedClosure?.id || '',
+                    linkedSicarCorId: selectedClosure?.corId || selectedClosure?.cor_id || null,
+                    reconciledAt: isWaiting ? null : serverTimestamp(),
+                    updatedAt: serverTimestamp(),
+                };
+
+                await setDoc(doc(db, 'recibos_caja_membretados', receiptDocId), receiptPayload, { merge: true });
+                savedCashReceipts.push({
+                    ...normalizedReceipt,
+                    id: receiptDocId,
+                    docId: receiptDocId,
+                    ...receiptPayload,
+                    reconciledAt: null,
                 });
             }
 
@@ -1566,6 +1701,25 @@ function CashClosure({ data }) {
                     supportFiles: {},
                     docId: invoice.docId || `membretada_${slugify(invoice.invoiceNumber)}_${(invoice.date || closureDate).replace(/-/g, '')}`,
                 })),
+                cashReceiptIds: savedCashReceipts.map((receipt) => receipt.id),
+                cashReceipts: savedCashReceipts.map((receipt) => ({
+                    id: receipt.id,
+                    docId: receipt.docId,
+                    receiptNumber: receipt.receiptNumber,
+                    date: receipt.date,
+                    customerName: receipt.customerName,
+                    amount: safeNumber(receipt.amount),
+                    retentionIr2: safeNumber(receipt.retentionIr2),
+                    netAmount: safeNumber(receipt.netAmount),
+                    concept: receipt.concept,
+                    paymentMethod: receipt.paymentMethod,
+                    status: receipt.status,
+                    closureStatus: receipt.closureStatus,
+                })),
+                cashReceiptDrafts: validCashReceiptDrafts.map((receipt) => ({
+                    ...receipt,
+                    docId: receipt.docId || receipt.id || '',
+                })),
                 notes,
                 source: 'manual_app',
                 sourceType: 'cash_closure',
@@ -1597,7 +1751,7 @@ function CashClosure({ data }) {
                 }, { merge: true });
             }
 
-            setMessage(isWaiting ? 'Cierre guardado en espera. Podes volver y continuar luego.' : 'Cierre guardado y facturas membretadas conciliadas.');
+            setMessage(isWaiting ? 'Cierre guardado en espera. Podes volver y continuar luego.' : 'Cierre guardado con facturas y recibos membretados conciliados.');
         } catch (error) {
             console.error(error);
             setMessage(error?.message || 'No se pudo guardar el cierre.');
@@ -2026,6 +2180,92 @@ function CashClosure({ data }) {
                                 </div>
                             );
                         })}
+                    </div>
+
+                    <div className="mt-6 rounded-3xl border border-amber-200 bg-amber-50/30 p-4">
+                        <div className="mb-4 flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
+                            <div>
+                                <div className="text-sm font-black text-slate-950">Recibos de caja membretados</div>
+                                <div className="text-xs font-semibold text-slate-500">
+                                    Selecciona los recibos del dia que pertenecen a este cierre. Se restan de recuperacion de credito para calcular recibos ticket SICAR.
+                                </div>
+                            </div>
+                            <Badge tone="amber">{fmt(closureCashReceipts.reduce((sum, receipt) => safeNumber(sum + safeNumber(receipt.amount)), 0))}</Badge>
+                        </div>
+
+                        <div className="mb-4">
+                            <SearchBox
+                                value={closureReceiptSearch}
+                                onChange={setClosureReceiptSearch}
+                                placeholder="Buscar recibo por numero, cliente, concepto o metodo..."
+                                resultLabel={`${filteredCashReceipts.length} de ${dayCashReceipts.length} del dia`}
+                            />
+                        </div>
+
+                        <div className="grid gap-3 md:grid-cols-2">
+                            {cashReceipts.length === 0 ? (
+                                <div className="rounded-3xl border border-dashed border-amber-300 bg-white p-8 text-center text-sm font-bold text-slate-400 md:col-span-2">
+                                    No hay recibos de caja membretados guardados todavia.
+                                </div>
+                            ) : filteredCashReceipts.length === 0 ? (
+                                <div className="rounded-3xl border border-dashed border-amber-300 bg-white p-8 text-center text-sm font-bold text-slate-400 md:col-span-2">
+                                    No hay recibos de caja del dia {closureDate} que coincidan con la busqueda.
+                                </div>
+                            ) : pagedCashReceipts.records.map((receipt) => {
+                                const receiptId = receipt.docId || receipt.id;
+                                return (
+                                    <label key={receiptId || receipt.localId} className="flex cursor-pointer items-center gap-3 rounded-2xl border border-amber-200 bg-white p-3 transition hover:border-amber-500">
+                                        <input
+                                            type="checkbox"
+                                            checked={selectedReceiptIds.includes(receiptId)}
+                                            onChange={(event) => toggleClosureCashReceipt(receipt, event.target.checked)}
+                                        />
+                                        <div className="min-w-0 flex-1">
+                                            <div className="truncate text-sm font-black text-slate-950">Recibo {receipt.receiptNumber || '-'}</div>
+                                            <div className="text-xs font-bold text-slate-500">{receipt.date} - {receipt.customerName || 'Sin cliente'}</div>
+                                        </div>
+                                        <div className="text-right">
+                                            <div className="font-mono text-sm font-black text-slate-900">{fmt(receipt.amount)}</div>
+                                            <div className="text-[10px] font-black uppercase tracking-[0.16em] text-amber-700">IR {fmt(receipt.retentionIr2)}</div>
+                                        </div>
+                                    </label>
+                                );
+                            })}
+                        </div>
+
+                        <div className="mt-4">
+                            <PaginationControls
+                                page={pagedCashReceipts.page}
+                                totalPages={pagedCashReceipts.totalPages}
+                                total={filteredCashReceipts.length}
+                                start={pagedCashReceipts.start}
+                                end={pagedCashReceipts.end}
+                                onPageChange={setClosureReceiptPage}
+                            />
+                        </div>
+
+                        {closureCashReceipts.length > 0 && (
+                            <div className="mt-4 space-y-2">
+                                <div className="text-[10px] font-black uppercase tracking-[0.22em] text-amber-700">Recibos aplicados al cierre</div>
+                                {closureCashReceipts.map((receipt) => {
+                                    const receiptId = receipt.docId || receipt.id || receipt.localId;
+                                    return (
+                                        <div key={receiptId} className="flex flex-col gap-2 rounded-2xl border border-amber-200 bg-white px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+                                            <div className="min-w-0">
+                                                <div className="truncate text-sm font-black text-slate-950">Recibo {receipt.receiptNumber || '-'}</div>
+                                                <div className="text-xs font-bold text-slate-500">{receipt.customerName || 'Sin cliente'} - {receipt.paymentMethod || 'Sin metodo'}</div>
+                                            </div>
+                                            <div className="flex items-center gap-2">
+                                                <div className="text-right font-mono text-sm font-black text-amber-800">{fmt(receipt.amount)}</div>
+                                                <button type="button" onClick={() => removeClosureCashReceipt(receiptId)} className="rounded-xl border border-red-200 px-3 py-2 text-xs font-black text-red-700 transition hover:bg-red-50">
+                                                    Quitar
+                                                </button>
+                                            </div>
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        )}
                     </div>
 
                     <textarea
@@ -4949,6 +5189,14 @@ const getCashClosureInvoices = (closure = {}) => {
     return (closure.stampedInvoiceIds || []).map((id) => ({ id, invoiceNumber: id }));
 };
 
+const getCashClosureReceipts = (closure = {}) => {
+    const detailedReceipts = Array.isArray(closure.cashReceipts) ? closure.cashReceipts : [];
+    const draftReceipts = Array.isArray(closure.cashReceiptDrafts) ? closure.cashReceiptDrafts : [];
+    if (detailedReceipts.length) return detailedReceipts.map((receipt) => createCashReceiptDraft(receipt, closure.date || todayString()));
+    if (draftReceipts.length) return draftReceipts.map((receipt) => createCashReceiptDraft(receipt, closure.date || todayString()));
+    return (closure.cashReceiptIds || []).map((id) => ({ id, docId: id, receiptNumber: id, amount: 0 }));
+};
+
 const ClosureInfoItem = ({ label, value }) => (
     <div className="rounded-2xl border border-slate-200 bg-slate-50/80 p-4">
         <div className="text-[10px] font-black uppercase tracking-[0.22em] text-slate-400">{label}</div>
@@ -5129,6 +5377,7 @@ const CashClosureDetailModal = ({ closure, onClose, onEdit }) => {
     const cordobaRows = buildDenominationRows(closure.cashCount, CASH_DENOMINATIONS);
     const dollarRows = buildDenominationRows(closure.dollarCashCount, USD_DENOMINATIONS);
     const linkedInvoices = getCashClosureInvoices(closure);
+    const linkedReceipts = getCashClosureReceipts(closure);
     const transferRows = TRANSFER_BANKS.flatMap((bank) => (
         getClosureBankRows(closure.transferDetails, bank.key).map((row, index) => ({
             ...row,
@@ -5163,7 +5412,7 @@ const CashClosureDetailModal = ({ closure, onClose, onEdit }) => {
             creditSalesTotal: detailNetSalesTotals.creditSalesNetTotal,
             creditRecoveryTotal: closure.creditRecoveryTotal || sicar.creditRecoveryTotal || sicar.recuperacionCredito || sicar.entCre,
             stampedInvoices: linkedInvoices,
-            cashReceipts: [],
+            cashReceipts: linkedReceipts,
             transferTotals: closure.transferTotals || {},
             posTotals: closure.posTotals || {},
             cashCordobasTotal: closure.cashCordobasTotal,
@@ -5384,6 +5633,51 @@ const CashClosureDetailModal = ({ closure, onClose, onEdit }) => {
                         </div>
                     </div>
 
+                    <div className="mt-5 rounded-3xl border border-amber-200 bg-amber-50/30 p-4">
+                        <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                            <div>
+                                <div className="text-[10px] font-black uppercase tracking-[0.24em] text-amber-700">Recibos de caja membretados</div>
+                                <div className="text-lg font-black text-slate-950">Vinculados a este cierre</div>
+                            </div>
+                            <Badge tone="amber">{linkedReceipts.length} recibo(s)</Badge>
+                        </div>
+                        <div className="overflow-x-auto">
+                            <table className="min-w-full text-left text-sm">
+                                <thead>
+                                    <tr className="border-b border-amber-200 text-[10px] font-black uppercase tracking-[0.22em] text-slate-400">
+                                        <th className="py-3 pr-4">Recibo</th>
+                                        <th className="py-3 pr-4">Fecha</th>
+                                        <th className="py-3 pr-4">Cliente</th>
+                                        <th className="py-3 pr-4">Metodo</th>
+                                        <th className="py-3 pr-4">Concepto</th>
+                                        <th className="py-3 pr-4 text-right">Ret. IR</th>
+                                        <th className="py-3 text-right">Monto</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {linkedReceipts.map((receipt, index) => (
+                                        <tr key={receipt.id || receipt.docId || `${receipt.receiptNumber}-${index}`} className="border-b border-amber-100 last:border-b-0">
+                                            <td className="py-3 pr-4 font-black text-slate-950">{receipt.receiptNumber || '-'}</td>
+                                            <td className="py-3 pr-4 font-bold text-slate-600">{receipt.date || '-'}</td>
+                                            <td className="py-3 pr-4 font-bold text-slate-600">{receipt.customerName || '-'}</td>
+                                            <td className="py-3 pr-4 font-bold text-slate-500">{receipt.paymentMethod || '-'}</td>
+                                            <td className="py-3 pr-4 font-bold text-slate-500">{receipt.concept || '-'}</td>
+                                            <td className="py-3 pr-4 text-right font-mono font-black text-amber-700">{fmt(receipt.retentionIr2)}</td>
+                                            <td className="py-3 text-right font-mono font-black text-emerald-700">{fmt(receipt.amount)}</td>
+                                        </tr>
+                                    ))}
+                                    {linkedReceipts.length === 0 && (
+                                        <tr>
+                                            <td className="py-10 text-center text-sm font-bold text-slate-400" colSpan="7">
+                                                Este cierre no tiene recibos de caja membretados vinculados.
+                                            </td>
+                                        </tr>
+                                    )}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
                     {closure.notes && (
                         <div className="mt-5 rounded-3xl border border-slate-200 bg-slate-50 p-4">
                             <div className="text-[10px] font-black uppercase tracking-[0.24em] text-slate-400">Notas</div>
@@ -5442,12 +5736,6 @@ function CashClosureHistory({ data }) {
         });
         return map;
     }, [data.diferencias_caja]);
-
-    const cashReceipts = useMemo(() => (
-        [...(data.recibos_caja_membretados || [])]
-            .map(normalizeCashReceiptRecord)
-            .filter((receipt) => normalizeText(receipt.status) !== 'ANULADO')
-    ), [data.recibos_caja_membretados]);
 
     const searchedClosures = useMemo(() => filterRecords(closures, search, [
         'date',
@@ -5599,7 +5887,7 @@ function CashClosureHistory({ data }) {
             const batch = writeBatch(db);
             const nextDifferenceId = `${editForm.id}_${cashierCode}`;
             const editedClosureDate = editForm.date || todayString();
-            const linkedCashReceipts = cashReceipts.filter((receipt) => String(receipt.date || '').substring(0, 10) === editedClosureDate);
+            const linkedCashReceipts = getCashClosureReceipts(editClosure);
             const accountingSummary = buildClosureAccountingSummary({
                 cashSalesTotal: safeNumber(editForm.cashSalesTotal),
                 creditSalesTotal: safeNumber(editForm.creditSalesTotal),
@@ -5650,6 +5938,8 @@ function CashClosureHistory({ data }) {
                 posTotals: totals.posTotals,
                 manualTotal: totals.manualTotal,
                 difference: totals.difference,
+                cashReceiptIds: linkedCashReceipts.map((receipt) => receipt.id || receipt.docId).filter(Boolean),
+                cashReceipts: linkedCashReceipts,
                 accountingSummary,
                 notes: editForm.notes || '',
                 editedWithPinAt: serverTimestamp(),
@@ -5698,18 +5988,24 @@ function CashClosureHistory({ data }) {
     const undoClosureConciliation = async () => {
         if (!editForm?.id || !editClosure) return;
         if (!requestCashClosureEditPin('deshacer conciliacion del cierre')) return;
-        if (!window.confirm('Esto dejara el cierre en espera, liberara sus facturas membretadas y anulara la diferencia de caja vinculada. Deseas continuar?')) return;
+        if (!window.confirm('Esto dejara el cierre en espera, liberara sus facturas y recibos membretados, y anulara la diferencia de caja vinculada. Deseas continuar?')) return;
 
         setEditSaving(true);
         setMessage('');
         try {
             const batch = writeBatch(db);
             const linkedInvoices = getCashClosureInvoices(editClosure);
+            const linkedReceipts = getCashClosureReceipts(editClosure);
             const invoiceIds = [
                 ...(Array.isArray(editClosure.stampedInvoiceIds) ? editClosure.stampedInvoiceIds : []),
                 ...linkedInvoices.map((invoice) => invoice.id || invoice.docId).filter(Boolean),
             ];
+            const receiptIds = [
+                ...(Array.isArray(editClosure.cashReceiptIds) ? editClosure.cashReceiptIds : []),
+                ...linkedReceipts.map((receipt) => receipt.id || receipt.docId).filter(Boolean),
+            ];
             const uniqueInvoiceIds = [...new Set(invoiceIds.filter(Boolean))];
+            const uniqueReceiptIds = [...new Set(receiptIds.filter(Boolean))];
             const draftInvoices = (Array.isArray(editClosure.stampedInvoiceDrafts) && editClosure.stampedInvoiceDrafts.length
                 ? editClosure.stampedInvoiceDrafts
                 : linkedInvoices
@@ -5717,6 +6013,13 @@ function CashClosureHistory({ data }) {
                 ...invoice,
                 docId: invoice.docId || invoice.id || '',
                 supportFiles: {},
+            }));
+            const draftReceipts = (Array.isArray(editClosure.cashReceiptDrafts) && editClosure.cashReceiptDrafts.length
+                ? editClosure.cashReceiptDrafts
+                : linkedReceipts
+            ).map((receipt) => ({
+                ...receipt,
+                docId: receipt.docId || receipt.id || '',
             }));
 
             uniqueInvoiceIds.forEach((invoiceId) => {
@@ -5735,12 +6038,29 @@ function CashClosureHistory({ data }) {
                 }, { merge: true });
             });
 
+            uniqueReceiptIds.forEach((receiptId) => {
+                batch.set(doc(db, 'recibos_caja_membretados', receiptId), {
+                    status: 'active',
+                    closureStatus: '',
+                    linkedCashClosureId: '',
+                    linkedSicarClosureId: '',
+                    linkedSicarCorId: null,
+                    reconciledAt: null,
+                    unlinkedFromCashClosureId: editForm.id,
+                    unlinkedFromCashClosureAt: serverTimestamp(),
+                    updatedAt: serverTimestamp(),
+                }, { merge: true });
+            });
+
             markClosureDifferencesVoided(batch, editForm.id, 'Conciliacion deshecha');
             batch.set(doc(db, 'cierres_caja', editForm.id), {
                 status: 'en_espera',
                 stampedInvoiceIds: [],
                 stampedInvoices: [],
                 stampedInvoiceDrafts: draftInvoices,
+                cashReceiptIds: [],
+                cashReceipts: [],
+                cashReceiptDrafts: draftReceipts,
                 reconciledAt: null,
                 conciliationUndoneAt: serverTimestamp(),
                 conciliationUndoneWithPin: true,
@@ -5748,7 +6068,7 @@ function CashClosureHistory({ data }) {
             }, { merge: true });
 
             await batch.commit();
-            setMessage('Conciliacion deshecha. El cierre quedo en espera y las facturas quedaron libres.');
+            setMessage('Conciliacion deshecha. El cierre quedo en espera y los documentos membretados quedaron libres.');
             closeEditClosure();
         } catch (error) {
             console.error(error);
