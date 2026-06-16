@@ -254,6 +254,7 @@ const buildClosureAccountingSummary = ({
     posTotals = {},
     cashCordobasTotal = 0,
     dollarCashTotalCordobas = 0,
+    preCloseDepositTotal = 0,
 } = {}) => {
     const stampedCashTotal = safeNumber(stampedInvoices.reduce((sum, invoice) => (
         sum + (!isCreditPaymentMethod(invoice.paymentMethod) ? safeNumber(invoice.total) : 0)
@@ -273,7 +274,7 @@ const buildClosureAccountingSummary = ({
         + (transferTotals.lafise || 0)
     );
     const transferTotalWithoutBac2 = safeNumber(transferTotal - safeNumber(transferTotals.bac2));
-    const cashTotal = safeNumber(cashCordobasTotal + dollarCashTotalCordobas);
+    const cashTotal = safeNumber(cashCordobasTotal + dollarCashTotalCordobas + preCloseDepositTotal);
     const rc = safeNumber(cardTotal + transferTotalWithoutBac2 - stampedCashTotal - cashReceiptTotal);
 
     return {
@@ -305,6 +306,7 @@ const buildClosureAccountingSummary = ({
             cashTotal,
             cashCordobas: safeNumber(cashCordobasTotal),
             cashDollarsConverted: safeNumber(dollarCashTotalCordobas),
+            preCloseDepositTotal: safeNumber(preCloseDepositTotal),
         },
         internalRatio: {
             rc,
@@ -313,14 +315,18 @@ const buildClosureAccountingSummary = ({
     };
 };
 
-const normalizeClosureAccountingSummarySales = (summary = {}, netSalesTotals = {}) => {
+const normalizeClosureAccountingSummarySales = (summary = {}, netSalesTotals = {}, closure = {}) => {
     const stamped = summary.stampedDocuments || {};
+    const payment = summary.paymentBreakdown || {};
     const creditRecoveryTotal = safeNumber(summary.general?.creditRecoveryTotal);
     const cashSalesTotal = safeNumber(netSalesTotals.cashSalesNetTotal);
     const creditSalesTotal = safeNumber(netSalesTotals.creditSalesNetTotal);
     const stampedCashInvoices = safeNumber(stamped.stampedCashInvoices);
     const stampedCreditInvoices = safeNumber(stamped.stampedCreditInvoices);
     const stampedCashReceipts = safeNumber(stamped.stampedCashReceipts);
+    const cashCordobas = safeNumber(payment.cashCordobas ?? closure.cashCordobasTotal);
+    const cashDollarsConverted = safeNumber(payment.cashDollarsConverted ?? closure.dollarCashTotalCordobas);
+    const preCloseDepositTotal = safeNumber(payment.preCloseDepositTotal ?? closure.preCloseDepositTotal ?? closure.preCloseDeposit?.totalCordobas);
 
     return {
         ...summary,
@@ -334,6 +340,13 @@ const normalizeClosureAccountingSummarySales = (summary = {}, netSalesTotals = {
             cashSalesTickets: safeNumber(cashSalesTotal - stampedCashInvoices),
             creditSalesTickets: safeNumber(creditSalesTotal - stampedCreditInvoices),
             cashReceiptTickets: safeNumber(creditRecoveryTotal - stampedCashReceipts),
+        },
+        paymentBreakdown: {
+            ...payment,
+            cashTotal: safeNumber(cashCordobas + cashDollarsConverted + preCloseDepositTotal),
+            cashCordobas,
+            cashDollarsConverted,
+            preCloseDepositTotal,
         },
     };
 };
@@ -1003,6 +1016,7 @@ const ClosureAccountingSummaryPanel = ({ summary = {} }) => {
                     <SummaryCard label="Efectivo total" value={fmt(payment.cashTotal)} />
                     <div className="mt-2 text-xs font-black text-slate-600">Cordobas {fmt(payment.cashCordobas)}</div>
                     <div className="text-xs font-black text-slate-600">Dolares {fmt(payment.cashDollarsConverted)}</div>
+                    <div className="text-xs font-black text-slate-600">Pre-cierre {fmt(payment.preCloseDepositTotal)}</div>
                     <div className="mt-3"><SummaryCard label="RC" value={fmt(ratio.rc)} tone={safeNumber(ratio.rc) >= 0 ? 'green' : 'red'} /></div>
                     <div className="mt-2 text-[11px] font-bold text-slate-500">{ratio.formula}</div>
                 </div>
@@ -1192,7 +1206,8 @@ function CashClosure({ data }) {
         posTotals,
         cashCordobasTotal: cashTotal,
         dollarCashTotalCordobas,
-    }), [sicarCashSalesTotal, sicarCreditSalesTotal, sicarCreditRecoveryTotal, closureInvoices, sameDayCashReceipts, transferTotals, posTotals, cashTotal, dollarCashTotalCordobas]);
+        preCloseDepositTotal,
+    }), [sicarCashSalesTotal, sicarCreditSalesTotal, sicarCreditRecoveryTotal, closureInvoices, sameDayCashReceipts, transferTotals, posTotals, cashTotal, dollarCashTotalCordobas, preCloseDepositTotal]);
     const expectedAfterRetentions = safeNumber(sicarExpected - retentionTotal);
     const difference = safeNumber(manualTotal - expectedAfterRetentions);
     const shouldTrackDifference = Math.abs(difference) > CASH_DIFFERENCE_THRESHOLD;
@@ -5107,7 +5122,7 @@ const CashClosureDetailModal = ({ closure, onClose, onEdit }) => {
     const preClose = closure.preCloseDeposit || {};
     const detailNetSalesTotals = getNetSicarSalesTotals({ ...sicar, ...closure });
     const detailAccountingSummary = closure.accountingSummary
-        ? normalizeClosureAccountingSummarySales(closure.accountingSummary, detailNetSalesTotals)
+        ? normalizeClosureAccountingSummarySales(closure.accountingSummary, detailNetSalesTotals, closure)
         : buildClosureAccountingSummary({
             cashSalesTotal: detailNetSalesTotals.cashSalesNetTotal,
             creditSalesTotal: detailNetSalesTotals.creditSalesNetTotal,
@@ -5118,6 +5133,7 @@ const CashClosureDetailModal = ({ closure, onClose, onEdit }) => {
             posTotals: closure.posTotals || {},
             cashCordobasTotal: closure.cashCordobasTotal,
             dollarCashTotalCordobas: closure.dollarCashTotalCordobas,
+            preCloseDepositTotal: closure.preCloseDepositTotal || closure.preCloseDeposit?.totalCordobas,
         });
 
     return (
@@ -5555,6 +5571,7 @@ function CashClosureHistory({ data }) {
                 posTotals: totals.posTotals,
                 cashCordobasTotal: totals.cashCordobasTotal,
                 dollarCashTotalCordobas: totals.dollarCashTotalCordobas,
+                preCloseDepositTotal: totals.preCloseDepositTotal,
             });
 
             batch.set(doc(db, 'cierres_caja', editForm.id), {
