@@ -109,11 +109,11 @@ const isActiveStampedInvoice = (invoice = {}) => (
 );
 
 const getInvoiceRecordIdentityKeys = (invoice = {}) => ([
-    invoice.id,
-    invoice.docId,
-    invoice.accountingInvoiceId,
-    invoice.contabilidadInvoiceId,
-    invoice.membretadaInvoiceId,
+    invoice.wasExistingDoc === false ? '' : invoice.id,
+    invoice.wasExistingDoc === false ? '' : invoice.docId,
+    invoice.wasExistingDoc === false ? '' : invoice.accountingInvoiceId,
+    invoice.wasExistingDoc === false ? '' : invoice.contabilidadInvoiceId,
+    invoice.wasExistingDoc === false ? '' : invoice.membretadaInvoiceId,
 ])
     .map((value) => normalizeInvoiceMatchKey(value))
     .filter(Boolean);
@@ -450,6 +450,10 @@ const getInvoiceClosureInfo = (invoice = {}, closureIndex = new Map()) => {
     if (!closureId) return { status: 'pendiente', label: 'Pendiente de vincular' };
 
     const closure = closureIndex.get(closureId);
+    if (!closure || normalizeText(closure.status) === 'EN_ESPERA' || normalizeText(closure.status) === 'EN ESPERA') {
+        return { status: 'pendiente', label: 'Pendiente de vincular' };
+    }
+
     return {
         status: 'vinculada',
         label: closure ? getClosureLabel(closure) : `Cierre ${closureId}`,
@@ -491,10 +495,14 @@ const createInvoiceDraft = (invoice = {}, fallbackDate = todayString()) => {
     const subtotal = safeNumber(invoice.subtotal ?? invoice.amount);
     const iva = safeNumber(invoice.iva);
     const total = safeNumber(invoice.total || subtotal + iva);
+    const wasExistingDoc = invoice.wasExistingDoc !== undefined
+        ? Boolean(invoice.wasExistingDoc)
+        : Boolean(invoice.id || invoice.docId);
 
     return {
         localId: invoice.localId || createLineId('invoice'),
         docId: invoice.id || invoice.docId || '',
+        wasExistingDoc,
         date,
         invoiceNumber,
         customerName: invoice.customerName || invoice.cliente || '',
@@ -1554,6 +1562,13 @@ function CashClosure({ data }) {
         setSaving(true);
         setMessage('');
         try {
+            const invoiceIds = [
+                ...(Array.isArray(closure.stampedInvoiceIds) ? closure.stampedInvoiceIds : []),
+                ...(Array.isArray(closure.stampedInvoices) ? closure.stampedInvoices : []),
+                ...(Array.isArray(closure.stampedInvoiceDrafts) ? closure.stampedInvoiceDrafts : []),
+            ]
+                .map((invoice) => (typeof invoice === 'string' ? invoice : invoice.id || invoice.docId))
+                .filter(Boolean);
             const receiptIds = [
                 ...(Array.isArray(closure.cashReceiptIds) ? closure.cashReceiptIds : []),
                 ...(Array.isArray(closure.cashReceipts) ? closure.cashReceipts : []),
@@ -1561,6 +1576,23 @@ function CashClosure({ data }) {
             ]
                 .map((receipt) => (typeof receipt === 'string' ? receipt : receipt.id || receipt.docId))
                 .filter(Boolean);
+
+            await Promise.all([...new Set(invoiceIds)].map(async (invoiceId) => {
+                const invoiceRef = doc(db, 'facturas_membretadas_ventas', invoiceId);
+                const invoiceSnap = await getDoc(invoiceRef);
+                if (!invoiceSnap.exists()) return;
+                await setDoc(invoiceRef, {
+                    status: 'active',
+                    closureStatus: '',
+                    linkedCashClosureId: '',
+                    linkedSicarClosureId: '',
+                    linkedSicarCorId: null,
+                    reconciledAt: null,
+                    unlinkedFromCashClosureId: closure.id,
+                    unlinkedFromCashClosureAt: serverTimestamp(),
+                    updatedAt: serverTimestamp(),
+                }, { merge: true });
+            }));
 
             await Promise.all([...new Set(receiptIds)].map((receiptId) => setDoc(doc(db, 'recibos_caja_membretados', receiptId), {
                 status: 'active',
@@ -1639,7 +1671,7 @@ function CashClosure({ data }) {
 
             assertUniqueStampedInvoiceNumbers(validInvoiceDrafts, stampedInvoices);
 
-            for (const invoice of validInvoiceDrafts) {
+            const preparedInvoiceDrafts = validInvoiceDrafts.map((invoice) => {
                 if (!String(invoice.invoiceNumber || '').trim()) {
                     throw new Error('Cada factura membretada del cierre necesita numero de factura.');
                 }
@@ -1653,6 +1685,28 @@ function CashClosure({ data }) {
                     retentionIr2: safeNumber(invoice.retentionIr2),
                     retentionMunicipal1: safeNumber(invoice.retentionMunicipal1),
                 });
+
+                return {
+                    ...invoice,
+                    wasExistingDoc: Boolean(invoice.docId),
+                    id: invoiceDocId,
+                    docId: invoiceDocId,
+                    date: invoiceDate,
+                    saleDate: invoiceDate,
+                    subtotal: fiscal.subtotal,
+                    iva: fiscal.iva,
+                    total: fiscal.total,
+                    retentionIr2: fiscal.retentionIr2,
+                    retentionMunicipal1: fiscal.retentionMunicipal1,
+                    retentionTotal: fiscal.retentionTotal,
+                    netTotal: fiscal.netTotal,
+                    supportFiles: invoice.supportFiles || {},
+                };
+            });
+
+            if (!isWaiting) {
+            for (const invoice of preparedInvoiceDrafts) {
+                const invoiceDocId = invoice.docId;
                 const existingInvoice = stampedInvoices.find((item) => item.id === invoiceDocId) || {};
                 const supportPayload = await uploadFiscalSupportFiles(
                     invoice.supportFiles || {},
@@ -1661,23 +1715,30 @@ function CashClosure({ data }) {
                     existingInvoice
                 );
                 const invoicePayload = {
-                    date: invoiceDate,
-                    saleDate: invoiceDate,
-                    month: getMonth(invoiceDate),
+                    date: invoice.date,
+                    saleDate: invoice.saleDate || invoice.date,
+                    month: getMonth(invoice.date),
                     numeroFactura: String(invoice.invoiceNumber || '').trim(),
                     invoiceNumber: String(invoice.invoiceNumber || '').trim(),
                     customerName: String(invoice.customerName || '').trim(),
                     paymentMethod: String(invoice.paymentMethod || '').trim(),
-                    ...fiscal,
-                    source: invoice.sourceSicarInvoiceId ? 'sicar_factura' : (invoice.docId ? 'manual' : 'cierre_caja'),
+                    subtotal: safeNumber(invoice.subtotal),
+                    iva: safeNumber(invoice.iva),
+                    total: safeNumber(invoice.total),
+                    retentionIr2: safeNumber(invoice.retentionIr2),
+                    retentionMunicipal1: safeNumber(invoice.retentionMunicipal1),
+                    retentionTotal: safeNumber(invoice.retentionTotal),
+                    netTotal: safeNumber(invoice.netTotal),
+                    amount: safeNumber(invoice.subtotal),
+                    source: invoice.sourceSicarInvoiceId ? 'sicar_factura' : (invoice.source || (invoice.wasExistingDoc ? 'manual' : 'cierre_caja')),
                     sourceType: 'stamped_sale_invoice',
                     sourceSicarInvoiceId: invoice.sourceSicarInvoiceId || '',
-                    status: isWaiting ? 'en_cierre' : 'conciliada',
-                    closureStatus: isWaiting ? 'en_espera' : 'conciliada',
+                    status: 'conciliada',
+                    closureStatus: 'conciliada',
                     linkedCashClosureId: docId,
                     linkedSicarClosureId: selectedClosure?.id || '',
                     linkedSicarCorId: selectedClosure?.corId || selectedClosure?.cor_id || null,
-                    reconciledAt: isWaiting ? null : serverTimestamp(),
+                    reconciledAt: serverTimestamp(),
                     ...supportPayload,
                     updatedAt: serverTimestamp(),
                     createdAt: serverTimestamp(),
@@ -1689,33 +1750,37 @@ function CashClosure({ data }) {
                     id: invoiceDocId,
                     docId: invoiceDocId,
                     ...invoicePayload,
-                    total: fiscal.total,
-                    retentionTotal: fiscal.retentionTotal,
+                    total: safeNumber(invoice.total),
+                    retentionTotal: safeNumber(invoice.retentionTotal),
                 });
             }
+            }
 
-            for (const receipt of validCashReceiptDrafts) {
+            const preparedCashReceiptDrafts = validCashReceiptDrafts.map((receipt) => createCashReceiptDraft(receipt, closureDate));
+
+            if (!isWaiting) {
+            for (const receipt of preparedCashReceiptDrafts) {
                 const receiptDocId = receipt.docId || receipt.id;
                 if (!receiptDocId) continue;
-                const normalizedReceipt = createCashReceiptDraft(receipt, closureDate);
                 const receiptPayload = {
-                    status: isWaiting ? 'en_cierre' : 'conciliado',
-                    closureStatus: isWaiting ? 'en_espera' : 'conciliado',
+                    status: 'conciliado',
+                    closureStatus: 'conciliado',
                     linkedCashClosureId: docId,
                     linkedSicarClosureId: selectedClosure?.id || '',
                     linkedSicarCorId: selectedClosure?.corId || selectedClosure?.cor_id || null,
-                    reconciledAt: isWaiting ? null : serverTimestamp(),
+                    reconciledAt: serverTimestamp(),
                     updatedAt: serverTimestamp(),
                 };
 
                 await setDoc(doc(db, 'recibos_caja_membretados', receiptDocId), receiptPayload, { merge: true });
                 savedCashReceipts.push({
-                    ...normalizedReceipt,
+                    ...receipt,
                     id: receiptDocId,
                     docId: receiptDocId,
                     ...receiptPayload,
                     reconciledAt: null,
                 });
+            }
             }
 
             const payload = {
@@ -1762,8 +1827,8 @@ function CashClosure({ data }) {
                 posTotals,
                 manualTotal,
                 difference,
-                stampedInvoiceIds: savedInvoices.map((invoice) => invoice.id),
-                stampedInvoices: savedInvoices.map((invoice) => ({
+                stampedInvoiceIds: isWaiting ? [] : savedInvoices.map((invoice) => invoice.id),
+                stampedInvoices: isWaiting ? [] : savedInvoices.map((invoice) => ({
                     id: invoice.id,
                     invoiceNumber: invoice.invoiceNumber,
                     date: invoice.saleDate || invoice.date,
@@ -1772,13 +1837,12 @@ function CashClosure({ data }) {
                     total: safeNumber(invoice.total),
                     retentionTotal: safeNumber(invoice.retentionTotal),
                 })),
-                stampedInvoiceDrafts: validInvoiceDrafts.map((invoice) => ({
+                stampedInvoiceDrafts: isWaiting ? preparedInvoiceDrafts.map((invoice) => ({
                     ...invoice,
                     supportFiles: {},
-                    docId: invoice.docId || `membretada_${slugify(invoice.invoiceNumber)}_${(invoice.date || closureDate).replace(/-/g, '')}`,
-                })),
-                cashReceiptIds: savedCashReceipts.map((receipt) => receipt.id),
-                cashReceipts: savedCashReceipts.map((receipt) => ({
+                })) : [],
+                cashReceiptIds: isWaiting ? [] : savedCashReceipts.map((receipt) => receipt.id),
+                cashReceipts: isWaiting ? [] : savedCashReceipts.map((receipt) => ({
                     id: receipt.id,
                     docId: receipt.docId,
                     receiptNumber: receipt.receiptNumber,
@@ -1792,10 +1856,10 @@ function CashClosure({ data }) {
                     status: receipt.status,
                     closureStatus: receipt.closureStatus,
                 })),
-                cashReceiptDrafts: validCashReceiptDrafts.map((receipt) => ({
+                cashReceiptDrafts: isWaiting ? preparedCashReceiptDrafts.map((receipt) => ({
                     ...receipt,
                     docId: receipt.docId || receipt.id || '',
-                })),
+                })) : [],
                 notes,
                 source: 'manual_app',
                 sourceType: 'cash_closure',
