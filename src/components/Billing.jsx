@@ -11,6 +11,8 @@ const TRANSFER_BANKS = [
     { key: 'bac2', label: 'BAC (2)' },
     { key: 'banpro', label: 'Banpro' },
     { key: 'lafise', label: 'Lafise' },
+    { key: 'bacUsd', label: 'BAC USD', currency: 'USD' },
+    { key: 'lafiseUsd', label: 'Lafise USD', currency: 'USD' },
 ];
 
 const POS_BANKS = [
@@ -23,6 +25,7 @@ const CASH_DENOMINATIONS = [1000, 500, 200, 100, 50, 20, 10, 5, 1];
 const USD_DENOMINATIONS = [100, 50, 20, 10, 5, 1];
 const CASH_DIFFERENCE_THRESHOLD = 30;
 const CASH_CLOSURE_EXCHANGE_RATE = 36.50;
+const TRANSFER_USD_EXCHANGE_RATE = 36.62;
 const CASH_CLOSURE_EDIT_PIN = '210397';
 
 const CASHIER_OPTIONS = [
@@ -45,6 +48,12 @@ const parsePromptAmount = (value = '') => {
         : raw.replace(',', '.');
     return safeNumber(normalized);
 };
+
+const getTransferBankExchangeRate = (bank = {}) => (bank.currency === 'USD' ? TRANSFER_USD_EXCHANGE_RATE : 1);
+
+const getBankRowsTotal = (rows = [], bank = {}) => safeNumber(
+    rows.reduce((sum, row) => sum + safeNumber(row.amount) * getTransferBankExchangeRate(bank), 0)
+);
 
 const requestCashClosureEditPin = (action = 'editar cierre') => {
     const pin = window.prompt(`PIN secreto para ${action}:`);
@@ -272,6 +281,8 @@ const buildClosureAccountingSummary = ({
         + (transferTotals.bac2 || 0)
         + (transferTotals.banpro || 0)
         + (transferTotals.lafise || 0)
+        + (transferTotals.bacUsd || 0)
+        + (transferTotals.lafiseUsd || 0)
     );
     const transferTotalWithoutBac2 = safeNumber(transferTotal - safeNumber(transferTotals.bac2));
     const cashTotal = safeNumber(cashCordobasTotal + dollarCashTotalCordobas + preCloseDepositTotal);
@@ -303,6 +314,8 @@ const buildClosureAccountingSummary = ({
             transferBac2: safeNumber(transferTotals.bac2),
             transferBanpro: safeNumber(transferTotals.banpro),
             transferLafise: safeNumber(transferTotals.lafise),
+            transferBacUsd: safeNumber(transferTotals.bacUsd),
+            transferLafiseUsd: safeNumber(transferTotals.lafiseUsd),
             cashTotal,
             cashCordobas: safeNumber(cashCordobasTotal),
             cashDollarsConverted: safeNumber(dollarCashTotalCordobas),
@@ -880,7 +893,7 @@ const SummaryCard = ({ label, value, tone = 'slate' }) => {
     );
 };
 
-const DetailRows = ({ title, rows, onChange, onAdd, onRemove, type, clients = [], onCreateClient }) => (
+const DetailRows = ({ title, rows, onChange, onAdd, onRemove, type, clients = [], onCreateClient, currency = 'NIO', exchangeRate = 1 }) => (
     <div className="rounded-3xl border border-slate-200 bg-slate-50/60 p-4">
         <div className="mb-3 flex items-center justify-between gap-3">
             <div>
@@ -895,7 +908,11 @@ const DetailRows = ({ title, rows, onChange, onAdd, onRemove, type, clients = []
         </div>
 
         <div className="space-y-2">
-            {rows.map((row, index) => (
+            {rows.map((row, index) => {
+                const isUsd = currency === 'USD';
+                const convertedAmount = safeNumber(safeNumber(row.amount) * safeNumber(exchangeRate || 1));
+
+                return (
                 <div key={row.localId || index} className="grid gap-2 rounded-2xl border border-slate-200 bg-white p-3 md:grid-cols-[1.4fr_1fr_1fr_auto]">
                     {type === 'transfer' ? (
                         <div>
@@ -924,15 +941,22 @@ const DetailRows = ({ title, rows, onChange, onAdd, onRemove, type, clients = []
                             onChange={(event) => onChange(index, 'reference', event.target.value)}
                         />
                     )}
-                    <input
-                        className={inputClass}
-                        type="number"
-                        step="0.01"
-                        min="0"
-                        placeholder="Monto"
-                        value={row.amount}
-                        onChange={(event) => onChange(index, 'amount', event.target.value)}
-                    />
+                    <div>
+                        <input
+                            className={inputClass}
+                            type="number"
+                            step="0.01"
+                            min="0"
+                            placeholder={isUsd ? 'Monto USD' : 'Monto'}
+                            value={row.amount}
+                            onChange={(event) => onChange(index, 'amount', event.target.value)}
+                        />
+                        {isUsd && (
+                            <div className="mt-1 rounded-xl bg-emerald-50 px-3 py-2 text-[10px] font-black uppercase tracking-[0.14em] text-emerald-700">
+                                Equivale {fmt(convertedAmount)} / TC {safeNumber(exchangeRate).toFixed(2)}
+                            </div>
+                        )}
+                    </div>
                     {type === 'transfer' ? (
                         <input
                             className={inputClass}
@@ -949,7 +973,8 @@ const DetailRows = ({ title, rows, onChange, onAdd, onRemove, type, clients = []
                         Quitar
                     </button>
                 </div>
-            ))}
+                );
+            })}
             {rows.length === 0 && (
                 <div className="rounded-2xl border border-dashed border-slate-300 bg-white p-5 text-center text-sm font-bold text-slate-400">
                     Sin detalle todavia.
@@ -1010,6 +1035,8 @@ const ClosureAccountingSummaryPanel = ({ summary = {} }) => {
                     <div className="text-xs font-black text-slate-600">BAC (2) {fmt(payment.transferBac2)}</div>
                     <div className="text-xs font-black text-slate-600">Banpro {fmt(payment.transferBanpro)}</div>
                     <div className="text-xs font-black text-slate-600">Lafise {fmt(payment.transferLafise)}</div>
+                    <div className="text-xs font-black text-slate-600">BAC USD {fmt(payment.transferBacUsd)}</div>
+                    <div className="text-xs font-black text-slate-600">Lafise USD {fmt(payment.transferLafiseUsd)}</div>
                 </div>
                 <div className="rounded-3xl border border-slate-200 bg-slate-50 p-4">
                     <div className="mb-3 text-[10px] font-black uppercase tracking-[0.22em] text-slate-500">1.5 Calculo interno</div>
@@ -1085,7 +1112,7 @@ function CashClosure({ data }) {
     const [cashCount, setCashCount] = useState({});
     const [dollarCashCount, setDollarCashCount] = useState({});
     const [preCloseDeposit, setPreCloseDeposit] = useState({ cordobas: '', dollars: '' });
-    const [transfers, setTransfers] = useState({ bac: [], bac2: [], banpro: [], lafise: [] });
+    const [transfers, setTransfers] = useState({ bac: [], bac2: [], banpro: [], lafise: [], bacUsd: [], lafiseUsd: [] });
     const [posDetails, setPosDetails] = useState({ bac: [], banpro: [], lafise: [] });
     const [closureInvoices, setClosureInvoices] = useState([]);
     const [notes, setNotes] = useState('');
@@ -1170,9 +1197,9 @@ function CashClosure({ data }) {
     const preCloseDepositTotal = safeNumber(preCloseDepositCordobas + (preCloseDepositDollars * CASH_CLOSURE_EXCHANGE_RATE));
     const cashClosureTotal = safeNumber(cashTotal + dollarCashTotalCordobas + preCloseDepositTotal);
 
-    const transferTotals = useMemo(() => Object.fromEntries(TRANSFER_BANKS.map(({ key }) => [
-        key,
-        safeNumber((transfers[key] || []).reduce((sum, item) => sum + safeNumber(item.amount), 0)),
+    const transferTotals = useMemo(() => Object.fromEntries(TRANSFER_BANKS.map((bank) => [
+        bank.key,
+        getBankRowsTotal(transfers[bank.key] || [], bank),
     ])), [transfers]);
 
     const posTotals = useMemo(() => Object.fromEntries(POS_BANKS.map(({ key }) => [
@@ -1227,7 +1254,7 @@ function CashClosure({ data }) {
         setCashCount(closure.cashCount || {});
         setDollarCashCount(closure.dollarCashCount || {});
         setPreCloseDeposit(closure.preCloseDeposit || { cordobas: '', dollars: '' });
-        setTransfers({ bac: [], bac2: [], banpro: [], lafise: [], ...(closure.transferDetails || {}) });
+        setTransfers({ bac: [], bac2: [], banpro: [], lafise: [], bacUsd: [], lafiseUsd: [], ...(closure.transferDetails || {}) });
         setPosDetails(closure.posDetails || { bac: [], banpro: [], lafise: [] });
         const loadedInvoices = (closure.stampedInvoiceDrafts || closure.stampedInvoices || []).map((invoice) => createInvoiceDraft(invoice, closure.date || todayString()));
         setClosureInvoices(loadedInvoices);
@@ -1376,7 +1403,7 @@ function CashClosure({ data }) {
                 setCashCount({});
                 setDollarCashCount({});
                 setPreCloseDeposit({ cordobas: '', dollars: '' });
-                setTransfers({ bac: [], bac2: [], banpro: [], lafise: [] });
+                setTransfers({ bac: [], bac2: [], banpro: [], lafise: [], bacUsd: [], lafiseUsd: [] });
                 setPosDetails({ bac: [], banpro: [], lafise: [] });
                 setClosureInvoices([]);
                 setActiveClosureInvoiceLocalId('');
@@ -1519,6 +1546,7 @@ function CashClosure({ data }) {
                 cashTotal: safeNumber(cashClosureTotal),
                 transferDetails: transfers,
                 transferTotals,
+                transferUsdExchangeRate: TRANSFER_USD_EXCHANGE_RATE,
                 posDetails,
                 posTotals,
                 manualTotal,
@@ -1690,10 +1718,12 @@ function CashClosure({ data }) {
                         {TRANSFER_BANKS.map((bank) => (
                             <DetailRows
                                 key={bank.key}
-                                title={`Transferencia ${bank.label} · ${fmt(transferTotals[bank.key])}`}
+                                title={`Transferencia ${bank.label} - ${fmt(transferTotals[bank.key])}${bank.currency === 'USD' ? ` / TC ${TRANSFER_USD_EXCHANGE_RATE.toFixed(2)}` : ''}`}
                                 rows={transfers[bank.key] || []}
                                 type="transfer"
                                 clients={clients}
+                                currency={bank.currency || 'NIO'}
+                                exchangeRate={getTransferBankExchangeRate(bank)}
                                 onCreateClient={requestCreateClient}
                                 onAdd={() => setTransfers((prev) => ({ ...prev, [bank.key]: [...(prev[bank.key] || []), emptyTransfer()] }))}
                                 onRemove={(index) => setTransfers((prev) => ({ ...prev, [bank.key]: (prev[bank.key] || []).filter((_, rowIndex) => rowIndex !== index) }))}
@@ -4813,7 +4843,7 @@ const buildDenominationRows = (count = {}, denominations = [], multiplier = 1) =
 );
 
 const getClosureRowsTotal = (rows = []) => (
-    rows.reduce((sum, row) => safeNumber(sum + safeNumber(row.amount || row.total || row.value)), 0)
+    rows.reduce((sum, row) => safeNumber(sum + safeNumber(row.amountCordobas ?? row.amount ?? row.total ?? row.value)), 0)
 );
 
 const getClosureBankRows = (details = {}, bankKey) => (
@@ -4844,9 +4874,9 @@ const calculateClosureEditTotals = (form = {}) => {
     const preCloseDepositDollars = safeNumber(form.preCloseDeposit?.dollars);
     const preCloseDepositTotal = safeNumber(preCloseDepositCordobas + preCloseDepositDollars * CASH_CLOSURE_EXCHANGE_RATE);
     const cashTotal = safeNumber(cashCordobasTotal + dollarCashTotalCordobas + preCloseDepositTotal);
-    const transferTotals = Object.fromEntries(TRANSFER_BANKS.map(({ key }) => [
-        key,
-        safeNumber((form.transferDetails?.[key] || []).reduce((sum, row) => sum + safeNumber(row.amount), 0)),
+    const transferTotals = Object.fromEntries(TRANSFER_BANKS.map((bank) => [
+        bank.key,
+        getBankRowsTotal(form.transferDetails?.[bank.key] || [], bank),
     ]));
     const posTotals = Object.fromEntries(POS_BANKS.map(({ key }) => [
         key,
@@ -5052,10 +5082,12 @@ const CashClosureEditModal = ({
                                 {TRANSFER_BANKS.map((bank) => (
                                     <DetailRows
                                         key={bank.key}
-                                        title={`Transferencia ${bank.label} · ${fmt(totals.transferTotals[bank.key])}`}
+                                        title={`Transferencia ${bank.label} - ${fmt(totals.transferTotals[bank.key])}${bank.currency === 'USD' ? ` / TC ${TRANSFER_USD_EXCHANGE_RATE.toFixed(2)}` : ''}`}
                                         rows={form.transferDetails?.[bank.key] || []}
                                         type="transfer"
                                         clients={clients}
+                                        currency={bank.currency || 'NIO'}
+                                        exchangeRate={getTransferBankExchangeRate(bank)}
                                         onAdd={() => onBankRowAdd('transferDetails', bank.key)}
                                         onRemove={(index) => onBankRowRemove('transferDetails', bank.key, index)}
                                         onChange={(index, field, value) => onBankRowChange('transferDetails', bank.key, index, field, value)}
@@ -5101,6 +5133,9 @@ const CashClosureDetailModal = ({ closure, onClose, onEdit }) => {
         getClosureBankRows(closure.transferDetails, bank.key).map((row, index) => ({
             ...row,
             bank: bank.label,
+            currency: bank.currency || 'NIO',
+            exchangeRate: getTransferBankExchangeRate(bank),
+            amountCordobas: safeNumber(safeNumber(row.amount ?? row.total ?? row.value) * getTransferBankExchangeRate(bank)),
             id: row.localId || row.id || `${bank.key}-transfer-${index}`,
         }))
     ));
@@ -5268,7 +5303,11 @@ const CashClosureDetailModal = ({ closure, onClose, onEdit }) => {
                                         <span className="font-black text-slate-950">{row.bank}</span>
                                         <span className="font-bold text-slate-600">{row.clientName || row.customerName || 'Sin cliente'}</span>
                                         <span className="font-bold text-slate-500">{row.reference || row.ref || 'Sin referencia'}</span>
-                                        <span className="text-right font-mono font-black text-emerald-700">{fmt(row.amount || row.total)}</span>
+                                        <span className="text-right font-mono font-black text-emerald-700">
+                                            {row.currency === 'USD'
+                                                ? `US$ ${safeNumber(row.amount ?? row.total ?? row.value).toFixed(2)} / ${fmt(row.amountCordobas)}`
+                                                : fmt(row.amount || row.total)}
+                                        </span>
                                     </div>
                                 )) : (
                                     <div className="rounded-2xl border border-dashed border-slate-300 p-6 text-center text-sm font-bold text-slate-400">Sin transferencias registradas.</div>
@@ -5606,6 +5645,7 @@ function CashClosureHistory({ data }) {
                 cashTotal: totals.cashTotal,
                 transferDetails: editForm.transferDetails || {},
                 transferTotals: totals.transferTotals,
+                transferUsdExchangeRate: TRANSFER_USD_EXCHANGE_RATE,
                 posDetails: editForm.posDetails || {},
                 posTotals: totals.posTotals,
                 manualTotal: totals.manualTotal,
