@@ -864,6 +864,7 @@ const PaymentSplitModal = ({
 };
 
 const STAMPED_PRINT_LAYOUT_DOC = 'factura_membretada_preimpresa';
+const CASH_RECEIPT_PRINT_LAYOUT_DOC = 'recibo_caja_preimpreso';
 const DEFAULT_PRINT_TEMPLATE_ID = 'principal';
 const DEFAULT_PRINT_TEMPLATE_NAME = 'Plantilla principal';
 
@@ -904,6 +905,33 @@ const PRINT_LAYOUT_FIELDS = [
     { key: 'total', label: 'Total' },
 ];
 
+const DEFAULT_CASH_RECEIPT_PRINT_LAYOUT = {
+    pageWidthCm: 21.59,
+    pageHeightCm: 13.97,
+    fontSizePt: 9,
+    date: { x: 1.45, y: 4.82, width: 6.2 },
+    amount: { x: 15.75, y: 4.82, width: 4.2 },
+    customerName: { x: 1.95, y: 5.72, width: 17.4 },
+    amountText: { x: 2.85, y: 6.62, width: 8.7 },
+    retentionIr2: { x: 17.55, y: 7.35, width: 2.2 },
+    concept: { x: 3.15, y: 8.28, width: 16.4 },
+    cashMark: { x: 3.88, y: 9.95, width: 0.35 },
+    reference: { x: 6.25, y: 10.02, width: 3.7 },
+    bank: { x: 11.65, y: 10.02, width: 5.4 },
+};
+
+const CASH_RECEIPT_PRINT_FIELDS = [
+    { key: 'date', label: 'Fecha' },
+    { key: 'amount', label: 'Por C$' },
+    { key: 'customerName', label: 'Recibi de' },
+    { key: 'amountText', label: 'La cantidad de' },
+    { key: 'retentionIr2', label: 'Retencion 2%' },
+    { key: 'concept', label: 'Concepto' },
+    { key: 'cashMark', label: 'Marca efectivo' },
+    { key: 'reference', label: 'CK / referencia' },
+    { key: 'bank', label: 'Banco' },
+];
+
 const mergePrintLayout = (layout = {}) => ({
     ...DEFAULT_STAMPED_PRINT_LAYOUT,
     ...layout,
@@ -917,6 +945,20 @@ const mergePrintLayout = (layout = {}) => ({
     items: { ...DEFAULT_STAMPED_PRINT_LAYOUT.items, ...(layout.items || {}) },
 });
 
+const mergeCashReceiptPrintLayout = (layout = {}) => ({
+    ...DEFAULT_CASH_RECEIPT_PRINT_LAYOUT,
+    ...layout,
+    date: { ...DEFAULT_CASH_RECEIPT_PRINT_LAYOUT.date, ...(layout.date || {}) },
+    amount: { ...DEFAULT_CASH_RECEIPT_PRINT_LAYOUT.amount, ...(layout.amount || {}) },
+    customerName: { ...DEFAULT_CASH_RECEIPT_PRINT_LAYOUT.customerName, ...(layout.customerName || {}) },
+    amountText: { ...DEFAULT_CASH_RECEIPT_PRINT_LAYOUT.amountText, ...(layout.amountText || {}) },
+    retentionIr2: { ...DEFAULT_CASH_RECEIPT_PRINT_LAYOUT.retentionIr2, ...(layout.retentionIr2 || {}) },
+    concept: { ...DEFAULT_CASH_RECEIPT_PRINT_LAYOUT.concept, ...(layout.concept || {}) },
+    cashMark: { ...DEFAULT_CASH_RECEIPT_PRINT_LAYOUT.cashMark, ...(layout.cashMark || {}) },
+    reference: { ...DEFAULT_CASH_RECEIPT_PRINT_LAYOUT.reference, ...(layout.reference || {}) },
+    bank: { ...DEFAULT_CASH_RECEIPT_PRINT_LAYOUT.bank, ...(layout.bank || {}) },
+});
+
 const createPrintTemplateId = (name = '') => (
     `plantilla_${slugify(name || 'factura')}_${Date.now()}`
         .toLowerCase()
@@ -927,6 +969,12 @@ const normalizePrintTemplate = (template = {}, fallbackIndex = 0) => ({
     id: template.id || (fallbackIndex === 0 ? DEFAULT_PRINT_TEMPLATE_ID : createPrintTemplateId(template.name || template.nombre || `Plantilla ${fallbackIndex + 1}`)),
     name: template.name || template.nombre || (fallbackIndex === 0 ? DEFAULT_PRINT_TEMPLATE_NAME : `Plantilla ${fallbackIndex + 1}`),
     layout: mergePrintLayout(template.layout || template),
+});
+
+const normalizeCashReceiptPrintTemplate = (template = {}, fallbackIndex = 0) => ({
+    id: template.id || (fallbackIndex === 0 ? DEFAULT_PRINT_TEMPLATE_ID : createPrintTemplateId(template.name || template.nombre || `Plantilla ${fallbackIndex + 1}`)),
+    name: template.name || template.nombre || (fallbackIndex === 0 ? DEFAULT_PRINT_TEMPLATE_NAME : `Plantilla ${fallbackIndex + 1}`),
+    layout: mergeCashReceiptPrintLayout(template.layout || template),
 });
 
 const readPrintTemplates = (config = {}) => {
@@ -943,6 +991,27 @@ const readPrintTemplates = (config = {}) => {
 
     return [
         normalizePrintTemplate({
+            id: DEFAULT_PRINT_TEMPLATE_ID,
+            name: DEFAULT_PRINT_TEMPLATE_NAME,
+            layout: config.layout || config,
+        }, 0),
+    ];
+};
+
+const readCashReceiptPrintTemplates = (config = {}) => {
+    if (Array.isArray(config.templates) && config.templates.length > 0) {
+        return config.templates.map(normalizeCashReceiptPrintTemplate);
+    }
+
+    if (config.templates && typeof config.templates === 'object') {
+        const templates = Object.entries(config.templates).map(([id, template], index) => (
+            normalizeCashReceiptPrintTemplate({ ...(template || {}), id }, index)
+        ));
+        if (templates.length > 0) return templates;
+    }
+
+    return [
+        normalizeCashReceiptPrintTemplate({
             id: DEFAULT_PRINT_TEMPLATE_ID,
             name: DEFAULT_PRINT_TEMPLATE_NAME,
             layout: config.layout || config,
@@ -1080,19 +1149,18 @@ const getReceiptPaymentBank = (method = '') => {
     return method || '';
 };
 
-const buildCashReceiptPrintHtml = (receipt = {}) => {
+const buildCashReceiptPrintHtml = (receipt = {}, layout = DEFAULT_CASH_RECEIPT_PRINT_LAYOUT) => {
+    const mergedLayout = mergeCashReceiptPrintLayout(layout);
     const amount = safeNumber(receipt.amount);
     const retention = safeNumber(receipt.retentionIr2);
     const paymentMethod = receipt.paymentMethod || '';
     const isCash = normalizeText(paymentMethod) === 'EFECTIVO';
     const bank = getReceiptPaymentBank(paymentMethod);
-    const pageWidth = 13.97;
-    const pageHeight = 21.59;
-    const text = (x, y, width, content, options = {}) => buildPrintTextHtml(
-        { x, y, width },
+    const text = (fieldKey, content, options = {}) => buildPrintTextHtml(
+        mergedLayout[fieldKey],
         content,
-        { fontSizePt: options.fontSizePt || 10 },
-        { align: options.align || 'left', mono: options.mono, fontSizePt: options.fontSizePt || 10 }
+        mergedLayout,
+        { align: options.align || 'left', mono: options.mono, fontSizePt: options.fontSizePt || mergedLayout.fontSizePt }
     );
 
     return `<!doctype html>
@@ -1101,10 +1169,10 @@ const buildCashReceiptPrintHtml = (receipt = {}) => {
     <meta charset="utf-8" />
     <title></title>
     <style>
-        @page { size: ${cm(pageWidth)} ${cm(pageHeight)}; margin: 0; }
+        @page { size: ${cm(mergedLayout.pageWidthCm)} ${cm(mergedLayout.pageHeightCm)}; margin: 0; }
         html, body {
-            width: ${cm(pageWidth)};
-            height: ${cm(pageHeight)};
+            width: ${cm(mergedLayout.pageWidthCm)};
+            height: ${cm(mergedLayout.pageHeightCm)};
             margin: 0 !important;
             padding: 0 !important;
             overflow: hidden !important;
@@ -1113,12 +1181,13 @@ const buildCashReceiptPrintHtml = (receipt = {}) => {
         * { box-sizing: border-box; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
         .sheet {
             position: relative;
-            width: ${cm(pageWidth)};
-            height: ${cm(pageHeight)};
+            width: ${cm(mergedLayout.pageWidthCm)};
+            height: ${cm(mergedLayout.pageHeightCm)};
             margin: 0 !important;
             padding: 0 !important;
             overflow: hidden;
             background: transparent;
+            transform-origin: top left;
         }
         .txt {
             position: absolute;
@@ -1132,8 +1201,8 @@ const buildCashReceiptPrintHtml = (receipt = {}) => {
             html,
             body,
             .sheet {
-                width: ${cm(pageWidth)} !important;
-                height: ${cm(pageHeight)} !important;
+                width: ${cm(mergedLayout.pageWidthCm)} !important;
+                height: ${cm(mergedLayout.pageHeightCm)} !important;
                 margin: 0 !important;
                 padding: 0 !important;
             }
@@ -1142,15 +1211,15 @@ const buildCashReceiptPrintHtml = (receipt = {}) => {
 </head>
 <body>
     <main class="sheet">
-        ${text(0.95, 7.45, 4.1, formatInvoiceDate(receipt.date), { fontSizePt: 10 })}
-        ${text(9.95, 7.45, 3.1, formatInvoiceMoney(amount), { align: 'right', mono: true, fontSizePt: 10 })}
-        ${text(1.30, 8.85, 12.1, receipt.customerName || receipt.recibiDe || '', { fontSizePt: 10 })}
-        ${text(1.85, 10.25, 6.2, `C$ ${formatInvoiceMoney(amount)}`, { fontSizePt: 10 })}
-        ${text(11.10, 11.35, 2.1, formatInvoiceMoney(retention), { align: 'right', mono: true, fontSizePt: 10 })}
-        ${text(2.05, 12.80, 11.4, receipt.concept || receipt.concepto || '', { fontSizePt: 10 })}
-        ${text(2.50, 15.35, 0.35, isCash ? 'X' : '', { align: 'center', fontSizePt: 14 })}
-        ${text(4.05, 15.45, 3.4, receipt.reference || receipt.referencia || '', { fontSizePt: 9 })}
-        ${text(7.55, 15.45, 4.9, bank, { fontSizePt: 9 })}
+        ${text('date', formatInvoiceDate(receipt.date))}
+        ${text('amount', formatInvoiceMoney(amount), { align: 'right', mono: true })}
+        ${text('customerName', receipt.customerName || receipt.recibiDe || '')}
+        ${text('amountText', `C$ ${formatInvoiceMoney(amount)}`)}
+        ${text('retentionIr2', formatInvoiceMoney(retention), { align: 'right', mono: true })}
+        ${text('concept', receipt.concept || receipt.concepto || '')}
+        ${text('cashMark', isCash ? 'X' : '', { align: 'center', fontSizePt: safeNumber(mergedLayout.fontSizePt) + 4 })}
+        ${text('reference', receipt.reference || receipt.referencia || '', { fontSizePt: Math.max(7, safeNumber(mergedLayout.fontSizePt) - 1) })}
+        ${text('bank', bank, { fontSizePt: Math.max(7, safeNumber(mergedLayout.fontSizePt) - 1) })}
     </main>
 </body>
 </html>`;
@@ -3111,6 +3180,249 @@ const StampedInvoicePrintModal = ({
     );
 };
 
+const getCashReceiptPrintSample = (receipt = {}) => normalizeCashReceiptRecord({
+    id: receipt.id || 'preview',
+    date: receipt.date || todayString(),
+    receiptNumber: receipt.receiptNumber || receipt.numeroRecibo || '0051',
+    customerName: receipt.customerName || receipt.recibiDe || 'CLIENTE DE PRUEBA',
+    amount: safeNumber(receipt.amount) || 1250,
+    retentionIr2: safeNumber(receipt.retentionIr2),
+    concept: receipt.concept || receipt.concepto || 'PAGO A CUENTA / RECUPERACION DE CREDITO',
+    paymentMethod: receipt.paymentMethod || receipt.metodoPago || 'EFECTIVO',
+    reference: receipt.reference || receipt.referencia || 'REF-001',
+});
+
+const CashReceiptPrintSheet = ({ receipt, layout }) => {
+    const mergedLayout = mergeCashReceiptPrintLayout(layout);
+    const sample = getCashReceiptPrintSample(receipt);
+    const amount = safeNumber(sample.amount);
+    const retention = safeNumber(sample.retentionIr2);
+    const paymentMethod = sample.paymentMethod || '';
+    const isCash = normalizeText(paymentMethod) === 'EFECTIVO';
+    const bank = getReceiptPaymentBank(paymentMethod);
+
+    return (
+        <div
+            className="cash-receipt-print-sheet relative mx-auto overflow-hidden bg-white shadow-2xl shadow-slate-950/20 ring-1 ring-slate-300"
+            style={{ width: cm(mergedLayout.pageWidthCm), height: cm(mergedLayout.pageHeightCm) }}
+        >
+            <div className="cash-receipt-screen-guide absolute inset-0 bg-[linear-gradient(rgba(15,23,42,0.05)_1px,transparent_1px),linear-gradient(90deg,rgba(15,23,42,0.05)_1px,transparent_1px)] bg-[size:0.5cm_0.5cm]" />
+            <div className="cash-receipt-screen-guide absolute inset-[0.35cm] rounded-sm border border-dashed border-red-300" />
+
+            <PrintText field={mergedLayout.date} layout={mergedLayout}>{formatInvoiceDate(sample.date)}</PrintText>
+            <PrintText field={mergedLayout.amount} layout={mergedLayout} align="right" mono>{formatInvoiceMoney(amount)}</PrintText>
+            <PrintText field={mergedLayout.customerName} layout={mergedLayout}>{sample.customerName || ''}</PrintText>
+            <PrintText field={mergedLayout.amountText} layout={mergedLayout}>{`C$ ${formatInvoiceMoney(amount)}`}</PrintText>
+            <PrintText field={mergedLayout.retentionIr2} layout={mergedLayout} align="right" mono>{formatInvoiceMoney(retention)}</PrintText>
+            <PrintText field={mergedLayout.concept} layout={mergedLayout}>{sample.concept || ''}</PrintText>
+            <PrintText field={mergedLayout.cashMark} layout={{ ...mergedLayout, fontSizePt: safeNumber(mergedLayout.fontSizePt) + 4 }} align="center">{isCash ? 'X' : ''}</PrintText>
+            <PrintText field={mergedLayout.reference} layout={{ ...mergedLayout, fontSizePt: Math.max(7, safeNumber(mergedLayout.fontSizePt) - 1) }}>{sample.reference || ''}</PrintText>
+            <PrintText field={mergedLayout.bank} layout={{ ...mergedLayout, fontSizePt: Math.max(7, safeNumber(mergedLayout.fontSizePt) - 1) }}>{bank}</PrintText>
+        </div>
+    );
+};
+
+const CashReceiptPrintModal = ({
+    receipt,
+    layout,
+    templates,
+    activeTemplateId,
+    templateName,
+    onSelectTemplate,
+    onTemplateNameChange,
+    onLayoutChange,
+    onSaveLayout,
+    onSaveNewLayout,
+    onClose,
+}) => {
+    if (!receipt) return null;
+    const mergedLayout = mergeCashReceiptPrintLayout(layout);
+    const sample = getCashReceiptPrintSample(receipt);
+
+    const updateField = (fieldKey, prop, value) => {
+        onLayoutChange(mergeCashReceiptPrintLayout({
+            ...mergedLayout,
+            [fieldKey]: {
+                ...(mergedLayout[fieldKey] || {}),
+                [prop]: Number(value),
+            },
+        }));
+    };
+
+    const updateLayout = (prop, value) => {
+        onLayoutChange(mergeCashReceiptPrintLayout({
+            ...mergedLayout,
+            [prop]: Number(value),
+        }));
+    };
+
+    const swapPageSize = () => {
+        onLayoutChange(mergeCashReceiptPrintLayout({
+            ...mergedLayout,
+            pageWidthCm: mergedLayout.pageHeightCm,
+            pageHeightCm: mergedLayout.pageWidthCm,
+        }));
+    };
+
+    const printReceipt = () => {
+        const iframe = document.createElement('iframe');
+        iframe.title = '';
+        iframe.setAttribute('aria-hidden', 'true');
+        iframe.style.position = 'fixed';
+        iframe.style.right = '0';
+        iframe.style.bottom = '0';
+        iframe.style.width = '0';
+        iframe.style.height = '0';
+        iframe.style.border = '0';
+        iframe.style.opacity = '0';
+        document.body.appendChild(iframe);
+
+        const iframeWindow = iframe.contentWindow;
+        const iframeDocument = iframe.contentDocument || iframeWindow?.document;
+        if (!iframeWindow || !iframeDocument) {
+            iframe.remove();
+            return;
+        }
+
+        iframeDocument.open();
+        iframeDocument.write(buildCashReceiptPrintHtml(sample, mergedLayout));
+        iframeDocument.close();
+
+        const cleanup = () => setTimeout(() => iframe.remove(), 500);
+        iframeWindow.onafterprint = cleanup;
+        setTimeout(() => {
+            iframeWindow.focus();
+            iframeWindow.print();
+            cleanup();
+        }, 180);
+    };
+
+    return (
+        <div className="fixed inset-0 z-[80] flex items-start justify-center overflow-y-auto bg-slate-950/70 p-4 backdrop-blur-sm">
+            <div className="w-full max-w-7xl rounded-[2rem] border border-white/10 bg-slate-50 shadow-2xl">
+                <div className="no-print flex flex-col gap-3 border-b border-slate-200 bg-slate-950 px-5 py-4 text-white sm:flex-row sm:items-center sm:justify-between">
+                    <div>
+                        <div className="text-[10px] font-black uppercase tracking-[0.28em] text-red-300">Recibo oficial de caja preimpreso</div>
+                        <h3 className="text-xl font-black">Ajustar impresion de recibo</h3>
+                        <p className="mt-1 text-xs font-semibold text-slate-300">
+                            Mueve cada campo en centimetros. X mueve horizontal, Y mueve vertical.
+                        </p>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                        <button type="button" onClick={onSaveLayout} className="rounded-2xl border border-white/20 px-4 py-2 text-xs font-black uppercase tracking-[0.16em] text-white transition hover:bg-white/10">
+                            Guardar
+                        </button>
+                        <button type="button" onClick={onSaveNewLayout} className="rounded-2xl border border-white/20 px-4 py-2 text-xs font-black uppercase tracking-[0.16em] text-white transition hover:bg-white/10">
+                            Guardar nueva
+                        </button>
+                        <button type="button" onClick={printReceipt} className="rounded-2xl bg-[#e30613] px-4 py-2 text-xs font-black uppercase tracking-[0.16em] text-white transition hover:bg-red-700">
+                            Probar impresion
+                        </button>
+                        <button type="button" onClick={onClose} className="rounded-2xl bg-white px-4 py-2 text-xs font-black uppercase tracking-[0.16em] text-slate-950 transition hover:bg-slate-200">
+                            Cerrar
+                        </button>
+                    </div>
+                </div>
+
+                <div className="grid gap-5 p-5 xl:grid-cols-[0.85fr_1.15fr]">
+                    <div className="no-print space-y-4">
+                        <div className="rounded-3xl border border-slate-200 bg-white p-4">
+                            <div className="text-sm font-black text-slate-950">Plantilla de impresion</div>
+                            <div className="mt-3 grid gap-3 md:grid-cols-[1fr_1fr]">
+                                <Field label="Elegir plantilla">
+                                    <select className={inputClass} value={activeTemplateId || ''} onChange={(event) => onSelectTemplate(event.target.value)}>
+                                        {(templates || []).map((template) => (
+                                            <option key={template.id} value={template.id}>{template.name}</option>
+                                        ))}
+                                    </select>
+                                </Field>
+                                <Field label="Nombre">
+                                    <input className={inputClass} value={templateName || ''} onChange={(event) => onTemplateNameChange(event.target.value)} placeholder="Ej: Epson recibos, bandeja manual..." />
+                                </Field>
+                            </div>
+                        </div>
+
+                        <div className="rounded-3xl border border-slate-200 bg-white p-4">
+                            <div className="flex items-center justify-between gap-3">
+                                <div className="text-sm font-black text-slate-950">Ajuste general</div>
+                                <button type="button" onClick={swapPageSize} className="rounded-xl border border-slate-200 px-3 py-2 text-[10px] font-black uppercase tracking-[0.14em] text-slate-600 transition hover:border-[#e30613] hover:text-[#e30613]">
+                                    Girar tamano
+                                </button>
+                            </div>
+                            <div className="mt-3 grid grid-cols-3 gap-3">
+                                <Field label="Ancho cm">
+                                    <input className={inputClass} type="number" step="0.05" value={mergedLayout.pageWidthCm} onChange={(event) => updateLayout('pageWidthCm', event.target.value)} />
+                                </Field>
+                                <Field label="Alto cm">
+                                    <input className={inputClass} type="number" step="0.05" value={mergedLayout.pageHeightCm} onChange={(event) => updateLayout('pageHeightCm', event.target.value)} />
+                                </Field>
+                                <Field label="Fuente">
+                                    <input className={inputClass} type="number" step="0.5" value={mergedLayout.fontSizePt} onChange={(event) => updateLayout('fontSizePt', event.target.value)} />
+                                </Field>
+                            </div>
+                            <div className="mt-2 text-xs font-semibold text-slate-500">
+                                Si el navegador centra el recibo, usa el tamano fisico real del papel y ajusta X/Y desde esta pantalla.
+                            </div>
+                        </div>
+
+                        <div className="max-h-[46rem] space-y-3 overflow-y-auto pr-1">
+                            {CASH_RECEIPT_PRINT_FIELDS.map((field) => (
+                                <div key={field.key} className="rounded-3xl border border-slate-200 bg-white p-4">
+                                    <div className="mb-3 text-xs font-black uppercase tracking-[0.2em] text-slate-500">{field.label}</div>
+                                    <div className="grid grid-cols-3 gap-2">
+                                        <Field label="X cm">
+                                            <input className={inputClass} type="number" step="0.05" value={mergedLayout[field.key]?.x || 0} onChange={(event) => updateField(field.key, 'x', event.target.value)} />
+                                        </Field>
+                                        <Field label="Y cm">
+                                            <input className={inputClass} type="number" step="0.05" value={mergedLayout[field.key]?.y || 0} onChange={(event) => updateField(field.key, 'y', event.target.value)} />
+                                        </Field>
+                                        <Field label="Ancho">
+                                            <input className={inputClass} type="number" step="0.05" value={mergedLayout[field.key]?.width || 2} onChange={(event) => updateField(field.key, 'width', event.target.value)} />
+                                        </Field>
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+
+                    <div className="cash-receipt-print-area overflow-auto rounded-3xl border border-slate-200 bg-slate-100 p-4">
+                        <CashReceiptPrintSheet receipt={sample} layout={mergedLayout} />
+                    </div>
+                </div>
+
+                <style>{`
+                    @media print {
+                        @page { size: ${cm(mergedLayout.pageWidthCm)} ${cm(mergedLayout.pageHeightCm)}; margin: 0; }
+                        body.print-cash-receipt-overlay * { visibility: hidden !important; }
+                        body.print-cash-receipt-overlay .cash-receipt-print-area,
+                        body.print-cash-receipt-overlay .cash-receipt-print-area * { visibility: visible !important; }
+                        body.print-cash-receipt-overlay .cash-receipt-print-area {
+                            position: absolute !important;
+                            inset: 0 auto auto 0 !important;
+                            width: ${cm(mergedLayout.pageWidthCm)} !important;
+                            height: ${cm(mergedLayout.pageHeightCm)} !important;
+                            overflow: hidden !important;
+                            border: 0 !important;
+                            border-radius: 0 !important;
+                            background: transparent !important;
+                            padding: 0 !important;
+                        }
+                        body.print-cash-receipt-overlay .cash-receipt-print-sheet {
+                            width: ${cm(mergedLayout.pageWidthCm)} !important;
+                            height: ${cm(mergedLayout.pageHeightCm)} !important;
+                            margin: 0 !important;
+                            box-shadow: none !important;
+                            border: 0 !important;
+                            background: transparent !important;
+                        }
+                        body.print-cash-receipt-overlay .cash-receipt-screen-guide { display: none !important; }
+                    }
+                `}</style>
+            </div>
+        </div>
+    );
+};
+
 function useStampedPrintTemplates(setMessage = () => {}) {
     const [printLayout, setPrintLayout] = useState(DEFAULT_STAMPED_PRINT_LAYOUT);
     const [printTemplates, setPrintTemplates] = useState([
@@ -3202,6 +3514,97 @@ function useStampedPrintTemplates(setMessage = () => {}) {
     };
 }
 
+function useCashReceiptPrintTemplates(setMessage = () => {}) {
+    const [cashReceiptLayout, setCashReceiptLayout] = useState(DEFAULT_CASH_RECEIPT_PRINT_LAYOUT);
+    const [cashReceiptTemplates, setCashReceiptTemplates] = useState([
+        { id: DEFAULT_PRINT_TEMPLATE_ID, name: DEFAULT_PRINT_TEMPLATE_NAME, layout: DEFAULT_CASH_RECEIPT_PRINT_LAYOUT },
+    ]);
+    const [activeCashReceiptTemplateId, setActiveCashReceiptTemplateId] = useState(DEFAULT_PRINT_TEMPLATE_ID);
+    const [cashReceiptTemplateName, setCashReceiptTemplateName] = useState(DEFAULT_PRINT_TEMPLATE_NAME);
+
+    useEffect(() => {
+        let mounted = true;
+        getDoc(doc(db, 'configuracion', CASH_RECEIPT_PRINT_LAYOUT_DOC))
+            .then((snapshot) => {
+                if (!mounted || !snapshot.exists()) return;
+                const config = snapshot.data() || {};
+                const templates = readCashReceiptPrintTemplates(config);
+                const selectedId = config.selectedTemplateId || templates[0]?.id || DEFAULT_PRINT_TEMPLATE_ID;
+                const selectedTemplate = templates.find((template) => template.id === selectedId) || templates[0];
+                setCashReceiptTemplates(templates);
+                setActiveCashReceiptTemplateId(selectedTemplate.id);
+                setCashReceiptTemplateName(selectedTemplate.name);
+                setCashReceiptLayout(mergeCashReceiptPrintLayout(selectedTemplate.layout));
+            })
+            .catch((error) => console.warn('No se pudo cargar plantilla de recibo de caja:', error));
+        return () => {
+            mounted = false;
+        };
+    }, []);
+
+    const persistCashReceiptTemplates = async (templates, selectedTemplateId, successMessage) => {
+        const normalizedTemplates = templates.map((template, index) => normalizeCashReceiptPrintTemplate(template, index));
+        await setDoc(doc(db, 'configuracion', CASH_RECEIPT_PRINT_LAYOUT_DOC), {
+            templates: normalizedTemplates,
+            selectedTemplateId,
+            layout: normalizedTemplates.find((template) => template.id === selectedTemplateId)?.layout || normalizedTemplates[0]?.layout || mergeCashReceiptPrintLayout(cashReceiptLayout),
+            updatedAt: serverTimestamp(),
+        }, { merge: true });
+        setCashReceiptTemplates(normalizedTemplates);
+        setActiveCashReceiptTemplateId(selectedTemplateId);
+        const selected = normalizedTemplates.find((template) => template.id === selectedTemplateId) || normalizedTemplates[0];
+        setCashReceiptTemplateName(selected?.name || DEFAULT_PRINT_TEMPLATE_NAME);
+        setCashReceiptLayout(mergeCashReceiptPrintLayout(selected?.layout || cashReceiptLayout));
+        setMessage(successMessage);
+    };
+
+    const selectCashReceiptTemplate = (templateId) => {
+        const selected = cashReceiptTemplates.find((template) => template.id === templateId);
+        if (!selected) return;
+        setActiveCashReceiptTemplateId(selected.id);
+        setCashReceiptTemplateName(selected.name);
+        setCashReceiptLayout(mergeCashReceiptPrintLayout(selected.layout));
+    };
+
+    const saveCashReceiptLayout = async () => {
+        const name = String(cashReceiptTemplateName || '').trim() || DEFAULT_PRINT_TEMPLATE_NAME;
+        const templateId = activeCashReceiptTemplateId || DEFAULT_PRINT_TEMPLATE_ID;
+        const nextTemplates = cashReceiptTemplates.map((template) => (
+            template.id === templateId
+                ? { ...template, name, layout: mergeCashReceiptPrintLayout(cashReceiptLayout) }
+                : template
+        ));
+
+        if (!nextTemplates.some((template) => template.id === templateId)) {
+            nextTemplates.push({ id: templateId, name, layout: mergeCashReceiptPrintLayout(cashReceiptLayout) });
+        }
+
+        await persistCashReceiptTemplates(nextTemplates, templateId, `Plantilla de recibo "${name}" guardada.`);
+    };
+
+    const saveNewCashReceiptLayout = async () => {
+        const name = String(cashReceiptTemplateName || '').trim() || `Plantilla ${cashReceiptTemplates.length + 1}`;
+        const templateId = createPrintTemplateId(name);
+        const nextTemplates = [
+            ...cashReceiptTemplates,
+            { id: templateId, name, layout: mergeCashReceiptPrintLayout(cashReceiptLayout) },
+        ];
+        await persistCashReceiptTemplates(nextTemplates, templateId, `Nueva plantilla de recibo "${name}" guardada.`);
+    };
+
+    return {
+        cashReceiptLayout,
+        cashReceiptTemplates,
+        activeCashReceiptTemplateId,
+        cashReceiptTemplateName,
+        setCashReceiptLayout,
+        setCashReceiptTemplateName,
+        selectCashReceiptTemplate,
+        saveCashReceiptLayout,
+        saveNewCashReceiptLayout,
+    };
+}
+
 function CashReceipts({ data }) {
     const clients = useMemo(() => (
         [...(data.clientes_facturacion || [])]
@@ -3230,6 +3633,18 @@ function CashReceipts({ data }) {
     const [page, setPage] = useState(1);
     const [saving, setSaving] = useState(false);
     const [message, setMessage] = useState('');
+    const [printTarget, setPrintTarget] = useState(null);
+    const {
+        cashReceiptLayout,
+        cashReceiptTemplates,
+        activeCashReceiptTemplateId,
+        cashReceiptTemplateName,
+        setCashReceiptLayout,
+        setCashReceiptTemplateName,
+        selectCashReceiptTemplate,
+        saveCashReceiptLayout,
+        saveNewCashReceiptLayout,
+    } = useCashReceiptPrintTemplates(setMessage);
 
     const filteredReceipts = useMemo(() => filterRecords(receipts, search, [
         'date',
@@ -3350,7 +3765,7 @@ function CashReceipts({ data }) {
         }
 
         iframeDocument.open();
-        iframeDocument.write(buildCashReceiptPrintHtml(receipt));
+        iframeDocument.write(buildCashReceiptPrintHtml(receipt, cashReceiptLayout));
         iframeDocument.close();
 
         const cleanup = () => setTimeout(() => iframe.remove(), 500);
@@ -3363,8 +3778,24 @@ function CashReceipts({ data }) {
     };
 
     return (
+        <>
         <div className="grid gap-5 xl:grid-cols-[0.85fr_1.15fr]">
-            <Section title="Nuevo recibo de caja" eyebrow="Registro contable" action={<Badge tone="green">Media carta</Badge>}>
+            <Section
+                title="Nuevo recibo de caja"
+                eyebrow="Registro contable"
+                action={(
+                    <div className="flex flex-wrap items-center gap-2">
+                        <Badge tone="green">Media carta</Badge>
+                        <button
+                            type="button"
+                            onClick={() => setPrintTarget(receipts[0] || getCashReceiptPrintSample(form))}
+                            className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-[10px] font-black uppercase tracking-[0.16em] text-slate-700 transition hover:border-[#e30613] hover:text-[#e30613]"
+                        >
+                            Ajustar impresion
+                        </button>
+                    </div>
+                )}
+            >
                 <form onSubmit={saveReceipt} className="space-y-4">
                     <div className="grid gap-4 md:grid-cols-2">
                         <Field label="Fecha">
@@ -3475,6 +3906,20 @@ function CashReceipts({ data }) {
                 </div>
             </Section>
         </div>
+        <CashReceiptPrintModal
+            receipt={printTarget}
+            layout={cashReceiptLayout}
+            templates={cashReceiptTemplates}
+            activeTemplateId={activeCashReceiptTemplateId}
+            templateName={cashReceiptTemplateName}
+            onSelectTemplate={selectCashReceiptTemplate}
+            onTemplateNameChange={setCashReceiptTemplateName}
+            onLayoutChange={setCashReceiptLayout}
+            onSaveLayout={saveCashReceiptLayout}
+            onSaveNewLayout={saveNewCashReceiptLayout}
+            onClose={() => setPrintTarget(null)}
+        />
+        </>
     );
 }
 
@@ -3482,6 +3927,19 @@ function CashReceiptHistory({ data }) {
     const [search, setSearch] = useState('');
     const [selectedMonth, setSelectedMonth] = useState(getMonth(todayString()));
     const [page, setPage] = useState(1);
+    const [message, setMessage] = useState('');
+    const [printTarget, setPrintTarget] = useState(null);
+    const {
+        cashReceiptLayout,
+        cashReceiptTemplates,
+        activeCashReceiptTemplateId,
+        cashReceiptTemplateName,
+        setCashReceiptLayout,
+        setCashReceiptTemplateName,
+        selectCashReceiptTemplate,
+        saveCashReceiptLayout,
+        saveNewCashReceiptLayout,
+    } = useCashReceiptPrintTemplates(setMessage);
 
     const receipts = useMemo(() => (
         [...(data.recibos_caja_membretados || [])]
@@ -3535,7 +3993,7 @@ function CashReceiptHistory({ data }) {
             return;
         }
         iframeDocument.open();
-        iframeDocument.write(buildCashReceiptPrintHtml(receipt));
+        iframeDocument.write(buildCashReceiptPrintHtml(receipt, cashReceiptLayout));
         iframeDocument.close();
         const cleanup = () => setTimeout(() => iframe.remove(), 500);
         iframeWindow.onafterprint = cleanup;
@@ -3547,14 +4005,31 @@ function CashReceiptHistory({ data }) {
     };
 
     return (
+        <>
         <div className="space-y-5">
-            <Section title="Historial de recibos de caja" eyebrow="Recibos membretados" action={<Badge tone="blue">{filteredReceipts.length} recibos</Badge>}>
+            <Section
+                title="Historial de recibos de caja"
+                eyebrow="Recibos membretados"
+                action={(
+                    <div className="flex flex-wrap items-center gap-2">
+                        <Badge tone="blue">{filteredReceipts.length} recibos</Badge>
+                        <button
+                            type="button"
+                            onClick={() => setPrintTarget(filteredReceipts[0] || receipts[0] || getCashReceiptPrintSample())}
+                            className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-[10px] font-black uppercase tracking-[0.16em] text-slate-700 transition hover:border-[#e30613] hover:text-[#e30613]"
+                        >
+                            Ajustar impresion
+                        </button>
+                    </div>
+                )}
+            >
                 <div className="grid gap-3 lg:grid-cols-[1fr_0.35fr]">
                     <SearchBox value={search} onChange={setSearch} placeholder="Buscar recibo, cliente, concepto o metodo..." resultLabel={`${searchedReceipts.length} encontrados`} />
                     <Field label="Mes">
                         <input className={inputClass} type="month" value={selectedMonth} onChange={(event) => setSelectedMonth(event.target.value)} />
                     </Field>
                 </div>
+                {message && <div className="mt-3 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-bold text-slate-700">{message}</div>}
                 <div className="mt-5 grid gap-3 md:grid-cols-3">
                     <SummaryCard label="Recibos" value={totals.count} />
                     <SummaryCard label="Cantidad total" value={fmt(totals.amount)} tone="green" />
@@ -3602,6 +4077,20 @@ function CashReceiptHistory({ data }) {
                 </div>
             </Section>
         </div>
+        <CashReceiptPrintModal
+            receipt={printTarget}
+            layout={cashReceiptLayout}
+            templates={cashReceiptTemplates}
+            activeTemplateId={activeCashReceiptTemplateId}
+            templateName={cashReceiptTemplateName}
+            onSelectTemplate={selectCashReceiptTemplate}
+            onTemplateNameChange={setCashReceiptTemplateName}
+            onLayoutChange={setCashReceiptLayout}
+            onSaveLayout={saveCashReceiptLayout}
+            onSaveNewLayout={saveNewCashReceiptLayout}
+            onClose={() => setPrintTarget(null)}
+        />
+        </>
     );
 }
 
