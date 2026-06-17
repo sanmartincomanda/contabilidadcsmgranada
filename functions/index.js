@@ -135,6 +135,14 @@ const PURCHASE_CATEGORY_PAYLOAD = {
   expenseSubcategory: 'Otros costos de producto',
   categoryLabel: 'Costos de venta / compras / Otros costos de producto',
 };
+const PURCHASE_SUPPLIER_SUBCATEGORY_RULES = [
+  { supplierIncludes: 'industrial comercial san martin', subcategory: 'Compra de carne res' },
+  { supplierIncludes: 'cargill', subcategory: 'Compra de pollo' },
+  { supplierIncludes: 'matadero cacique', subcategory: 'Compra de cerdo' },
+  { supplierIncludes: 'delmor', subcategory: 'Compra de embutidos' },
+  { supplierIncludes: 'los artesanos', subcategory: 'Compra de embutidos' },
+  { supplierIncludes: 'sigma alimentos', subcategory: 'Compra de embutidos' },
+];
 const SICAR_PRIVATE_CUTOVER_DATE = defineString('SICAR_PRIVATE_CUTOVER_DATE', { default: '2026-05-14' });
 const PIPELINE_STATUSES = new Set([
   'pending',
@@ -183,6 +191,22 @@ function normalizeComparableText(value) {
     .toLowerCase()
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '');
+}
+
+function buildPurchaseCategoryPayload(subcategory = PURCHASE_CATEGORY_PAYLOAD.subcategory) {
+  return {
+    ...PURCHASE_CATEGORY_PAYLOAD,
+    subcategory,
+    subcategoria: subcategory,
+    expenseSubcategory: subcategory,
+    categoryLabel: `${PURCHASE_CATEGORY_PAYLOAD.category} / ${subcategory}`,
+  };
+}
+
+function resolvePurchaseCategoryPayload(entry = {}) {
+  const supplierKey = normalizeComparableText(typeof entry === 'string' ? entry : entry.supplier);
+  const rule = PURCHASE_SUPPLIER_SUBCATEGORY_RULES.find((item) => supplierKey.includes(item.supplierIncludes));
+  return buildPurchaseCategoryPayload(rule?.subcategory || PURCHASE_CATEGORY_PAYLOAD.subcategory);
 }
 
 function normalizeAiLearningDocId(value) {
@@ -1622,6 +1646,7 @@ async function createCashPurchase(rawId, normalized, rawData) {
   const { compraId, gastoDiarioId } = getPurchaseTargetIds(rawId);
   const batch = firestore.batch();
   const description = buildPurchaseDescription(normalized);
+  const categoryPayload = resolvePurchaseCategoryPayload(normalized);
 
   batch.set(firestore.collection('gastosDiarios').doc(gastoDiarioId), {
     fecha: normalized.date,
@@ -1635,7 +1660,7 @@ async function createCashPurchase(rawId, normalized, rawData) {
     iva: normalized.iva,
     total: normalized.total,
     tipo: 'Compra',
-    ...PURCHASE_CATEGORY_PAYLOAD,
+    ...categoryPayload,
     sucursal: getBranchId(),
     branch: getBranchId(),
     branchName: getBranchName(),
@@ -1662,7 +1687,7 @@ async function createCashPurchase(rawId, normalized, rawData) {
     subtotalGravado: normalized.subtotalGravado,
     iva: normalized.iva,
     total: normalized.total,
-    ...PURCHASE_CATEGORY_PAYLOAD,
+    ...categoryPayload,
     branch: getBranchId(),
     branchName: getBranchName(),
     paymentType: 'contado',
@@ -1692,6 +1717,7 @@ async function createCashPurchase(rawId, normalized, rawData) {
 async function createCreditPurchase(rawId, normalized, rawData) {
   const { compraId, cuentaPorPagarId } = getPurchaseTargetIds(rawId);
   const batch = firestore.batch();
+  const categoryPayload = resolvePurchaseCategoryPayload(normalized);
   const cuentaPorPagarRef = firestore.collection('cuentas_por_pagar').doc(cuentaPorPagarId);
   const existingPayableSnapshot = await cuentaPorPagarRef.get();
   const existingPayable = existingPayableSnapshot.exists ? existingPayableSnapshot.data() : null;
@@ -1721,7 +1747,7 @@ async function createCreditPurchase(rawId, normalized, rawData) {
     subtotalGravado: normalized.subtotalGravado,
     iva: normalized.iva,
     total: normalized.total,
-    ...PURCHASE_CATEGORY_PAYLOAD,
+    ...categoryPayload,
     estado: saldo <= 0 ? 'pagado' : saldo < newTotal ? 'parcial' : 'pendiente',
     paymentType: 'credito',
     paymentMethodOriginal: 'credito',
@@ -1749,7 +1775,7 @@ async function createCreditPurchase(rawId, normalized, rawData) {
     subtotalGravado: normalized.subtotalGravado,
     iva: normalized.iva,
     total: normalized.total,
-    ...PURCHASE_CATEGORY_PAYLOAD,
+    ...categoryPayload,
     branch: getBranchId(),
     branchName: getBranchName(),
     paymentType: 'credito',
@@ -1778,6 +1804,7 @@ async function createCreditPurchase(rawId, normalized, rawData) {
 
 async function createOtherPurchase(rawId, normalized, rawData) {
   const { compraId } = getPurchaseTargetIds(rawId);
+  const categoryPayload = resolvePurchaseCategoryPayload(normalized);
 
   await firestore.collection('compras').doc(compraId).set({
     date: normalized.date,
@@ -1792,7 +1819,7 @@ async function createOtherPurchase(rawId, normalized, rawData) {
     subtotalGravado: normalized.subtotalGravado,
     iva: normalized.iva,
     total: normalized.total,
-    ...PURCHASE_CATEGORY_PAYLOAD,
+    ...categoryPayload,
     branch: getBranchId(),
     branchName: getBranchName(),
     paymentType: 'Transferencia',

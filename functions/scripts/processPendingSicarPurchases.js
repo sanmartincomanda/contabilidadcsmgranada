@@ -14,6 +14,14 @@ const PURCHASE_CATEGORY_PAYLOAD = {
   expenseSubcategory: 'Otros costos de producto',
   categoryLabel: 'Costos de venta / compras / Otros costos de producto',
 };
+const PURCHASE_SUPPLIER_SUBCATEGORY_RULES = [
+  { supplierIncludes: 'industrial comercial san martin', subcategory: 'Compra de carne res' },
+  { supplierIncludes: 'cargill', subcategory: 'Compra de pollo' },
+  { supplierIncludes: 'matadero cacique', subcategory: 'Compra de cerdo' },
+  { supplierIncludes: 'delmor', subcategory: 'Compra de embutidos' },
+  { supplierIncludes: 'los artesanos', subcategory: 'Compra de embutidos' },
+  { supplierIncludes: 'sigma alimentos', subcategory: 'Compra de embutidos' },
+];
 const preview = process.argv.includes('--preview');
 const requeueErrors = process.argv.includes('--requeue-errors');
 const limitArg = process.argv.find((arg) => arg.startsWith('--limit='));
@@ -49,6 +57,22 @@ function normalizeComparableText(value) {
     .toLowerCase()
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '');
+}
+
+function buildPurchaseCategoryPayload(subcategory = PURCHASE_CATEGORY_PAYLOAD.subcategory) {
+  return {
+    ...PURCHASE_CATEGORY_PAYLOAD,
+    subcategory,
+    subcategoria: subcategory,
+    expenseSubcategory: subcategory,
+    categoryLabel: `${PURCHASE_CATEGORY_PAYLOAD.category} / ${subcategory}`,
+  };
+}
+
+function resolvePurchaseCategoryPayload(entry = {}) {
+  const supplierKey = normalizeComparableText(typeof entry === 'string' ? entry : entry.supplier);
+  const rule = PURCHASE_SUPPLIER_SUBCATEGORY_RULES.find((item) => supplierKey.includes(item.supplierIncludes));
+  return buildPurchaseCategoryPayload(rule?.subcategory || PURCHASE_CATEGORY_PAYLOAD.subcategory);
 }
 
 function normalizeAmount(value) {
@@ -458,6 +482,7 @@ async function processPurchaseDocument(docSnapshot) {
     }
 
     const description = buildDescription(normalized);
+    const categoryPayload = resolvePurchaseCategoryPayload(normalized);
 
     if (normalized.paymentRoute === 'efectivo') {
       batch.set(db.collection('gastosDiarios').doc(targetDocIds.gastoDiarioId), {
@@ -472,7 +497,7 @@ async function processPurchaseDocument(docSnapshot) {
         iva: normalized.iva,
         total: normalized.total,
         tipo: 'Compra',
-        ...PURCHASE_CATEGORY_PAYLOAD,
+        ...categoryPayload,
         sucursal: BRANCH_ID,
         branch: BRANCH_ID,
         branchName: BRANCH_NAME,
@@ -518,7 +543,7 @@ async function processPurchaseDocument(docSnapshot) {
         subtotalGravado: normalized.subtotalGravado,
         iva: normalized.iva,
         total: normalized.total,
-        ...PURCHASE_CATEGORY_PAYLOAD,
+        ...categoryPayload,
         estado: saldo <= 0 ? 'pagado' : saldo < normalized.total ? 'parcial' : 'pendiente',
         paymentType: 'credito',
         paymentMethodOriginal: 'credito',
@@ -547,7 +572,7 @@ async function processPurchaseDocument(docSnapshot) {
       subtotalGravado: normalized.subtotalGravado,
       iva: normalized.iva,
       total: normalized.total,
-      ...PURCHASE_CATEGORY_PAYLOAD,
+      ...categoryPayload,
       branch: BRANCH_ID,
       branchName: BRANCH_NAME,
       paymentType: normalized.paymentRoute === 'credito' ? 'credito' : normalized.paymentRoute === 'efectivo' ? 'contado' : 'Transferencia',
@@ -579,6 +604,7 @@ async function processPurchaseDocument(docSnapshot) {
         purchaseFolio: normalized.purchaseFolio,
         purchaseSeries: normalized.purchaseSeries,
         paymentRoute: normalized.paymentRoute,
+        ...categoryPayload,
       },
     }, { merge: true });
 

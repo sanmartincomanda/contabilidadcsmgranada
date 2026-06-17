@@ -20,6 +20,14 @@ const PURCHASE_CATEGORY_PAYLOAD = {
   expenseSubcategory: 'Otros costos de producto',
   categoryLabel: 'Costos de venta / compras / Otros costos de producto',
 };
+const PURCHASE_SUPPLIER_SUBCATEGORY_RULES = [
+  { supplierIncludes: 'industrial comercial san martin', subcategory: 'Compra de carne res' },
+  { supplierIncludes: 'cargill', subcategory: 'Compra de pollo' },
+  { supplierIncludes: 'matadero cacique', subcategory: 'Compra de cerdo' },
+  { supplierIncludes: 'delmor', subcategory: 'Compra de embutidos' },
+  { supplierIncludes: 'los artesanos', subcategory: 'Compra de embutidos' },
+  { supplierIncludes: 'sigma alimentos', subcategory: 'Compra de embutidos' },
+];
 
 function loadEnvFile(filePath) {
   if (!fs.existsSync(filePath)) return;
@@ -121,6 +129,22 @@ function normalizeComparableText(value) {
     .replace(/[\u0300-\u036f]/g, '');
 }
 
+function buildPurchaseCategoryPayload(subcategory = PURCHASE_CATEGORY_PAYLOAD.subcategory) {
+  return {
+    ...PURCHASE_CATEGORY_PAYLOAD,
+    subcategory,
+    subcategoria: subcategory,
+    expenseSubcategory: subcategory,
+    categoryLabel: `${PURCHASE_CATEGORY_PAYLOAD.category} / ${subcategory}`,
+  };
+}
+
+function resolvePurchaseCategoryPayload(entry = {}) {
+  const supplierKey = normalizeComparableText(typeof entry === 'string' ? entry : entry.supplier);
+  const rule = PURCHASE_SUPPLIER_SUBCATEGORY_RULES.find((item) => supplierKey.includes(item.supplierIncludes));
+  return buildPurchaseCategoryPayload(rule?.subcategory || PURCHASE_CATEGORY_PAYLOAD.subcategory);
+}
+
 function meaningfulText(value) {
   const cleaned = cleanText(value);
   if (!cleaned) return '';
@@ -186,11 +210,14 @@ function getPurchaseTargetIds(rawId) {
 }
 
 function buildSyncFingerprint(entry) {
+  const categoryPayload = resolvePurchaseCategoryPayload(entry);
   return createHash('sha1')
     .update(JSON.stringify({
       date: entry.date,
       supplier: entry.supplier,
       invoiceNumber: entry.invoiceNumber,
+      categoryLabel: categoryPayload.categoryLabel,
+      subcategory: categoryPayload.subcategory,
       subtotal: entry.subtotal,
       subtotalExento: entry.subtotalExento,
       subtotalGravado: entry.subtotalGravado,
@@ -402,6 +429,51 @@ async function fetchExcludedPurchases(connection, startDate, endExclusive) {
   });
 }
 
+async function fetchCancelledPurchases(connection, startDate, endExclusive) {
+  const [rows] = await connection.execute(`
+    SELECT
+      c.com_id,
+      c.fecha,
+      c.folio,
+      c.serieFolio,
+      c.subtotal,
+      ROUND(c.total - c.subtotal, 2) AS iva,
+      c.total,
+      c.status,
+      c.can_caj_id,
+      c.can_rcc_id,
+      p.nombre AS supplier
+    FROM compra c
+    LEFT JOIN proveedor p ON p.pro_id = c.pro_id
+    WHERE c.fecha >= ?
+      AND c.fecha < ?
+      AND (
+        IFNULL(c.status, 0) < 0
+        OR c.can_caj_id IS NOT NULL
+        OR c.can_rcc_id IS NOT NULL
+      )
+    ORDER BY c.fecha, c.com_id
+  `, [startDate, endExclusive]);
+
+  return rows.map((row) => {
+    const rawId = `compra_${row.com_id}`;
+    return {
+      rawId,
+      ...getPurchaseTargetIds(rawId),
+      sourceRecordId: String(row.com_id),
+      date: toDateString(row.fecha),
+      supplier: cleanText(row.supplier).toUpperCase() || 'PROVEEDOR NO IDENTIFICADO',
+      invoiceNumber: buildInvoiceNumber(row),
+      subtotal: money(row.subtotal),
+      iva: money(row.iva),
+      total: money(row.total),
+      status: row.status,
+      cancelledByCashboxId: row.can_caj_id || null,
+      cancelledByClosureId: row.can_rcc_id || null,
+    };
+  });
+}
+
 async function deleteExcludedPurchases(db, excludedEntries, options) {
   if (options.stageOnly || excludedEntries.length === 0) {
     return { deletedCount: 0 };
@@ -418,6 +490,59 @@ async function deleteExcludedPurchases(db, excludedEntries, options) {
   return { deletedCount: excludedEntries.length };
 }
 
+async function cancelPurchases(db, cancelledEntries, options) {
+  if (cancelledEntries.length === 0) {
+    return { cancelledCount: 0 };
+  }
+
+  const FieldValue = admin.firestore.FieldValue;
+  const batch = db.batch();
+
+  cancelledEntries.forEach((entry) => {
+    const rawRef = db.collection('integraciones_privadas').doc('sicar').collection('compras_raw').doc(entry.rawId);
+    batch.set(rawRef, {
+      sourceSystem: 'SICAR',
+      sourceType: 'compra',
+      sourceMode: 'local-worker',
+      branch: BRANCH_ID,
+      branchName: BRANCH_NAME,
+      sourceRecordId: entry.sourceRecordId,
+      normalized: {
+        date: entry.date,
+        supplier: entry.supplier,
+        invoiceNumber: entry.invoiceNumber,
+        subtotal: entry.subtotal,
+        iva: entry.iva,
+        total: entry.total,
+        isCancelled: true,
+        status: entry.status,
+        cancelledByCashboxId: entry.cancelledByCashboxId,
+        cancelledByClosureId: entry.cancelledByClosureId,
+      },
+      targetDocIds: {
+        compraId: entry.compraId,
+        gastoDiarioId: entry.gastoDiarioId,
+        cuentaPorPagarId: entry.cuentaPorPagarId,
+      },
+      status: options.stageOnly ? 'pending_cancelled' : 'cancelled',
+      isCancelled: true,
+      cancelledAt: FieldValue.serverTimestamp(),
+      lastSeenAt: FieldValue.serverTimestamp(),
+      syncedAt: FieldValue.serverTimestamp(),
+      seenCount: FieldValue.increment(1),
+    }, { merge: true });
+
+    if (!options.stageOnly) {
+      batch.delete(db.collection('compras').doc(entry.compraId));
+      batch.delete(db.collection('gastosDiarios').doc(entry.gastoDiarioId));
+      batch.delete(db.collection('cuentas_por_pagar').doc(entry.cuentaPorPagarId));
+    }
+  });
+
+  await batch.commit();
+  return { cancelledCount: options.stageOnly ? 0 : cancelledEntries.length };
+}
+
 async function writePurchase(db, entry, options) {
   const FieldValue = admin.firestore.FieldValue;
   const rawRef = db.collection('integraciones_privadas').doc('sicar').collection('compras_raw').doc(entry.rawId);
@@ -427,6 +552,7 @@ async function writePurchase(db, entry, options) {
   const sourceCollection = buildRawSourcePath(entry.rawId);
   const description = buildPurchaseDescription(entry).toUpperCase();
   const route = entry.paymentRoute;
+  const categoryPayload = resolvePurchaseCategoryPayload(entry);
   const syncFingerprint = buildSyncFingerprint(entry);
   const targetDocIds = {
     compraId: entry.compraId,
@@ -478,6 +604,7 @@ async function writePurchase(db, entry, options) {
       paymentTypeNames: entry.paymentTypeNames,
       paymentTypeTotal: entry.paymentTypeTotal,
       dueDate: entry.dueDate || '',
+      ...categoryPayload,
       sourceRecordId: entry.sourceRecordId,
       isCancelled: false,
     },
@@ -520,7 +647,7 @@ async function writePurchase(db, entry, options) {
       subtotalGravado: entry.subtotalGravado,
       iva: entry.iva,
       total: entry.total,
-      ...PURCHASE_CATEGORY_PAYLOAD,
+      ...categoryPayload,
       branch: BRANCH_ID,
       branchName: BRANCH_NAME,
       isInventoryCost: true,
@@ -559,7 +686,7 @@ async function writePurchase(db, entry, options) {
         subtotalGravado: entry.subtotalGravado,
         iva: entry.iva,
         total: entry.total,
-        ...PURCHASE_CATEGORY_PAYLOAD,
+        ...categoryPayload,
         estado: payableSaldo <= 0 ? 'pagado' : payableSaldo < entry.total ? 'parcial' : 'pendiente',
         paymentType: 'credito',
         paymentMethodOriginal: 'credito',
@@ -596,7 +723,7 @@ async function writePurchase(db, entry, options) {
         iva: entry.iva,
         total: entry.total,
         tipo: 'Compra',
-        ...PURCHASE_CATEGORY_PAYLOAD,
+        ...categoryPayload,
         sucursal: BRANCH_ID,
         branch: BRANCH_ID,
         branchName: BRANCH_NAME,
@@ -658,6 +785,7 @@ async function main() {
   try {
     const entries = await fetchPurchases(connection, startDate, addDays(endDate, 1));
     const excludedEntries = await fetchExcludedPurchases(connection, startDate, addDays(endDate, 1));
+    const cancelledEntries = await fetchCancelledPurchases(connection, startDate, addDays(endDate, 1));
     const routes = entries.reduce((acc, entry) => {
       acc[entry.paymentRoute] = (acc[entry.paymentRoute] || 0) + 1;
       return acc;
@@ -676,11 +804,13 @@ async function main() {
         excludedSupplierId: getExcludedSupplierId(),
         excludedSupplierName: getExcludedSupplierName(),
         excludedCount: excludedEntries.length,
+        cancelledCount: cancelledEntries.length,
         excludedSubtotal: money(excludedEntries.reduce((sum, entry) => sum + entry.subtotal, 0)),
         excludedIva: money(excludedEntries.reduce((sum, entry) => sum + entry.iva, 0)),
         excludedTotal: money(excludedEntries.reduce((sum, entry) => sum + entry.total, 0)),
         routes,
         excludedEntries: excludedEntries.slice(0, 20),
+        cancelledEntries: cancelledEntries.slice(0, 20),
         firstEntries: entries.slice(0, 10).map((entry) => ({
           rawId: entry.rawId,
           date: entry.date,
@@ -698,6 +828,7 @@ async function main() {
     }
 
     const excludedCleanup = await deleteExcludedPurchases(db, excludedEntries, { stageOnly: args.stageOnly });
+    const cancelledCleanup = await cancelPurchases(db, cancelledEntries, { stageOnly: args.stageOnly });
     const writeResults = [];
     for (const entry of entries) {
       writeResults.push(await writePurchase(db, entry, { stageOnly: args.stageOnly }));
@@ -719,10 +850,12 @@ async function main() {
       excludedSupplierId: getExcludedSupplierId(),
       excludedSupplierName: getExcludedSupplierName(),
       excludedCount: excludedEntries.length,
+      cancelledCount: cancelledEntries.length,
       excludedSubtotal: money(excludedEntries.reduce((sum, entry) => sum + entry.subtotal, 0)),
       excludedIva: money(excludedEntries.reduce((sum, entry) => sum + entry.iva, 0)),
       excludedTotal: money(excludedEntries.reduce((sum, entry) => sum + entry.total, 0)),
       excludedDeletedCount: excludedCleanup.deletedCount,
+      cancelledDeletedCount: cancelledCleanup.cancelledCount,
       routes,
       writtenCount,
       skippedUnchanged,
@@ -744,10 +877,12 @@ async function main() {
       excludedSupplierId: getExcludedSupplierId(),
       excludedSupplierName: getExcludedSupplierName(),
       excludedCount: excludedEntries.length,
+      cancelledCount: cancelledEntries.length,
       excludedSubtotal: money(excludedEntries.reduce((sum, entry) => sum + entry.subtotal, 0)),
       excludedIva: money(excludedEntries.reduce((sum, entry) => sum + entry.iva, 0)),
       excludedTotal: money(excludedEntries.reduce((sum, entry) => sum + entry.total, 0)),
       excludedDeletedCount: excludedCleanup.deletedCount,
+      cancelledDeletedCount: cancelledCleanup.cancelledCount,
       routes,
       writtenCount,
       skippedUnchanged,
