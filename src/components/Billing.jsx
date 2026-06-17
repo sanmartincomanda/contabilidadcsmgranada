@@ -236,7 +236,9 @@ const normalizeStampedInvoiceRecord = (item = {}) => ({
     customerName: item.customerName || item.cliente || '',
     customerRfc: item.customerRfc || item.rfc || '',
     customerAddress: item.customerAddress || item.address || '',
-    paymentMethod: item.paymentMethod || '',
+    paymentMethod: getInvoicePaymentMethodLabel(item),
+    paymentBreakdown: normalizePaymentBreakdownRows(item.paymentBreakdown),
+    paymentNetTotal: safeNumber(item.paymentNetTotal || getPaymentBreakdownTotal(item.paymentBreakdown) || getInvoicePaymentTargetAmount(item)),
     items: Array.isArray(item.items) ? item.items : [],
 });
 
@@ -279,7 +281,72 @@ const getCashDifferencePendingAmount = (item = {}) => {
 
 const getCashDifferenceType = (amount = 0) => (safeNumber(amount) < 0 ? 'faltante' : 'sobrante');
 
+const MIXED_PAYMENT_METHOD = 'MIXTO';
+
 const isCreditPaymentMethod = (method = '') => normalizeText(method).includes('CREDITO');
+
+const getInvoicePaymentTargetAmount = (invoice = {}) => {
+    const total = safeNumber(invoice.total || safeNumber(invoice.subtotal) + safeNumber(invoice.iva));
+    const retentions = safeNumber(invoice.retentionTotal ?? (safeNumber(invoice.retentionIr2) + safeNumber(invoice.retentionMunicipal1)));
+    const net = safeNumber(total - retentions);
+    return net > 0 ? net : total;
+};
+
+const normalizePaymentBreakdownRows = (rows = []) => (
+    (Array.isArray(rows) ? rows : [])
+        .map((row) => ({
+            id: row.id || row.localId || createLineId('payment'),
+            method: String(row.method || row.paymentMethod || '').trim(),
+            amount: safeNumber(row.amount),
+            reference: String(row.reference || '').trim(),
+        }))
+        .filter((row) => row.method && row.amount > 0)
+);
+
+const getPaymentBreakdownTotal = (rows = []) => safeNumber(
+    normalizePaymentBreakdownRows(rows).reduce((sum, row) => sum + safeNumber(row.amount), 0)
+);
+
+const getPaymentMethodFromBreakdown = (rows = [], fallback = '') => {
+    const normalizedRows = normalizePaymentBreakdownRows(rows);
+    if (normalizedRows.length > 1) return MIXED_PAYMENT_METHOD;
+    if (normalizedRows.length === 1) return normalizedRows[0].method;
+    return fallback || '';
+};
+
+const validatePaymentBreakdownForInvoice = (invoice = {}) => {
+    const rows = normalizePaymentBreakdownRows(invoice.paymentBreakdown);
+    if (!rows.length) return [];
+    const target = getInvoicePaymentTargetAmount(invoice);
+    const paid = getPaymentBreakdownTotal(rows);
+    if (target <= 0) {
+        throw new Error(`La factura ${invoice.invoiceNumber || ''} necesita total para dividir el pago.`);
+    }
+    if (Math.abs(paid - target) > 0.05) {
+        throw new Error(`El pago dividido de la factura ${invoice.invoiceNumber || ''} debe sumar ${fmt(target)}. Actualmente suma ${fmt(paid)}.`);
+    }
+    return rows;
+};
+
+const getPaymentBreakdownLabel = (invoice = {}) => {
+    const rows = normalizePaymentBreakdownRows(invoice.paymentBreakdown);
+    if (!rows.length) return invoice.paymentMethod || '';
+    return rows.map((row) => `${row.method} ${fmt(row.amount)}`).join(' / ');
+};
+
+const getInvoicePaymentMethodLabel = (invoice = {}) => (
+    normalizePaymentBreakdownRows(invoice.paymentBreakdown).length > 1
+        ? MIXED_PAYMENT_METHOD
+        : (getPaymentMethodFromBreakdown(invoice.paymentBreakdown, invoice.paymentMethod) || invoice.paymentMethod || '')
+);
+
+const getInvoicePaymentRows = (invoice = {}) => {
+    const rows = normalizePaymentBreakdownRows(invoice.paymentBreakdown);
+    if (rows.length) return rows;
+    const method = String(invoice.paymentMethod || '').trim();
+    if (!method) return [];
+    return [{ id: `${method}-${invoice.id || invoice.docId || ''}`, method, amount: getInvoicePaymentTargetAmount(invoice), reference: '' }];
+};
 
 const hasNumericValue = (value) => value !== undefined && value !== null && value !== '';
 
@@ -323,10 +390,14 @@ const buildClosureAccountingSummary = ({
     preCloseDepositTotal = 0,
 } = {}) => {
     const stampedCashTotal = safeNumber(stampedInvoices.reduce((sum, invoice) => (
-        sum + (!isCreditPaymentMethod(invoice.paymentMethod) ? safeNumber(invoice.total) : 0)
+        sum + getInvoicePaymentRows(invoice).reduce((paymentSum, row) => (
+            paymentSum + (!isCreditPaymentMethod(row.method) ? safeNumber(row.amount) : 0)
+        ), 0)
     ), 0));
     const stampedCreditTotal = safeNumber(stampedInvoices.reduce((sum, invoice) => (
-        sum + (isCreditPaymentMethod(invoice.paymentMethod) ? safeNumber(invoice.total) : 0)
+        sum + getInvoicePaymentRows(invoice).reduce((paymentSum, row) => (
+            paymentSum + (isCreditPaymentMethod(row.method) ? safeNumber(row.amount) : 0)
+        ), 0)
     ), 0));
     const cashReceiptTotal = safeNumber(cashReceipts.reduce((sum, receipt) => sum + safeNumber(receipt.amount), 0));
     const ticketCashSales = safeNumber(cashSalesTotal - stampedCashTotal);
@@ -506,7 +577,9 @@ const createInvoiceDraft = (invoice = {}, fallbackDate = todayString()) => {
         date,
         invoiceNumber,
         customerName: invoice.customerName || invoice.cliente || '',
-        paymentMethod: invoice.paymentMethod || '',
+        paymentMethod: getInvoicePaymentMethodLabel(invoice),
+        paymentBreakdown: normalizePaymentBreakdownRows(invoice.paymentBreakdown),
+        paymentNetTotal: safeNumber(invoice.paymentNetTotal || getPaymentBreakdownTotal(invoice.paymentBreakdown) || getInvoicePaymentTargetAmount(invoice)),
         subtotal: subtotal ? String(subtotal) : '',
         iva: iva ? String(iva) : '',
         total: total ? String(total) : '',
@@ -659,11 +732,136 @@ const PaginationControls = ({ page, totalPages, total, start, end, onPageChange 
 const PaymentMethodSelect = ({ value, onChange, required = false }) => (
     <select className={inputClass} value={value || ''} onChange={(event) => onChange(event.target.value)} required={required}>
         <option value="">Seleccionar metodo...</option>
+        {value === MIXED_PAYMENT_METHOD && <option value={MIXED_PAYMENT_METHOD}>MIXTO</option>}
         {PAYMENT_METHODS.map((method) => (
             <option key={method} value={method}>{method}</option>
         ))}
     </select>
 );
+
+const PaymentBreakdownPreview = ({ invoice = {} }) => {
+    const rows = normalizePaymentBreakdownRows(invoice.paymentBreakdown);
+    if (!rows.length) return null;
+    return (
+        <div className="mt-2 rounded-2xl border border-sky-200 bg-sky-50 px-3 py-2">
+            <div className="text-[10px] font-black uppercase tracking-[0.2em] text-sky-700">Pago dividido</div>
+            <div className="mt-1 flex flex-wrap gap-2 text-xs font-black text-slate-700">
+                {rows.map((row) => (
+                    <span key={row.id || `${row.method}-${row.amount}`} className="rounded-full border border-sky-200 bg-white px-3 py-1">
+                        {row.method} {fmt(row.amount)}
+                    </span>
+                ))}
+            </div>
+            <div className="mt-1 text-xs font-bold text-sky-700">Total aplicado: {fmt(getPaymentBreakdownTotal(rows))}</div>
+        </div>
+    );
+};
+
+const PaymentSplitModal = ({
+    open,
+    title = 'Dividir pago',
+    targetAmount = 0,
+    initialRows = [],
+    fallbackMethod = '',
+    onClose,
+    onSave,
+}) => {
+    const [rows, setRows] = useState([]);
+    const [error, setError] = useState('');
+
+    useEffect(() => {
+        if (!open) return;
+        const normalized = normalizePaymentBreakdownRows(initialRows);
+        setRows(normalized.length ? normalized : [{
+            id: createLineId('payment'),
+            method: fallbackMethod && fallbackMethod !== MIXED_PAYMENT_METHOD ? fallbackMethod : '',
+            amount: targetAmount ? String(targetAmount) : '',
+            reference: '',
+        }]);
+        setError('');
+    }, [fallbackMethod, initialRows, open, targetAmount]);
+
+    if (!open) return null;
+
+    const totalPaid = getPaymentBreakdownTotal(rows);
+    const difference = safeNumber(targetAmount - totalPaid);
+    const updateRow = (id, key, value) => {
+        setRows((current) => current.map((row) => (row.id === id ? { ...row, [key]: value } : row)));
+    };
+    const addRow = () => setRows((current) => [...current, { id: createLineId('payment'), method: '', amount: '', reference: '' }]);
+    const removeRow = (id) => setRows((current) => current.filter((row) => row.id !== id));
+    const saveRows = () => {
+        const normalized = normalizePaymentBreakdownRows(rows);
+        if (!normalized.length) {
+            setError('Agrega al menos una linea de pago.');
+            return;
+        }
+        if (normalized.length !== rows.filter((row) => String(row.method || '').trim() || safeNumber(row.amount)).length) {
+            setError('Cada linea debe tener metodo y monto mayor que cero.');
+            return;
+        }
+        const paid = getPaymentBreakdownTotal(normalized);
+        if (Math.abs(paid - targetAmount) > 0.05) {
+            setError(`El pago debe sumar ${fmt(targetAmount)}. Actualmente suma ${fmt(paid)}.`);
+            return;
+        }
+        onSave(normalized);
+    };
+
+    return (
+        <div className="fixed inset-0 z-[95] flex items-center justify-center overflow-y-auto bg-slate-950/70 p-4 backdrop-blur-sm">
+            <div className="w-full max-w-3xl overflow-hidden rounded-[2rem] border border-white/10 bg-white shadow-2xl">
+                <div className="flex flex-col gap-3 border-b border-slate-200 bg-slate-950 px-5 py-4 text-white sm:flex-row sm:items-center sm:justify-between">
+                    <div>
+                        <div className="text-[10px] font-black uppercase tracking-[0.28em] text-sky-300">Pago mixto</div>
+                        <h3 className="text-xl font-black">{title}</h3>
+                        <p className="mt-1 text-sm font-semibold text-slate-300">Monto neto a cobrar: {fmt(targetAmount)}</p>
+                    </div>
+                    <button type="button" onClick={onClose} className="rounded-2xl bg-white px-4 py-2 text-xs font-black uppercase tracking-[0.16em] text-slate-950 transition hover:bg-slate-200">
+                        Cerrar
+                    </button>
+                </div>
+
+                <div className="space-y-4 p-5">
+                    <div className="space-y-3">
+                        {rows.map((row, index) => (
+                            <div key={row.id} className="grid gap-3 rounded-3xl border border-slate-200 bg-slate-50 p-3 md:grid-cols-[1.2fr_0.8fr_1fr_auto] md:items-end">
+                                <Field label={`Metodo ${index + 1}`}>
+                                    <PaymentMethodSelect value={row.method || ''} onChange={(value) => updateRow(row.id, 'method', value)} required />
+                                </Field>
+                                <Field label="Monto">
+                                    <input className={inputClass} type="number" step="0.01" min="0" value={row.amount || ''} onChange={(event) => updateRow(row.id, 'amount', event.target.value)} placeholder="0.00" />
+                                </Field>
+                                <Field label="Referencia opcional">
+                                    <input className={inputClass} value={row.reference || ''} onChange={(event) => updateRow(row.id, 'reference', event.target.value)} placeholder="Voucher / referencia" />
+                                </Field>
+                                <button type="button" onClick={() => removeRow(row.id)} disabled={rows.length === 1} className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-xs font-black uppercase tracking-[0.14em] text-red-700 transition hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-40">
+                                    Quitar
+                                </button>
+                            </div>
+                        ))}
+                    </div>
+
+                    <button type="button" onClick={addRow} className="rounded-2xl border border-sky-200 bg-sky-50 px-4 py-3 text-xs font-black uppercase tracking-[0.16em] text-sky-700 transition hover:bg-sky-100">
+                        Agregar metodo
+                    </button>
+
+                    <div className="grid gap-3 md:grid-cols-3">
+                        <SummaryCard label="Neto factura" value={fmt(targetAmount)} tone="blue" />
+                        <SummaryCard label="Pagado" value={fmt(totalPaid)} tone="green" />
+                        <SummaryCard label="Diferencia" value={fmt(difference)} tone={Math.abs(difference) <= 0.05 ? 'green' : 'red'} />
+                    </div>
+
+                    {error && <div className="rounded-2xl border border-red-200 bg-red-50 p-3 text-sm font-bold text-red-700">{error}</div>}
+
+                    <button type="button" onClick={saveRows} className="w-full rounded-2xl bg-[#e30613] px-5 py-4 text-sm font-black uppercase tracking-[0.2em] text-white shadow-lg shadow-red-950/20 transition hover:bg-[#9f111a]">
+                        Guardar pago dividido
+                    </button>
+                </div>
+            </div>
+        </div>
+    );
+};
 
 const STAMPED_PRINT_LAYOUT_DOC = 'factura_membretada_preimpresa';
 const DEFAULT_PRINT_TEMPLATE_ID = 'principal';
@@ -1488,6 +1686,10 @@ function CashClosure({ data }) {
             if (key === 'subtotal' || key === 'iva') {
                 next.total = String(safeNumber(next.subtotal) + safeNumber(next.iva));
             }
+            if (key === 'paymentMethod') {
+                next.paymentBreakdown = [];
+                next.paymentNetTotal = 0;
+            }
             return next;
         }));
     };
@@ -1700,12 +1902,17 @@ function CashClosure({ data }) {
                     retentionMunicipal1: fiscal.retentionMunicipal1,
                     retentionTotal: fiscal.retentionTotal,
                     netTotal: fiscal.netTotal,
+                    paymentMethod: getInvoicePaymentMethodLabel(invoice),
+                    paymentBreakdown: normalizePaymentBreakdownRows(invoice.paymentBreakdown),
+                    paymentNetTotal: safeNumber(invoice.paymentNetTotal || getPaymentBreakdownTotal(invoice.paymentBreakdown) || getInvoicePaymentTargetAmount({ ...invoice, ...fiscal })),
                     supportFiles: invoice.supportFiles || {},
                 };
             });
 
             if (!isWaiting) {
             for (const invoice of preparedInvoiceDrafts) {
+                const paymentBreakdown = validatePaymentBreakdownForInvoice(invoice);
+                const paymentMethod = getPaymentMethodFromBreakdown(paymentBreakdown, invoice.paymentMethod);
                 const invoiceDocId = invoice.docId;
                 const existingInvoice = stampedInvoices.find((item) => item.id === invoiceDocId) || {};
                 const supportPayload = await uploadFiscalSupportFiles(
@@ -1721,7 +1928,9 @@ function CashClosure({ data }) {
                     numeroFactura: String(invoice.invoiceNumber || '').trim(),
                     invoiceNumber: String(invoice.invoiceNumber || '').trim(),
                     customerName: String(invoice.customerName || '').trim(),
-                    paymentMethod: String(invoice.paymentMethod || '').trim(),
+                    paymentMethod: String(paymentMethod || '').trim(),
+                    paymentBreakdown,
+                    paymentNetTotal: paymentBreakdown.length ? getPaymentBreakdownTotal(paymentBreakdown) : getInvoicePaymentTargetAmount(invoice),
                     subtotal: safeNumber(invoice.subtotal),
                     iva: safeNumber(invoice.iva),
                     total: safeNumber(invoice.total),
@@ -1836,6 +2045,9 @@ function CashClosure({ data }) {
                     iva: safeNumber(invoice.iva),
                     total: safeNumber(invoice.total),
                     retentionTotal: safeNumber(invoice.retentionTotal),
+                    paymentMethod: invoice.paymentMethod,
+                    paymentBreakdown: normalizePaymentBreakdownRows(invoice.paymentBreakdown),
+                    paymentNetTotal: safeNumber(invoice.paymentNetTotal),
                 })),
                 stampedInvoiceDrafts: isWaiting ? preparedInvoiceDrafts.map((invoice) => ({
                     ...invoice,
@@ -2572,6 +2784,8 @@ const createStampedInvoiceForm = () => ({
     retentionIr2: '',
     retentionMunicipal1: '',
     paymentMethod: '',
+    paymentBreakdown: [],
+    paymentNetTotal: 0,
     sourceSicarInvoiceId: '',
     sourceSicarInvoiceNumber: '',
     items: [],
@@ -2590,7 +2804,9 @@ const createStampedInvoiceEditForm = (invoice = {}) => ({
     total: String(safeNumber(invoice.total) || safeNumber(invoice.subtotal) + safeNumber(invoice.iva)),
     retentionIr2: String(safeNumber(invoice.retentionIr2)),
     retentionMunicipal1: String(safeNumber(invoice.retentionMunicipal1)),
-    paymentMethod: invoice.paymentMethod || '',
+    paymentMethod: getInvoicePaymentMethodLabel(invoice),
+    paymentBreakdown: normalizePaymentBreakdownRows(invoice.paymentBreakdown),
+    paymentNetTotal: safeNumber(invoice.paymentNetTotal || getPaymentBreakdownTotal(invoice.paymentBreakdown) || getInvoicePaymentTargetAmount(invoice)),
     source: invoice.source || 'manual',
     sourceSicarInvoiceId: invoice.sourceSicarInvoiceId || '',
     sourceSicarInvoiceNumber: invoice.sourceSicarInvoiceNumber || '',
@@ -3156,7 +3372,17 @@ function CashReceipts({ data }) {
                             </datalist>
                         </Field>
                         <Field label="Metodo de pago">
-                            <PaymentMethodSelect value={form.paymentMethod} onChange={(value) => update('paymentMethod', value)} required />
+                            <div className="grid gap-2 sm:grid-cols-[1fr_auto]">
+                                <PaymentMethodSelect value={form.paymentMethod} onChange={(value) => update('paymentMethod', value)} required />
+                                <button
+                                    type="button"
+                                    onClick={() => setPaymentSplitOpen(true)}
+                                    className="rounded-2xl border border-sky-200 bg-sky-50 px-4 py-3 text-xs font-black uppercase tracking-[0.16em] text-sky-700 transition hover:bg-sky-100"
+                                >
+                                    Dividir pago
+                                </button>
+                            </div>
+                            <PaymentBreakdownPreview invoice={form} />
                         </Field>
                         <Field label="Cantidad">
                             <input className={inputClass} type="number" step="0.01" min="0" value={form.amount} onChange={(event) => update('amount', event.target.value)} required />
@@ -3405,6 +3631,7 @@ function StampedInvoices({ data }) {
     const [supportFiles, setSupportFiles] = useState({});
     const [saving, setSaving] = useState(false);
     const [message, setMessage] = useState('');
+    const [paymentSplitOpen, setPaymentSplitOpen] = useState(false);
     const [sicarInvoiceSearch, setSicarInvoiceSearch] = useState('');
     const [sicarInvoicePage, setSicarInvoicePage] = useState(1);
 
@@ -3447,8 +3674,24 @@ function StampedInvoices({ data }) {
             if (key === 'subtotal' || key === 'iva') {
                 next.total = String(safeNumber(next.subtotal) + safeNumber(next.iva));
             }
+            if (key === 'paymentMethod') {
+                next.paymentBreakdown = [];
+                next.paymentNetTotal = 0;
+            }
             return next;
         });
+    };
+
+    const applyPaymentSplit = (rows) => {
+        const normalizedRows = normalizePaymentBreakdownRows(rows);
+        setForm((prev) => ({
+            ...prev,
+            paymentBreakdown: normalizedRows,
+            paymentNetTotal: getPaymentBreakdownTotal(normalizedRows),
+            paymentMethod: getPaymentMethodFromBreakdown(normalizedRows, prev.paymentMethod),
+        }));
+        setPaymentSplitOpen(false);
+        setMessage('Pago dividido aplicado a la factura.');
     };
 
     const applyItemTotals = (items = []) => {
@@ -3472,6 +3715,8 @@ function StampedInvoices({ data }) {
                     ...prev,
                     sourceSicarInvoiceId: '',
                     sourceSicarInvoiceNumber: '',
+                    paymentBreakdown: [],
+                    paymentNetTotal: 0,
                     ...applyItemTotals(items),
                 };
             }
@@ -3479,6 +3724,8 @@ function StampedInvoices({ data }) {
                 ...createStampedInvoiceForm(),
                 date: prev.date || todayString(),
                 paymentMethod: prev.paymentMethod || '',
+                paymentBreakdown: [],
+                paymentNetTotal: 0,
             };
         });
         setMessage(mode === 'manual' ? 'Modo manual activo: podes escribir articulos, cantidades y precios.' : 'Modo SICAR activo: carga una factura pendiente desde MySQL.');
@@ -3499,6 +3746,8 @@ function StampedInvoices({ data }) {
             retentionIr2: '',
             retentionMunicipal1: '',
             paymentMethod: invoice.paymentMethod || '',
+            paymentBreakdown: [],
+            paymentNetTotal: 0,
             sourceSicarInvoiceId: invoice.id || '',
             sourceSicarInvoiceNumber: invoice.invoiceNumber || invoice.numeroFactura || invoice.folio || '',
             items: invoice.items || [],
@@ -3570,6 +3819,9 @@ function StampedInvoices({ data }) {
             subtotal: String(firstTotals.subtotal),
             iva: String(firstTotals.iva),
             total: String(firstTotals.total),
+            paymentBreakdown: [],
+            paymentNetTotal: 0,
+            paymentMethod: '',
         }));
         setSplitInvoice({
             ...form,
@@ -3580,6 +3832,9 @@ function StampedInvoices({ data }) {
             total: String(secondTotals.total),
             retentionIr2: '',
             retentionMunicipal1: '',
+            paymentMethod: '',
+            paymentBreakdown: [],
+            paymentNetTotal: 0,
             splitPart: 2,
         });
         setMessage(`Factura dividida: 10 articulos quedan en ${form.invoiceNumber}; ${secondItems.length} articulos pasan a ${String(secondInvoiceNumber).trim()}. Al guardar se crean ambas.`);
@@ -3631,6 +3886,7 @@ function StampedInvoices({ data }) {
             invoicesToSave.forEach((invoice) => {
                 if (!String(invoice.invoiceNumber || '').trim()) throw new Error('Ingresa el numero de factura.');
                 if (!safeNumber(invoice.subtotal) && !safeNumber(invoice.total)) throw new Error(`Ingresa subtotal o total para la factura ${invoice.invoiceNumber}.`);
+                validatePaymentBreakdownForInvoice(invoice);
             });
 
             const invoiceNumberKeys = invoicesToSave.map((invoice) => normalizeInvoiceMatchKey(invoice.invoiceNumber)).filter(Boolean);
@@ -3659,6 +3915,8 @@ function StampedInvoices({ data }) {
             }
 
             for (const { invoice, docId } of invoiceMeta) {
+                const paymentBreakdown = validatePaymentBreakdownForInvoice(invoice);
+                const paymentMethod = getPaymentMethodFromBreakdown(paymentBreakdown, invoice.paymentMethod);
                 const itemFiscal = calculateInvoiceItemsFiscal(invoice.items || []);
                 const invoiceFiscal = buildFiscalPayload({
                     subtotal: itemFiscal.subtotal || safeNumber(invoice.subtotal),
@@ -3677,7 +3935,9 @@ function StampedInvoices({ data }) {
                     customerName: String(invoice.customerName || '').trim(),
                     customerAddress: String(invoice.customerAddress || '').trim(),
                     customerRfc: String(invoice.customerRfc || '').trim(),
-                    paymentMethod: String(invoice.paymentMethod || '').trim(),
+                    paymentMethod: String(paymentMethod || '').trim(),
+                    paymentBreakdown,
+                    paymentNetTotal: paymentBreakdown.length ? getPaymentBreakdownTotal(paymentBreakdown) : getInvoicePaymentTargetAmount({ ...invoice, ...invoiceFiscal }),
                     items: invoice.items || [],
                     ...invoiceFiscal,
                     source: invoice.sourceSicarInvoiceId ? 'sicar_factura' : 'manual',
@@ -3971,6 +4231,16 @@ function StampedInvoices({ data }) {
             </div>
             )}
 
+                <PaymentSplitModal
+                    open={paymentSplitOpen}
+                    title={`Dividir pago factura ${form.invoiceNumber || ''}`}
+                    targetAmount={getInvoicePaymentTargetAmount(fiscal)}
+                    initialRows={form.paymentBreakdown}
+                    fallbackMethod={form.paymentMethod}
+                    onClose={() => setPaymentSplitOpen(false)}
+                    onSave={applyPaymentSplit}
+                />
+
                 {false && (
                 <Section title="Guardadas" eyebrow="Facturas membretadas" action={<Badge tone="green">{savedInvoices.length} registros</Badge>}>
                     <div className="space-y-3">
@@ -4107,9 +4377,10 @@ const StampedInvoiceDetailModal = ({
                         </div>
 
                         <div className="rounded-3xl border border-slate-200 bg-white p-4">
-                            <Field label="Metodo de pago">
-                                <PaymentMethodSelect value={invoice.paymentMethod || ''} onChange={(value) => onPaymentMethodChange(invoice, value)} />
-                            </Field>
+                        <Field label="Metodo de pago">
+                            <PaymentMethodSelect value={invoice.paymentMethod || ''} onChange={(value) => onPaymentMethodChange(invoice, value)} />
+                            <PaymentBreakdownPreview invoice={invoice} />
+                        </Field>
                         </div>
 
                         <div className="rounded-3xl border border-slate-200 bg-white p-4">
@@ -4220,6 +4491,7 @@ const StampedInvoiceEditModal = ({
     onRemoveItem,
     onSplit,
     onSplitInvoiceNumberChange,
+    onOpenPaymentSplit,
 }) => {
     if (!form) return null;
     const fiscal = buildFiscalPayload({
@@ -4264,7 +4536,17 @@ const StampedInvoiceEditModal = ({
                             <input className={inputClass} value={form.customerName || ''} onChange={(event) => onUpdate('customerName', event.target.value)} />
                         </Field>
                         <Field label="Metodo de pago">
-                            <PaymentMethodSelect value={form.paymentMethod || ''} onChange={(value) => onUpdate('paymentMethod', value)} />
+                            <div className="grid gap-2 sm:grid-cols-[1fr_auto]">
+                                <PaymentMethodSelect value={form.paymentMethod || ''} onChange={(value) => onUpdate('paymentMethod', value)} />
+                                <button
+                                    type="button"
+                                    onClick={onOpenPaymentSplit}
+                                    className="rounded-2xl border border-sky-200 bg-sky-50 px-4 py-3 text-xs font-black uppercase tracking-[0.16em] text-sky-700 transition hover:bg-sky-100"
+                                >
+                                    Dividir pago
+                                </button>
+                            </div>
+                            <PaymentBreakdownPreview invoice={form} />
                         </Field>
                         <Field label="Direccion cliente">
                             <input className={inputClass} value={form.customerAddress || ''} onChange={(event) => onUpdate('customerAddress', event.target.value)} />
@@ -4366,6 +4648,7 @@ function StampedInvoiceHistory({ data }) {
     const [editTarget, setEditTarget] = useState(null);
     const [editForm, setEditForm] = useState(null);
     const [splitEditInvoice, setSplitEditInvoice] = useState(null);
+    const [editPaymentSplitOpen, setEditPaymentSplitOpen] = useState(false);
     const [editSaving, setEditSaving] = useState(false);
     const [printTarget, setPrintTarget] = useState(null);
     const [supportUploadFiles, setSupportUploadFiles] = useState({});
@@ -4413,7 +4696,10 @@ function StampedInvoiceHistory({ data }) {
         searchedInvoices.filter((invoice) => {
             const invoiceMonth = getMonth(invoice.date || invoice.saleDate || '');
             const matchesMonth = !selectedMonth || invoiceMonth === selectedMonth;
-            const matchesPayment = !paymentMethodFilter || normalizeText(invoice.paymentMethod) === normalizeText(paymentMethodFilter);
+            const paymentRows = normalizePaymentBreakdownRows(invoice.paymentBreakdown);
+            const matchesPayment = !paymentMethodFilter
+                || normalizeText(invoice.paymentMethod) === normalizeText(paymentMethodFilter)
+                || paymentRows.some((row) => normalizeText(row.method) === normalizeText(paymentMethodFilter));
             return matchesMonth && matchesPayment;
         })
     ), [searchedInvoices, selectedMonth, paymentMethodFilter]);
@@ -4447,11 +4733,13 @@ function StampedInvoiceHistory({ data }) {
         try {
             await setDoc(doc(db, 'facturas_membretadas_ventas', invoiceId), {
                 paymentMethod,
+                paymentBreakdown: [],
+                paymentNetTotal: 0,
                 updatedAt: serverTimestamp(),
             }, { merge: true });
             setDetailTarget((current) => (
                 current && (current.id || current.docId) === invoiceId
-                    ? { ...current, paymentMethod }
+                    ? { ...current, paymentMethod, paymentBreakdown: [], paymentNetTotal: 0 }
                     : current
             ));
             setMessage(`Metodo de pago actualizado para factura ${invoice.invoiceNumber || invoice.numeroFactura || invoiceId}.`);
@@ -4511,6 +4799,7 @@ function StampedInvoiceHistory({ data }) {
         setEditTarget(null);
         setEditForm(null);
         setSplitEditInvoice(null);
+        setEditPaymentSplitOpen(false);
     };
 
     const updateEditField = (key, value) => {
@@ -4520,8 +4809,24 @@ function StampedInvoiceHistory({ data }) {
             if (key === 'subtotal' || key === 'iva') {
                 next.total = String(safeNumber(next.subtotal) + safeNumber(next.iva));
             }
+            if (key === 'paymentMethod') {
+                next.paymentBreakdown = [];
+                next.paymentNetTotal = 0;
+            }
             return next;
         });
+    };
+
+    const applyEditPaymentSplit = (rows) => {
+        const normalizedRows = normalizePaymentBreakdownRows(rows);
+        setEditForm((prev) => prev ? {
+            ...prev,
+            paymentBreakdown: normalizedRows,
+            paymentNetTotal: getPaymentBreakdownTotal(normalizedRows),
+            paymentMethod: getPaymentMethodFromBreakdown(normalizedRows, prev.paymentMethod),
+        } : prev);
+        setEditPaymentSplitOpen(false);
+        setMessage('Pago dividido aplicado a la factura en edicion.');
     };
 
     const applyEditItemTotals = (items = []) => {
@@ -4606,6 +4911,9 @@ function StampedInvoiceHistory({ data }) {
             subtotal: String(firstTotals.subtotal),
             iva: String(firstTotals.iva),
             total: String(firstTotals.total),
+            paymentBreakdown: [],
+            paymentNetTotal: 0,
+            paymentMethod: '',
             splitPart: 1,
             splitTotalParts: 2,
         }));
@@ -4620,6 +4928,9 @@ function StampedInvoiceHistory({ data }) {
             total: String(secondTotals.total),
             retentionIr2: '',
             retentionMunicipal1: '',
+            paymentMethod: '',
+            paymentBreakdown: [],
+            paymentNetTotal: 0,
             splitPart: 2,
             splitTotalParts: 2,
         });
@@ -4650,6 +4961,7 @@ function StampedInvoiceHistory({ data }) {
             invoicesToSave.forEach((invoice) => {
                 if (!String(invoice.invoiceNumber || '').trim()) throw new Error('Ingresa el numero de factura.');
                 if (!safeNumber(invoice.subtotal) && !safeNumber(invoice.total)) throw new Error(`Ingresa subtotal o total para la factura ${invoice.invoiceNumber}.`);
+                validatePaymentBreakdownForInvoice(invoice);
             });
 
             const invoiceNumberKeys = invoicesToSave.map((invoice) => normalizeInvoiceMatchKey(invoice.invoiceNumber)).filter(Boolean);
@@ -4678,6 +4990,8 @@ function StampedInvoiceHistory({ data }) {
             const batch = writeBatch(db);
 
             invoiceMeta.forEach(({ invoice, docId }) => {
+                const paymentBreakdown = validatePaymentBreakdownForInvoice(invoice);
+                const paymentMethod = getPaymentMethodFromBreakdown(paymentBreakdown, invoice.paymentMethod);
                 const itemFiscal = calculateInvoiceItemsFiscal(invoice.items || []);
                 const invoiceFiscal = buildFiscalPayload({
                     subtotal: itemFiscal.subtotal || safeNumber(invoice.subtotal),
@@ -4695,7 +5009,9 @@ function StampedInvoiceHistory({ data }) {
                     customerName: String(invoice.customerName || '').trim(),
                     customerAddress: String(invoice.customerAddress || '').trim(),
                     customerRfc: String(invoice.customerRfc || '').trim(),
-                    paymentMethod: String(invoice.paymentMethod || '').trim(),
+                    paymentMethod: String(paymentMethod || '').trim(),
+                    paymentBreakdown,
+                    paymentNetTotal: paymentBreakdown.length ? getPaymentBreakdownTotal(paymentBreakdown) : getInvoicePaymentTargetAmount({ ...invoice, ...invoiceFiscal }),
                     items: invoice.items || [],
                     ...invoiceFiscal,
                     source: invoice.source || (invoice.sourceSicarInvoiceId ? 'sicar_factura' : 'manual'),
@@ -4924,6 +5240,7 @@ function StampedInvoiceHistory({ data }) {
 
                                     <Field label="Metodo">
                                         <PaymentMethodSelect value={invoice.paymentMethod || ''} onChange={(value) => updatePaymentMethod(invoice, value)} />
+                                        <PaymentBreakdownPreview invoice={invoice} />
                                     </Field>
 
                                     <div className="flex flex-wrap justify-start gap-2 xl:justify-end">
@@ -5003,6 +5320,16 @@ function StampedInvoiceHistory({ data }) {
                 onRemoveItem={removeEditItem}
                 onSplit={splitEditedInvoice}
                 onSplitInvoiceNumberChange={updateSplitEditInvoiceNumber}
+                onOpenPaymentSplit={() => setEditPaymentSplitOpen(true)}
+            />
+            <PaymentSplitModal
+                open={editPaymentSplitOpen}
+                title={`Dividir pago factura ${editForm?.invoiceNumber || ''}`}
+                targetAmount={getInvoicePaymentTargetAmount(editForm || {})}
+                initialRows={editForm?.paymentBreakdown || []}
+                fallbackMethod={editForm?.paymentMethod || ''}
+                onClose={() => setEditPaymentSplitOpen(false)}
+                onSave={applyEditPaymentSplit}
             />
             <StampedInvoicePrintModal
                 invoice={printTarget}

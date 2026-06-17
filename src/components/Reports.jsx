@@ -40,6 +40,44 @@ const normalizeReportText = (value = '') => (
         .toUpperCase()
 );
 
+const PAYMENT_ROWS_SYMBOL = Symbol('paymentRows');
+
+const normalizePaymentBreakdownRows = (rows = []) => (
+    (Array.isArray(rows) ? rows : [])
+        .map((row) => ({
+            method: String(row.method || row.paymentMethod || '').trim(),
+            amount: peso(row.amount),
+            reference: String(row.reference || '').trim(),
+        }))
+        .filter((row) => row.method && row.amount > 0)
+);
+
+const paymentBreakdownTotal = (rows = []) => peso(
+    normalizePaymentBreakdownRows(rows).reduce((sum, row) => sum + peso(row.amount), 0)
+);
+
+const invoicePaymentTarget = (item = {}) => {
+    const total = peso(item.total);
+    const retentions = peso(item.retentionTotal ?? (peso(item.retentionIr2) + peso(item.retentionMunicipal1)));
+    const net = peso(total - retentions);
+    return net > 0 ? net : total;
+};
+
+const getInvoicePaymentRows = (item = {}) => {
+    const rows = normalizePaymentBreakdownRows(item.paymentBreakdown);
+    if (rows.length) return rows;
+    const method = String(item.paymentMethod || '').trim();
+    if (!method) return [];
+    return [{ method, amount: invoicePaymentTarget(item), reference: '' }];
+};
+
+const paymentMethodLabel = (item = {}) => {
+    const rows = normalizePaymentBreakdownRows(item.paymentBreakdown);
+    if (!rows.length) return item.paymentMethod || '';
+    if (rows.length === 1) return rows[0].method;
+    return rows.map((row) => `${row.method} ${fmt(row.amount)}`).join(' / ');
+};
+
 // --- COMPONENTES UI ---
 
 const Card = ({ title, children, className = "", right, subtitle, icon, gradient = false }) => (
@@ -638,12 +676,16 @@ const buildTaxReport = (data, selectedMonth) => {
             const retentionIr2 = peso(item.retentionIr2);
             const retentionMunicipal1 = peso(item.retentionMunicipal1);
             const retentionTotal = peso(item.retentionTotal ?? (retentionIr2 + retentionMunicipal1));
+            const paymentRows = normalizePaymentBreakdownRows(item.paymentBreakdown);
 
             return {
                 date: saleDate || date,
                 dailySaleCode: item.dailySaleCode || linkedDailySale.dailySaleCode || (saleDate ? `VENTA-${saleDate.replaceAll('-', '')}` : ''),
                 document: item.numeroFactura || item.invoiceNumber || '',
-                paymentMethod: item.paymentMethod || '',
+                paymentMethod: paymentMethodLabel(item),
+                paymentDetail: paymentRows.length ? paymentRows.map((row) => `${row.method} ${fmt(row.amount)}`).join(' / ') : (item.paymentMethod || ''),
+                paymentNetTotal: paymentBreakdownTotal(paymentRows) || invoicePaymentTarget(item),
+                [PAYMENT_ROWS_SYMBOL]: paymentRows,
                 subtotal,
                 iva,
                 total,
@@ -708,11 +750,22 @@ const buildTaxReport = (data, selectedMonth) => {
         ['VENTAS TRANSFERENCIA BAC', 'TRANSFERENCIA BAC'],
         ['VENTAS TRANSFERENCIA BANPRO', 'TRANSFERENCIA BANPRO'],
         ['VENTAS TRANSFERENCIA LAFISE', 'TRANSFERENCIA LAFISE'],
+        ['VENTAS EFECTIVO', 'EFECTIVO'],
+        ['VENTAS CREDITO', 'CREDITO'],
     ].map(([label, method]) => ({
         ITEM: label,
         TOTAL: peso(stampedInvoiceRows
-            .filter((row) => normalizeReportText(row.paymentMethod) === normalizeReportText(method))
-            .reduce((sum, row) => sum + peso(row.total), 0)),
+            .reduce((sum, row) => {
+                const rows = row[PAYMENT_ROWS_SYMBOL] || [];
+                if (rows.length) {
+                    return sum + rows
+                        .filter((payment) => normalizeReportText(payment.method) === normalizeReportText(method))
+                        .reduce((paymentSum, payment) => paymentSum + peso(payment.amount), 0);
+                }
+                return normalizeReportText(row.paymentMethod) === normalizeReportText(method)
+                    ? sum + peso(row.paymentNetTotal || row.total)
+                    : sum;
+            }, 0)),
     }));
 
     stampedInvoicePaymentSummaryRows.push(
