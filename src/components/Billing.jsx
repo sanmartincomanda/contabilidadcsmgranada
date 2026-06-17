@@ -1086,8 +1086,8 @@ const buildCashReceiptPrintHtml = (receipt = {}) => {
     const paymentMethod = receipt.paymentMethod || '';
     const isCash = normalizeText(paymentMethod) === 'EFECTIVO';
     const bank = getReceiptPaymentBank(paymentMethod);
-    const pageWidth = 21.59;
-    const pageHeight = 13.97;
+    const pageWidth = 13.97;
+    const pageHeight = 21.59;
     const text = (x, y, width, content, options = {}) => buildPrintTextHtml(
         { x, y, width },
         content,
@@ -1128,19 +1128,29 @@ const buildCashReceiptPrintHtml = (receipt = {}) => {
             white-space: nowrap;
             overflow: hidden;
         }
+        @media print {
+            html,
+            body,
+            .sheet {
+                width: ${cm(pageWidth)} !important;
+                height: ${cm(pageHeight)} !important;
+                margin: 0 !important;
+                padding: 0 !important;
+            }
+        }
     </style>
 </head>
 <body>
     <main class="sheet">
-        ${text(1.45, 4.82, 6.2, formatInvoiceDate(receipt.date), { fontSizePt: 10 })}
-        ${text(15.75, 4.82, 4.2, formatInvoiceMoney(amount), { align: 'right', mono: true, fontSizePt: 10 })}
-        ${text(1.95, 5.72, 17.4, receipt.customerName || receipt.recibiDe || '', { fontSizePt: 10 })}
-        ${text(2.85, 6.62, 8.7, `C$ ${formatInvoiceMoney(amount)}`, { fontSizePt: 10 })}
-        ${text(17.55, 7.35, 2.2, formatInvoiceMoney(retention), { align: 'right', mono: true, fontSizePt: 10 })}
-        ${text(3.15, 8.28, 16.4, receipt.concept || receipt.concepto || '', { fontSizePt: 10 })}
-        ${text(3.88, 9.95, 0.35, isCash ? 'X' : '', { align: 'center', fontSizePt: 14 })}
-        ${text(6.25, 10.02, 3.7, receipt.reference || receipt.referencia || '', { fontSizePt: 9 })}
-        ${text(11.65, 10.02, 5.4, bank, { fontSizePt: 9 })}
+        ${text(0.95, 7.45, 4.1, formatInvoiceDate(receipt.date), { fontSizePt: 10 })}
+        ${text(9.95, 7.45, 3.1, formatInvoiceMoney(amount), { align: 'right', mono: true, fontSizePt: 10 })}
+        ${text(1.30, 8.85, 12.1, receipt.customerName || receipt.recibiDe || '', { fontSizePt: 10 })}
+        ${text(1.85, 10.25, 6.2, `C$ ${formatInvoiceMoney(amount)}`, { fontSizePt: 10 })}
+        ${text(11.10, 11.35, 2.1, formatInvoiceMoney(retention), { align: 'right', mono: true, fontSizePt: 10 })}
+        ${text(2.05, 12.80, 11.4, receipt.concept || receipt.concepto || '', { fontSizePt: 10 })}
+        ${text(2.50, 15.35, 0.35, isCash ? 'X' : '', { align: 'center', fontSizePt: 14 })}
+        ${text(4.05, 15.45, 3.4, receipt.reference || receipt.referencia || '', { fontSizePt: 9 })}
+        ${text(7.55, 15.45, 4.9, bank, { fontSizePt: 9 })}
     </main>
 </body>
 </html>`;
