@@ -2,7 +2,7 @@ param(
     [string]$Date = '',
     [string]$StartDate = '',
     [string]$EndDate = '',
-    [int]$LookbackDays = 7,
+    [int]$LookbackDays = 31,
     [switch]$Preview,
     [switch]$StageOnly
 )

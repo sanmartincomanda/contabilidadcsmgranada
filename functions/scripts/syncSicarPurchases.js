@@ -53,7 +53,7 @@ function parseArgs(argv) {
 function normalizeLookbackDays(value) {
   const parsed = Number(value ?? process.env.SICAR_PURCHASE_SYNC_LOOKBACK_DAYS ?? 7);
   if (!Number.isFinite(parsed) || parsed < 0) return 7;
-  return Math.min(Math.floor(parsed), 14);
+  return Math.min(Math.floor(parsed), 31);
 }
 
 function getManaguaNowParts() {
