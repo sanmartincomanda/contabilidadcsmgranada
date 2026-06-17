@@ -4043,7 +4043,17 @@ function StampedInvoices({ data }) {
                             <input className={inputClass} value={form.customerRfc} onChange={(event) => update('customerRfc', event.target.value)} placeholder="RUC / RFC del cliente" />
                         </Field>
                         <Field label="Metodo de pago">
-                            <PaymentMethodSelect value={form.paymentMethod} onChange={(value) => update('paymentMethod', value)} required />
+                            <div className="grid gap-2 sm:grid-cols-[1fr_auto]">
+                                <PaymentMethodSelect value={form.paymentMethod} onChange={(value) => update('paymentMethod', value)} required />
+                                <button
+                                    type="button"
+                                    onClick={() => setPaymentSplitOpen(true)}
+                                    className="rounded-2xl border border-sky-200 bg-sky-50 px-4 py-3 text-xs font-black uppercase tracking-[0.16em] text-sky-700 transition hover:bg-sky-100"
+                                >
+                                    Dividir pago
+                                </button>
+                            </div>
+                            <PaymentBreakdownPreview invoice={form} />
                         </Field>
                         <Field label="Subtotal">
                             <input className={inputClass} type="number" step="0.01" min="0" value={form.subtotal} onChange={(event) => update('subtotal', event.target.value)} required />
