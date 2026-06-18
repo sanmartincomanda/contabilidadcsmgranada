@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { useLocation } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { collection, deleteDoc, doc, getDoc, serverTimestamp, setDoc, writeBatch } from 'firebase/firestore';
 import { db } from '../firebase';
 import { useAuth } from '../context/AuthContext';
@@ -21,6 +21,19 @@ const POS_BANKS = [
     { key: 'banpro', label: 'Banpro' },
     { key: 'lafise', label: 'Lafise' },
 ];
+
+const BILLING_TABS = [
+    { key: 'cierre', label: 'Cierre Caja' },
+    { key: 'registro', label: 'Registro Contable' },
+    { key: 'historial', label: 'Historial' },
+    { key: 'depositos', label: 'Deposito Bancario' },
+];
+const BILLING_TAB_KEYS = new Set(BILLING_TABS.map((tab) => tab.key));
+
+function getBillingTabFromSearch(search = '') {
+    const tabFromUrl = new URLSearchParams(search).get('tab');
+    return BILLING_TAB_KEYS.has(tabFromUrl) ? tabFromUrl : 'cierre';
+}
 
 const CASH_DENOMINATIONS = [1000, 500, 200, 100, 50, 20, 10, 5, 1];
 const USD_DENOMINATIONS = [100, 50, 20, 10, 5, 1];
@@ -9159,22 +9172,20 @@ function ComingSoon() {
 
 export default function Billing({ data = {} }) {
     const location = useLocation();
-    const [activeTab, setActiveTab] = useState('cierre');
-
-    const tabs = [
-        { key: 'cierre', label: 'Cierre Caja' },
-        { key: 'registro', label: 'Registro Contable' },
-        { key: 'historial', label: 'Historial' },
-        { key: 'depositos', label: 'Deposito Bancario' },
-    ];
-    const validTabKeys = useMemo(() => new Set(tabs.map((tab) => tab.key)), []);
+    const navigate = useNavigate();
+    const [activeTab, setActiveTab] = useState(() => getBillingTabFromSearch(location.search));
 
     useEffect(() => {
-        const tabFromUrl = new URLSearchParams(location.search).get('tab');
-        if (validTabKeys.has(tabFromUrl) && tabFromUrl !== activeTab) {
-            setActiveTab(tabFromUrl);
+        const nextTab = getBillingTabFromSearch(location.search);
+        if (nextTab !== activeTab) {
+            setActiveTab(nextTab);
         }
-    }, [activeTab, location.search, validTabKeys]);
+    }, [activeTab, location.search]);
+
+    const handleTabChange = useCallback((tabKey) => {
+        setActiveTab(tabKey);
+        navigate(`/facturacion?tab=${tabKey}`, { replace: false });
+    }, [navigate]);
 
     return (
         <div className="space-y-5">
@@ -9198,11 +9209,11 @@ export default function Billing({ data = {} }) {
 
                 <div className="border-t border-slate-200 p-3">
                     <div className="flex flex-wrap gap-1.5">
-                        {tabs.map((tab) => (
+                        {BILLING_TABS.map((tab) => (
                             <button
                                 key={tab.key}
                                 type="button"
-                                onClick={() => setActiveTab(tab.key)}
+                                onClick={() => handleTabChange(tab.key)}
                                 className={`rounded-xl px-4 py-2.5 text-xs font-black uppercase tracking-wide transition-all ${
                                     activeTab === tab.key
                                         ? 'bg-[#e30613] text-white shadow-sm shadow-red-900/20'
