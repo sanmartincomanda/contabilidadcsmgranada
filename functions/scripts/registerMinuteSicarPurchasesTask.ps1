@@ -1,7 +1,7 @@
 param(
     [string]$TaskName = 'SICAR Purchases Sync Every Minute',
     [int]$IntervalMinutes = 1,
-    [int]$LookbackDays = 1
+    [int]$LookbackDays = 14
 )
 
 $scriptPath = Join-Path $PSScriptRoot 'runDailySicarPurchases.ps1'
@@ -16,7 +16,7 @@ if (-not (Test-Path -LiteralPath $hiddenRunnerPath)) {
 }
 
 $safeInterval = [Math]::Max(1, [Math]::Min($IntervalMinutes, 60))
-$safeLookback = [Math]::Max(0, [Math]::Min($LookbackDays, 14))
+$safeLookback = [Math]::Max(0, [Math]::Min($LookbackDays, 31))
 
 $taskAction = New-ScheduledTaskAction `
     -Execute 'wscript.exe' `
