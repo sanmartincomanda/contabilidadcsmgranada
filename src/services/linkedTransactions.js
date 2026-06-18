@@ -10,6 +10,7 @@ import {
 } from 'firebase/firestore';
 import { db } from '../firebase';
 import { DEFAULT_PURCHASE_CATEGORY_ID, buildExpenseCategoryPayload, getExpenseCategoryFromRecord } from './expenseCategories';
+import { isCashPayment, normalizePaymentMethod } from './fiscalUtils';
 import { buildPettyCashMovementPayload, pettyCashMovementRef } from './pettyCash';
 
 const uniqueRefs = (refs) => {
@@ -48,6 +49,21 @@ const normalizeAmount = (value) => {
 };
 
 const firstDefined = (...values) => values.find((value) => value !== undefined && value !== null);
+
+const hasOwn = (object, key) => Object.prototype.hasOwnProperty.call(object || {}, key);
+
+const hasPaymentUpdate = (updateData = {}) => (
+    hasOwn(updateData, 'paymentType') || hasOwn(updateData, 'paymentMethod')
+);
+
+const shouldMirrorToPettyCash = (nextPaymentType, currentGastoData = {}, sourceData = {}, updateData = {}) => {
+    if (hasPaymentUpdate(updateData)) return isCashPayment(nextPaymentType);
+    const currentMethod = firstDefined(currentGastoData.paymentType, currentGastoData.paymentMethod);
+    if (currentMethod) return isCashPayment(currentMethod);
+    const sourceMethod = firstDefined(sourceData.paymentType, sourceData.paymentMethod);
+    if (!sourceMethod) return true;
+    return isCashPayment(sourceMethod) || normalizePaymentMethod(sourceMethod) === 'CONTADO';
+};
 
 const buildPayableMirrorPayload = (purchaseData, updateData, payableData = {}) => {
     const merged = { ...purchaseData, ...updateData };
@@ -145,6 +161,8 @@ const buildGastoMirrorPayload = (purchaseData, updateData) => {
         retentionMunicipal1: normalizeAmount(merged.retentionMunicipal1),
         retencionIr2: normalizeAmount(merged.retencionIr2 ?? merged.retentionIr2),
         retencionMunicipal1: normalizeAmount(merged.retencionMunicipal1 ?? merged.retentionMunicipal1),
+        paymentType: merged.paymentType,
+        paymentReference: merged.paymentReference,
         ...categoryPayload,
         tipo: 'Compra',
     });
@@ -342,30 +360,46 @@ export async function updatePurchaseTransaction(purchaseId, updateData, options 
     }
 
     for (const gastoRef of gastoRefs) {
+        const gastoSnap = await getDoc(gastoRef);
+        const currentGastoData = gastoSnap.exists() ? gastoSnap.data() : {};
         const gastoMirrorPayload = buildGastoMirrorPayload(purchaseData, cleanUpdate);
+        const nextPaymentType = firstDefined(
+            cleanUpdate.paymentType,
+            cleanUpdate.paymentMethod,
+            gastoMirrorPayload.paymentType,
+            currentGastoData.paymentType,
+            currentGastoData.paymentMethod,
+            purchaseData.paymentType,
+            purchaseData.paymentMethod,
+            'EFECTIVO'
+        );
         batch.update(gastoRef, {
             ...gastoMirrorPayload,
             updatedAt: serverTimestamp(),
         });
-        batch.set(
-            pettyCashMovementRef('gastosDiarios', gastoRef.id),
-            buildPettyCashMovementPayload({
-                ...gastoMirrorPayload,
-                direction: 'salida',
-                fecha: gastoMirrorPayload.fecha,
-                amount: gastoMirrorPayload.monto,
-                description: gastoMirrorPayload.descripcion,
-                paymentType: firstDefined(cleanUpdate.paymentType, purchaseData.paymentType, 'EFECTIVO'),
-                paymentReference: firstDefined(cleanUpdate.paymentReference, purchaseData.paymentReference, ''),
-                sourceCollection: 'gastosDiarios',
-                sourceDocId: gastoRef.id,
-                linkedGastoDiarioId: gastoRef.id,
-                linkedPurchaseId: purchaseId,
-                supplier: gastoMirrorPayload.proveedor,
-                invoiceNumber: gastoMirrorPayload.factura,
-            }),
-            { merge: true }
-        );
+        if (shouldMirrorToPettyCash(nextPaymentType, currentGastoData, purchaseData, cleanUpdate)) {
+            batch.set(
+                pettyCashMovementRef('gastosDiarios', gastoRef.id),
+                buildPettyCashMovementPayload({
+                    ...gastoMirrorPayload,
+                    direction: 'salida',
+                    fecha: gastoMirrorPayload.fecha,
+                    amount: gastoMirrorPayload.monto,
+                    description: gastoMirrorPayload.descripcion,
+                    paymentType: nextPaymentType,
+                    paymentReference: firstDefined(cleanUpdate.paymentReference, purchaseData.paymentReference, ''),
+                    sourceCollection: 'gastosDiarios',
+                    sourceDocId: gastoRef.id,
+                    linkedGastoDiarioId: gastoRef.id,
+                    linkedPurchaseId: purchaseId,
+                    supplier: gastoMirrorPayload.proveedor,
+                    invoiceNumber: gastoMirrorPayload.factura,
+                }),
+                { merge: true }
+            );
+        } else {
+            batch.delete(pettyCashMovementRef('gastosDiarios', gastoRef.id));
+        }
     }
 
     await batch.commit();
@@ -418,30 +452,46 @@ export async function updateExpenseTransaction(expenseId, updateData, options = 
     }
 
     for (const gastoRef of gastoRefs) {
+        const gastoSnap = await getDoc(gastoRef);
+        const currentGastoData = gastoSnap.exists() ? gastoSnap.data() : {};
         const gastoMirrorPayload = buildExpenseGastoMirrorPayload(expenseData, cleanUpdate);
+        const nextPaymentType = firstDefined(
+            cleanUpdate.paymentType,
+            cleanUpdate.paymentMethod,
+            gastoMirrorPayload.paymentType,
+            currentGastoData.paymentType,
+            currentGastoData.paymentMethod,
+            expenseData.paymentType,
+            expenseData.paymentMethod,
+            'EFECTIVO'
+        );
         batch.update(gastoRef, {
             ...gastoMirrorPayload,
             updatedAt: serverTimestamp(),
         });
-        batch.set(
-            pettyCashMovementRef('gastosDiarios', gastoRef.id),
-            buildPettyCashMovementPayload({
-                ...gastoMirrorPayload,
-                direction: 'salida',
-                fecha: gastoMirrorPayload.fecha,
-                amount: gastoMirrorPayload.monto,
-                description: gastoMirrorPayload.descripcion,
-                paymentType: firstDefined(cleanUpdate.paymentType, expenseData.paymentType, 'EFECTIVO'),
-                paymentReference: firstDefined(cleanUpdate.paymentReference, expenseData.paymentReference, ''),
-                sourceCollection: 'gastosDiarios',
-                sourceDocId: gastoRef.id,
-                linkedGastoDiarioId: gastoRef.id,
-                linkedExpenseId: expenseId,
-                supplier: gastoMirrorPayload.proveedor,
-                invoiceNumber: gastoMirrorPayload.factura,
-            }),
-            { merge: true }
-        );
+        if (shouldMirrorToPettyCash(nextPaymentType, currentGastoData, expenseData, cleanUpdate)) {
+            batch.set(
+                pettyCashMovementRef('gastosDiarios', gastoRef.id),
+                buildPettyCashMovementPayload({
+                    ...gastoMirrorPayload,
+                    direction: 'salida',
+                    fecha: gastoMirrorPayload.fecha,
+                    amount: gastoMirrorPayload.monto,
+                    description: gastoMirrorPayload.descripcion,
+                    paymentType: nextPaymentType,
+                    paymentReference: firstDefined(cleanUpdate.paymentReference, expenseData.paymentReference, ''),
+                    sourceCollection: 'gastosDiarios',
+                    sourceDocId: gastoRef.id,
+                    linkedGastoDiarioId: gastoRef.id,
+                    linkedExpenseId: expenseId,
+                    supplier: gastoMirrorPayload.proveedor,
+                    invoiceNumber: gastoMirrorPayload.factura,
+                }),
+                { merge: true }
+            );
+        } else {
+            batch.delete(pettyCashMovementRef('gastosDiarios', gastoRef.id));
+        }
     }
 
     await batch.commit();

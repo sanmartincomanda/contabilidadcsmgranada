@@ -12,6 +12,7 @@ import {
     PETTY_CASH_PIN,
     buildPettyCashMovementPayload,
     createPettyCashRef,
+    isPettyCashBalanceMovement,
     pettyCashMovementRef,
 } from '../services/pettyCash';
 import { getDeviceSettings } from '../services/deviceSettings';
@@ -739,7 +740,8 @@ export default function GastosDiarios({ categories = [], providers = [] }) {
         }
     };
 
-    const cashboxBalance = cashMovements.reduce((sum, movement) => sum + (Number(movement.signedAmount) || 0), 0);
+    const cashboxBalanceMovements = cashMovements.filter(isPettyCashBalanceMovement);
+    const cashboxBalance = cashboxBalanceMovements.reduce((sum, movement) => sum + (Number(movement.signedAmount) || 0), 0);
     const isLowCashboxBalance = cashboxBalance < PETTY_CASH_ALERT_THRESHOLD;
     const totalGastos = registros.filter(r => r.tipo === 'Gasto').reduce((sum, r) => sum + getRecordAmount(r), 0);
     const totalCompras = registros.filter(r => r.tipo === 'Compra').reduce((sum, r) => sum + getRecordAmount(r), 0);
@@ -848,7 +850,7 @@ export default function GastosDiarios({ categories = [], providers = [] }) {
                         {!cashboxUnlocked ? (
                             <form onSubmit={handleUnlockCashbox} className="space-y-4">
                                 <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm font-semibold text-amber-800">
-                                    El saldo y los depositos solo se muestran con PIN. Los usuarios pueden registrar gastos sin ver el saldo.
+                                    El saldo y los depositos solo se muestran con PIN. Solo los pagos en EFECTIVO descuentan Caja Chica.
                                 </div>
                                 <Input
                                     label="PIN de Caja Chica"
@@ -866,7 +868,7 @@ export default function GastosDiarios({ categories = [], providers = [] }) {
                                 <div className={`rounded-2xl border p-5 ${isLowCashboxBalance ? 'border-amber-300 bg-amber-50' : 'border-emerald-200 bg-emerald-50'}`}>
                                     <div className="text-xs font-black uppercase tracking-[0.24em] text-slate-500">Saldo disponible</div>
                                     <div className={`mt-2 text-3xl font-black ${isLowCashboxBalance ? 'text-amber-700' : 'text-emerald-700'}`}>{fmt(cashboxBalance)}</div>
-                                    <div className="mt-1 text-xs font-semibold text-slate-500">Caja {CAJA}</div>
+                                    <div className="mt-1 text-xs font-semibold text-slate-500">Caja {CAJA} · solo movimientos en efectivo</div>
                                     {isLowCashboxBalance && (
                                         <div className="mt-3 rounded-xl bg-white px-3 py-2 text-xs font-bold text-amber-700">
                                             Aviso: saldo menor a {fmt(PETTY_CASH_ALERT_THRESHOLD)}.

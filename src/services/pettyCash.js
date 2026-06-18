@@ -12,6 +12,19 @@ export const normalizeCashAmount = (value) => {
     return Math.round(parsed * 100) / 100;
 };
 
+const normalizePaymentMethod = (value = '') => (
+    String(value || '')
+        .trim()
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .toUpperCase()
+);
+
+export const isPettyCashBalanceMovement = (movement = {}) => {
+    if (movement.direction === 'entrada') return true;
+    return normalizePaymentMethod(movement.paymentType || movement.paymentMethod) === 'EFECTIVO';
+};
+
 const cleanForFirestore = (value) => {
     if (value === undefined) return null;
     if (value === null) return null;
