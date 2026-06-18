@@ -1,7 +1,7 @@
 param(
     [string]$TaskName = 'SICAR Purchases Sync Every Minute',
     [int]$IntervalMinutes = 1,
-    [int]$LookbackDays = 14
+    [int]$LookbackDays = 30
 )
 
 $scriptPath = Join-Path $PSScriptRoot 'runDailySicarPurchases.ps1'
