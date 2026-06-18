@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { useLocation } from 'react-router-dom';
 import { collection, deleteDoc, doc, getDoc, serverTimestamp, setDoc, writeBatch } from 'firebase/firestore';
 import { db } from '../firebase';
 import { useAuth } from '../context/AuthContext';
@@ -9093,14 +9094,23 @@ function ComingSoon() {
 }
 
 export default function Billing({ data = {} }) {
+    const location = useLocation();
     const [activeTab, setActiveTab] = useState('cierre');
 
     const tabs = [
-        { key: 'cierre', label: 'Cierre de caja' },
-        { key: 'registro', label: 'Registro Contables' },
+        { key: 'cierre', label: 'Cierre Caja' },
+        { key: 'registro', label: 'Registro Contable' },
         { key: 'historial', label: 'Historial' },
-        { key: 'depositos', label: 'Depositos bancarios' },
+        { key: 'depositos', label: 'Deposito Bancario' },
     ];
+    const validTabKeys = useMemo(() => new Set(tabs.map((tab) => tab.key)), []);
+
+    useEffect(() => {
+        const tabFromUrl = new URLSearchParams(location.search).get('tab');
+        if (validTabKeys.has(tabFromUrl) && tabFromUrl !== activeTab) {
+            setActiveTab(tabFromUrl);
+        }
+    }, [activeTab, location.search, validTabKeys]);
 
     return (
         <div className="space-y-5">

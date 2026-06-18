@@ -43,10 +43,10 @@ const entryTabs = [
 ];
 
 const billingHints = [
-    'Cierre de caja',
-    'Facturas membretadas',
-    'Diferencias de caja',
-    'Depositos bancarios',
+    { label: 'Cierre Caja', to: '/facturacion?tab=cierre' },
+    { label: 'Registro Contable', to: '/facturacion?tab=registro' },
+    { label: 'Historial', to: '/facturacion?tab=historial' },
+    { label: 'Deposito Bancario', to: '/facturacion?tab=depositos' },
 ];
 
 const reportHints = [
@@ -66,7 +66,10 @@ export default function Header({ moduleAccess = {}, isMaster = false, defaultPat
     const navRef = useRef(null);
 
     const canAccess = (moduleId) => moduleAccess?.[moduleId] === true;
-    const isActive = (path) => (path === '/' ? location.pathname === '/' : location.pathname.startsWith(path));
+    const isActive = (path) => {
+        const cleanPath = path.split('?')[0];
+        return cleanPath === '/' ? location.pathname === '/' : location.pathname.startsWith(cleanPath);
+    };
 
     useEffect(() => {
         const onScroll = () => setIsScrolled(window.scrollY > 8);
@@ -92,7 +95,7 @@ export default function Header({ moduleAccess = {}, isMaster = false, defaultPat
         canAccess('dashboard') && { key: 'inicio', label: 'Inicio', icon: 'home', to: '/' },
         canAccess('caja_chica') && { key: 'caja', label: 'Caja Chica', icon: 'cash', to: '/gastos-diarios' },
         canAccess('cuentas_pagar') && { key: 'cuentas', label: 'Cuentas por Pagar', icon: 'creditCard', to: '/cuentas-pagar' },
-        canAccess('facturacion') && { key: 'facturacion', label: 'Facturacion', icon: 'receipt', to: '/facturacion', hintList: billingHints },
+        canAccess('facturacion') && { key: 'facturacion', label: 'Facturacion', icon: 'receipt', to: '/facturacion?tab=cierre', hintList: billingHints },
         canAccess('reportes') && { key: 'reportes', label: 'Reportes', icon: 'chart', to: '/reportes', hintList: reportHints },
         isMaster && { key: 'config', label: 'Configuraciones', icon: 'gear', to: '/configuraciones' },
     ].filter(Boolean)), [isMaster, moduleAccess]);
@@ -197,15 +200,18 @@ export default function Header({ moduleAccess = {}, isMaster = false, defaultPat
                             className="absolute left-0 top-full z-40 mt-3 w-64 rounded-[1.25rem] border border-white/[0.12] bg-slate-950/[0.98] p-2 shadow-2xl shadow-black/30 ring-1 ring-white/10 backdrop-blur-xl"
                         >
                             <div className="px-3 py-2 text-[10px] font-black uppercase tracking-[0.28em] text-[#f5b51b]">{item.label}</div>
-                            {item.hintList.map((hint) => (
+                            {item.hintList.map((hint) => {
+                                const option = typeof hint === 'string' ? { label: hint, to: item.to } : hint;
+                                return (
                                 <Link
-                                    key={hint}
-                                    to={item.to}
+                                    key={option.label}
+                                    to={option.to || item.to}
                                     className="block rounded-xl px-3 py-2 text-xs font-bold text-white/[0.74] transition hover:bg-white/[0.08] hover:text-white focus:outline-none focus:ring-2 focus:ring-[#f5b51b]/60"
                                 >
-                                    {hint}
+                                    {option.label}
                                 </Link>
-                            ))}
+                                );
+                            })}
                         </motion.div>
                     )}
                 </AnimatePresence>
@@ -213,17 +219,50 @@ export default function Header({ moduleAccess = {}, isMaster = false, defaultPat
         </div>
     );
 
-    const MobileItem = ({ item }) => (
-        <Link
-            to={item.to}
-            className={`flex items-center gap-3 rounded-2xl px-4 py-3 text-sm font-black transition ${
-                isActive(item.to) ? 'bg-white text-slate-950' : 'text-white/[0.84] hover:bg-white/10 hover:text-white'
-            }`}
-        >
-            <Icon path={Icons[item.icon]} className={`h-4 w-4 ${isActive(item.to) ? 'text-[#e30613]' : 'text-[#f5b51b]'}`} />
-            {item.label}
-        </Link>
-    );
+    const MobileItem = ({ item }) => {
+        const active = isActive(item.to.split('?')[0]);
+        if (item.hintList) {
+            return (
+                <div className={`rounded-2xl p-2 transition ${active ? 'bg-white/[0.08]' : 'bg-white/[0.03]'}`}>
+                    <Link
+                        to={item.to}
+                        className={`flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-black transition ${
+                            active ? 'bg-white text-slate-950' : 'text-white/[0.84] hover:bg-white/10 hover:text-white'
+                        }`}
+                    >
+                        <Icon path={Icons[item.icon]} className={`h-4 w-4 ${active ? 'text-[#e30613]' : 'text-[#f5b51b]'}`} />
+                        {item.label}
+                    </Link>
+                    <div className="mt-1 grid gap-1">
+                        {item.hintList.map((hint) => {
+                            const option = typeof hint === 'string' ? { label: hint, to: item.to } : hint;
+                            return (
+                                <Link
+                                    key={option.label}
+                                    to={option.to || item.to}
+                                    className="rounded-xl px-10 py-2 text-xs font-bold text-white/[0.72] transition hover:bg-white/[0.08] hover:text-white"
+                                >
+                                    {option.label}
+                                </Link>
+                            );
+                        })}
+                    </div>
+                </div>
+            );
+        }
+
+        return (
+            <Link
+                to={item.to}
+                className={`flex items-center gap-3 rounded-2xl px-4 py-3 text-sm font-black transition ${
+                    active ? 'bg-white text-slate-950' : 'text-white/[0.84] hover:bg-white/10 hover:text-white'
+                }`}
+            >
+                <Icon path={Icons[item.icon]} className={`h-4 w-4 ${active ? 'text-[#e30613]' : 'text-[#f5b51b]'}`} />
+                {item.label}
+            </Link>
+        );
+    };
 
     return (
         <>
