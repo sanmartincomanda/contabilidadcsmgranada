@@ -24,6 +24,7 @@ import {
     buildFiscalPayload,
     computeFiscalAmounts,
     computeRetentions,
+    getCashPaidAmountAfterRetentions,
     getSupportFiles,
     getSupportPath,
     getSupportUrl,
@@ -1768,6 +1769,7 @@ const FiscalExpenseForm = ({ categories, providers = [], loading, setLoading, on
                 });
             } else if (isCashPayment(paymentType)) {
                 const cashRef = doc(collection(db, 'gastosDiarios'));
+                const cashPaidAmount = getCashPaidAmountAfterRetentions(fiscal);
                 batch.set(gastoRef, { ...expensePayload, linkedCashExpenseId: cashRef.id });
                 batch.set(cashRef, {
                     fecha: date,
@@ -1802,7 +1804,7 @@ const FiscalExpenseForm = ({ categories, providers = [], loading, setLoading, on
                     buildPettyCashMovementPayload({
                         direction: 'salida',
                         fecha: date,
-                        amount: fiscal.total,
+                        amount: cashPaidAmount,
                         description: description.trim().toUpperCase(),
                         paymentType,
                         paymentReference: paymentReference.trim().toUpperCase(),
@@ -1812,6 +1814,11 @@ const FiscalExpenseForm = ({ categories, providers = [], loading, setLoading, on
                         linkedExpenseId: gastoRef.id,
                         supplier: provider.nombre,
                         invoiceNumber: invoiceNumber.trim(),
+                        retentionIr2: fiscal.retentionIr2,
+                        retentionMunicipal1: fiscal.retentionMunicipal1,
+                        retentionTotal: fiscal.retentionTotal,
+                        accountingTotal: fiscal.total,
+                        cashPaidAmount,
                         ...categoryPayload,
                         ...photoPayload,
                     })
@@ -1986,6 +1993,7 @@ const FiscalPurchasesForm = ({ categories, providers = [], loading, setLoading, 
                 batch.set(purchaseRef, { ...purchasePayload, linkedPayableId: payableRef.id, sourceFacturaId: payableRef.id });
             } else if (isCashPayment(paymentType)) {
                 const cashRef = doc(collection(db, 'gastosDiarios'));
+                const cashPaidAmount = getCashPaidAmountAfterRetentions(fiscal);
                 batch.set(cashRef, {
                     fecha: date,
                     date,
@@ -2020,7 +2028,7 @@ const FiscalPurchasesForm = ({ categories, providers = [], loading, setLoading, 
                     buildPettyCashMovementPayload({
                         direction: 'salida',
                         fecha: date,
-                        amount: fiscal.total,
+                        amount: cashPaidAmount,
                         description: description.trim().toUpperCase() || `COMPRA ${provider.nombre}`,
                         paymentType,
                         paymentReference: paymentReference.trim().toUpperCase(),
@@ -2030,6 +2038,11 @@ const FiscalPurchasesForm = ({ categories, providers = [], loading, setLoading, 
                         linkedPurchaseId: purchaseRef.id,
                         supplier: provider.nombre,
                         invoiceNumber: invoiceNumber.trim(),
+                        retentionIr2: fiscal.retentionIr2,
+                        retentionMunicipal1: fiscal.retentionMunicipal1,
+                        retentionTotal: fiscal.retentionTotal,
+                        accountingTotal: fiscal.total,
+                        cashPaidAmount,
                         ...categoryPayload,
                         ...photoPayload,
                     })

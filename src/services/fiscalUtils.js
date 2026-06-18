@@ -86,6 +86,18 @@ export const computeRetentions = ({ subtotal = 0, retentionIr2 = 0, retentionMun
     };
 };
 
+export const getCashPaidAmountAfterRetentions = ({
+    total = 0,
+    retentionTotal,
+    retentionIr2 = 0,
+    retentionMunicipal1 = 0,
+} = {}) => {
+    const retained = retentionTotal === undefined || retentionTotal === null
+        ? money(money(retentionIr2) + money(retentionMunicipal1))
+        : money(retentionTotal);
+    return money(Math.max(money(total) - retained, 0));
+};
+
 export const buildSupportPayload = ({
     url = '',
     path = '',
@@ -213,6 +225,10 @@ export const buildFiscalPayload = (values = {}) => {
         retentionIr2: retentions.retentionIr2,
         retentionMunicipal1: retentions.retentionMunicipal1,
         retentionTotal: retentions.retentionTotal,
+        cashPaidAmount: getCashPaidAmountAfterRetentions({
+            total: fiscal.total,
+            retentionTotal: retentions.retentionTotal,
+        }),
     };
 };
 

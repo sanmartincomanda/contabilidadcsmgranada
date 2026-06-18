@@ -10,7 +10,7 @@ import {
 } from 'firebase/firestore';
 import { db } from '../firebase';
 import { DEFAULT_PURCHASE_CATEGORY_ID, buildExpenseCategoryPayload, getExpenseCategoryFromRecord } from './expenseCategories';
-import { isCashPayment, normalizePaymentMethod } from './fiscalUtils';
+import { getCashPaidAmountAfterRetentions, isCashPayment, normalizePaymentMethod } from './fiscalUtils';
 import { buildPettyCashMovementPayload, pettyCashMovementRef } from './pettyCash';
 
 const uniqueRefs = (refs) => {
@@ -378,13 +378,14 @@ export async function updatePurchaseTransaction(purchaseId, updateData, options 
             updatedAt: serverTimestamp(),
         });
         if (shouldMirrorToPettyCash(nextPaymentType, currentGastoData, purchaseData, cleanUpdate)) {
+            const cashPaidAmount = getCashPaidAmountAfterRetentions(gastoMirrorPayload);
             batch.set(
                 pettyCashMovementRef('gastosDiarios', gastoRef.id),
                 buildPettyCashMovementPayload({
                     ...gastoMirrorPayload,
                     direction: 'salida',
                     fecha: gastoMirrorPayload.fecha,
-                    amount: gastoMirrorPayload.monto,
+                    amount: cashPaidAmount,
                     description: gastoMirrorPayload.descripcion,
                     paymentType: nextPaymentType,
                     paymentReference: firstDefined(cleanUpdate.paymentReference, purchaseData.paymentReference, ''),
@@ -394,6 +395,8 @@ export async function updatePurchaseTransaction(purchaseId, updateData, options 
                     linkedPurchaseId: purchaseId,
                     supplier: gastoMirrorPayload.proveedor,
                     invoiceNumber: gastoMirrorPayload.factura,
+                    accountingTotal: gastoMirrorPayload.total || gastoMirrorPayload.monto,
+                    cashPaidAmount,
                 }),
                 { merge: true }
             );
@@ -470,13 +473,14 @@ export async function updateExpenseTransaction(expenseId, updateData, options = 
             updatedAt: serverTimestamp(),
         });
         if (shouldMirrorToPettyCash(nextPaymentType, currentGastoData, expenseData, cleanUpdate)) {
+            const cashPaidAmount = getCashPaidAmountAfterRetentions(gastoMirrorPayload);
             batch.set(
                 pettyCashMovementRef('gastosDiarios', gastoRef.id),
                 buildPettyCashMovementPayload({
                     ...gastoMirrorPayload,
                     direction: 'salida',
                     fecha: gastoMirrorPayload.fecha,
-                    amount: gastoMirrorPayload.monto,
+                    amount: cashPaidAmount,
                     description: gastoMirrorPayload.descripcion,
                     paymentType: nextPaymentType,
                     paymentReference: firstDefined(cleanUpdate.paymentReference, expenseData.paymentReference, ''),
@@ -486,6 +490,8 @@ export async function updateExpenseTransaction(expenseId, updateData, options = 
                     linkedExpenseId: expenseId,
                     supplier: gastoMirrorPayload.proveedor,
                     invoiceNumber: gastoMirrorPayload.factura,
+                    accountingTotal: gastoMirrorPayload.total || gastoMirrorPayload.monto,
+                    cashPaidAmount,
                 }),
                 { merge: true }
             );

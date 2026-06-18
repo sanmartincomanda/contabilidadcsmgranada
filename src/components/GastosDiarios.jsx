@@ -5,7 +5,7 @@ import {
     collection, Timestamp, getDocs, doc, writeBatch, query, where
 } from 'firebase/firestore';
 import { APP_BRAND_NAME, DEFAULT_BRANCH_ID, DEFAULT_BRANCH_NAME, DEFAULT_CASHBOX_NAME, fmt } from '../constants';
-import { buildFiscalPayload, isCashPayment, isCreditPayment, PURCHASE_PAYMENT_METHODS, uploadInvoicePhoto } from '../services/fiscalUtils';
+import { buildFiscalPayload, getCashPaidAmountAfterRetentions, isCashPayment, isCreditPayment, PURCHASE_PAYMENT_METHODS, uploadInvoicePhoto } from '../services/fiscalUtils';
 import {
     PETTY_CASH_ALERT_THRESHOLD,
     PETTY_CASH_COLLECTION,
@@ -202,7 +202,13 @@ const PettyCashVoucher = ({ voucher }) => {
             <div className="ticket-line" />
             <div className="ticket-row"><span>Subtotal</span><strong>{fmt(voucher.subtotal)}</strong></div>
             <div className="ticket-row"><span>IVA</span><strong>{fmt(voucher.iva)}</strong></div>
+            {voucher.retentionTotal > 0 && (
+                <div className="ticket-row"><span>Retenciones</span><strong>{fmt(voucher.retentionTotal)}</strong></div>
+            )}
             <div className="ticket-total"><span>Total</span><strong>{fmt(voucher.total)}</strong></div>
+            {voucher.retentionTotal > 0 && (
+                <div className="ticket-total"><span>Pagado fisico</span><strong>{fmt(voucher.cashPaidAmount)}</strong></div>
+            )}
             <div className="ticket-line" />
             <div className="ticket-approved">
                 <div>___________________</div>
@@ -345,6 +351,7 @@ export default function GastosDiarios({ categories = [], providers = [] }) {
         const fiscalSubtotal = Number(payload.subtotal ?? payload.amount ?? payload.total ?? payload.monto ?? 0) || 0;
         const fiscalIva = Number(payload.iva ?? 0) || 0;
         const fiscalTotal = Number(payload.total ?? payload.monto ?? (fiscalSubtotal + fiscalIva)) || 0;
+        const retentionTotal = Number(payload.retentionTotal ?? ((Number(payload.retentionIr2 || 0) || 0) + (Number(payload.retentionMunicipal1 || 0) || 0))) || 0;
         return {
             fecha: payload.fecha || payload.date || now.toISOString().substring(0, 10),
             hora: now.toLocaleTimeString('es-NI', { hour: '2-digit', minute: '2-digit' }),
@@ -358,6 +365,8 @@ export default function GastosDiarios({ categories = [], providers = [] }) {
             subtotal: fiscalSubtotal,
             iva: fiscalIva,
             total: fiscalTotal,
+            retentionTotal,
+            cashPaidAmount: Number(payload.cashPaidAmount ?? Math.max(fiscalTotal - retentionTotal, 0)) || 0,
             autoPrint: getDeviceSettings().printer.voucherAutoPrint !== false,
         };
     }, []);
@@ -629,12 +638,13 @@ export default function GastosDiarios({ categories = [], providers = [] }) {
             }
 
             if (isCashPayment(paymentType)) {
+                const cashPaidAmount = getCashPaidAmountAfterRetentions(fiscal);
                 batch.set(
                     pettyCashMovementRef('gastosDiarios', gastoDiarioRef.id),
                     buildPettyCashMovementPayload({
                         direction: 'salida',
                         fecha,
-                        amount: fiscal.total,
+                        amount: cashPaidAmount,
                         description: descripcion,
                         paymentType,
                         paymentReference: paymentReference.trim().toUpperCase(),
@@ -646,6 +656,11 @@ export default function GastosDiarios({ categories = [], providers = [] }) {
                         supplier: provider?.nombre || cleanProviderName,
                         invoiceNumber: numeroFactura.trim(),
                         timestamp,
+                        retentionIr2: fiscal.retentionIr2,
+                        retentionMunicipal1: fiscal.retentionMunicipal1,
+                        retentionTotal: fiscal.retentionTotal,
+                        accountingTotal: fiscal.total,
+                        cashPaidAmount,
                         ...categoryPayload,
                         ...photoPayload,
                     })
@@ -664,6 +679,10 @@ export default function GastosDiarios({ categories = [], providers = [] }) {
                 subtotal: fiscal.subtotal,
                 iva: fiscal.iva,
                 total: fiscal.total,
+                retentionIr2: fiscal.retentionIr2,
+                retentionMunicipal1: fiscal.retentionMunicipal1,
+                retentionTotal: fiscal.retentionTotal,
+                cashPaidAmount: fiscal.cashPaidAmount,
                 ...categoryPayload,
             }));
 
