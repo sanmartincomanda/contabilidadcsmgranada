@@ -242,18 +242,42 @@ const normalizeStampedInvoiceRecord = (item = {}) => ({
     items: Array.isArray(item.items) ? item.items : [],
 });
 
-const normalizeCashReceiptRecord = (item = {}) => ({
-    ...item,
-    date: item.date || item.receiptDate || '',
-    month: item.month || getMonth(item.date || item.receiptDate || todayString()),
-    receiptNumber: item.receiptNumber || item.numeroRecibo || '',
-    customerName: item.customerName || item.recibiDe || item.cliente || '',
-    amount: safeNumber(item.amount || item.cantidad),
-    retentionIr2: safeNumber(item.retentionIr2 || item.retencionIr2),
-    concept: item.concept || item.concepto || '',
-    paymentMethod: item.paymentMethod || item.metodoPago || '',
-    netAmount: safeNumber(item.netAmount || safeNumber(item.amount || item.cantidad) - safeNumber(item.retentionIr2 || item.retencionIr2)),
-});
+const getCashReceiptRetentionTotal = (receipt = {}) => safeNumber(
+    receipt.retentionTotal
+    ?? receipt.retencionTotal
+    ?? (safeNumber(receipt.retentionIr2 || receipt.retencionIr2) + safeNumber(receipt.retentionMunicipal1 || receipt.retencionMunicipal1))
+);
+
+const getCashReceiptNetAmount = (receipt = {}) => {
+    const amount = safeNumber(receipt.amount || receipt.cantidad);
+    const retentionTotal = getCashReceiptRetentionTotal(receipt);
+    if (retentionTotal > 0) return safeNumber(amount - retentionTotal);
+    const storedNet = safeNumber(receipt.netAmount || receipt.montoNeto);
+    if (storedNet > 0) return storedNet;
+    return amount;
+};
+
+const normalizeCashReceiptRecord = (item = {}) => {
+    const amount = safeNumber(item.amount || item.cantidad);
+    const retentionIr2 = safeNumber(item.retentionIr2 || item.retencionIr2);
+    const retentionMunicipal1 = safeNumber(item.retentionMunicipal1 || item.retencionMunicipal1);
+    const retentionTotal = safeNumber(item.retentionTotal ?? item.retencionTotal ?? (retentionIr2 + retentionMunicipal1));
+    return {
+        ...item,
+        date: item.date || item.receiptDate || '',
+        month: item.month || getMonth(item.date || item.receiptDate || todayString()),
+        receiptNumber: item.receiptNumber || item.numeroRecibo || '',
+        customerName: item.customerName || item.recibiDe || item.cliente || '',
+        amount,
+        retentionIr2,
+        retentionMunicipal1,
+        retentionTotal,
+        concept: item.concept || item.concepto || '',
+        paymentMethod: item.paymentMethod || item.metodoPago || '',
+        reference: item.reference || item.referencia || '',
+        netAmount: getCashReceiptNetAmount({ ...item, amount, retentionIr2, retentionMunicipal1, retentionTotal }),
+    };
+};
 
 const isPdfSupportFile = (support = {}) => (
     `${support.url || ''} ${support.path || ''} ${support.contentType || ''}`.toLowerCase().includes('.pdf')
@@ -399,10 +423,12 @@ const buildClosureAccountingSummary = ({
             paymentSum + (isCreditPaymentMethod(row.method) ? safeNumber(row.amount) : 0)
         ), 0)
     ), 0));
-    const cashReceiptTotal = safeNumber(cashReceipts.reduce((sum, receipt) => sum + safeNumber(receipt.amount), 0));
+    const cashReceiptGrossTotal = safeNumber(cashReceipts.reduce((sum, receipt) => sum + safeNumber(receipt.amount), 0));
+    const cashReceiptRetentionTotal = safeNumber(cashReceipts.reduce((sum, receipt) => sum + getCashReceiptRetentionTotal(receipt), 0));
+    const cashReceiptNetTotal = safeNumber(cashReceipts.reduce((sum, receipt) => sum + getCashReceiptNetAmount(receipt), 0));
     const ticketCashSales = safeNumber(cashSalesTotal - stampedCashTotal);
     const ticketCreditSales = safeNumber(creditSalesTotal - stampedCreditTotal);
-    const ticketCashReceipts = safeNumber(creditRecoveryTotal - cashReceiptTotal);
+    const ticketCashReceipts = safeNumber(creditRecoveryTotal - cashReceiptGrossTotal);
     const cardTotal = safeNumber((posTotals.bac || 0) + (posTotals.banpro || 0) + (posTotals.lafise || 0));
     const transferTotal = safeNumber(
         (transferTotals.bac || 0)
@@ -414,7 +440,7 @@ const buildClosureAccountingSummary = ({
     );
     const transferTotalWithoutBac2 = safeNumber(transferTotal - safeNumber(transferTotals.bac2));
     const cashTotal = safeNumber(cashCordobasTotal + dollarCashTotalCordobas + preCloseDepositTotal);
-    const rc = safeNumber(cardTotal + transferTotalWithoutBac2 - stampedCashTotal - cashReceiptTotal);
+    const rc = safeNumber(cardTotal + transferTotalWithoutBac2 - stampedCashTotal - cashReceiptNetTotal);
 
     return {
         general: {
@@ -425,7 +451,9 @@ const buildClosureAccountingSummary = ({
         stampedDocuments: {
             stampedCashInvoices: stampedCashTotal,
             stampedCreditInvoices: stampedCreditTotal,
-            stampedCashReceipts: cashReceiptTotal,
+            stampedCashReceipts: cashReceiptGrossTotal,
+            stampedCashReceiptsNet: cashReceiptNetTotal,
+            stampedCashReceiptRetentions: cashReceiptRetentionTotal,
         },
         sicarTickets: {
             cashSalesTickets: ticketCashSales,
@@ -605,10 +633,82 @@ const createCashReceiptDraft = (receipt = {}, fallbackDate = todayString()) => {
         customerName: normalized.customerName || receipt.recibiDe || '',
         amount: safeNumber(normalized.amount),
         retentionIr2: safeNumber(normalized.retentionIr2),
+        retentionMunicipal1: safeNumber(normalized.retentionMunicipal1),
+        retentionTotal: safeNumber(normalized.retentionTotal),
         concept: normalized.concept || '',
         paymentMethod: normalized.paymentMethod || '',
         netAmount: safeNumber(normalized.netAmount),
     };
+};
+
+const syncLinkedClosureForCashReceipt = async (receiptId = '', receiptPayload = {}) => {
+    const linkedCashClosureId = receiptPayload.linkedCashClosureId || receiptPayload.cashClosureId || '';
+    if (!receiptId || !linkedCashClosureId) return;
+
+    const closureRef = doc(db, 'cierres_caja', linkedCashClosureId);
+    const closureSnap = await getDoc(closureRef);
+    if (!closureSnap.exists()) return;
+
+    const closure = closureSnap.data() || {};
+    const matchesReceipt = (receipt = {}) => [receipt.id, receipt.docId, receipt.receiptId]
+        .filter(Boolean)
+        .includes(receiptId);
+    const mergeReceipt = (receipt = {}) => (
+        matchesReceipt(receipt)
+            ? normalizeCashReceiptRecord({ ...receipt, ...receiptPayload, id: receipt.id || receiptId, docId: receipt.docId || receiptId })
+            : receipt
+    );
+    const cashReceipts = Array.isArray(closure.cashReceipts) ? closure.cashReceipts.map(mergeReceipt) : [];
+    const cashReceiptDrafts = Array.isArray(closure.cashReceiptDrafts) ? closure.cashReceiptDrafts.map(mergeReceipt) : [];
+    const receiptsForTotals = cashReceipts.length ? cashReceipts : cashReceiptDrafts;
+    const invoiceRetentionTotal = (closure.stampedInvoices || []).reduce((sum, invoice) => (
+        safeNumber(sum + safeNumber(invoice.retentionTotal || safeNumber(invoice.retentionIr2) + safeNumber(invoice.retentionMunicipal1)))
+    ), 0);
+    const cashReceiptRetentionTotal = receiptsForTotals.reduce((sum, receipt) => (
+        safeNumber(sum + getCashReceiptRetentionTotal(receipt))
+    ), 0);
+    const cashReceiptGrossTotal = receiptsForTotals.reduce((sum, receipt) => (
+        safeNumber(sum + safeNumber(receipt.amount))
+    ), 0);
+    const cashReceiptNetTotal = receiptsForTotals.reduce((sum, receipt) => (
+        safeNumber(sum + getCashReceiptNetAmount(receipt))
+    ), 0);
+    const retentionAdjustment = safeNumber(invoiceRetentionTotal + cashReceiptRetentionTotal);
+    const sicarExpected = safeNumber(closure.sicarExpected);
+    const manualTotal = safeNumber(closure.manualTotal);
+    const expectedAfterRetentions = safeNumber(sicarExpected - retentionAdjustment);
+    const difference = safeNumber(manualTotal - expectedAfterRetentions);
+    const payment = closure.accountingSummary?.paymentBreakdown || {};
+    const stamped = closure.accountingSummary?.stampedDocuments || {};
+    const transferTotalWithoutBac2 = safeNumber(safeNumber(payment.transferTotal) - safeNumber(payment.transferBac2));
+    const rc = safeNumber(safeNumber(payment.cardTotal) + transferTotalWithoutBac2 - safeNumber(stamped.stampedCashInvoices) - cashReceiptNetTotal);
+    const accountingSummary = closure.accountingSummary ? {
+        ...closure.accountingSummary,
+        stampedDocuments: {
+            ...(closure.accountingSummary.stampedDocuments || {}),
+            stampedCashReceipts: cashReceiptGrossTotal,
+            stampedCashReceiptsNet: cashReceiptNetTotal,
+            stampedCashReceiptRetentions: cashReceiptRetentionTotal,
+        },
+        sicarTickets: {
+            ...(closure.accountingSummary.sicarTickets || {}),
+            cashReceiptTickets: safeNumber(safeNumber(closure.accountingSummary.general?.creditRecoveryTotal) - cashReceiptGrossTotal),
+        },
+        internalRatio: {
+            ...(closure.accountingSummary.internalRatio || {}),
+            rc,
+        },
+    } : null;
+
+    await setDoc(closureRef, {
+        ...(cashReceipts.length ? { cashReceipts } : {}),
+        ...(cashReceiptDrafts.length ? { cashReceiptDrafts } : {}),
+        retentionAdjustment,
+        expectedAfterRetentions,
+        difference,
+        ...(accountingSummary ? { accountingSummary } : {}),
+        updatedAt: serverTimestamp(),
+    }, { merge: true });
 };
 
 const hasInvoiceDraftContent = (invoice = {}) => (
@@ -1618,9 +1718,13 @@ function CashClosure({ data }) {
         + Object.values(transferTotals).reduce((sum, value) => sum + value, 0)
         + Object.values(posTotals).reduce((sum, value) => sum + value, 0)
     );
-    const retentionTotal = safeNumber(closureInvoices.reduce((sum, invoice) => (
+    const invoiceRetentionTotal = safeNumber(closureInvoices.reduce((sum, invoice) => (
         sum + safeNumber(invoice.retentionIr2) + safeNumber(invoice.retentionMunicipal1)
     ), 0));
+    const cashReceiptRetentionTotal = safeNumber(closureCashReceipts.reduce((sum, receipt) => (
+        sum + getCashReceiptRetentionTotal(receipt)
+    ), 0));
+    const retentionTotal = safeNumber(invoiceRetentionTotal + cashReceiptRetentionTotal);
     const sicarExpected = safeNumber(selectedClosure?.calculatedTotal ?? selectedClosure?.calculado ?? selectedClosure?.totalDineroIngresado);
     const sicarNetSalesTotals = useMemo(() => getNetSicarSalesTotals(selectedClosure || {}), [selectedClosure]);
     const sicarCashSalesTotal = sicarNetSalesTotals.cashSalesNetTotal;
@@ -2141,6 +2245,8 @@ function CashClosure({ data }) {
                     customerName: receipt.customerName,
                     amount: safeNumber(receipt.amount),
                     retentionIr2: safeNumber(receipt.retentionIr2),
+                    retentionMunicipal1: safeNumber(receipt.retentionMunicipal1),
+                    retentionTotal: getCashReceiptRetentionTotal(receipt),
                     netAmount: safeNumber(receipt.netAmount),
                     concept: receipt.concept,
                     paymentMethod: receipt.paymentMethod,
@@ -2659,7 +2765,7 @@ function CashClosure({ data }) {
                                         </div>
                                         <div className="text-right">
                                             <div className="font-mono text-sm font-black text-slate-900">{fmt(receipt.amount)}</div>
-                                            <div className="text-[10px] font-black uppercase tracking-[0.16em] text-amber-700">IR {fmt(receipt.retentionIr2)}</div>
+                                            <div className="text-[10px] font-black uppercase tracking-[0.16em] text-amber-700">Ret. {fmt(getCashReceiptRetentionTotal(receipt))}</div>
                                         </div>
                                     </label>
                                 );
@@ -3423,6 +3529,72 @@ const CashReceiptPrintModal = ({
     );
 };
 
+const CashReceiptEditModal = ({
+    form,
+    saving = false,
+    onClose,
+    onSave,
+    onUpdate,
+}) => {
+    if (!form) return null;
+    const netAmount = safeNumber(safeNumber(form.amount) - safeNumber(form.retentionIr2) - safeNumber(form.retentionMunicipal1));
+
+    return (
+        <div className="fixed inset-0 z-[85] flex items-start justify-center overflow-y-auto bg-slate-950/70 p-4 backdrop-blur-sm">
+            <div className="w-full max-w-4xl overflow-hidden rounded-[2rem] border border-white/10 bg-white shadow-2xl">
+                <div className="flex flex-col gap-3 border-b border-slate-200 bg-slate-950 px-5 py-4 text-white sm:flex-row sm:items-center sm:justify-between">
+                    <div>
+                        <div className="text-[10px] font-black uppercase tracking-[0.28em] text-red-300">Edicion master</div>
+                        <h3 className="text-xl font-black">Editar recibo {form.receiptNumber || '-'}</h3>
+                        <p className="mt-1 text-sm font-semibold text-slate-300">Actualiza montos y retenciones del recibo de caja.</p>
+                    </div>
+                    <button type="button" onClick={onClose} className="rounded-2xl bg-white px-4 py-2 text-xs font-black uppercase tracking-[0.16em] text-slate-950 transition hover:bg-slate-200">
+                        Cerrar
+                    </button>
+                </div>
+
+                <form onSubmit={onSave} className="space-y-4 p-5">
+                    <div className="grid gap-4 md:grid-cols-2">
+                        <Field label="Fecha">
+                            <input className={inputClass} type="date" value={form.date || ''} onChange={(event) => onUpdate('date', event.target.value)} required />
+                        </Field>
+                        <Field label="Numero de recibo">
+                            <input className={inputClass} value={form.receiptNumber || ''} onChange={(event) => onUpdate('receiptNumber', event.target.value)} />
+                        </Field>
+                        <Field label="Recibi de">
+                            <input className={inputClass} value={form.customerName || ''} onChange={(event) => onUpdate('customerName', event.target.value)} required />
+                        </Field>
+                        <Field label="Metodo de pago">
+                            <PaymentMethodSelect value={form.paymentMethod || ''} onChange={(value) => onUpdate('paymentMethod', value)} required />
+                        </Field>
+                        <Field label="Cantidad">
+                            <input className={inputClass} type="number" step="0.01" min="0" value={form.amount || ''} onChange={(event) => onUpdate('amount', event.target.value)} required />
+                        </Field>
+                        <Field label="Retencion anticipo IR 2%">
+                            <input className={inputClass} type="number" step="0.01" min="0" value={form.retentionIr2 || ''} onChange={(event) => onUpdate('retentionIr2', event.target.value)} />
+                        </Field>
+                        <Field label="Retencion municipal 1%">
+                            <input className={inputClass} type="number" step="0.01" min="0" value={form.retentionMunicipal1 || ''} onChange={(event) => onUpdate('retentionMunicipal1', event.target.value)} />
+                        </Field>
+                        <Field label="Neto recibido">
+                            <input className={inputClass} readOnly value={formatInvoiceMoney(netAmount)} />
+                        </Field>
+                        <Field label="Referencia / CK No.">
+                            <input className={inputClass} value={form.reference || ''} onChange={(event) => onUpdate('reference', event.target.value)} />
+                        </Field>
+                        <Field label="Concepto" span="md:col-span-2">
+                            <textarea className={`${inputClass} min-h-[110px]`} value={form.concept || ''} onChange={(event) => onUpdate('concept', event.target.value)} />
+                        </Field>
+                    </div>
+                    <button type="submit" disabled={saving} className="w-full rounded-2xl bg-[#e30613] px-5 py-4 text-sm font-black uppercase tracking-[0.2em] text-white shadow-lg shadow-red-950/20 transition hover:bg-[#9f111a] disabled:cursor-not-allowed disabled:opacity-60">
+                        {saving ? 'Guardando...' : 'Guardar cambios'}
+                    </button>
+                </form>
+            </div>
+        </div>
+    );
+};
+
 function useStampedPrintTemplates(setMessage = () => {}) {
     const [printLayout, setPrintLayout] = useState(DEFAULT_STAMPED_PRINT_LAYOUT);
     const [printTemplates, setPrintTemplates] = useState([
@@ -3606,6 +3778,8 @@ function useCashReceiptPrintTemplates(setMessage = () => {}) {
 }
 
 function CashReceipts({ data }) {
+    const { user } = useAuth();
+    const isMaster = isMasterEmail(user?.email);
     const clients = useMemo(() => (
         [...(data.clientes_facturacion || [])]
             .map((item) => ({ ...item, name: item.name || item.nombre || '' }))
@@ -3625,6 +3799,7 @@ function CashReceipts({ data }) {
         customerName: '',
         amount: '',
         retentionIr2: '',
+        retentionMunicipal1: '',
         concept: '',
         paymentMethod: '',
         reference: '',
@@ -3634,6 +3809,8 @@ function CashReceipts({ data }) {
     const [saving, setSaving] = useState(false);
     const [message, setMessage] = useState('');
     const [printTarget, setPrintTarget] = useState(null);
+    const [editForm, setEditForm] = useState(null);
+    const [editSaving, setEditSaving] = useState(false);
     const {
         cashReceiptLayout,
         cashReceiptTemplates,
@@ -3669,6 +3846,28 @@ function CashReceipts({ data }) {
         setForm((prev) => ({ ...prev, [key]: value }));
     };
 
+    const openEditReceipt = (receipt) => {
+        if (!isMaster) return;
+        const normalized = normalizeCashReceiptRecord(receipt);
+        setEditForm({
+            id: normalized.id || receipt.id || receipt.docId || '',
+            date: normalized.date || todayString(),
+            receiptNumber: normalized.receiptNumber || '',
+            customerName: normalized.customerName || '',
+            amount: String(safeNumber(normalized.amount) || ''),
+            retentionIr2: String(safeNumber(normalized.retentionIr2) || ''),
+            retentionMunicipal1: String(safeNumber(normalized.retentionMunicipal1) || ''),
+            concept: normalized.concept || '',
+            paymentMethod: normalized.paymentMethod || '',
+            reference: normalized.reference || receipt.reference || receipt.referencia || '',
+            linkedCashClosureId: normalized.linkedCashClosureId || receipt.linkedCashClosureId || '',
+        });
+    };
+
+    const updateEditReceipt = (key, value) => {
+        setEditForm((prev) => prev ? { ...prev, [key]: value } : prev);
+    };
+
     const upsertClientRecord = async (name, source = 'recibo_caja') => {
         const safeName = String(name || '').trim();
         if (!safeName) return '';
@@ -3699,6 +3898,9 @@ function CashReceipts({ data }) {
                 : `recibo_${String(form.date || todayString()).replace(/-/g, '')}_${Date.now()}`;
             const amount = safeNumber(form.amount);
             const retentionIr2 = safeNumber(form.retentionIr2);
+            const retentionMunicipal1 = safeNumber(form.retentionMunicipal1);
+            const retentionTotal = safeNumber(retentionIr2 + retentionMunicipal1);
+            const netAmount = safeNumber(amount - retentionTotal);
 
             await setDoc(doc(db, 'recibos_caja_membretados', receiptId), {
                 date: form.date || todayString(),
@@ -3712,7 +3914,12 @@ function CashReceipts({ data }) {
                 cantidad: amount,
                 retentionIr2,
                 retencionIr2: retentionIr2,
-                netAmount: safeNumber(amount - retentionIr2),
+                retentionMunicipal1,
+                retencionMunicipal1: retentionMunicipal1,
+                retentionTotal,
+                retencionTotal: retentionTotal,
+                netAmount,
+                montoNeto: netAmount,
                 concept: String(form.concept || '').trim(),
                 concepto: String(form.concept || '').trim(),
                 paymentMethod: String(form.paymentMethod || '').trim(),
@@ -3731,6 +3938,7 @@ function CashReceipts({ data }) {
                 customerName: '',
                 amount: '',
                 retentionIr2: '',
+                retentionMunicipal1: '',
                 concept: '',
                 paymentMethod: '',
                 reference: '',
@@ -3741,6 +3949,55 @@ function CashReceipts({ data }) {
             setMessage(error?.message || 'No se pudo guardar el recibo de caja.');
         } finally {
             setSaving(false);
+        }
+    };
+
+    const saveEditedReceipt = async (event) => {
+        event.preventDefault();
+        if (!isMaster || !editForm?.id) return;
+        setEditSaving(true);
+        setMessage('');
+        try {
+            const amount = safeNumber(editForm.amount);
+            const retentionIr2 = safeNumber(editForm.retentionIr2);
+            const retentionMunicipal1 = safeNumber(editForm.retentionMunicipal1);
+            const retentionTotal = safeNumber(retentionIr2 + retentionMunicipal1);
+            const netAmount = safeNumber(amount - retentionTotal);
+            const receiptPayload = {
+                date: editForm.date || todayString(),
+                receiptDate: editForm.date || todayString(),
+                month: getMonth(editForm.date || todayString()),
+                receiptNumber: String(editForm.receiptNumber || '').trim(),
+                numeroRecibo: String(editForm.receiptNumber || '').trim(),
+                customerName: String(editForm.customerName || '').trim(),
+                recibiDe: String(editForm.customerName || '').trim(),
+                amount,
+                cantidad: amount,
+                retentionIr2,
+                retencionIr2: retentionIr2,
+                retentionMunicipal1,
+                retencionMunicipal1: retentionMunicipal1,
+                retentionTotal,
+                retencionTotal: retentionTotal,
+                netAmount,
+                montoNeto: netAmount,
+                concept: String(editForm.concept || '').trim(),
+                concepto: String(editForm.concept || '').trim(),
+                paymentMethod: String(editForm.paymentMethod || '').trim(),
+                metodoPago: String(editForm.paymentMethod || '').trim(),
+                reference: String(editForm.reference || '').trim(),
+                linkedCashClosureId: editForm.linkedCashClosureId || '',
+                updatedAt: serverTimestamp(),
+            };
+            await setDoc(doc(db, 'recibos_caja_membretados', editForm.id), receiptPayload, { merge: true });
+            await syncLinkedClosureForCashReceipt(editForm.id, receiptPayload);
+            setMessage(`Recibo ${editForm.receiptNumber || editForm.id} actualizado.`);
+            setEditForm(null);
+        } catch (error) {
+            console.error(error);
+            setMessage(error?.message || 'No se pudo actualizar el recibo.');
+        } finally {
+            setEditSaving(false);
         }
     };
 
@@ -3831,11 +4088,14 @@ function CashReceipts({ data }) {
                         <Field label="Retencion 2%">
                             <input className={inputClass} type="number" step="0.01" min="0" value={form.retentionIr2} onChange={(event) => update('retentionIr2', event.target.value)} />
                         </Field>
+                        <Field label="Retencion municipal 1%">
+                            <input className={inputClass} type="number" step="0.01" min="0" value={form.retentionMunicipal1} onChange={(event) => update('retentionMunicipal1', event.target.value)} />
+                        </Field>
                         <Field label="Referencia / CK No.">
                             <input className={inputClass} value={form.reference} onChange={(event) => update('reference', event.target.value)} placeholder="Opcional" />
                         </Field>
                         <Field label="Neto">
-                            <input className={inputClass} readOnly value={formatInvoiceMoney(safeNumber(form.amount) - safeNumber(form.retentionIr2))} />
+                            <input className={inputClass} readOnly value={formatInvoiceMoney(safeNumber(form.amount) - safeNumber(form.retentionIr2) - safeNumber(form.retentionMunicipal1))} />
                         </Field>
                         <Field label="En concepto de" span="md:col-span-2">
                             <textarea className={`${inputClass} min-h-[110px]`} value={form.concept} onChange={(event) => update('concept', event.target.value)} placeholder="Concepto del pago o recuperacion de credito" />
@@ -3864,7 +4124,7 @@ function CashReceipts({ data }) {
                                 <th className="px-4 py-3">Cliente</th>
                                 <th className="px-4 py-3">Metodo</th>
                                 <th className="px-4 py-3 text-right">Cantidad</th>
-                                <th className="px-4 py-3 text-right">Ret. 2%</th>
+                                <th className="px-4 py-3 text-right">Retenciones</th>
                                 <th className="px-4 py-3 text-right">Accion</th>
                             </tr>
                         </thead>
@@ -3876,11 +4136,18 @@ function CashReceipts({ data }) {
                                     <td className="px-4 py-3 font-bold text-slate-600">{receipt.customerName || '-'}</td>
                                     <td className="px-4 py-3 font-bold text-slate-500">{receipt.paymentMethod || '-'}</td>
                                     <td className="px-4 py-3 text-right font-mono font-black text-emerald-700">{fmt(receipt.amount)}</td>
-                                    <td className="px-4 py-3 text-right font-mono font-black text-amber-700">{fmt(receipt.retentionIr2)}</td>
+                                    <td className="px-4 py-3 text-right font-mono font-black text-amber-700">{fmt(getCashReceiptRetentionTotal(receipt))}</td>
                                     <td className="px-4 py-3 text-right">
-                                        <button type="button" onClick={() => printReceipt(receipt)} className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-[10px] font-black uppercase tracking-[0.16em] text-slate-700 transition hover:border-[#e30613] hover:text-[#e30613]">
-                                            Imprimir
-                                        </button>
+                                        <div className="flex justify-end gap-2">
+                                            {isMaster && (
+                                                <button type="button" onClick={() => openEditReceipt(receipt)} className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-[10px] font-black uppercase tracking-[0.16em] text-slate-700 transition hover:border-sky-500 hover:text-sky-700">
+                                                    Editar
+                                                </button>
+                                            )}
+                                            <button type="button" onClick={() => printReceipt(receipt)} className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-[10px] font-black uppercase tracking-[0.16em] text-slate-700 transition hover:border-[#e30613] hover:text-[#e30613]">
+                                                Imprimir
+                                            </button>
+                                        </div>
                                     </td>
                                 </tr>
                             ))}
@@ -3919,16 +4186,27 @@ function CashReceipts({ data }) {
             onSaveNewLayout={saveNewCashReceiptLayout}
             onClose={() => setPrintTarget(null)}
         />
+        <CashReceiptEditModal
+            form={editForm}
+            saving={editSaving}
+            onClose={() => setEditForm(null)}
+            onSave={saveEditedReceipt}
+            onUpdate={updateEditReceipt}
+        />
         </>
     );
 }
 
 function CashReceiptHistory({ data }) {
+    const { user } = useAuth();
+    const isMaster = isMasterEmail(user?.email);
     const [search, setSearch] = useState('');
     const [selectedMonth, setSelectedMonth] = useState(getMonth(todayString()));
     const [page, setPage] = useState(1);
     const [message, setMessage] = useState('');
     const [printTarget, setPrintTarget] = useState(null);
+    const [editForm, setEditForm] = useState(null);
+    const [editSaving, setEditSaving] = useState(false);
     const {
         cashReceiptLayout,
         cashReceiptTemplates,
@@ -3965,8 +4243,10 @@ function CashReceiptHistory({ data }) {
         filteredReceipts.reduce((acc, receipt) => ({
             amount: safeNumber(acc.amount + safeNumber(receipt.amount)),
             retentionIr2: safeNumber(acc.retentionIr2 + safeNumber(receipt.retentionIr2)),
+            retentionMunicipal1: safeNumber(acc.retentionMunicipal1 + safeNumber(receipt.retentionMunicipal1)),
+            retentionTotal: safeNumber(acc.retentionTotal + getCashReceiptRetentionTotal(receipt)),
             count: acc.count + 1,
-        }), { amount: 0, retentionIr2: 0, count: 0 })
+        }), { amount: 0, retentionIr2: 0, retentionMunicipal1: 0, retentionTotal: 0, count: 0 })
     ), [filteredReceipts]);
 
     useEffect(() => setPage(1), [search, selectedMonth]);
@@ -4004,6 +4284,77 @@ function CashReceiptHistory({ data }) {
         }, 180);
     };
 
+    const openEditReceipt = (receipt) => {
+        if (!isMaster) return;
+        const normalized = normalizeCashReceiptRecord(receipt);
+        setEditForm({
+            id: normalized.id || receipt.id || receipt.docId || '',
+            date: normalized.date || todayString(),
+            receiptNumber: normalized.receiptNumber || '',
+            customerName: normalized.customerName || '',
+            amount: String(safeNumber(normalized.amount) || ''),
+            retentionIr2: String(safeNumber(normalized.retentionIr2) || ''),
+            retentionMunicipal1: String(safeNumber(normalized.retentionMunicipal1) || ''),
+            concept: normalized.concept || '',
+            paymentMethod: normalized.paymentMethod || '',
+            reference: normalized.reference || '',
+            linkedCashClosureId: normalized.linkedCashClosureId || receipt.linkedCashClosureId || '',
+        });
+    };
+
+    const updateEditReceipt = (key, value) => {
+        setEditForm((prev) => prev ? { ...prev, [key]: value } : prev);
+    };
+
+    const saveEditedReceipt = async (event) => {
+        event.preventDefault();
+        if (!isMaster || !editForm?.id) return;
+        setEditSaving(true);
+        setMessage('');
+        try {
+            const amount = safeNumber(editForm.amount);
+            const retentionIr2 = safeNumber(editForm.retentionIr2);
+            const retentionMunicipal1 = safeNumber(editForm.retentionMunicipal1);
+            const retentionTotal = safeNumber(retentionIr2 + retentionMunicipal1);
+            const netAmount = safeNumber(amount - retentionTotal);
+            const receiptPayload = {
+                date: editForm.date || todayString(),
+                receiptDate: editForm.date || todayString(),
+                month: getMonth(editForm.date || todayString()),
+                receiptNumber: String(editForm.receiptNumber || '').trim(),
+                numeroRecibo: String(editForm.receiptNumber || '').trim(),
+                customerName: String(editForm.customerName || '').trim(),
+                recibiDe: String(editForm.customerName || '').trim(),
+                amount,
+                cantidad: amount,
+                retentionIr2,
+                retencionIr2: retentionIr2,
+                retentionMunicipal1,
+                retencionMunicipal1: retentionMunicipal1,
+                retentionTotal,
+                retencionTotal: retentionTotal,
+                netAmount,
+                montoNeto: netAmount,
+                concept: String(editForm.concept || '').trim(),
+                concepto: String(editForm.concept || '').trim(),
+                paymentMethod: String(editForm.paymentMethod || '').trim(),
+                metodoPago: String(editForm.paymentMethod || '').trim(),
+                reference: String(editForm.reference || '').trim(),
+                linkedCashClosureId: editForm.linkedCashClosureId || '',
+                updatedAt: serverTimestamp(),
+            };
+            await setDoc(doc(db, 'recibos_caja_membretados', editForm.id), receiptPayload, { merge: true });
+            await syncLinkedClosureForCashReceipt(editForm.id, receiptPayload);
+            setMessage(`Recibo ${editForm.receiptNumber || editForm.id} actualizado.`);
+            setEditForm(null);
+        } catch (error) {
+            console.error(error);
+            setMessage(error?.message || 'No se pudo actualizar el recibo.');
+        } finally {
+            setEditSaving(false);
+        }
+    };
+
     return (
         <>
         <div className="space-y-5">
@@ -4033,7 +4384,7 @@ function CashReceiptHistory({ data }) {
                 <div className="mt-5 grid gap-3 md:grid-cols-3">
                     <SummaryCard label="Recibos" value={totals.count} />
                     <SummaryCard label="Cantidad total" value={fmt(totals.amount)} tone="green" />
-                    <SummaryCard label="Retencion 2%" value={fmt(totals.retentionIr2)} tone="amber" />
+                    <SummaryCard label="Retenciones" value={fmt(totals.retentionTotal)} tone="amber" />
                 </div>
             </Section>
             <Section title="Recibos registrados" eyebrow="Detalle">
@@ -4047,7 +4398,7 @@ function CashReceiptHistory({ data }) {
                                 <th className="px-4 py-3">Concepto</th>
                                 <th className="px-4 py-3">Metodo</th>
                                 <th className="px-4 py-3 text-right">Cantidad</th>
-                                <th className="px-4 py-3 text-right">Retencion</th>
+                                <th className="px-4 py-3 text-right">Retenciones</th>
                                 <th className="px-4 py-3 text-right">Accion</th>
                             </tr>
                         </thead>
@@ -4060,9 +4411,14 @@ function CashReceiptHistory({ data }) {
                                     <td className="px-4 py-3 font-bold text-slate-500">{receipt.concept || '-'}</td>
                                     <td className="px-4 py-3 font-bold text-slate-500">{receipt.paymentMethod || '-'}</td>
                                     <td className="px-4 py-3 text-right font-mono font-black text-emerald-700">{fmt(receipt.amount)}</td>
-                                    <td className="px-4 py-3 text-right font-mono font-black text-amber-700">{fmt(receipt.retentionIr2)}</td>
+                                    <td className="px-4 py-3 text-right font-mono font-black text-amber-700">{fmt(getCashReceiptRetentionTotal(receipt))}</td>
                                     <td className="px-4 py-3 text-right">
-                                        <button type="button" onClick={() => printReceipt(receipt)} className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-[10px] font-black uppercase tracking-[0.16em] text-slate-700 transition hover:border-[#e30613] hover:text-[#e30613]">Imprimir</button>
+                                        <div className="flex justify-end gap-2">
+                                            {isMaster && (
+                                                <button type="button" onClick={() => openEditReceipt(receipt)} className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-[10px] font-black uppercase tracking-[0.16em] text-slate-700 transition hover:border-sky-500 hover:text-sky-700">Editar</button>
+                                            )}
+                                            <button type="button" onClick={() => printReceipt(receipt)} className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-[10px] font-black uppercase tracking-[0.16em] text-slate-700 transition hover:border-[#e30613] hover:text-[#e30613]">Imprimir</button>
+                                        </div>
                                     </td>
                                 </tr>
                             ))}
@@ -4089,6 +4445,13 @@ function CashReceiptHistory({ data }) {
             onSaveLayout={saveCashReceiptLayout}
             onSaveNewLayout={saveNewCashReceiptLayout}
             onClose={() => setPrintTarget(null)}
+        />
+        <CashReceiptEditModal
+            form={editForm}
+            saving={editSaving}
+            onClose={() => setEditForm(null)}
+            onSave={saveEditedReceipt}
+            onUpdate={updateEditReceipt}
         />
         </>
     );
@@ -6638,7 +7001,7 @@ const CashClosureDetailModal = ({ closure, onClose, onEdit }) => {
                                             <td className="py-3 pr-4 font-bold text-slate-600">{receipt.customerName || '-'}</td>
                                             <td className="py-3 pr-4 font-bold text-slate-500">{receipt.paymentMethod || '-'}</td>
                                             <td className="py-3 pr-4 font-bold text-slate-500">{receipt.concept || '-'}</td>
-                                            <td className="py-3 pr-4 text-right font-mono font-black text-amber-700">{fmt(receipt.retentionIr2)}</td>
+                                            <td className="py-3 pr-4 text-right font-mono font-black text-amber-700">{fmt(getCashReceiptRetentionTotal(receipt))}</td>
                                             <td className="py-3 text-right font-mono font-black text-emerald-700">{fmt(receipt.amount)}</td>
                                         </tr>
                                     ))}
