@@ -1123,6 +1123,7 @@ function AppContent() {
     const reportCollections = useMemo(() => [
         collectionConfig('ingresos', [where('month', '>=', reportStartMonth)]),
         collectionConfig('facturas_membretadas_ventas', [where('saleDate', '>=', `${reportStartMonth}-01`)]),
+        collectionConfig('recibos_caja_membretados', [where('date', '>=', `${reportStartMonth}-01`)]),
         collectionConfig('gastos', [where('date', '>=', `${reportStartMonth}-01`)]),
         collectionConfig('inventarios', [where('month', '>=', reportStartMonth)]),
         collectionConfig('compras', [where('month', '>=', reportStartMonth)]),

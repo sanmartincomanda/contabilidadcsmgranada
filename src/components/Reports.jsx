@@ -791,7 +791,26 @@ const buildTaxReport = (data, selectedMonth) => {
             retentionMunicipal1: peso(item.retentionMunicipal1),
             retentionTotal: peso(item.retentionTotal ?? (peso(item.retentionIr2) + peso(item.retentionMunicipal1))),
             paymentMethod: item.paymentMethod || '',
-        }));
+        }))
+        .filter((item) => item.retentionTotal > 0);
+
+    const cashReceiptRetentionRows = (data.recibos_caja_membretados || [])
+        .filter(inMonth)
+        .map((item) => ({
+            type: 'Retencion venta',
+            date: getDocDate(item),
+            source: 'Recibo de caja',
+            document: item.receiptNumber || item.numeroRecibo || '',
+            subtotal: peso(item.amount ?? item.cantidad),
+            retentionIr2: peso(item.retentionIr2 ?? item.retencionIr2),
+            retentionMunicipal1: peso(item.retentionMunicipal1 ?? item.retencionMunicipal1),
+            retentionTotal: peso(item.retentionTotal ?? item.retencionTotal ?? (peso(item.retentionIr2 ?? item.retencionIr2) + peso(item.retentionMunicipal1 ?? item.retencionMunicipal1))),
+            paymentMethod: item.paymentMethod || item.metodoPago || '',
+        }))
+        .filter((item) => item.retentionTotal > 0);
+
+    const combinedSalesRetentionRows = [...salesRetentionRows, ...cashReceiptRetentionRows]
+        .sort((a, b) => `${a.date}-${a.document}`.localeCompare(`${b.date}-${b.document}`));
 
     const purchaseRetentionRows = [...(data.compras || []), ...(data.gastos || [])]
         .filter(inMonth)
@@ -846,11 +865,13 @@ const buildTaxReport = (data, selectedMonth) => {
     const municipalTax = salesSubtotal * 0.01;
     const profitBeforeTax = operatingProfit;
     const profitAfterMunicipal = profitBeforeTax - municipalTax;
-    const incomeTax30 = profitAfterMunicipal > 0 ? profitAfterMunicipal * 0.30 : 0;
+        const incomeTax30 = profitAfterMunicipal > 0 ? profitAfterMunicipal * 0.30 : 0;
 
     return {
         ivaRows: [...incomeRows, ...purchaseRows],
-        retentionRows: [...salesRetentionRows, ...purchaseRetentionRows],
+        retentionRows: [...combinedSalesRetentionRows, ...purchaseRetentionRows],
+        retentionSalesRows: combinedSalesRetentionRows,
+        retentionPurchaseRows: purchaseRetentionRows,
         stampedInvoiceRows,
         stampedInvoiceDailyRows,
         stampedInvoicePaymentSummaryRows,
@@ -860,7 +881,7 @@ const buildTaxReport = (data, selectedMonth) => {
             ivaSold,
             ivaBought,
             ivaNet: ivaSold - ivaBought,
-            retentionSales: sumBy(salesRetentionRows, 'retentionTotal'),
+            retentionSales: sumBy(combinedSalesRetentionRows, 'retentionTotal'),
             retentionPurchases: sumBy(purchaseRetentionRows, 'retentionTotal'),
             stampedInvoiceCount: stampedInvoiceRows.length,
             stampedInvoiceSubtotal: sumBy(stampedInvoiceRows, 'subtotal'),
@@ -1218,6 +1239,7 @@ const TaxStatementPrintableReport = ({ taxReport, selectedMonth, onPrint }) => {
 
 const TaxReportsPanel = ({ taxReport, taxTab, setTaxTab, selectedMonth, setSelectedMonth, availableMonths }) => {
     const subTabs = ['IVA', 'Retenciones', 'Facturas membretadas', 'Resultado despues de impuestos'];
+    const [retentionSubTab, setRetentionSubTab] = useState('ventas');
     const tableClass = "w-full text-sm";
     const thClass = "pb-3 text-left text-xs font-bold uppercase tracking-wider text-stone-500";
     const tdClass = "py-2.5 border-t border-stone-100 text-stone-700";
@@ -1235,6 +1257,16 @@ const TaxReportsPanel = ({ taxReport, taxTab, setTaxTab, selectedMonth, setSelec
         window.print();
         window.setTimeout(cleanup, 1000);
     };
+    const activeRetentionRows = retentionSubTab === 'ventas'
+        ? taxReport.retentionSalesRows
+        : taxReport.retentionPurchaseRows;
+    const activeRetentionTitle = retentionSubTab === 'ventas'
+        ? 'Retenciones de ventas'
+        : 'Retenciones de compras';
+    const activeRetentionSlug = retentionSubTab === 'ventas' ? 'ventas' : 'compras';
+    const activeRetentionHelp = retentionSubTab === 'ventas'
+        ? 'Ventas incluye facturas membretadas y recibos de caja con retencion.'
+        : 'Compras incluye compras y gastos con retenciones registradas.';
 
     return (
         <div className="animate-fade-in space-y-5">
@@ -1316,15 +1348,37 @@ const TaxReportsPanel = ({ taxReport, taxTab, setTaxTab, selectedMonth, setSelec
                         <StatCard title="Retenciones Compras" value={fmt(taxReport.totals.retentionPurchases)} icon="shoppingCart" variant="warning" />
                         <StatCard title="Total Retenciones" value={fmt(taxReport.totals.retentionSales + taxReport.totals.retentionPurchases)} icon="receipt" variant="wine" />
                     </div>
+                    <div className="flex flex-wrap gap-2">
+                        {[
+                            { key: 'ventas', label: 'Retenciones de ventas' },
+                            { key: 'compras', label: 'Retenciones de compras' },
+                        ].map((tab) => (
+                            <button
+                                key={tab.key}
+                                type="button"
+                                onClick={() => setRetentionSubTab(tab.key)}
+                                className={`rounded-lg px-4 py-2 text-xs font-bold uppercase tracking-wide transition ${
+                                    retentionSubTab === tab.key ? 'bg-[#9f111a] text-white' : 'bg-white border border-stone-200 text-stone-600 hover:bg-stone-50'
+                                }`}
+                            >
+                                {tab.label}
+                            </button>
+                        ))}
+                    </div>
                     <Card
-                        title="Reporte Membretado de Retenciones"
-                        subtitle="Detalle fiscal para soporte ante DGI"
+                        title={activeRetentionTitle}
+                        subtitle={activeRetentionHelp}
                         icon="receipt"
-                        right={<button onClick={() => downloadCsv(`reporte-retenciones-${selectedMonth}.csv`, taxReport.retentionRows)} className="rounded-lg bg-[#e30613] px-3 py-1.5 text-xs font-bold text-white">Exportar CSV</button>}
+                        right={(
+                            <div className="flex flex-wrap gap-2">
+                                <button onClick={() => downloadCsv(`retenciones-${activeRetentionSlug}-${selectedMonth || 'todos'}.csv`, activeRetentionRows)} className="rounded-lg bg-[#e30613] px-3 py-1.5 text-xs font-bold text-white">Exportar CSV</button>
+                                <button onClick={() => downloadXls(`retenciones-${activeRetentionSlug}-${selectedMonth || 'todos'}.xls`, activeRetentionRows, activeRetentionTitle)} className="rounded-lg border border-[#e30613] px-3 py-1.5 text-xs font-bold text-[#e30613]">Exportar XLS</button>
+                            </div>
+                        )}
                     >
                         <div className="mb-4 rounded-xl border border-[#d8dee6] bg-[#f8fafc] p-4">
                             <div className="text-xs font-bold uppercase tracking-[0.3em] text-[#e30613]">{APP_BRAND_NAME}</div>
-                            <div className="text-lg font-black text-[#111827]">Reporte de retenciones fiscales</div>
+                            <div className="text-lg font-black text-[#111827]">{activeRetentionTitle}</div>
                             <div className="text-xs font-semibold text-stone-500">Periodo: {selectedMonth || 'Todos'}</div>
                         </div>
                         <div className="overflow-x-auto">
@@ -1341,7 +1395,7 @@ const TaxReportsPanel = ({ taxReport, taxTab, setTaxTab, selectedMonth, setSelec
                                     </tr>
                                 </thead>
                                 <tbody>
-                                    {taxReport.retentionRows.map((row, idx) => (
+                                    {activeRetentionRows.map((row, idx) => (
                                         <tr key={`${row.type}-${row.document}-${idx}`}>
                                             <td className={tdClass}>{row.type}</td>
                                             <td className={tdClass}>{row.date}</td>
@@ -1352,6 +1406,13 @@ const TaxReportsPanel = ({ taxReport, taxTab, setTaxTab, selectedMonth, setSelec
                                             <td className={`${tdClass} text-right font-black text-[#9f111a]`}>{fmt(row.retentionTotal)}</td>
                                         </tr>
                                     ))}
+                                    {activeRetentionRows.length === 0 && (
+                                        <tr>
+                                            <td colSpan="7" className="py-6 text-center text-sm font-semibold text-stone-400">
+                                                No hay retenciones registradas en esta vista.
+                                            </td>
+                                        </tr>
+                                    )}
                                 </tbody>
                             </table>
                         </div>

@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { collection, deleteDoc, doc, getDoc, serverTimestamp, setDoc, writeBatch } from 'firebase/firestore';
 import { db } from '../firebase';
 import { useAuth } from '../context/AuthContext';
@@ -28,6 +28,8 @@ const CASH_CLOSURE_EXCHANGE_RATE = 36.50;
 const TRANSFER_USD_EXCHANGE_RATE = 36.62;
 const CASH_CLOSURE_EDIT_PIN = '210397';
 const SICAR_CASH_CLOSURE_AVAILABLE_FROM_DATE = '2026-06-14';
+const CASH_CLOSURE_POSITIVE_RC_THRESHOLD = 0.009;
+const CASH_CLOSURE_POSITIVE_RC_MESSAGE = 'NO SE PUEDE REALIZAR CONCILIACION Y CIERRE DE CAJA PORQUE RC ES POSITIVO.';
 
 const CASHIER_OPTIONS = [
     'Dania Espinoza',
@@ -39,6 +41,20 @@ const CASHIER_OPTIONS = [
 const safeNumber = (value) => {
     const parsed = Number(value || 0);
     return Number.isFinite(parsed) ? Math.round(parsed * 100) / 100 : 0;
+};
+
+const getCashClosureRcValue = (summary = {}) => safeNumber(summary?.internalRatio?.rc);
+
+const isPositiveCashClosureRc = (value = 0) => safeNumber(value) > CASH_CLOSURE_POSITIVE_RC_THRESHOLD;
+
+const buildPositiveCashClosureRcMessage = (rc = 0) => `${CASH_CLOSURE_POSITIVE_RC_MESSAGE} RC ACTUAL: ${fmt(rc)}.`;
+
+const assertCashClosureRcAllowed = (summary = {}, { shouldAlert = true } = {}) => {
+    const rc = getCashClosureRcValue(summary);
+    if (!isPositiveCashClosureRc(rc)) return rc;
+    const message = buildPositiveCashClosureRcMessage(rc);
+    if (shouldAlert) window.alert(message);
+    throw new Error(message);
 };
 
 const parsePromptAmount = (value = '') => {
@@ -185,6 +201,249 @@ const isAccountingLoadedStatus = (value = '') => (
     ['CONTABILIZADA', 'CONTABILIZADO', 'CARGADA', 'CARGADO', 'LOADED', 'ACCOUNTED'].includes(normalizeText(value))
 );
 
+const CREDIT_STATUS_META = {
+    pending: { label: 'Credito - Pendiente', tone: 'amber' },
+    partial: { label: 'Credito - Pagada Parcial', tone: 'blue' },
+    cancelled: { label: 'Credito - Cancelada', tone: 'green' },
+};
+
+const uniqueStrings = (values = []) => [...new Set(
+    (Array.isArray(values) ? values : [])
+        .map((value) => String(value || '').trim())
+        .filter(Boolean)
+)];
+
+const getInvoiceDocId = (invoice = {}) => invoice.id || invoice.docId || '';
+
+const normalizeCreditStatusKey = (value = '') => {
+    const normalized = normalizeText(value);
+    if (!normalized) return '';
+    if (normalized.includes('CANCEL')) return 'cancelled';
+    if (normalized.includes('PARCIAL')) return 'partial';
+    if (normalized.includes('PENDIENT')) return 'pending';
+    return '';
+};
+
+const getInvoiceCreditOriginalAmount = (invoice = {}) => {
+    const stored = invoice.creditOriginalAmount ?? invoice.originalCreditAmount ?? invoice.montoCredito ?? invoice.creditAmount;
+    if (stored !== undefined && stored !== null && stored !== '') return safeNumber(stored);
+    return isCreditPaymentMethod(invoice.paymentMethod) ? getInvoicePaymentTargetAmount(invoice) : 0;
+};
+
+const getInvoiceCreditPaidAmount = (invoice = {}) => safeNumber(
+    invoice.creditPaidAmount
+    ?? invoice.montoCobradoCredito
+    ?? invoice.creditCollectedAmount
+);
+
+const getInvoiceCreditBalance = (invoice = {}) => {
+    const stored = invoice.creditBalance ?? invoice.saldoCredito;
+    if (stored !== undefined && stored !== null && stored !== '') return safeNumber(Math.max(stored, 0));
+    return safeNumber(Math.max(getInvoiceCreditOriginalAmount(invoice) - getInvoiceCreditPaidAmount(invoice), 0));
+};
+
+const getInvoiceCreditReceiptIds = (invoice = {}) => uniqueStrings(
+    invoice.creditReceiptIds
+    || invoice.linkedReceiptIds
+    || []
+);
+
+const getInvoiceCreditStatusKey = (invoice = {}) => {
+    const stored = normalizeCreditStatusKey(invoice.creditStatus || invoice.creditStatusLabel || invoice.estadoCredito);
+    if (stored) return stored;
+    const original = getInvoiceCreditOriginalAmount(invoice);
+    const paid = getInvoiceCreditPaidAmount(invoice);
+    const balance = getInvoiceCreditBalance(invoice);
+    if (balance <= 0.01 && (original > 0 || paid > 0)) return 'cancelled';
+    if (paid > 0 && balance > 0.01) return 'partial';
+    if (original > 0 || isCreditPaymentMethod(invoice.paymentMethod)) return 'pending';
+    return '';
+};
+
+const getInvoiceCreditStatusLabel = (invoice = {}) => {
+    const statusKey = getInvoiceCreditStatusKey(invoice);
+    return CREDIT_STATUS_META[statusKey]?.label || '';
+};
+
+const buildCreditInvoiceSnapshot = (invoice = {}, overrides = {}) => {
+    const merged = { ...invoice, ...overrides };
+    if (!isCreditPaymentMethod(merged.paymentMethod)) {
+        return {
+            isCreditSale: false,
+            creditOriginalAmount: 0,
+            creditPaidAmount: 0,
+            creditBalance: 0,
+            creditReceiptIds: [],
+            creditStatus: '',
+            creditStatusLabel: '',
+        };
+    }
+
+    const creditOriginalAmount = safeNumber(
+        overrides.creditOriginalAmount ?? getInvoiceCreditOriginalAmount(merged)
+    );
+    const creditPaidAmount = safeNumber(
+        overrides.creditPaidAmount ?? getInvoiceCreditPaidAmount(merged)
+    );
+
+    if (creditPaidAmount > creditOriginalAmount + 0.01) {
+        throw new Error(`La factura ${merged.invoiceNumber || merged.numeroFactura || getInvoiceDocId(merged) || ''} ya tiene abonos por ${fmt(creditPaidAmount)} y no puede quedar con un saldo base menor a ${fmt(creditOriginalAmount)}.`);
+    }
+
+    const creditReceiptIds = uniqueStrings(
+        overrides.creditReceiptIds ?? getInvoiceCreditReceiptIds(merged)
+    );
+    const creditBalance = safeNumber(Math.max(creditOriginalAmount - creditPaidAmount, 0));
+    const creditStatus = creditBalance <= 0.01 && creditOriginalAmount > 0
+        ? 'cancelled'
+        : creditPaidAmount > 0
+            ? 'partial'
+            : 'pending';
+
+    return {
+        isCreditSale: true,
+        creditOriginalAmount,
+        creditPaidAmount,
+        creditBalance,
+        creditReceiptIds,
+        creditStatus,
+        creditStatusLabel: CREDIT_STATUS_META[creditStatus]?.label || '',
+    };
+};
+
+const assertInvoiceCreditMethodChangeAllowed = (invoice = {}, nextPaymentMethod = '') => {
+    if (isCreditPaymentMethod(nextPaymentMethod)) return;
+    if (!isCreditPaymentMethod(invoice.paymentMethod)) return;
+    const paid = getInvoiceCreditPaidAmount(invoice);
+    const receiptIds = getInvoiceCreditReceiptIds(invoice);
+    if (paid > 0.01 || receiptIds.length) {
+        throw new Error(`La factura ${invoice.invoiceNumber || invoice.numeroFactura || getInvoiceDocId(invoice) || ''} ya tiene recibos aplicados. No puedes quitarle el metodo CREDITO mientras existan abonos.`);
+    }
+};
+
+const isStampedInvoiceAnnulled = (invoice = {}) => ['ANULADA', 'ANULADO'].includes(normalizeText(invoice.status));
+
+const assertStampedInvoiceAnnulmentAllowed = (invoice = {}) => {
+    if (isStampedInvoiceAnnulled(invoice)) {
+        throw new Error(`La factura ${invoice.invoiceNumber || invoice.numeroFactura || getInvoiceDocId(invoice) || ''} ya esta ANULADA.`);
+    }
+    const paid = getInvoiceCreditPaidAmount(invoice);
+    const receiptIds = getInvoiceCreditReceiptIds(invoice);
+    if (paid > 0.01 || receiptIds.length) {
+        throw new Error(`La factura ${invoice.invoiceNumber || invoice.numeroFactura || getInvoiceDocId(invoice) || ''} ya tiene recibos de caja aplicados. No se puede anular mientras existan abonos.`);
+    }
+};
+
+const buildAnnulledInvoiceItems = (items = []) => (
+    (Array.isArray(items) ? items : []).map((item) => ({
+        ...item,
+        unitPriceWithoutTax: 0,
+        unitPriceWithTax: 0,
+        totalWithoutTax: 0,
+        taxAmount: 0,
+        totalWithTax: 0,
+        precioSin: 0,
+        precioCon: 0,
+        importeSin: 0,
+        importeCon: 0,
+        iva: 0,
+    }))
+);
+
+const buildAnnulledStampedInvoiceSnapshot = (invoice = {}, { includeServerFields = false } = {}) => {
+    const base = {
+        ...invoice,
+        status: 'ANULADA',
+        subtotal: 0,
+        iva: 0,
+        total: 0,
+        amount: 0,
+        retentionIr2: 0,
+        retentionMunicipal1: 0,
+        retentionTotal: 0,
+        netTotal: 0,
+        paymentMethod: '',
+        paymentBreakdown: [],
+        paymentNetTotal: 0,
+        items: buildAnnulledInvoiceItems(invoice.items),
+        ...buildCreditInvoiceSnapshot({ ...invoice, paymentMethod: '' }),
+    };
+
+    if (!includeServerFields) return base;
+
+    return {
+        ...base,
+        annulledAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+    };
+};
+
+const normalizeReceiptInvoiceApplication = (application = {}) => ({
+    invoiceId: application.invoiceId || application.id || application.docId || application.facturaId || '',
+    invoiceNumber: application.invoiceNumber || application.numeroFactura || application.factura || '',
+    customerName: application.customerName || application.cliente || '',
+    appliedAmount: safeNumber(
+        application.appliedAmount
+        ?? application.amount
+        ?? application.monto
+        ?? application.abono
+    ),
+    balanceBeforeApplication: safeNumber(
+        application.balanceBeforeApplication
+        ?? application.previousBalance
+        ?? application.saldoAnterior
+    ),
+    remainingBalance: safeNumber(
+        application.remainingBalance
+        ?? application.nextBalance
+        ?? application.saldoRestante
+    ),
+});
+
+const getReceiptInvoiceApplications = (receipt = {}) => (
+    (Array.isArray(receipt.invoiceApplications) ? receipt.invoiceApplications : Array.isArray(receipt.linkedInvoices) ? receipt.linkedInvoices : [])
+        .map(normalizeReceiptInvoiceApplication)
+        .filter((application) => application.invoiceId)
+);
+
+const createCashReceiptForm = () => ({
+    date: todayString(),
+    receiptNumber: '',
+    customerName: '',
+    amount: '',
+    retentionIr2: '',
+    retentionMunicipal1: '',
+    concept: '',
+    paymentMethod: '',
+    reference: '',
+    isOtherReceipt: false,
+    invoiceApplications: [],
+});
+
+const createCashReceiptEditForm = (receipt = {}) => {
+    const normalized = normalizeCashReceiptRecord(receipt);
+    const invoiceApplications = getReceiptInvoiceApplications(normalized).map((application) => ({
+        ...application,
+        appliedAmount: String(application.appliedAmount || ''),
+    }));
+    return {
+        ...createCashReceiptForm(),
+        id: normalized.id || receipt.id || receipt.docId || '',
+        date: normalized.date || todayString(),
+        receiptNumber: normalized.receiptNumber || '',
+        customerName: normalized.customerName || invoiceApplications[0]?.customerName || '',
+        amount: String(safeNumber(normalized.amount) || ''),
+        retentionIr2: String(safeNumber(normalized.retentionIr2) || ''),
+        retentionMunicipal1: String(safeNumber(normalized.retentionMunicipal1) || ''),
+        concept: normalized.concept || '',
+        paymentMethod: normalized.paymentMethod || '',
+        reference: normalized.reference || '',
+        linkedCashClosureId: normalized.linkedCashClosureId || receipt.linkedCashClosureId || '',
+        isOtherReceipt: Boolean(normalized.isOtherReceipt || !invoiceApplications.length),
+        invoiceApplications,
+    };
+};
+
 const buildLoadedInvoiceIndex = (savedInvoices = []) => {
     const sourceKeys = new Set();
     const docSourceKeys = new Map();
@@ -239,6 +498,12 @@ const normalizeStampedInvoiceRecord = (item = {}) => ({
     paymentMethod: getInvoicePaymentMethodLabel(item),
     paymentBreakdown: normalizePaymentBreakdownRows(item.paymentBreakdown),
     paymentNetTotal: safeNumber(item.paymentNetTotal || getPaymentBreakdownTotal(item.paymentBreakdown) || getInvoicePaymentTargetAmount(item)),
+    creditOriginalAmount: getInvoiceCreditOriginalAmount(item),
+    creditPaidAmount: getInvoiceCreditPaidAmount(item),
+    creditBalance: getInvoiceCreditBalance(item),
+    creditReceiptIds: getInvoiceCreditReceiptIds(item),
+    creditStatus: getInvoiceCreditStatusKey(item),
+    creditStatusLabel: getInvoiceCreditStatusLabel(item),
     items: Array.isArray(item.items) ? item.items : [],
 });
 
@@ -264,6 +529,7 @@ const normalizeCashReceiptRecord = (item = {}) => {
     const retentionTotal = safeNumber(item.retentionTotal ?? item.retencionTotal ?? (retentionIr2 + retentionMunicipal1));
     return {
         ...item,
+        id: item.id || item.docId || item.receiptId || '',
         date: item.date || item.receiptDate || '',
         month: item.month || getMonth(item.date || item.receiptDate || todayString()),
         receiptNumber: item.receiptNumber || item.numeroRecibo || '',
@@ -276,6 +542,9 @@ const normalizeCashReceiptRecord = (item = {}) => {
         paymentMethod: item.paymentMethod || item.metodoPago || '',
         reference: item.reference || item.referencia || '',
         netAmount: getCashReceiptNetAmount({ ...item, amount, retentionIr2, retentionMunicipal1, retentionTotal }),
+        linkedCashClosureId: item.linkedCashClosureId || item.cashClosureId || '',
+        isOtherReceipt: Boolean(item.isOtherReceipt || normalizeText(item.receiptMode) === 'OTHER'),
+        invoiceApplications: getReceiptInvoiceApplications(item),
     };
 };
 
@@ -440,7 +709,7 @@ const buildClosureAccountingSummary = ({
     );
     const transferTotalWithoutBac2 = safeNumber(transferTotal - safeNumber(transferTotals.bac2));
     const cashTotal = safeNumber(cashCordobasTotal + dollarCashTotalCordobas + preCloseDepositTotal);
-    const rc = safeNumber(cardTotal + transferTotalWithoutBac2 - stampedCashTotal - cashReceiptNetTotal);
+    const rc = safeNumber(cardTotal + transferTotalWithoutBac2 - stampedCashTotal - cashReceiptGrossTotal);
 
     return {
         general: {
@@ -479,7 +748,7 @@ const buildClosureAccountingSummary = ({
         },
         internalRatio: {
             rc,
-            formula: 'Tarjeta + transferencia sin BAC (2) - facturas membretadas contado - recibos de caja membretados',
+            formula: 'Tarjeta + transferencia sin BAC (2) - facturas membretadas contado - recibos de caja membretados sin retenciones',
         },
     };
 };
@@ -638,6 +907,12 @@ const createCashReceiptDraft = (receipt = {}, fallbackDate = todayString()) => {
         concept: normalized.concept || '',
         paymentMethod: normalized.paymentMethod || '',
         netAmount: safeNumber(normalized.netAmount),
+        linkedCashClosureId: normalized.linkedCashClosureId || '',
+        isOtherReceipt: Boolean(normalized.isOtherReceipt),
+        invoiceApplications: (normalized.invoiceApplications || []).map((application) => ({
+            ...application,
+            appliedAmount: safeNumber(application.appliedAmount),
+        })),
     };
 };
 
@@ -681,7 +956,7 @@ const syncLinkedClosureForCashReceipt = async (receiptId = '', receiptPayload = 
     const payment = closure.accountingSummary?.paymentBreakdown || {};
     const stamped = closure.accountingSummary?.stampedDocuments || {};
     const transferTotalWithoutBac2 = safeNumber(safeNumber(payment.transferTotal) - safeNumber(payment.transferBac2));
-    const rc = safeNumber(safeNumber(payment.cardTotal) + transferTotalWithoutBac2 - safeNumber(stamped.stampedCashInvoices) - cashReceiptNetTotal);
+    const rc = safeNumber(safeNumber(payment.cardTotal) + transferTotalWithoutBac2 - safeNumber(stamped.stampedCashInvoices) - cashReceiptGrossTotal);
     const accountingSummary = closure.accountingSummary ? {
         ...closure.accountingSummary,
         stampedDocuments: {
@@ -709,6 +984,293 @@ const syncLinkedClosureForCashReceipt = async (receiptId = '', receiptPayload = 
         ...(accountingSummary ? { accountingSummary } : {}),
         updatedAt: serverTimestamp(),
     }, { merge: true });
+};
+
+const syncLinkedClosureForStampedInvoice = async (invoiceId = '', invoicePayload = {}) => {
+    const linkedCashClosureId = invoicePayload.linkedCashClosureId || invoicePayload.cashClosureId || '';
+    if (!invoiceId || !linkedCashClosureId) return;
+
+    const closureRef = doc(db, 'cierres_caja', linkedCashClosureId);
+    const closureSnap = await getDoc(closureRef);
+    if (!closureSnap.exists()) return;
+
+    const closure = closureSnap.data() || {};
+    const matchesInvoice = (invoice = {}) => [invoice.id, invoice.docId]
+        .filter(Boolean)
+        .includes(invoiceId);
+    const mergeInvoice = (invoice = {}) => (
+        matchesInvoice(invoice)
+            ? normalizeStampedInvoiceRecord({ ...invoice, ...invoicePayload, id: invoice.id || invoiceId, docId: invoice.docId || invoiceId })
+            : invoice
+    );
+    const stampedInvoices = Array.isArray(closure.stampedInvoices) ? closure.stampedInvoices.map(mergeInvoice) : [];
+    const stampedInvoiceDrafts = Array.isArray(closure.stampedInvoiceDrafts) ? closure.stampedInvoiceDrafts.map(mergeInvoice) : [];
+    const invoicesForTotals = stampedInvoices.length ? stampedInvoices : stampedInvoiceDrafts;
+    const cashReceipts = getCashClosureReceipts(closure);
+    const netSalesTotals = getNetSicarSalesTotals({ ...(closure.sicar || {}), ...closure });
+    const accountingSummary = buildClosureAccountingSummary({
+        cashSalesTotal: netSalesTotals.cashSalesNetTotal,
+        creditSalesTotal: netSalesTotals.creditSalesNetTotal,
+        creditRecoveryTotal: safeNumber(closure.creditRecoveryTotal || closure.sicar?.creditRecoveryTotal || closure.sicar?.recuperacionCredito || closure.sicar?.entCre),
+        stampedInvoices: invoicesForTotals,
+        cashReceipts,
+        transferTotals: closure.transferTotals || {},
+        posTotals: closure.posTotals || {},
+        cashCordobasTotal: closure.cashCordobasTotal,
+        dollarCashTotalCordobas: closure.dollarCashTotalCordobas,
+        preCloseDepositTotal: closure.preCloseDepositTotal || closure.preCloseDeposit?.totalCordobas,
+    });
+    const invoiceRetentionTotal = invoicesForTotals.reduce((sum, invoice) => (
+        safeNumber(sum + safeNumber(invoice.retentionTotal || safeNumber(invoice.retentionIr2) + safeNumber(invoice.retentionMunicipal1)))
+    ), 0);
+    const cashReceiptRetentionTotal = cashReceipts.reduce((sum, receipt) => (
+        safeNumber(sum + getCashReceiptRetentionTotal(receipt))
+    ), 0);
+    const retentionAdjustment = safeNumber(invoiceRetentionTotal + cashReceiptRetentionTotal);
+    const sicarExpected = safeNumber(closure.sicarExpected);
+    const manualTotal = safeNumber(closure.manualTotal);
+    const expectedAfterRetentions = safeNumber(sicarExpected - retentionAdjustment);
+    const difference = safeNumber(manualTotal - expectedAfterRetentions);
+
+    await setDoc(closureRef, {
+        ...(stampedInvoices.length ? { stampedInvoices } : {}),
+        ...(stampedInvoiceDrafts.length ? { stampedInvoiceDrafts } : {}),
+        retentionAdjustment,
+        expectedAfterRetentions,
+        difference,
+        accountingSummary,
+        updatedAt: serverTimestamp(),
+    }, { merge: true });
+};
+
+const getCashReceiptApplicationsTotal = (applications = []) => safeNumber(
+    (Array.isArray(applications) ? applications : []).reduce(
+        (sum, application) => sum + safeNumber(application.appliedAmount),
+        0
+    )
+);
+
+const buildValidatedReceiptInvoiceApplications = ({
+    applications = [],
+    invoiceIndex = new Map(),
+    previousApplicationsMap = new Map(),
+}) => {
+    const normalizedApplications = (Array.isArray(applications) ? applications : [])
+        .map((application) => ({
+            invoiceId: application.invoiceId || application.id || application.docId || '',
+            appliedAmount: safeNumber(application.appliedAmount),
+        }))
+        .filter((application) => application.invoiceId && application.appliedAmount > 0);
+
+    if (!normalizedApplications.length) {
+        return { applications: [], total: 0, customerName: '' };
+    }
+
+    const customerKeys = new Set();
+    const rows = normalizedApplications.map((application) => {
+        const invoice = invoiceIndex.get(application.invoiceId);
+        if (!invoice) {
+            throw new Error(`No encontre la factura ${application.invoiceId} dentro de las membretadas cargadas.`);
+        }
+        if (!isCreditPaymentMethod(invoice.paymentMethod)) {
+            throw new Error(`La factura ${invoice.invoiceNumber || invoice.numeroFactura || application.invoiceId} no esta registrada como CREDITO.`);
+        }
+
+        const previousAppliedAmount = safeNumber(previousApplicationsMap.get(application.invoiceId));
+        const availableBalance = safeNumber(getInvoiceCreditBalance(invoice) + previousAppliedAmount);
+        if (availableBalance <= 0.01) {
+            throw new Error(`La factura ${invoice.invoiceNumber || invoice.numeroFactura || application.invoiceId} ya no tiene saldo pendiente.`);
+        }
+        if (application.appliedAmount > availableBalance + 0.01) {
+            throw new Error(`El abono de la factura ${invoice.invoiceNumber || invoice.numeroFactura || application.invoiceId} no puede superar el saldo disponible ${fmt(availableBalance)}.`);
+        }
+
+        const customerName = String(invoice.customerName || invoice.cliente || '').trim();
+        if (customerName) customerKeys.add(normalizeText(customerName));
+
+        return {
+            invoiceId: getInvoiceDocId(invoice),
+            invoiceNumber: invoice.invoiceNumber || invoice.numeroFactura || application.invoiceId,
+            customerName,
+            appliedAmount: application.appliedAmount,
+            balanceBeforeApplication: availableBalance,
+            remainingBalance: safeNumber(Math.max(availableBalance - application.appliedAmount, 0)),
+        };
+    });
+
+    if (customerKeys.size > 1) {
+        throw new Error('Un mismo recibo solo puede aplicarse a facturas del mismo cliente.');
+    }
+
+    return {
+        applications: rows,
+        total: getCashReceiptApplicationsTotal(rows),
+        customerName: rows[0]?.customerName || '',
+    };
+};
+
+const buildReceiptConcept = (form = {}, invoiceApplications = []) => {
+    const customConcept = String(form.concept || '').trim();
+    if (customConcept) return customConcept;
+    if (!invoiceApplications.length) return '';
+    const numbers = invoiceApplications
+        .map((application) => String(application.invoiceNumber || '').trim())
+        .filter(Boolean);
+    return numbers.length
+        ? `Pago factura${numbers.length > 1 ? 's' : ''} ${numbers.join(', ')}`
+        : 'Pago a facturas de credito';
+};
+
+const buildCashReceiptPayload = ({
+    form = {},
+    amount = 0,
+    customerName = '',
+    invoiceApplications = [],
+    isNew = false,
+}) => {
+    const date = form.date || todayString();
+    const retentionIr2 = safeNumber(form.retentionIr2);
+    const retentionMunicipal1 = safeNumber(form.retentionMunicipal1);
+    const retentionTotal = safeNumber(retentionIr2 + retentionMunicipal1);
+    const netAmount = safeNumber(amount - retentionTotal);
+    const linkedInvoiceIds = invoiceApplications.map((application) => application.invoiceId).filter(Boolean);
+
+    return {
+        date,
+        receiptDate: date,
+        month: getMonth(date),
+        receiptNumber: String(form.receiptNumber || '').trim(),
+        numeroRecibo: String(form.receiptNumber || '').trim(),
+        customerName: String(customerName || '').trim(),
+        recibiDe: String(customerName || '').trim(),
+        amount,
+        cantidad: amount,
+        retentionIr2,
+        retencionIr2: retentionIr2,
+        retentionMunicipal1,
+        retencionMunicipal1: retentionMunicipal1,
+        retentionTotal,
+        retencionTotal: retentionTotal,
+        netAmount,
+        montoNeto: netAmount,
+        concept: buildReceiptConcept(form, invoiceApplications),
+        concepto: buildReceiptConcept(form, invoiceApplications),
+        paymentMethod: String(form.paymentMethod || '').trim(),
+        metodoPago: String(form.paymentMethod || '').trim(),
+        reference: String(form.reference || '').trim(),
+        linkedCashClosureId: form.linkedCashClosureId || '',
+        receiptMode: invoiceApplications.length ? 'linked_invoices' : 'other',
+        isOtherReceipt: !invoiceApplications.length,
+        invoiceApplications,
+        linkedInvoices: invoiceApplications,
+        linkedInvoiceIds,
+        source: 'manual_app',
+        sourceType: 'cash_receipt',
+        status: 'active',
+        updatedAt: serverTimestamp(),
+        ...(isNew ? { createdAt: serverTimestamp() } : {}),
+    };
+};
+
+const persistCashReceiptRecord = async ({
+    receiptId = '',
+    form = {},
+    existingReceipt = {},
+    invoiceIndex = new Map(),
+}) => {
+    if (!receiptId) throw new Error('No se pudo generar el identificador del recibo.');
+    if (!String(form.paymentMethod || '').trim()) throw new Error('Selecciona metodo de pago.');
+
+    const previousApplications = getReceiptInvoiceApplications(existingReceipt);
+    const previousApplicationsMap = new Map(
+        previousApplications.map((application) => [application.invoiceId, safeNumber(application.appliedAmount)])
+    );
+    const shouldLinkInvoices = !form.isOtherReceipt;
+    const validatedApplications = shouldLinkInvoices
+        ? buildValidatedReceiptInvoiceApplications({
+            applications: form.invoiceApplications,
+            invoiceIndex,
+            previousApplicationsMap,
+        })
+        : { applications: [], total: 0, customerName: '' };
+
+    if (shouldLinkInvoices && !validatedApplications.applications.length) {
+        throw new Error('Selecciona al menos una factura o marca RECIBO - OTROS.');
+    }
+
+    const amount = shouldLinkInvoices ? validatedApplications.total : safeNumber(form.amount);
+    if (!amount) throw new Error('Ingresa la cantidad del recibo.');
+
+    const customerName = shouldLinkInvoices
+        ? validatedApplications.customerName || String(form.customerName || '').trim()
+        : String(form.customerName || '').trim();
+    if (!customerName) throw new Error('Selecciona o escribe el cliente.');
+
+    const receiptPayload = buildCashReceiptPayload({
+        form,
+        amount,
+        customerName,
+        invoiceApplications: validatedApplications.applications,
+        isNew: !existingReceipt?.id && !existingReceipt?.docId,
+    });
+
+    const batch = writeBatch(db);
+    batch.set(doc(db, 'recibos_caja_membretados', receiptId), receiptPayload, { merge: true });
+
+    const invoiceStates = new Map();
+    const getInvoiceState = (invoiceId) => {
+        if (invoiceStates.has(invoiceId)) return invoiceStates.get(invoiceId);
+        const invoice = invoiceIndex.get(invoiceId);
+        if (!invoice) {
+            throw new Error(`No encontre la factura ${invoiceId} para actualizar su saldo.`);
+        }
+        const baseCreditSnapshot = buildCreditInvoiceSnapshot(invoice);
+        const state = {
+            invoice,
+            creditOriginalAmount: baseCreditSnapshot.creditOriginalAmount,
+            creditPaidAmount: baseCreditSnapshot.creditPaidAmount,
+            creditReceiptIds: [...baseCreditSnapshot.creditReceiptIds],
+        };
+        invoiceStates.set(invoiceId, state);
+        return state;
+    };
+
+    previousApplications.forEach((application) => {
+        const state = getInvoiceState(application.invoiceId);
+        state.creditPaidAmount = safeNumber(Math.max(state.creditPaidAmount - safeNumber(application.appliedAmount), 0));
+        state.creditReceiptIds = state.creditReceiptIds.filter((linkedReceiptId) => linkedReceiptId !== receiptId);
+    });
+
+    validatedApplications.applications.forEach((application) => {
+        const state = getInvoiceState(application.invoiceId);
+        state.creditPaidAmount = safeNumber(state.creditPaidAmount + safeNumber(application.appliedAmount));
+        if (!state.creditReceiptIds.includes(receiptId)) {
+            state.creditReceiptIds.push(receiptId);
+        }
+    });
+
+    invoiceStates.forEach((state, invoiceId) => {
+        const creditSnapshot = buildCreditInvoiceSnapshot(state.invoice, {
+            creditOriginalAmount: state.creditOriginalAmount,
+            creditPaidAmount: state.creditPaidAmount,
+            creditReceiptIds: state.creditReceiptIds,
+        });
+        batch.set(doc(db, 'facturas_membretadas_ventas', invoiceId), {
+            ...creditSnapshot,
+            updatedAt: serverTimestamp(),
+        }, { merge: true });
+    });
+
+    await batch.commit();
+
+    if (receiptPayload.linkedCashClosureId) {
+        await syncLinkedClosureForCashReceipt(receiptId, receiptPayload);
+    }
+
+    return {
+        receiptPayload,
+        invoiceApplications: validatedApplications.applications,
+    };
 };
 
 const hasInvoiceDraftContent = (invoice = {}) => (
@@ -829,8 +1391,8 @@ const PaginationControls = ({ page, totalPages, total, start, end, onPageChange 
     );
 };
 
-const PaymentMethodSelect = ({ value, onChange, required = false }) => (
-    <select className={inputClass} value={value || ''} onChange={(event) => onChange(event.target.value)} required={required}>
+const PaymentMethodSelect = ({ value, onChange, required = false, disabled = false }) => (
+    <select className={inputClass} value={value || ''} onChange={(event) => onChange(event.target.value)} required={required} disabled={disabled}>
         <option value="">Seleccionar metodo...</option>
         {value === MIXED_PAYMENT_METHOD && <option value={MIXED_PAYMENT_METHOD}>MIXTO</option>}
         {PAYMENT_METHODS.map((method) => (
@@ -1355,6 +1917,18 @@ const SummaryCard = ({ label, value, tone = 'slate' }) => {
     );
 };
 
+const CashClosureRcAlarm = ({ rc = 0 }) => {
+    if (!isPositiveCashClosureRc(rc)) return null;
+
+    return (
+        <div className="rounded-3xl border border-red-300 bg-red-50 px-4 py-4 text-red-900 shadow-sm">
+            <div className="text-[10px] font-black uppercase tracking-[0.24em] text-red-700">Alarma de conciliacion</div>
+            <div className="mt-2 text-sm font-black">{CASH_CLOSURE_POSITIVE_RC_MESSAGE}</div>
+            <div className="mt-1 text-xs font-bold text-red-700">RC actual: {fmt(rc)}</div>
+        </div>
+    );
+};
+
 const DetailRows = ({ title, rows, onChange, onAdd, onRemove, type, clients = [], onCreateClient, currency = 'NIO', exchangeRate = 1 }) => (
     <div className="rounded-3xl border border-slate-200 bg-slate-50/60 p-4">
         <div className="mb-3 flex items-center justify-between gap-3">
@@ -1465,7 +2039,7 @@ const ClosureAccountingSummaryPanel = ({ summary = {} }) => {
                     <div className="text-[10px] font-black uppercase tracking-[0.28em] text-[#e30613]">Resumen final del cierre</div>
                     <div className="text-lg font-black text-slate-950">Cuadre contable y ratio RC</div>
                 </div>
-                <Badge tone={safeNumber(ratio.rc) >= 0 ? 'green' : 'red'}>RC {fmt(ratio.rc)}</Badge>
+                <Badge tone={isPositiveCashClosureRc(ratio.rc) ? 'red' : 'green'}>RC {fmt(ratio.rc)}</Badge>
             </div>
             <div className="grid gap-4 xl:grid-cols-5">
                 <div className="rounded-3xl border border-slate-200 bg-slate-50 p-4">
@@ -1506,7 +2080,7 @@ const ClosureAccountingSummaryPanel = ({ summary = {} }) => {
                     <div className="mt-2 text-xs font-black text-slate-600">Cordobas {fmt(payment.cashCordobas)}</div>
                     <div className="text-xs font-black text-slate-600">Dolares {fmt(payment.cashDollarsConverted)}</div>
                     <div className="text-xs font-black text-slate-600">Pre-cierre {fmt(payment.preCloseDepositTotal)}</div>
-                    <div className="mt-3"><SummaryCard label="RC" value={fmt(ratio.rc)} tone={safeNumber(ratio.rc) >= 0 ? 'green' : 'red'} /></div>
+                    <div className="mt-3"><SummaryCard label="RC" value={fmt(ratio.rc)} tone={isPositiveCashClosureRc(ratio.rc) ? 'red' : 'green'} /></div>
                     <div className="mt-2 text-[11px] font-bold text-slate-500">{ratio.formula}</div>
                 </div>
             </div>
@@ -1742,6 +2316,8 @@ function CashClosure({ data }) {
         dollarCashTotalCordobas,
         preCloseDepositTotal,
     }), [sicarCashSalesTotal, sicarCreditSalesTotal, sicarCreditRecoveryTotal, closureInvoices, closureCashReceipts, transferTotals, posTotals, cashTotal, dollarCashTotalCordobas, preCloseDepositTotal]);
+    const closureRc = getCashClosureRcValue(closureAccountingSummary);
+    const isClosureRcPositive = isPositiveCashClosureRc(closureRc);
     const expectedAfterRetentions = safeNumber(sicarExpected - retentionTotal);
     const difference = safeNumber(manualTotal - expectedAfterRetentions);
     const shouldTrackDifference = Math.abs(difference) > CASH_DIFFERENCE_THRESHOLD;
@@ -2040,8 +2616,16 @@ function CashClosure({ data }) {
     };
 
     const saveClosure = async (mode = 'closed') => {
-        setSaving(true);
         setMessage('');
+        if (mode !== 'waiting') {
+            try {
+                assertCashClosureRcAllowed(closureAccountingSummary);
+            } catch (error) {
+                setMessage(error?.message || CASH_CLOSURE_POSITIVE_RC_MESSAGE);
+                return;
+            }
+        }
+        setSaving(true);
         try {
             await ensurePeopleRecords();
             const cashierCode = cashierName ? `CAJ-${slugify(cashierName)}` : '';
@@ -2475,6 +3059,12 @@ function CashClosure({ data }) {
                         <SummaryCard label="Diferencia" value={fmt(difference)} tone={shouldTrackDifference ? 'red' : 'green'} />
                     </div>
 
+                    {isClosureRcPositive && (
+                        <div className="mt-5">
+                            <CashClosureRcAlarm rc={closureRc} />
+                        </div>
+                    )}
+
                     {isMaster && (
                     <div className="mt-5">
                         <ClosureAccountingSummaryPanel summary={closureAccountingSummary} />
@@ -2820,7 +3410,13 @@ function CashClosure({ data }) {
                         <button type="button" onClick={() => saveClosure('waiting')} disabled={saving} className="rounded-2xl border border-amber-300 bg-amber-50 px-5 py-4 text-sm font-black uppercase tracking-[0.2em] text-amber-800 transition hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-60">
                             {saving ? 'Guardando...' : 'Guardar en espera'}
                         </button>
-                        <button type="button" onClick={() => saveClosure('closed')} disabled={saving} className="rounded-2xl bg-[#e30613] px-5 py-4 text-sm font-black uppercase tracking-[0.2em] text-white shadow-lg shadow-red-950/20 transition hover:bg-[#9f111a] disabled:cursor-not-allowed disabled:opacity-60">
+                        <button
+                            type="button"
+                            onClick={() => saveClosure('closed')}
+                            disabled={saving}
+                            title={isClosureRcPositive ? buildPositiveCashClosureRcMessage(closureRc) : undefined}
+                            className={`rounded-2xl px-5 py-4 text-sm font-black uppercase tracking-[0.2em] transition disabled:cursor-not-allowed disabled:opacity-60 ${isClosureRcPositive ? 'border border-red-300 bg-red-50 text-red-800 hover:bg-red-100' : 'bg-[#e30613] text-white shadow-lg shadow-red-950/20 hover:bg-[#9f111a]'}`}
+                        >
                             {saving ? 'Cerrando...' : 'Cerrar caja y conciliar'}
                         </button>
                     </div>
@@ -3001,6 +3597,12 @@ const createStampedInvoiceEditForm = (invoice = {}) => ({
     cashClosureLinkStatus: invoice.cashClosureLinkStatus || '',
     closureStatus: invoice.closureStatus || '',
     excludeFromCashClosure: Boolean(invoice.excludeFromCashClosure),
+    creditOriginalAmount: getInvoiceCreditOriginalAmount(invoice),
+    creditPaidAmount: getInvoiceCreditPaidAmount(invoice),
+    creditBalance: getInvoiceCreditBalance(invoice),
+    creditReceiptIds: getInvoiceCreditReceiptIds(invoice),
+    creditStatus: getInvoiceCreditStatusKey(invoice),
+    creditStatusLabel: getInvoiceCreditStatusLabel(invoice),
     splitGroupId: invoice.splitGroupId || '',
     splitPart: invoice.splitPart || null,
     splitTotalParts: invoice.splitTotalParts || null,
@@ -3529,12 +4131,130 @@ const CashReceiptPrintModal = ({
     );
 };
 
+const ReceiptInvoiceApplicationsEditor = ({
+    isOtherReceipt = false,
+    onToggleOtherReceipt,
+    applications = [],
+    availableInvoices = [],
+    onToggleInvoice,
+    onUpdateApplicationAmount,
+    searchValue = '',
+    onSearchChange,
+}) => {
+    const selectedMap = new Map(
+        (applications || []).map((application) => [application.invoiceId, application])
+    );
+    const selectedTotal = getCashReceiptApplicationsTotal(applications);
+
+    return (
+        <div className="space-y-4 rounded-[1.8rem] border border-slate-200 bg-slate-50/70 p-4">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                    <div className="text-sm font-black text-slate-950">Facturas a credito vinculadas</div>
+                    <div className="text-xs font-semibold text-slate-500">
+                        Selecciona las facturas membretadas a credito y define el monto que pagara este recibo.
+                    </div>
+                </div>
+                <div className="flex items-center gap-3">
+                    <label className="inline-flex items-center gap-2 rounded-2xl border border-amber-200 bg-white px-3 py-2 text-xs font-black uppercase tracking-[0.14em] text-amber-800">
+                        <input
+                            type="checkbox"
+                            checked={isOtherReceipt}
+                            onChange={(event) => onToggleOtherReceipt(event.target.checked)}
+                        />
+                        RECIBO - OTROS
+                    </label>
+                    <Badge tone={selectedTotal > 0 ? 'green' : 'slate'}>{fmt(selectedTotal)}</Badge>
+                </div>
+            </div>
+
+            {!isOtherReceipt && (
+                <>
+                    <div className="grid gap-3 lg:grid-cols-[1fr_auto]">
+                        <input
+                            className={inputClass}
+                            value={searchValue}
+                            onChange={(event) => onSearchChange(event.target.value)}
+                            placeholder="Buscar factura a credito por numero, cliente o fecha..."
+                        />
+                        <div className="flex items-center rounded-2xl border border-slate-200 bg-white px-4 py-3 text-xs font-black uppercase tracking-[0.14em] text-slate-500">
+                            {applications.length} seleccionada(s)
+                        </div>
+                    </div>
+
+                    <div className="space-y-3">
+                        {availableInvoices.length === 0 ? (
+                            <div className="rounded-3xl border border-dashed border-slate-300 bg-white p-6 text-center text-sm font-bold text-slate-400">
+                                No hay facturas a credito disponibles para este filtro.
+                            </div>
+                        ) : availableInvoices.map((invoice) => {
+                            const invoiceId = getInvoiceDocId(invoice);
+                            const selectedApplication = selectedMap.get(invoiceId);
+                            return (
+                                <label key={invoiceId} className={`block rounded-3xl border p-4 transition ${selectedApplication ? 'border-sky-300 bg-sky-50/60' : 'border-slate-200 bg-white hover:border-sky-200'}`}>
+                                    <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                                        <div className="min-w-0">
+                                            <div className="flex flex-wrap items-center gap-2">
+                                                <input
+                                                    type="checkbox"
+                                                    checked={Boolean(selectedApplication)}
+                                                    onChange={(event) => onToggleInvoice(invoice, event.target.checked)}
+                                                />
+                                                <div className="truncate text-sm font-black text-slate-950">Factura {invoice.invoiceNumber || '-'}</div>
+                                                <Badge tone={invoice.creditStatus === 'cancelled' ? 'green' : invoice.creditStatus === 'partial' ? 'blue' : 'amber'}>
+                                                    {invoice.creditStatusLabel || 'Credito'}
+                                                </Badge>
+                                            </div>
+                                            <div className="mt-1 text-xs font-bold text-slate-500">
+                                                {invoice.customerName || 'Sin cliente'} · {invoice.date || '-'} · Saldo disponible {fmt(invoice.availableCreditBalance)}
+                                            </div>
+                                        </div>
+                                        <div className="grid gap-2 sm:grid-cols-3 lg:min-w-[24rem]">
+                                            <div className="rounded-2xl border border-slate-200 bg-white px-3 py-2">
+                                                <div className="text-[10px] font-black uppercase tracking-[0.16em] text-slate-400">Monto credito</div>
+                                                <div className="font-mono text-sm font-black text-slate-900">{fmt(invoice.creditOriginalAmount)}</div>
+                                            </div>
+                                            <div className="rounded-2xl border border-slate-200 bg-white px-3 py-2">
+                                                <div className="text-[10px] font-black uppercase tracking-[0.16em] text-slate-400">Pagado</div>
+                                                <div className="font-mono text-sm font-black text-slate-900">{fmt(invoice.creditPaidAmount)}</div>
+                                            </div>
+                                            <div>
+                                                <div className="mb-1 text-[10px] font-black uppercase tracking-[0.16em] text-slate-400">Abono recibo</div>
+                                                <input
+                                                    className={inputClass}
+                                                    type="number"
+                                                    step="0.01"
+                                                    min="0"
+                                                    disabled={!selectedApplication}
+                                                    value={selectedApplication?.appliedAmount || ''}
+                                                    onChange={(event) => onUpdateApplicationAmount(invoiceId, event.target.value)}
+                                                    placeholder="0.00"
+                                                />
+                                            </div>
+                                        </div>
+                                    </div>
+                                </label>
+                            );
+                        })}
+                    </div>
+                </>
+            )}
+        </div>
+    );
+};
+
 const CashReceiptEditModal = ({
     form,
     saving = false,
+    availableInvoices = [],
+    invoiceSearch = '',
+    onInvoiceSearchChange,
     onClose,
     onSave,
     onUpdate,
+    onToggleOtherReceipt,
+    onToggleInvoice,
+    onUpdateInvoiceAmount,
 }) => {
     if (!form) return null;
     const netAmount = safeNumber(safeNumber(form.amount) - safeNumber(form.retentionIr2) - safeNumber(form.retentionMunicipal1));
@@ -3562,13 +4282,28 @@ const CashReceiptEditModal = ({
                             <input className={inputClass} value={form.receiptNumber || ''} onChange={(event) => onUpdate('receiptNumber', event.target.value)} />
                         </Field>
                         <Field label="Recibi de">
-                            <input className={inputClass} value={form.customerName || ''} onChange={(event) => onUpdate('customerName', event.target.value)} required />
+                            <input
+                                className={inputClass}
+                                value={form.customerName || ''}
+                                onChange={(event) => onUpdate('customerName', event.target.value)}
+                                required
+                                readOnly={!form.isOtherReceipt && (form.invoiceApplications || []).length > 0}
+                            />
                         </Field>
                         <Field label="Metodo de pago">
                             <PaymentMethodSelect value={form.paymentMethod || ''} onChange={(value) => onUpdate('paymentMethod', value)} required />
                         </Field>
                         <Field label="Cantidad">
-                            <input className={inputClass} type="number" step="0.01" min="0" value={form.amount || ''} onChange={(event) => onUpdate('amount', event.target.value)} required />
+                            <input
+                                className={inputClass}
+                                type="number"
+                                step="0.01"
+                                min="0"
+                                value={form.amount || ''}
+                                onChange={(event) => onUpdate('amount', event.target.value)}
+                                required
+                                readOnly={!form.isOtherReceipt && (form.invoiceApplications || []).length > 0}
+                            />
                         </Field>
                         <Field label="Retencion anticipo IR 2%">
                             <input className={inputClass} type="number" step="0.01" min="0" value={form.retentionIr2 || ''} onChange={(event) => onUpdate('retentionIr2', event.target.value)} />
@@ -3586,6 +4321,16 @@ const CashReceiptEditModal = ({
                             <textarea className={`${inputClass} min-h-[110px]`} value={form.concept || ''} onChange={(event) => onUpdate('concept', event.target.value)} />
                         </Field>
                     </div>
+                    <ReceiptInvoiceApplicationsEditor
+                        isOtherReceipt={Boolean(form.isOtherReceipt)}
+                        onToggleOtherReceipt={onToggleOtherReceipt}
+                        applications={form.invoiceApplications || []}
+                        availableInvoices={availableInvoices}
+                        onToggleInvoice={onToggleInvoice}
+                        onUpdateApplicationAmount={onUpdateInvoiceAmount}
+                        searchValue={invoiceSearch}
+                        onSearchChange={onInvoiceSearchChange}
+                    />
                     <button type="submit" disabled={saving} className="w-full rounded-2xl bg-[#e30613] px-5 py-4 text-sm font-black uppercase tracking-[0.2em] text-white shadow-lg shadow-red-950/20 transition hover:bg-[#9f111a] disabled:cursor-not-allowed disabled:opacity-60">
                         {saving ? 'Guardando...' : 'Guardar cambios'}
                     </button>
@@ -3786,6 +4531,21 @@ function CashReceipts({ data }) {
             .filter((item) => item.name)
             .sort((a, b) => a.name.localeCompare(b.name, 'es'))
     ), [data.clientes_facturacion]);
+    const savedInvoices = useMemo(() => (
+        [...(data.facturas_membretadas_ventas || [])]
+            .map(normalizeStampedInvoiceRecord)
+            .sort((a, b) => String(b.date).localeCompare(String(a.date)))
+    ), [data.facturas_membretadas_ventas]);
+    const invoiceIndex = useMemo(() => new Map(
+        savedInvoices
+            .map((invoice) => [getInvoiceDocId(invoice), invoice])
+            .filter(([invoiceId]) => invoiceId)
+    ), [savedInvoices]);
+    const creditInvoices = useMemo(() => (
+        savedInvoices
+            .filter((invoice) => isActiveStampedInvoice(invoice) && isCreditPaymentMethod(invoice.paymentMethod))
+            .filter((invoice) => getInvoiceCreditBalance(invoice) > 0.01 || getInvoiceCreditReceiptIds(invoice).length > 0 || getInvoiceCreditPaidAmount(invoice) > 0.01)
+    ), [savedInvoices]);
 
     const receipts = useMemo(() => (
         [...(data.recibos_caja_membretados || [])]
@@ -3793,24 +4553,16 @@ function CashReceipts({ data }) {
             .sort((a, b) => String(b.date).localeCompare(String(a.date)))
     ), [data.recibos_caja_membretados]);
 
-    const [form, setForm] = useState({
-        date: todayString(),
-        receiptNumber: '',
-        customerName: '',
-        amount: '',
-        retentionIr2: '',
-        retentionMunicipal1: '',
-        concept: '',
-        paymentMethod: '',
-        reference: '',
-    });
+    const [form, setForm] = useState(createCashReceiptForm);
     const [search, setSearch] = useState('');
+    const [invoiceSearch, setInvoiceSearch] = useState('');
     const [page, setPage] = useState(1);
     const [saving, setSaving] = useState(false);
     const [message, setMessage] = useState('');
     const [printTarget, setPrintTarget] = useState(null);
     const [editForm, setEditForm] = useState(null);
     const [editSaving, setEditSaving] = useState(false);
+    const [editInvoiceSearch, setEditInvoiceSearch] = useState('');
     const {
         cashReceiptLayout,
         cashReceiptTemplates,
@@ -3822,6 +4574,44 @@ function CashReceipts({ data }) {
         saveCashReceiptLayout,
         saveNewCashReceiptLayout,
     } = useCashReceiptPrintTemplates(setMessage);
+    const buildAvailableCreditInvoices = useCallback((customerName, searchValue, selectedApplications = []) => {
+        const selectedAmounts = new Map(
+            (selectedApplications || []).map((application) => [
+                application.invoiceId,
+                safeNumber(application.appliedAmount),
+            ])
+        );
+        const customerKey = normalizeText(customerName);
+        const searchKey = normalizeText(searchValue);
+
+        return creditInvoices
+            .map((invoice) => {
+                const invoiceId = getInvoiceDocId(invoice);
+                return {
+                    ...invoice,
+                    availableCreditBalance: safeNumber(getInvoiceCreditBalance(invoice) + safeNumber(selectedAmounts.get(invoiceId))),
+                };
+            })
+            .filter((invoice) => {
+                const invoiceId = getInvoiceDocId(invoice);
+                const selected = selectedAmounts.has(invoiceId);
+                const matchesCustomer = !customerKey || normalizeText(invoice.customerName || invoice.cliente || '') === customerKey || selected;
+                const matchesSearch = !searchKey || recordSearchText(invoice, [
+                    'date',
+                    'invoiceNumber',
+                    'customerName',
+                    'total',
+                    'creditStatusLabel',
+                ]).includes(searchKey);
+                return matchesCustomer && matchesSearch && (invoice.availableCreditBalance > 0.01 || selected);
+            });
+    }, [creditInvoices]);
+    const availableCreditInvoices = useMemo(() => (
+        buildAvailableCreditInvoices(form.customerName, invoiceSearch, form.invoiceApplications)
+    ), [buildAvailableCreditInvoices, form.customerName, form.invoiceApplications, invoiceSearch]);
+    const availableEditCreditInvoices = useMemo(() => (
+        editForm ? buildAvailableCreditInvoices(editForm.customerName, editInvoiceSearch, editForm.invoiceApplications) : []
+    ), [buildAvailableCreditInvoices, editForm, editInvoiceSearch]);
 
     const filteredReceipts = useMemo(() => filterRecords(receipts, search, [
         'date',
@@ -3846,26 +4636,139 @@ function CashReceipts({ data }) {
         setForm((prev) => ({ ...prev, [key]: value }));
     };
 
+    const toggleOtherReceipt = (checked) => {
+        setForm((prev) => ({
+            ...prev,
+            isOtherReceipt: checked,
+            invoiceApplications: checked ? [] : prev.invoiceApplications,
+            amount: checked ? '' : (prev.invoiceApplications?.length ? String(getCashReceiptApplicationsTotal(prev.invoiceApplications)) : ''),
+        }));
+    };
+
+    const toggleReceiptInvoice = (invoice, checked) => {
+        const invoiceId = getInvoiceDocId(invoice);
+        if (!invoiceId) return;
+        const invoiceCustomerName = String(invoice.customerName || invoice.cliente || '').trim();
+        const formCustomerKey = normalizeText(form.customerName);
+        const invoiceCustomerKey = normalizeText(invoiceCustomerName);
+        if (checked && formCustomerKey && invoiceCustomerKey && formCustomerKey !== invoiceCustomerKey) {
+            setMessage('Un mismo recibo solo puede mezclar facturas del mismo cliente.');
+            return;
+        }
+
+        setForm((prev) => {
+            const currentApplications = Array.isArray(prev.invoiceApplications) ? prev.invoiceApplications : [];
+            const nextApplications = checked
+                ? currentApplications.some((application) => application.invoiceId === invoiceId)
+                    ? currentApplications
+                    : [
+                        ...currentApplications,
+                        {
+                            invoiceId,
+                            invoiceNumber: invoice.invoiceNumber || invoice.numeroFactura || '',
+                            customerName: invoiceCustomerName,
+                            appliedAmount: String(safeNumber(invoice.availableCreditBalance ?? getInvoiceCreditBalance(invoice))),
+                        },
+                    ]
+                : currentApplications.filter((application) => application.invoiceId !== invoiceId);
+
+            return {
+                ...prev,
+                isOtherReceipt: false,
+                customerName: prev.customerName || invoiceCustomerName,
+                invoiceApplications: nextApplications,
+                amount: nextApplications.length ? String(getCashReceiptApplicationsTotal(nextApplications)) : '',
+            };
+        });
+    };
+
+    const updateReceiptInvoiceAmount = (invoiceId, value) => {
+        setForm((prev) => {
+            const nextApplications = (prev.invoiceApplications || []).map((application) => (
+                application.invoiceId === invoiceId
+                    ? { ...application, appliedAmount: value }
+                    : application
+            ));
+            return {
+                ...prev,
+                invoiceApplications: nextApplications,
+                amount: nextApplications.length ? String(getCashReceiptApplicationsTotal(nextApplications)) : '',
+            };
+        });
+    };
+
     const openEditReceipt = (receipt) => {
         if (!isMaster) return;
-        const normalized = normalizeCashReceiptRecord(receipt);
-        setEditForm({
-            id: normalized.id || receipt.id || receipt.docId || '',
-            date: normalized.date || todayString(),
-            receiptNumber: normalized.receiptNumber || '',
-            customerName: normalized.customerName || '',
-            amount: String(safeNumber(normalized.amount) || ''),
-            retentionIr2: String(safeNumber(normalized.retentionIr2) || ''),
-            retentionMunicipal1: String(safeNumber(normalized.retentionMunicipal1) || ''),
-            concept: normalized.concept || '',
-            paymentMethod: normalized.paymentMethod || '',
-            reference: normalized.reference || receipt.reference || receipt.referencia || '',
-            linkedCashClosureId: normalized.linkedCashClosureId || receipt.linkedCashClosureId || '',
-        });
+        setEditForm(createCashReceiptEditForm(receipt));
+        setEditInvoiceSearch('');
     };
 
     const updateEditReceipt = (key, value) => {
         setEditForm((prev) => prev ? { ...prev, [key]: value } : prev);
+    };
+
+    const toggleEditOtherReceipt = (checked) => {
+        setEditForm((prev) => prev ? ({
+            ...prev,
+            isOtherReceipt: checked,
+            invoiceApplications: checked ? [] : prev.invoiceApplications,
+            amount: checked ? '' : (prev.invoiceApplications?.length ? String(getCashReceiptApplicationsTotal(prev.invoiceApplications)) : ''),
+        }) : prev);
+    };
+
+    const toggleEditReceiptInvoice = (invoice, checked) => {
+        if (!editForm) return;
+        const invoiceId = getInvoiceDocId(invoice);
+        if (!invoiceId) return;
+        const invoiceCustomerName = String(invoice.customerName || invoice.cliente || '').trim();
+        const editCustomerKey = normalizeText(editForm.customerName);
+        const invoiceCustomerKey = normalizeText(invoiceCustomerName);
+        if (checked && editCustomerKey && invoiceCustomerKey && editCustomerKey !== invoiceCustomerKey) {
+            setMessage('Un mismo recibo solo puede mezclar facturas del mismo cliente.');
+            return;
+        }
+
+        setEditForm((prev) => {
+            if (!prev) return prev;
+            const currentApplications = Array.isArray(prev.invoiceApplications) ? prev.invoiceApplications : [];
+            const nextApplications = checked
+                ? currentApplications.some((application) => application.invoiceId === invoiceId)
+                    ? currentApplications
+                    : [
+                        ...currentApplications,
+                        {
+                            invoiceId,
+                            invoiceNumber: invoice.invoiceNumber || invoice.numeroFactura || '',
+                            customerName: invoiceCustomerName,
+                            appliedAmount: String(safeNumber(invoice.availableCreditBalance ?? getInvoiceCreditBalance(invoice))),
+                        },
+                    ]
+                : currentApplications.filter((application) => application.invoiceId !== invoiceId);
+
+            return {
+                ...prev,
+                isOtherReceipt: false,
+                customerName: prev.customerName || invoiceCustomerName,
+                invoiceApplications: nextApplications,
+                amount: nextApplications.length ? String(getCashReceiptApplicationsTotal(nextApplications)) : '',
+            };
+        });
+    };
+
+    const updateEditReceiptInvoiceAmount = (invoiceId, value) => {
+        setEditForm((prev) => {
+            if (!prev) return prev;
+            const nextApplications = (prev.invoiceApplications || []).map((application) => (
+                application.invoiceId === invoiceId
+                    ? { ...application, appliedAmount: value }
+                    : application
+            ));
+            return {
+                ...prev,
+                invoiceApplications: nextApplications,
+                amount: nextApplications.length ? String(getCashReceiptApplicationsTotal(nextApplications)) : '',
+            };
+        });
     };
 
     const upsertClientRecord = async (name, source = 'recibo_caja') => {
@@ -3888,61 +4791,18 @@ function CashReceipts({ data }) {
         setSaving(true);
         setMessage('');
         try {
-            if (!String(form.customerName || '').trim()) throw new Error('Selecciona o escribe el cliente.');
-            if (!safeNumber(form.amount)) throw new Error('Ingresa la cantidad del recibo.');
-            if (!String(form.paymentMethod || '').trim()) throw new Error('Selecciona metodo de pago.');
-
-            await upsertClientRecord(form.customerName, 'recibo_caja');
             const receiptId = form.receiptNumber
                 ? `recibo_${slugify(form.receiptNumber)}_${String(form.date || todayString()).replace(/-/g, '')}`
                 : `recibo_${String(form.date || todayString()).replace(/-/g, '')}_${Date.now()}`;
-            const amount = safeNumber(form.amount);
-            const retentionIr2 = safeNumber(form.retentionIr2);
-            const retentionMunicipal1 = safeNumber(form.retentionMunicipal1);
-            const retentionTotal = safeNumber(retentionIr2 + retentionMunicipal1);
-            const netAmount = safeNumber(amount - retentionTotal);
-
-            await setDoc(doc(db, 'recibos_caja_membretados', receiptId), {
-                date: form.date || todayString(),
-                receiptDate: form.date || todayString(),
-                month: getMonth(form.date || todayString()),
-                receiptNumber: String(form.receiptNumber || '').trim(),
-                numeroRecibo: String(form.receiptNumber || '').trim(),
-                customerName: String(form.customerName || '').trim(),
-                recibiDe: String(form.customerName || '').trim(),
-                amount,
-                cantidad: amount,
-                retentionIr2,
-                retencionIr2: retentionIr2,
-                retentionMunicipal1,
-                retencionMunicipal1: retentionMunicipal1,
-                retentionTotal,
-                retencionTotal: retentionTotal,
-                netAmount,
-                montoNeto: netAmount,
-                concept: String(form.concept || '').trim(),
-                concepto: String(form.concept || '').trim(),
-                paymentMethod: String(form.paymentMethod || '').trim(),
-                metodoPago: String(form.paymentMethod || '').trim(),
-                reference: String(form.reference || '').trim(),
-                source: 'manual_app',
-                sourceType: 'cash_receipt',
-                status: 'active',
-                updatedAt: serverTimestamp(),
-                createdAt: serverTimestamp(),
-            }, { merge: true });
-
-            setForm({
-                date: todayString(),
-                receiptNumber: '',
-                customerName: '',
-                amount: '',
-                retentionIr2: '',
-                retentionMunicipal1: '',
-                concept: '',
-                paymentMethod: '',
-                reference: '',
+            const { receiptPayload } = await persistCashReceiptRecord({
+                receiptId,
+                form,
+                existingReceipt: {},
+                invoiceIndex,
             });
+            await upsertClientRecord(receiptPayload.customerName, receiptPayload.invoiceApplications?.length ? 'recibo_caja_credito' : 'recibo_caja');
+            setForm(createCashReceiptForm());
+            setInvoiceSearch('');
             setMessage('Recibo de caja guardado correctamente.');
         } catch (error) {
             console.error(error);
@@ -3958,41 +4818,17 @@ function CashReceipts({ data }) {
         setEditSaving(true);
         setMessage('');
         try {
-            const amount = safeNumber(editForm.amount);
-            const retentionIr2 = safeNumber(editForm.retentionIr2);
-            const retentionMunicipal1 = safeNumber(editForm.retentionMunicipal1);
-            const retentionTotal = safeNumber(retentionIr2 + retentionMunicipal1);
-            const netAmount = safeNumber(amount - retentionTotal);
-            const receiptPayload = {
-                date: editForm.date || todayString(),
-                receiptDate: editForm.date || todayString(),
-                month: getMonth(editForm.date || todayString()),
-                receiptNumber: String(editForm.receiptNumber || '').trim(),
-                numeroRecibo: String(editForm.receiptNumber || '').trim(),
-                customerName: String(editForm.customerName || '').trim(),
-                recibiDe: String(editForm.customerName || '').trim(),
-                amount,
-                cantidad: amount,
-                retentionIr2,
-                retencionIr2: retentionIr2,
-                retentionMunicipal1,
-                retencionMunicipal1: retentionMunicipal1,
-                retentionTotal,
-                retencionTotal: retentionTotal,
-                netAmount,
-                montoNeto: netAmount,
-                concept: String(editForm.concept || '').trim(),
-                concepto: String(editForm.concept || '').trim(),
-                paymentMethod: String(editForm.paymentMethod || '').trim(),
-                metodoPago: String(editForm.paymentMethod || '').trim(),
-                reference: String(editForm.reference || '').trim(),
-                linkedCashClosureId: editForm.linkedCashClosureId || '',
-                updatedAt: serverTimestamp(),
-            };
-            await setDoc(doc(db, 'recibos_caja_membretados', editForm.id), receiptPayload, { merge: true });
-            await syncLinkedClosureForCashReceipt(editForm.id, receiptPayload);
+            const existingReceipt = receipts.find((receipt) => receipt.id === editForm.id) || {};
+            const { receiptPayload } = await persistCashReceiptRecord({
+                receiptId: editForm.id,
+                form: editForm,
+                existingReceipt,
+                invoiceIndex,
+            });
+            await upsertClientRecord(receiptPayload.customerName, receiptPayload.invoiceApplications?.length ? 'recibo_caja_credito' : 'recibo_caja');
             setMessage(`Recibo ${editForm.receiptNumber || editForm.id} actualizado.`);
             setEditForm(null);
+            setEditInvoiceSearch('');
         } catch (error) {
             console.error(error);
             setMessage(error?.message || 'No se pudo actualizar el recibo.');
@@ -4062,7 +4898,15 @@ function CashReceipts({ data }) {
                             <input className={inputClass} value={form.receiptNumber} onChange={(event) => update('receiptNumber', event.target.value)} placeholder="Opcional / preimpreso" />
                         </Field>
                         <Field label="Recibi de">
-                            <input className={inputClass} list="cash-receipt-clients" value={form.customerName} onChange={(event) => update('customerName', event.target.value)} placeholder="Cliente" required />
+                            <input
+                                className={inputClass}
+                                list="cash-receipt-clients"
+                                value={form.customerName}
+                                onChange={(event) => update('customerName', event.target.value)}
+                                placeholder="Cliente"
+                                required
+                                readOnly={!form.isOtherReceipt && (form.invoiceApplications || []).length > 0}
+                            />
                             <datalist id="cash-receipt-clients">
                                 {clients.map((client) => (
                                     <option key={client.id || client.code || client.name} value={client.name || client.nombre || ''} />
@@ -4070,20 +4914,19 @@ function CashReceipts({ data }) {
                             </datalist>
                         </Field>
                         <Field label="Metodo de pago">
-                            <div className="grid gap-2 sm:grid-cols-[1fr_auto]">
-                                <PaymentMethodSelect value={form.paymentMethod} onChange={(value) => update('paymentMethod', value)} required />
-                                <button
-                                    type="button"
-                                    onClick={() => setPaymentSplitOpen(true)}
-                                    className="rounded-2xl border border-sky-200 bg-sky-50 px-4 py-3 text-xs font-black uppercase tracking-[0.16em] text-sky-700 transition hover:bg-sky-100"
-                                >
-                                    Dividir pago
-                                </button>
-                            </div>
-                            <PaymentBreakdownPreview invoice={form} />
+                            <PaymentMethodSelect value={form.paymentMethod} onChange={(value) => update('paymentMethod', value)} required />
                         </Field>
                         <Field label="Cantidad">
-                            <input className={inputClass} type="number" step="0.01" min="0" value={form.amount} onChange={(event) => update('amount', event.target.value)} required />
+                            <input
+                                className={inputClass}
+                                type="number"
+                                step="0.01"
+                                min="0"
+                                value={form.amount}
+                                onChange={(event) => update('amount', event.target.value)}
+                                required
+                                readOnly={!form.isOtherReceipt && (form.invoiceApplications || []).length > 0}
+                            />
                         </Field>
                         <Field label="Retencion 2%">
                             <input className={inputClass} type="number" step="0.01" min="0" value={form.retentionIr2} onChange={(event) => update('retentionIr2', event.target.value)} />
@@ -4101,6 +4944,16 @@ function CashReceipts({ data }) {
                             <textarea className={`${inputClass} min-h-[110px]`} value={form.concept} onChange={(event) => update('concept', event.target.value)} placeholder="Concepto del pago o recuperacion de credito" />
                         </Field>
                     </div>
+                    <ReceiptInvoiceApplicationsEditor
+                        isOtherReceipt={Boolean(form.isOtherReceipt)}
+                        onToggleOtherReceipt={toggleOtherReceipt}
+                        applications={form.invoiceApplications || []}
+                        availableInvoices={availableCreditInvoices}
+                        onToggleInvoice={toggleReceiptInvoice}
+                        onUpdateApplicationAmount={updateReceiptInvoiceAmount}
+                        searchValue={invoiceSearch}
+                        onSearchChange={setInvoiceSearch}
+                    />
                     {message && <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-bold text-slate-700">{message}</div>}
                     <button type="submit" disabled={saving} className="w-full rounded-2xl bg-[#e30613] px-5 py-4 text-sm font-black uppercase tracking-[0.2em] text-white shadow-lg shadow-red-950/20 transition hover:bg-[#9f111a] disabled:cursor-not-allowed disabled:opacity-60">
                         {saving ? 'Guardando...' : 'Guardar recibo de caja'}
@@ -4189,9 +5042,15 @@ function CashReceipts({ data }) {
         <CashReceiptEditModal
             form={editForm}
             saving={editSaving}
+            availableInvoices={availableEditCreditInvoices}
+            invoiceSearch={editInvoiceSearch}
+            onInvoiceSearchChange={setEditInvoiceSearch}
             onClose={() => setEditForm(null)}
             onSave={saveEditedReceipt}
             onUpdate={updateEditReceipt}
+            onToggleOtherReceipt={toggleEditOtherReceipt}
+            onToggleInvoice={toggleEditReceiptInvoice}
+            onUpdateInvoiceAmount={updateEditReceiptInvoiceAmount}
         />
         </>
     );
@@ -4207,6 +5066,7 @@ function CashReceiptHistory({ data }) {
     const [printTarget, setPrintTarget] = useState(null);
     const [editForm, setEditForm] = useState(null);
     const [editSaving, setEditSaving] = useState(false);
+    const [editInvoiceSearch, setEditInvoiceSearch] = useState('');
     const {
         cashReceiptLayout,
         cashReceiptTemplates,
@@ -4218,6 +5078,55 @@ function CashReceiptHistory({ data }) {
         saveCashReceiptLayout,
         saveNewCashReceiptLayout,
     } = useCashReceiptPrintTemplates(setMessage);
+    const savedInvoices = useMemo(() => (
+        [...(data.facturas_membretadas_ventas || [])]
+            .map(normalizeStampedInvoiceRecord)
+            .sort((a, b) => String(b.date).localeCompare(String(a.date)))
+    ), [data.facturas_membretadas_ventas]);
+    const invoiceIndex = useMemo(() => new Map(
+        savedInvoices
+            .map((invoice) => [getInvoiceDocId(invoice), invoice])
+            .filter(([invoiceId]) => invoiceId)
+    ), [savedInvoices]);
+    const creditInvoices = useMemo(() => (
+        savedInvoices
+            .filter((invoice) => isActiveStampedInvoice(invoice) && isCreditPaymentMethod(invoice.paymentMethod))
+            .filter((invoice) => getInvoiceCreditBalance(invoice) > 0.01 || getInvoiceCreditReceiptIds(invoice).length > 0 || getInvoiceCreditPaidAmount(invoice) > 0.01)
+    ), [savedInvoices]);
+    const buildAvailableCreditInvoices = useCallback((customerName, searchValue, selectedApplications = []) => {
+        const selectedAmounts = new Map(
+            (selectedApplications || []).map((application) => [
+                application.invoiceId,
+                safeNumber(application.appliedAmount),
+            ])
+        );
+        const customerKey = normalizeText(customerName);
+        const searchKey = normalizeText(searchValue);
+
+        return creditInvoices
+            .map((invoice) => {
+                const invoiceId = getInvoiceDocId(invoice);
+                return {
+                    ...invoice,
+                    availableCreditBalance: safeNumber(getInvoiceCreditBalance(invoice) + safeNumber(selectedAmounts.get(invoiceId))),
+                };
+            })
+            .filter((invoice) => {
+                const invoiceId = getInvoiceDocId(invoice);
+                const selected = selectedAmounts.has(invoiceId);
+                const matchesCustomer = !customerKey || normalizeText(invoice.customerName || invoice.cliente || '') === customerKey || selected;
+                const matchesSearch = !searchKey || recordSearchText(invoice, [
+                    'date',
+                    'invoiceNumber',
+                    'customerName',
+                    'creditStatusLabel',
+                ]).includes(searchKey);
+                return matchesCustomer && matchesSearch && (invoice.availableCreditBalance > 0.01 || selected);
+            });
+    }, [creditInvoices]);
+    const availableEditCreditInvoices = useMemo(() => (
+        editForm ? buildAvailableCreditInvoices(editForm.customerName, editInvoiceSearch, editForm.invoiceApplications) : []
+    ), [buildAvailableCreditInvoices, editForm, editInvoiceSearch]);
 
     const receipts = useMemo(() => (
         [...(data.recibos_caja_membretados || [])]
@@ -4286,24 +5195,76 @@ function CashReceiptHistory({ data }) {
 
     const openEditReceipt = (receipt) => {
         if (!isMaster) return;
-        const normalized = normalizeCashReceiptRecord(receipt);
-        setEditForm({
-            id: normalized.id || receipt.id || receipt.docId || '',
-            date: normalized.date || todayString(),
-            receiptNumber: normalized.receiptNumber || '',
-            customerName: normalized.customerName || '',
-            amount: String(safeNumber(normalized.amount) || ''),
-            retentionIr2: String(safeNumber(normalized.retentionIr2) || ''),
-            retentionMunicipal1: String(safeNumber(normalized.retentionMunicipal1) || ''),
-            concept: normalized.concept || '',
-            paymentMethod: normalized.paymentMethod || '',
-            reference: normalized.reference || '',
-            linkedCashClosureId: normalized.linkedCashClosureId || receipt.linkedCashClosureId || '',
-        });
+        setEditForm(createCashReceiptEditForm(receipt));
+        setEditInvoiceSearch('');
     };
 
     const updateEditReceipt = (key, value) => {
         setEditForm((prev) => prev ? { ...prev, [key]: value } : prev);
+    };
+
+    const toggleEditOtherReceipt = (checked) => {
+        setEditForm((prev) => prev ? ({
+            ...prev,
+            isOtherReceipt: checked,
+            invoiceApplications: checked ? [] : prev.invoiceApplications,
+            amount: checked ? '' : (prev.invoiceApplications?.length ? String(getCashReceiptApplicationsTotal(prev.invoiceApplications)) : ''),
+        }) : prev);
+    };
+
+    const toggleEditReceiptInvoice = (invoice, checked) => {
+        if (!editForm) return;
+        const invoiceId = getInvoiceDocId(invoice);
+        if (!invoiceId) return;
+        const invoiceCustomerName = String(invoice.customerName || invoice.cliente || '').trim();
+        const editCustomerKey = normalizeText(editForm.customerName);
+        const invoiceCustomerKey = normalizeText(invoiceCustomerName);
+        if (checked && editCustomerKey && invoiceCustomerKey && editCustomerKey !== invoiceCustomerKey) {
+            setMessage('Un mismo recibo solo puede mezclar facturas del mismo cliente.');
+            return;
+        }
+
+        setEditForm((prev) => {
+            if (!prev) return prev;
+            const currentApplications = Array.isArray(prev.invoiceApplications) ? prev.invoiceApplications : [];
+            const nextApplications = checked
+                ? currentApplications.some((application) => application.invoiceId === invoiceId)
+                    ? currentApplications
+                    : [
+                        ...currentApplications,
+                        {
+                            invoiceId,
+                            invoiceNumber: invoice.invoiceNumber || invoice.numeroFactura || '',
+                            customerName: invoiceCustomerName,
+                            appliedAmount: String(safeNumber(invoice.availableCreditBalance ?? getInvoiceCreditBalance(invoice))),
+                        },
+                    ]
+                : currentApplications.filter((application) => application.invoiceId !== invoiceId);
+
+            return {
+                ...prev,
+                isOtherReceipt: false,
+                customerName: prev.customerName || invoiceCustomerName,
+                invoiceApplications: nextApplications,
+                amount: nextApplications.length ? String(getCashReceiptApplicationsTotal(nextApplications)) : '',
+            };
+        });
+    };
+
+    const updateEditReceiptInvoiceAmount = (invoiceId, value) => {
+        setEditForm((prev) => {
+            if (!prev) return prev;
+            const nextApplications = (prev.invoiceApplications || []).map((application) => (
+                application.invoiceId === invoiceId
+                    ? { ...application, appliedAmount: value }
+                    : application
+            ));
+            return {
+                ...prev,
+                invoiceApplications: nextApplications,
+                amount: nextApplications.length ? String(getCashReceiptApplicationsTotal(nextApplications)) : '',
+            };
+        });
     };
 
     const saveEditedReceipt = async (event) => {
@@ -4312,41 +5273,24 @@ function CashReceiptHistory({ data }) {
         setEditSaving(true);
         setMessage('');
         try {
-            const amount = safeNumber(editForm.amount);
-            const retentionIr2 = safeNumber(editForm.retentionIr2);
-            const retentionMunicipal1 = safeNumber(editForm.retentionMunicipal1);
-            const retentionTotal = safeNumber(retentionIr2 + retentionMunicipal1);
-            const netAmount = safeNumber(amount - retentionTotal);
-            const receiptPayload = {
-                date: editForm.date || todayString(),
-                receiptDate: editForm.date || todayString(),
-                month: getMonth(editForm.date || todayString()),
-                receiptNumber: String(editForm.receiptNumber || '').trim(),
-                numeroRecibo: String(editForm.receiptNumber || '').trim(),
-                customerName: String(editForm.customerName || '').trim(),
-                recibiDe: String(editForm.customerName || '').trim(),
-                amount,
-                cantidad: amount,
-                retentionIr2,
-                retencionIr2: retentionIr2,
-                retentionMunicipal1,
-                retencionMunicipal1: retentionMunicipal1,
-                retentionTotal,
-                retencionTotal: retentionTotal,
-                netAmount,
-                montoNeto: netAmount,
-                concept: String(editForm.concept || '').trim(),
-                concepto: String(editForm.concept || '').trim(),
-                paymentMethod: String(editForm.paymentMethod || '').trim(),
-                metodoPago: String(editForm.paymentMethod || '').trim(),
-                reference: String(editForm.reference || '').trim(),
-                linkedCashClosureId: editForm.linkedCashClosureId || '',
+            const existingReceipt = receipts.find((receipt) => receipt.id === editForm.id) || {};
+            const { receiptPayload } = await persistCashReceiptRecord({
+                receiptId: editForm.id,
+                form: editForm,
+                existingReceipt,
+                invoiceIndex,
+            });
+            await setDoc(doc(db, 'clientes_facturacion', `CLI-${slugify(receiptPayload.customerName)}`), {
+                code: `CLI-${slugify(receiptPayload.customerName)}`,
+                name: receiptPayload.customerName,
+                normalizedName: normalizeText(receiptPayload.customerName),
+                source: receiptPayload.invoiceApplications?.length ? 'recibo_caja_credito' : 'recibo_caja',
                 updatedAt: serverTimestamp(),
-            };
-            await setDoc(doc(db, 'recibos_caja_membretados', editForm.id), receiptPayload, { merge: true });
-            await syncLinkedClosureForCashReceipt(editForm.id, receiptPayload);
+                createdAt: serverTimestamp(),
+            }, { merge: true });
             setMessage(`Recibo ${editForm.receiptNumber || editForm.id} actualizado.`);
             setEditForm(null);
+            setEditInvoiceSearch('');
         } catch (error) {
             console.error(error);
             setMessage(error?.message || 'No se pudo actualizar el recibo.');
@@ -4449,9 +5393,15 @@ function CashReceiptHistory({ data }) {
         <CashReceiptEditModal
             form={editForm}
             saving={editSaving}
+            availableInvoices={availableEditCreditInvoices}
+            invoiceSearch={editInvoiceSearch}
+            onInvoiceSearchChange={setEditInvoiceSearch}
             onClose={() => setEditForm(null)}
             onSave={saveEditedReceipt}
             onUpdate={updateEditReceipt}
+            onToggleOtherReceipt={toggleEditOtherReceipt}
+            onToggleInvoice={toggleEditReceiptInvoice}
+            onUpdateInvoiceAmount={updateEditReceiptInvoiceAmount}
         />
         </>
     );
@@ -4787,6 +5737,16 @@ function StampedInvoices({ data }) {
                     retentionIr2: safeNumber(invoice.retentionIr2),
                     retentionMunicipal1: safeNumber(invoice.retentionMunicipal1),
                 });
+                const creditSnapshot = buildCreditInvoiceSnapshot(
+                    { ...invoice, paymentMethod, ...invoiceFiscal },
+                    isCreditPaymentMethod(paymentMethod)
+                        ? {
+                            creditOriginalAmount: getInvoicePaymentTargetAmount({ ...invoice, paymentMethod, ...invoiceFiscal }),
+                            creditPaidAmount: 0,
+                            creditReceiptIds: [],
+                        }
+                        : {}
+                );
 
                 await setDoc(doc(db, 'facturas_membretadas_ventas', docId), {
                     date: invoice.date,
@@ -4806,6 +5766,7 @@ function StampedInvoices({ data }) {
                     sourceType: 'stamped_sale_invoice',
                     sourceSicarInvoiceId: invoice.sourceSicarInvoiceId || '',
                     sourceSicarInvoiceNumber: invoice.sourceSicarInvoiceNumber || '',
+                    ...creditSnapshot,
                     splitGroupId: invoiceMeta.length > 1 ? primaryDocId : '',
                     splitPart: invoice.splitPart || null,
                     splitTotalParts: invoice.splitTotalParts || null,
@@ -5205,6 +6166,7 @@ const StampedInvoiceDetailModal = ({
     supportSaving = false,
 }) => {
     if (!invoice) return null;
+    const isAnnulled = isStampedInvoiceAnnulled(invoice);
     const supportFiles = getSupportFiles(invoice);
     const hasPendingSupportFiles = Object.values(supportUploadFiles || {}).some(Boolean);
 
@@ -5218,10 +6180,11 @@ const StampedInvoiceDetailModal = ({
                         <p className="mt-1 text-sm font-semibold text-slate-300">{invoice.date || invoice.saleDate || '-'} · {invoice.customerName || invoice.cliente || 'Sin cliente'}</p>
                     </div>
                     <div className="flex flex-wrap gap-2">
+                        {isAnnulled && <Badge tone="red">ANULADA</Badge>}
                         <button type="button" onClick={() => onPrint(invoice)} className="rounded-2xl bg-[#e30613] px-4 py-2 text-xs font-black uppercase tracking-[0.16em] text-white transition hover:bg-red-700">
                             Imprimir
                         </button>
-                        <button type="button" onClick={() => onEdit(invoice)} className="rounded-2xl border border-white/20 bg-white/10 px-4 py-2 text-xs font-black uppercase tracking-[0.16em] text-white transition hover:bg-white/20">
+                        <button type="button" onClick={() => onEdit(invoice)} disabled={isAnnulled} className="rounded-2xl border border-white/20 bg-white/10 px-4 py-2 text-xs font-black uppercase tracking-[0.16em] text-white transition hover:bg-white/20 disabled:cursor-not-allowed disabled:opacity-50">
                             Editar
                         </button>
                         <button type="button" onClick={onClose} className="rounded-2xl bg-white px-4 py-2 text-xs font-black uppercase tracking-[0.16em] text-slate-950 transition hover:bg-slate-200">
@@ -5248,9 +6211,17 @@ const StampedInvoiceDetailModal = ({
                             <SummaryCard label="Retenciones" value={fmt(invoice.retentionTotal || safeNumber(invoice.retentionIr2) + safeNumber(invoice.retentionMunicipal1))} tone="amber" />
                         </div>
 
+                        {invoice.creditStatusLabel && (
+                            <div className="grid gap-3 sm:grid-cols-3">
+                                <SummaryCard label="Estado credito" value={invoice.creditStatusLabel} tone={invoice.creditStatus === 'cancelled' ? 'green' : invoice.creditStatus === 'partial' ? 'blue' : 'amber'} />
+                                <SummaryCard label="Abonado" value={fmt(invoice.creditPaidAmount)} tone="blue" />
+                                <SummaryCard label="Saldo" value={fmt(invoice.creditBalance)} tone={invoice.creditBalance <= 0.01 ? 'green' : 'amber'} />
+                            </div>
+                        )}
+
                         <div className="rounded-3xl border border-slate-200 bg-white p-4">
                         <Field label="Metodo de pago">
-                            <PaymentMethodSelect value={invoice.paymentMethod || ''} onChange={(value) => onPaymentMethodChange(invoice, value)} />
+                            <PaymentMethodSelect value={invoice.paymentMethod || ''} onChange={(value) => onPaymentMethodChange(invoice, value)} disabled={isAnnulled} />
                             <PaymentBreakdownPreview invoice={invoice} />
                         </Field>
                         </div>
@@ -5602,16 +6573,32 @@ function StampedInvoiceHistory({ data }) {
     const updatePaymentMethod = async (invoice, paymentMethod) => {
         const invoiceId = invoice.id || invoice.docId;
         if (!invoiceId) return;
+        if (isStampedInvoiceAnnulled(invoice)) {
+            setMessage(`La factura ${invoice.invoiceNumber || invoice.numeroFactura || invoiceId} esta ANULADA y no se puede editar.`);
+            return;
+        }
         try {
+            assertInvoiceCreditMethodChangeAllowed(invoice, paymentMethod);
+            const creditSnapshot = buildCreditInvoiceSnapshot(
+                { ...invoice, paymentMethod },
+                isCreditPaymentMethod(paymentMethod)
+                    ? {
+                        creditOriginalAmount: getInvoicePaymentTargetAmount({ ...invoice, paymentMethod }),
+                        creditPaidAmount: getInvoiceCreditPaidAmount(invoice),
+                        creditReceiptIds: getInvoiceCreditReceiptIds(invoice),
+                    }
+                    : {}
+            );
             await setDoc(doc(db, 'facturas_membretadas_ventas', invoiceId), {
                 paymentMethod,
                 paymentBreakdown: [],
                 paymentNetTotal: 0,
+                ...creditSnapshot,
                 updatedAt: serverTimestamp(),
             }, { merge: true });
             setDetailTarget((current) => (
                 current && (current.id || current.docId) === invoiceId
-                    ? { ...current, paymentMethod, paymentBreakdown: [], paymentNetTotal: 0 }
+                    ? { ...current, paymentMethod, paymentBreakdown: [], paymentNetTotal: 0, ...creditSnapshot }
                     : current
             ));
             setMessage(`Metodo de pago actualizado para factura ${invoice.invoiceNumber || invoice.numeroFactura || invoiceId}.`);
@@ -5624,6 +6611,10 @@ function StampedInvoiceHistory({ data }) {
     const markInvoiceWithoutClosure = async (invoice) => {
         const invoiceId = invoice.id || invoice.docId;
         if (!invoiceId) return;
+        if (isStampedInvoiceAnnulled(invoice)) {
+            setMessage(`La factura ${invoice.invoiceNumber || invoice.numeroFactura || invoiceId} esta ANULADA y no se puede editar.`);
+            return;
+        }
         if (!window.confirm(`Estas seguro que deseas dejar la factura ${invoice.invoiceNumber || invoice.numeroFactura || invoiceId} sin cierre de caja vinculado?`)) return;
         try {
             await setDoc(doc(db, 'facturas_membretadas_ventas', invoiceId), {
@@ -5655,12 +6646,41 @@ function StampedInvoiceHistory({ data }) {
         }
     };
 
+    const annulInvoice = async (invoice) => {
+        const invoiceId = invoice.id || invoice.docId;
+        if (!invoiceId) return;
+        if (!window.confirm(`Estas seguro que deseas ANULAR la factura ${invoice.invoiceNumber || invoice.numeroFactura || invoiceId}? La factura quedara en cero y marcada en rojo.`)) return;
+        try {
+            assertStampedInvoiceAnnulmentAllowed(invoice);
+            const annulledLocalSnapshot = normalizeStampedInvoiceRecord({
+                ...buildAnnulledStampedInvoiceSnapshot(invoice),
+                id: invoiceId,
+                docId: invoiceId,
+            });
+            await setDoc(doc(db, 'facturas_membretadas_ventas', invoiceId), buildAnnulledStampedInvoiceSnapshot(invoice, { includeServerFields: true }), { merge: true });
+            await syncLinkedClosureForStampedInvoice(invoiceId, annulledLocalSnapshot);
+            setDetailTarget((current) => (
+                current && (current.id || current.docId) === invoiceId
+                    ? annulledLocalSnapshot
+                    : current
+            ));
+            setMessage(`Factura ${invoice.invoiceNumber || invoice.numeroFactura || invoiceId} anulada correctamente.`);
+        } catch (error) {
+            console.error(error);
+            setMessage(error?.message || 'No se pudo anular la factura.');
+        }
+    };
+
     const openInvoiceDetail = (invoice) => {
         setDetailTarget(invoice);
         setSupportUploadFiles({});
     };
 
     const openInvoiceEdit = (invoice) => {
+        if (isStampedInvoiceAnnulled(invoice)) {
+            setMessage(`La factura ${invoice.invoiceNumber || invoice.numeroFactura || invoice.id || invoice.docId || ''} esta ANULADA y no se puede editar.`);
+            return;
+        }
         setDetailTarget(null);
         setEditTarget(invoice);
         setEditForm(createStampedInvoiceEditForm(invoice));
@@ -5803,6 +6823,12 @@ function StampedInvoiceHistory({ data }) {
             paymentMethod: '',
             paymentBreakdown: [],
             paymentNetTotal: 0,
+            creditOriginalAmount: 0,
+            creditPaidAmount: 0,
+            creditBalance: 0,
+            creditReceiptIds: [],
+            creditStatus: '',
+            creditStatusLabel: '',
             splitPart: 2,
             splitTotalParts: 2,
         });
@@ -5862,8 +6888,10 @@ function StampedInvoiceHistory({ data }) {
             const batch = writeBatch(db);
 
             invoiceMeta.forEach(({ invoice, docId }) => {
+                const existingSavedInvoice = savedInvoices.find((item) => getInvoiceDocId(item) === docId) || {};
                 const paymentBreakdown = validatePaymentBreakdownForInvoice(invoice);
                 const paymentMethod = getPaymentMethodFromBreakdown(paymentBreakdown, invoice.paymentMethod);
+                assertInvoiceCreditMethodChangeAllowed(existingSavedInvoice, paymentMethod);
                 const itemFiscal = calculateInvoiceItemsFiscal(invoice.items || []);
                 const invoiceFiscal = buildFiscalPayload({
                     subtotal: itemFiscal.subtotal || safeNumber(invoice.subtotal),
@@ -5872,6 +6900,16 @@ function StampedInvoiceHistory({ data }) {
                     retentionIr2: safeNumber(invoice.retentionIr2),
                     retentionMunicipal1: safeNumber(invoice.retentionMunicipal1),
                 });
+                const creditSnapshot = buildCreditInvoiceSnapshot(
+                    { ...existingSavedInvoice, ...invoice, paymentMethod, ...invoiceFiscal },
+                    isCreditPaymentMethod(paymentMethod)
+                        ? {
+                            creditOriginalAmount: getInvoicePaymentTargetAmount({ ...invoice, paymentMethod, ...invoiceFiscal }),
+                            creditPaidAmount: getInvoiceCreditPaidAmount(existingSavedInvoice),
+                            creditReceiptIds: getInvoiceCreditReceiptIds(existingSavedInvoice),
+                        }
+                        : {}
+                );
                 batch.set(doc(db, 'facturas_membretadas_ventas', docId), {
                     date: invoice.date || todayString(),
                     saleDate: invoice.date || todayString(),
@@ -5896,6 +6934,7 @@ function StampedInvoiceHistory({ data }) {
                     cashClosureLinkStatus: invoice.cashClosureLinkStatus || '',
                     closureStatus: invoice.closureStatus || '',
                     excludeFromCashClosure: Boolean(invoice.excludeFromCashClosure),
+                    ...creditSnapshot,
                     splitGroupId,
                     splitPart: invoice.splitPart || null,
                     splitTotalParts: invoice.splitTotalParts || null,
@@ -6075,43 +7114,55 @@ function StampedInvoiceHistory({ data }) {
                             </div>
                         ) : pagedInvoices.records.map((invoice) => {
                             const closureInfo = getInvoiceClosureInfo(invoice, closureIndex);
+                            const isAnnulled = isStampedInvoiceAnnulled(invoice);
                             return (
-                            <div key={invoice.id || `${invoice.invoiceNumber}-${invoice.date}`} className="rounded-[1.6rem] border border-slate-200 bg-white p-4 shadow-sm transition hover:-translate-y-0.5 hover:border-red-200 hover:shadow-lg hover:shadow-slate-900/5">
+                            <div key={invoice.id || `${invoice.invoiceNumber}-${invoice.date}`} className={`rounded-[1.6rem] border p-4 shadow-sm transition ${isAnnulled ? 'border-red-300 bg-red-50/70 shadow-red-100/40' : 'border-slate-200 bg-white hover:-translate-y-0.5 hover:border-red-200 hover:shadow-lg hover:shadow-slate-900/5'}`}>
                                 <div className="grid gap-4 xl:grid-cols-[1fr_0.58fr_0.8fr_auto] xl:items-center">
                                     <div className="min-w-0">
                                         <div className="flex flex-wrap items-center gap-2">
-                                            <div className="truncate text-base font-black text-slate-950">Factura {invoice.invoiceNumber || '-'}</div>
+                                            <div className={`truncate text-base font-black ${isAnnulled ? 'text-red-900' : 'text-slate-950'}`}>Factura {invoice.invoiceNumber || '-'}</div>
                                             <Badge tone={invoice.source === 'sicar_factura' ? 'blue' : 'slate'}>{invoice.source === 'sicar_factura' ? 'SICAR' : 'Manual'}</Badge>
                                             <Badge tone={closureInfo.status === 'vinculada' ? 'green' : closureInfo.status === 'sin_cierre' ? 'amber' : 'slate'}>{closureInfo.status === 'vinculada' ? 'Con cierre' : closureInfo.status === 'sin_cierre' ? 'Sin cierre' : 'Pendiente'}</Badge>
+                                            {isAnnulled && <Badge tone="red">ANULADA</Badge>}
+                                            {invoice.creditStatusLabel && (
+                                                <Badge tone={invoice.creditStatus === 'cancelled' ? 'green' : invoice.creditStatus === 'partial' ? 'blue' : 'amber'}>
+                                                    {invoice.creditStatusLabel}
+                                                </Badge>
+                                            )}
                                         </div>
-                                        <div className="mt-1 text-sm font-bold text-slate-600">{invoice.customerName || invoice.cliente || 'Sin cliente'}</div>
-                                        <div className="mt-1 text-xs font-bold text-slate-400">{invoice.date || '-'} · RUC {invoice.customerRfc || invoice.rfc || '-'} · {(invoice.items || []).length} articulo(s)</div>
-                                        <div className="mt-2 rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-black text-slate-600">
-                                            Cierre de caja vinculado: <span className="text-slate-950">{closureInfo.label}</span>
+                                        <div className={`mt-1 text-sm font-bold ${isAnnulled ? 'text-red-700' : 'text-slate-600'}`}>{invoice.customerName || invoice.cliente || 'Sin cliente'}</div>
+                                        <div className={`mt-1 text-xs font-bold ${isAnnulled ? 'text-red-500' : 'text-slate-400'}`}>{invoice.date || '-'} · RUC {invoice.customerRfc || invoice.rfc || '-'} · {(invoice.items || []).length} articulo(s)</div>
+                                        <div className={`mt-2 rounded-2xl border px-3 py-2 text-xs font-black ${isAnnulled ? 'border-red-200 bg-white text-red-700' : 'border-slate-200 bg-slate-50 text-slate-600'}`}>
+                                            Cierre de caja vinculado: <span className={isAnnulled ? 'text-red-900' : 'text-slate-950'}>{closureInfo.label}</span>
                                         </div>
+                                        {invoice.creditStatusLabel && (
+                                            <div className="mt-2 rounded-2xl border border-sky-200 bg-sky-50 px-3 py-2 text-xs font-black text-sky-800">
+                                                Abonado {fmt(invoice.creditPaidAmount)} · Saldo {fmt(invoice.creditBalance)}
+                                            </div>
+                                        )}
                                     </div>
 
                                     <div className="grid grid-cols-2 gap-2 text-xs font-bold text-slate-500">
                                         <div>
                                             <div className="text-[10px] font-black uppercase tracking-[0.18em] text-slate-400">Subtotal</div>
-                                            <div className="font-mono text-sm font-black text-slate-950">{fmt(invoice.subtotal)}</div>
+                                            <div className={`font-mono text-sm font-black ${isAnnulled ? 'text-red-800' : 'text-slate-950'}`}>{fmt(invoice.subtotal)}</div>
                                         </div>
                                         <div>
                                             <div className="text-[10px] font-black uppercase tracking-[0.18em] text-slate-400">Total</div>
-                                            <div className="font-mono text-sm font-black text-emerald-700">{fmt(invoice.total)}</div>
+                                            <div className={`font-mono text-sm font-black ${isAnnulled ? 'text-red-800' : 'text-emerald-700'}`}>{fmt(invoice.total)}</div>
                                         </div>
                                         <div>
                                             <div className="text-[10px] font-black uppercase tracking-[0.18em] text-slate-400">IVA</div>
-                                            <div className="font-mono text-sm font-black text-sky-700">{fmt(invoice.iva)}</div>
+                                            <div className={`font-mono text-sm font-black ${isAnnulled ? 'text-red-700' : 'text-sky-700'}`}>{fmt(invoice.iva)}</div>
                                         </div>
                                         <div>
                                             <div className="text-[10px] font-black uppercase tracking-[0.18em] text-slate-400">Ret.</div>
-                                            <div className="font-mono text-sm font-black text-amber-700">{fmt(invoice.retentionTotal || 0)}</div>
+                                            <div className={`font-mono text-sm font-black ${isAnnulled ? 'text-red-700' : 'text-amber-700'}`}>{fmt(invoice.retentionTotal || 0)}</div>
                                         </div>
                                     </div>
 
                                     <Field label="Metodo">
-                                        <PaymentMethodSelect value={invoice.paymentMethod || ''} onChange={(value) => updatePaymentMethod(invoice, value)} />
+                                        <PaymentMethodSelect value={invoice.paymentMethod || ''} onChange={(value) => updatePaymentMethod(invoice, value)} disabled={isAnnulled} />
                                         <PaymentBreakdownPreview invoice={invoice} />
                                     </Field>
 
@@ -6126,7 +7177,8 @@ function StampedInvoiceHistory({ data }) {
                                         <button
                                             type="button"
                                             onClick={() => openInvoiceEdit(invoice)}
-                                            className="rounded-xl bg-[#e30613] px-4 py-3 text-xs font-black uppercase tracking-[0.14em] text-white transition hover:bg-red-700"
+                                            disabled={isAnnulled}
+                                            className="rounded-xl bg-[#e30613] px-4 py-3 text-xs font-black uppercase tracking-[0.14em] text-white transition hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-50"
                                         >
                                             Editar
                                         </button>
@@ -6141,9 +7193,19 @@ function StampedInvoiceHistory({ data }) {
                                             <button
                                                 type="button"
                                                 onClick={() => markInvoiceWithoutClosure(invoice)}
-                                                className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs font-black uppercase tracking-[0.14em] text-amber-800 transition hover:bg-amber-100"
+                                                disabled={isAnnulled}
+                                                className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs font-black uppercase tracking-[0.14em] text-amber-800 transition hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-50"
                                             >
                                                 Sin cierre
+                                            </button>
+                                        )}
+                                        {!isAnnulled && (
+                                            <button
+                                                type="button"
+                                                onClick={() => annulInvoice(invoice)}
+                                                className="rounded-xl border border-red-300 bg-red-50 px-4 py-3 text-xs font-black uppercase tracking-[0.14em] text-red-800 transition hover:bg-red-100"
+                                            >
+                                                Anular
                                             </button>
                                         )}
                                     </div>
@@ -6533,6 +7595,208 @@ const getCashClosureReceipts = (closure = {}) => {
     return (closure.cashReceiptIds || []).map((id) => ({ id, docId: id, receiptNumber: id, amount: 0 }));
 };
 
+const escapeClosureReportXml = (value) => String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+
+const isClosureReportCurrencyHeader = (header = '') => (
+    [
+        'subtotal',
+        'iva',
+        'total',
+        'nettotal',
+        'retentionir2',
+        'retentionmunicipal1',
+        'retentiontotal',
+        'retencionir2',
+        'retencionmunicipal1',
+        'retenciontotal',
+    ].includes(
+        normalizeText(header)
+            .replace(/[^A-Z0-9]/g, '')
+            .toLowerCase()
+    )
+);
+
+const safeClosureReportSheetName = (value = 'Reporte') => (
+    String(value || 'Reporte')
+        .replace(/[\\/?*[\]:]/g, ' ')
+        .trim()
+        .slice(0, 31) || 'Reporte'
+);
+
+const buildClosureReportWorksheetXml = ({ name = 'Reporte', rows = [] }) => {
+    const headers = rows.length ? Object.keys(rows[0]) : [];
+    const rowXml = [
+        `<Row>${headers.map((header) => `<Cell ss:StyleID="Header"><Data ss:Type="String">${escapeClosureReportXml(header)}</Data></Cell>`).join('')}</Row>`,
+        ...rows.map((row) => (
+            `<Row>${headers.map((header) => {
+                const value = row[header];
+                const isNumber = typeof value === 'number' && Number.isFinite(value);
+                const style = isNumber && isClosureReportCurrencyHeader(header) ? 'Currency' : 'Text';
+                return `<Cell ss:StyleID="${style}"><Data ss:Type="${isNumber ? 'Number' : 'String'}">${escapeClosureReportXml(value)}</Data></Cell>`;
+            }).join('')}</Row>`
+        )),
+    ].join('');
+
+    return `<Worksheet ss:Name="${escapeClosureReportXml(safeClosureReportSheetName(name))}">
+        <Table>${rowXml}</Table>
+        <WorksheetOptions xmlns="urn:schemas-microsoft-com:office:excel">
+            <Selected/>
+            <Panes><Pane><Number>3</Number><ActiveRow>1</ActiveRow></Pane></Panes>
+        </WorksheetOptions>
+    </Worksheet>`;
+};
+
+const downloadClosureReportXls = (filename, sheets = []) => {
+    const filledSheets = (Array.isArray(sheets) ? sheets : []).filter((sheet) => (sheet.rows || []).length);
+    if (!filledSheets.length) return;
+
+    const workbook = `<?xml version="1.0" encoding="UTF-8"?>
+<?mso-application progid="Excel.Sheet"?>
+<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet"
+    xmlns:o="urn:schemas-microsoft-com:office:office"
+    xmlns:x="urn:schemas-microsoft-com:office:excel"
+    xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet"
+    xmlns:html="http://www.w3.org/TR/REC-html40">
+    <Styles>
+        <Style ss:ID="Header">
+            <Font ss:Bold="1" ss:Color="#FFFFFF"/>
+            <Interior ss:Color="#9F111A" ss:Pattern="Solid"/>
+            <Borders>
+                <Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#D8DEE6"/>
+                <Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#D8DEE6"/>
+                <Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#D8DEE6"/>
+                <Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#D8DEE6"/>
+            </Borders>
+        </Style>
+        <Style ss:ID="Text">
+            <Borders>
+                <Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#D8DEE6"/>
+                <Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#D8DEE6"/>
+                <Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#D8DEE6"/>
+                <Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#D8DEE6"/>
+            </Borders>
+        </Style>
+        <Style ss:ID="Currency">
+            <NumberFormat ss:Format="&quot;C$&quot; #,##0.00"/>
+            <Borders>
+                <Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#D8DEE6"/>
+                <Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#D8DEE6"/>
+                <Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#D8DEE6"/>
+                <Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#D8DEE6"/>
+            </Borders>
+        </Style>
+    </Styles>
+    ${filledSheets.map(buildClosureReportWorksheetXml).join('')}
+</Workbook>`;
+    const blob = new Blob([workbook], { type: 'application/vnd.ms-excel;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    link.click();
+    URL.revokeObjectURL(url);
+};
+
+const buildCashClosureReportContext = (closure = {}) => {
+    const exchangeRate = safeNumber(closure.exchangeRate || closure.preCloseDeposit?.exchangeRate || CASH_CLOSURE_EXCHANGE_RATE);
+    const linkedInvoices = getCashClosureInvoices(closure);
+    const linkedReceipts = getCashClosureReceipts(closure);
+    const transferRows = TRANSFER_BANKS.flatMap((bank) => (
+        getClosureBankRows(closure.transferDetails, bank.key).map((row, index) => ({
+            ...row,
+            bank: bank.label,
+            currency: bank.currency || 'NIO',
+            exchangeRate: getTransferBankExchangeRate(bank),
+            amountCordobas: safeNumber(safeNumber(row.amount ?? row.total ?? row.value) * getTransferBankExchangeRate(bank)),
+            id: row.localId || row.id || `${bank.key}-transfer-${index}`,
+        }))
+    ));
+    const posRows = POS_BANKS.flatMap((bank) => (
+        getClosureBankRows(closure.posDetails, bank.key).map((row, index) => ({
+            ...row,
+            bank: bank.label,
+            id: row.localId || row.id || `${bank.key}-pos-${index}`,
+        }))
+    ));
+    const transferTotal = getClosureRowsTotal(transferRows);
+    const posTotal = getClosureRowsTotal(posRows);
+    const status = closure.status || 'cerrado';
+    const sicar = closure.sicar || {};
+    const code = closure.code || closure.linkedSicarCorId || sicar.corId || sicar.cor_id || closure.id;
+    const cashboxName = closure.cashboxName || sicar.cashboxName || sicar.cajaName || sicar.caja || 'Caja';
+    const preClose = closure.preCloseDeposit || {};
+    const detailNetSalesTotals = getNetSicarSalesTotals({ ...sicar, ...closure });
+    const detailAccountingSummary = closure.accountingSummary
+        ? normalizeClosureAccountingSummarySales(closure.accountingSummary, detailNetSalesTotals, closure)
+        : buildClosureAccountingSummary({
+            cashSalesTotal: detailNetSalesTotals.cashSalesNetTotal,
+            creditSalesTotal: detailNetSalesTotals.creditSalesNetTotal,
+            creditRecoveryTotal: closure.creditRecoveryTotal || sicar.creditRecoveryTotal || sicar.recuperacionCredito || sicar.entCre,
+            stampedInvoices: linkedInvoices,
+            cashReceipts: linkedReceipts,
+            transferTotals: closure.transferTotals || {},
+            posTotals: closure.posTotals || {},
+            cashCordobasTotal: closure.cashCordobasTotal,
+            dollarCashTotalCordobas: closure.dollarCashTotalCordobas,
+            preCloseDepositTotal: closure.preCloseDepositTotal || closure.preCloseDeposit?.totalCordobas,
+        });
+
+    return {
+        exchangeRate,
+        linkedInvoices,
+        linkedReceipts,
+        transferRows,
+        posRows,
+        transferTotal,
+        posTotal,
+        status,
+        sicar,
+        code,
+        cashboxName,
+        preClose,
+        detailAccountingSummary,
+    };
+};
+
+const buildCashClosureRcReportSheets = (closure = {}) => {
+    const context = buildCashClosureReportContext(closure);
+    const stamped = context.detailAccountingSummary?.stampedDocuments || {};
+    const payment = context.detailAccountingSummary?.paymentBreakdown || {};
+    const ratio = context.detailAccountingSummary?.internalRatio || {};
+
+    const summaryRows = [
+        { Seccion: 'Cierre', Concepto: 'Fecha', Detalle: closure.date || '-', Total: '' },
+        { Seccion: 'Cierre', Concepto: 'Caja', Detalle: context.cashboxName || '-', Total: '' },
+        { Seccion: 'Cierre', Concepto: 'Cajero', Detalle: closure.cashierName || 'Sin cajero', Total: '' },
+        { Seccion: 'Cierre', Concepto: 'Codigo cierre', Detalle: context.code || '-', Total: '' },
+        { Seccion: 'Cierre', Concepto: 'RCC', Detalle: closure.linkedSicarRccId || context.sicar.rccId || context.sicar.rcc_id || '-', Total: '' },
+        { Seccion: 'Cierre', Concepto: 'Estado', Detalle: String(context.status || 'cerrado').replace(/_/g, ' '), Total: '' },
+        { Seccion: '1.2 Documentos membretados', Concepto: 'Fact. contado', Detalle: '', Total: safeNumber(stamped.stampedCashInvoices) },
+        { Seccion: '1.2 Documentos membretados', Concepto: 'Fact. credito', Detalle: '', Total: safeNumber(stamped.stampedCreditInvoices) },
+        { Seccion: '1.2 Documentos membretados', Concepto: 'Recibos caja', Detalle: '', Total: safeNumber(stamped.stampedCashReceipts) },
+        { Seccion: '1.4 Metodos de pago', Concepto: 'Tarjeta total', Detalle: '', Total: safeNumber(payment.cardTotal) },
+        { Seccion: '1.4 Metodos de pago', Concepto: 'POS BAC', Detalle: '', Total: safeNumber(payment.posBac) },
+        { Seccion: '1.4 Metodos de pago', Concepto: 'POS Banpro', Detalle: '', Total: safeNumber(payment.posBanpro) },
+        { Seccion: '1.4 Metodos de pago', Concepto: 'POS Lafise', Detalle: '', Total: safeNumber(payment.posLafise) },
+        { Seccion: '1.4 Metodos de pago', Concepto: 'Transferencias', Detalle: '', Total: safeNumber(payment.transferTotal) },
+        { Seccion: '1.4 Metodos de pago', Concepto: 'BAC', Detalle: '', Total: safeNumber(payment.transferBac) },
+        { Seccion: '1.4 Metodos de pago', Concepto: 'BAC (2)', Detalle: '', Total: safeNumber(payment.transferBac2) },
+        { Seccion: '1.4 Metodos de pago', Concepto: 'Banpro', Detalle: '', Total: safeNumber(payment.transferBanpro) },
+        { Seccion: '1.4 Metodos de pago', Concepto: 'Lafise', Detalle: '', Total: safeNumber(payment.transferLafise) },
+        { Seccion: '1.4 Metodos de pago', Concepto: 'BAC USD', Detalle: '', Total: safeNumber(payment.transferBacUsd) },
+        { Seccion: '1.4 Metodos de pago', Concepto: 'Lafise USD', Detalle: '', Total: safeNumber(payment.transferLafiseUsd) },
+        { Seccion: '1.5 Calculo interno', Concepto: 'RC EFECTIVO', Detalle: '', Total: Math.abs(safeNumber(ratio.rc)) },
+    ];
+
+    return [
+        { name: 'RC Contador', rows: summaryRows },
+    ];
+};
+
 const ClosureInfoItem = ({ label, value }) => (
     <div className="rounded-2xl border border-slate-200 bg-slate-50/80 p-4">
         <div className="text-[10px] font-black uppercase tracking-[0.22em] text-slate-400">{label}</div>
@@ -6565,6 +7829,8 @@ const CashClosureEditModal = ({
     form,
     clients = [],
     saving = false,
+    rcValue = 0,
+    rcBlocked = false,
     onClose,
     onSave,
     onUndoConciliation,
@@ -6594,7 +7860,13 @@ const CashClosureEditModal = ({
                         <button type="button" onClick={onUndoConciliation} disabled={saving} className="rounded-2xl border border-amber-300 bg-amber-400 px-4 py-2 text-xs font-black uppercase tracking-[0.16em] text-amber-950 transition hover:bg-amber-300 disabled:opacity-60">
                             Deshacer conciliacion
                         </button>
-                        <button type="button" onClick={onSave} disabled={saving} className="rounded-2xl bg-[#e30613] px-4 py-2 text-xs font-black uppercase tracking-[0.16em] text-white transition hover:bg-red-700 disabled:opacity-60">
+                        <button
+                            type="button"
+                            onClick={onSave}
+                            disabled={saving}
+                            title={rcBlocked ? buildPositiveCashClosureRcMessage(rcValue) : undefined}
+                            className={`rounded-2xl px-4 py-2 text-xs font-black uppercase tracking-[0.16em] transition disabled:opacity-60 ${rcBlocked ? 'border border-red-300 bg-red-50 text-red-800 hover:bg-red-100' : 'bg-[#e30613] text-white hover:bg-red-700'}`}
+                        >
                             {saving ? 'Guardando...' : 'Guardar edicion'}
                         </button>
                         <button type="button" onClick={onClose} className="rounded-2xl bg-white px-4 py-2 text-xs font-black uppercase tracking-[0.16em] text-slate-950 transition hover:bg-slate-200">
@@ -6622,13 +7894,16 @@ const CashClosureEditModal = ({
                         </Field>
                     </div>
 
-                    <div className="grid gap-3 md:grid-cols-5">
+                    <div className="grid gap-3 md:grid-cols-6">
                         <SummaryCard label="Ingresado app" value={fmt(totals.manualTotal)} tone="green" />
                         <SummaryCard label="Esperado neto" value={fmt(totals.expectedAfterRetentions)} tone="blue" />
                         <SummaryCard label="Diferencia" value={fmt(totals.difference)} tone={Math.abs(totals.difference) > 0.01 ? 'red' : 'green'} />
                         <SummaryCard label="Efectivo total" value={fmt(totals.cashTotal)} />
                         <SummaryCard label="Estado sugerido" value={form.status === 'en_espera' ? 'En espera' : totals.shouldTrackDifference ? 'Con diferencia' : 'Cuadrado'} tone={form.status === 'en_espera' ? 'amber' : totals.shouldTrackDifference ? 'red' : 'green'} />
+                        <SummaryCard label="RC" value={fmt(rcValue)} tone={rcBlocked ? 'red' : 'green'} />
                     </div>
+
+                    {rcBlocked && <CashClosureRcAlarm rc={rcValue} />}
 
                     <Section title="Efectivo y deposito pre-cierre" eyebrow="Conteo editable">
                         <div className="mb-4 grid gap-3 md:grid-cols-4">
@@ -6706,58 +7981,30 @@ const CashClosureEditModal = ({
     );
 };
 
-const CashClosureDetailModal = ({ closure, onClose, onEdit }) => {
+const CashClosureDetailModal = ({ closure, onClose, onEdit, onExport }) => {
     const { user } = useAuth();
     const isMaster = isMasterEmail(user?.email);
 
     if (!closure || !isMaster) return null;
 
-    const exchangeRate = safeNumber(closure.exchangeRate || closure.preCloseDeposit?.exchangeRate || CASH_CLOSURE_EXCHANGE_RATE);
+    const context = buildCashClosureReportContext(closure);
+    const exchangeRate = context.exchangeRate;
     const cordobaRows = buildDenominationRows(closure.cashCount, CASH_DENOMINATIONS);
     const dollarRows = buildDenominationRows(closure.dollarCashCount, USD_DENOMINATIONS);
-    const linkedInvoices = getCashClosureInvoices(closure);
-    const linkedReceipts = getCashClosureReceipts(closure);
-    const transferRows = TRANSFER_BANKS.flatMap((bank) => (
-        getClosureBankRows(closure.transferDetails, bank.key).map((row, index) => ({
-            ...row,
-            bank: bank.label,
-            currency: bank.currency || 'NIO',
-            exchangeRate: getTransferBankExchangeRate(bank),
-            amountCordobas: safeNumber(safeNumber(row.amount ?? row.total ?? row.value) * getTransferBankExchangeRate(bank)),
-            id: row.localId || row.id || `${bank.key}-transfer-${index}`,
-        }))
-    ));
-    const posRows = POS_BANKS.flatMap((bank) => (
-        getClosureBankRows(closure.posDetails, bank.key).map((row, index) => ({
-            ...row,
-            bank: bank.label,
-            id: row.localId || row.id || `${bank.key}-pos-${index}`,
-        }))
-    ));
-    const transferTotal = getClosureRowsTotal(transferRows);
-    const posTotal = getClosureRowsTotal(posRows);
+    const linkedInvoices = context.linkedInvoices;
+    const linkedReceipts = context.linkedReceipts;
+    const transferRows = context.transferRows;
+    const posRows = context.posRows;
+    const transferTotal = context.transferTotal;
+    const posTotal = context.posTotal;
     const dollarTotal = dollarRows.reduce((sum, row) => safeNumber(sum + safeNumber(row.denomination * row.quantity)), 0);
-    const status = closure.status || 'cerrado';
+    const status = context.status;
     const statusTone = status === 'con_diferencia' ? 'red' : status === 'en_espera' ? 'amber' : 'green';
-    const sicar = closure.sicar || {};
-    const code = closure.code || closure.linkedSicarCorId || sicar.corId || sicar.cor_id || closure.id;
-    const cashboxName = closure.cashboxName || sicar.cashboxName || sicar.cajaName || sicar.caja || 'Caja';
-    const preClose = closure.preCloseDeposit || {};
-    const detailNetSalesTotals = getNetSicarSalesTotals({ ...sicar, ...closure });
-    const detailAccountingSummary = closure.accountingSummary
-        ? normalizeClosureAccountingSummarySales(closure.accountingSummary, detailNetSalesTotals, closure)
-        : buildClosureAccountingSummary({
-            cashSalesTotal: detailNetSalesTotals.cashSalesNetTotal,
-            creditSalesTotal: detailNetSalesTotals.creditSalesNetTotal,
-            creditRecoveryTotal: closure.creditRecoveryTotal || sicar.creditRecoveryTotal || sicar.recuperacionCredito || sicar.entCre,
-            stampedInvoices: linkedInvoices,
-            cashReceipts: linkedReceipts,
-            transferTotals: closure.transferTotals || {},
-            posTotals: closure.posTotals || {},
-            cashCordobasTotal: closure.cashCordobasTotal,
-            dollarCashTotalCordobas: closure.dollarCashTotalCordobas,
-            preCloseDepositTotal: closure.preCloseDepositTotal || closure.preCloseDeposit?.totalCordobas,
-        });
+    const sicar = context.sicar;
+    const code = context.code;
+    const cashboxName = context.cashboxName;
+    const preClose = context.preClose;
+    const detailAccountingSummary = context.detailAccountingSummary;
 
     return (
         <div className="fixed inset-0 z-[120] flex items-center justify-center p-3 sm:p-6">
@@ -6778,6 +8025,13 @@ const CashClosureDetailModal = ({ closure, onClose, onEdit }) => {
                     </div>
                     <div className="flex items-center gap-2">
                         <Badge tone={statusTone}>{String(status).replace(/_/g, ' ')}</Badge>
+                        <button
+                            type="button"
+                            onClick={() => onExport?.(closure)}
+                            className="rounded-2xl border border-emerald-300 bg-emerald-50 px-4 py-2 text-xs font-black uppercase tracking-[0.18em] text-emerald-800 transition hover:bg-emerald-100"
+                        >
+                            Reporte RC XLS
+                        </button>
                         <button
                             type="button"
                             onClick={() => onEdit?.(closure)}
@@ -7131,6 +8385,33 @@ function CashClosureHistory({ data }) {
         setEditForm(null);
     };
 
+    const exportClosureRcReport = (closure) => {
+        if (!closure?.id) return;
+        const context = buildCashClosureReportContext(closure);
+        const filename = `reporte-contador-rc-${closure.date || todayString()}-${slugify(context.code || closure.id || 'cierre')}.xls`;
+        downloadClosureReportXls(filename, buildCashClosureRcReportSheets(closure));
+        setMessage(`Reporte contador RC generado para el cierre ${context.code || closure.id}.`);
+    };
+
+    const editAccountingSummary = useMemo(() => {
+        if (!editForm || !editClosure) return null;
+        const totals = calculateClosureEditTotals(editForm);
+        return buildClosureAccountingSummary({
+            cashSalesTotal: safeNumber(editForm.cashSalesTotal),
+            creditSalesTotal: safeNumber(editForm.creditSalesTotal),
+            creditRecoveryTotal: safeNumber(editForm.creditRecoveryTotal),
+            stampedInvoices: getCashClosureInvoices(editClosure),
+            cashReceipts: getCashClosureReceipts(editClosure),
+            transferTotals: totals.transferTotals,
+            posTotals: totals.posTotals,
+            cashCordobasTotal: totals.cashCordobasTotal,
+            dollarCashTotalCordobas: totals.dollarCashTotalCordobas,
+            preCloseDepositTotal: totals.preCloseDepositTotal,
+        });
+    }, [editForm, editClosure]);
+    const editClosureRc = getCashClosureRcValue(editAccountingSummary);
+    const isEditClosureRcPositive = editForm?.status !== 'en_espera' && isPositiveCashClosureRc(editClosureRc);
+
     const updateEditField = (key, value) => {
         setEditForm((prev) => {
             if (!prev) return prev;
@@ -7217,30 +8498,40 @@ function CashClosureHistory({ data }) {
 
     const saveEditedClosure = async () => {
         if (!editForm?.id) return;
-        setEditSaving(true);
         setMessage('');
+        const totals = calculateClosureEditTotals(editForm);
+        const cashierCode = editForm.cashierName ? `CAJ-${slugify(editForm.cashierName)}` : '';
+        const nextStatus = editForm.status === 'en_espera'
+            ? 'en_espera'
+            : totals.shouldTrackDifference ? 'con_diferencia' : 'cuadrado';
+        const linkedCashReceipts = getCashClosureReceipts(editClosure);
+        const accountingSummary = buildClosureAccountingSummary({
+            cashSalesTotal: safeNumber(editForm.cashSalesTotal),
+            creditSalesTotal: safeNumber(editForm.creditSalesTotal),
+            creditRecoveryTotal: safeNumber(editForm.creditRecoveryTotal),
+            stampedInvoices: getCashClosureInvoices(editClosure),
+            cashReceipts: linkedCashReceipts,
+            transferTotals: totals.transferTotals,
+            posTotals: totals.posTotals,
+            cashCordobasTotal: totals.cashCordobasTotal,
+            dollarCashTotalCordobas: totals.dollarCashTotalCordobas,
+            preCloseDepositTotal: totals.preCloseDepositTotal,
+        });
+
+        if (nextStatus !== 'en_espera') {
+            try {
+                assertCashClosureRcAllowed(accountingSummary);
+            } catch (error) {
+                setMessage(error?.message || CASH_CLOSURE_POSITIVE_RC_MESSAGE);
+                return;
+            }
+        }
+
+        setEditSaving(true);
         try {
-            const totals = calculateClosureEditTotals(editForm);
-            const cashierCode = editForm.cashierName ? `CAJ-${slugify(editForm.cashierName)}` : '';
-            const nextStatus = editForm.status === 'en_espera'
-                ? 'en_espera'
-                : totals.shouldTrackDifference ? 'con_diferencia' : 'cuadrado';
             const batch = writeBatch(db);
             const nextDifferenceId = `${editForm.id}_${cashierCode}`;
             const editedClosureDate = editForm.date || todayString();
-            const linkedCashReceipts = getCashClosureReceipts(editClosure);
-            const accountingSummary = buildClosureAccountingSummary({
-                cashSalesTotal: safeNumber(editForm.cashSalesTotal),
-                creditSalesTotal: safeNumber(editForm.creditSalesTotal),
-                creditRecoveryTotal: safeNumber(editForm.creditRecoveryTotal),
-                stampedInvoices: getCashClosureInvoices(editClosure),
-                cashReceipts: linkedCashReceipts,
-                transferTotals: totals.transferTotals,
-                posTotals: totals.posTotals,
-                cashCordobasTotal: totals.cashCordobasTotal,
-                dollarCashTotalCordobas: totals.dollarCashTotalCordobas,
-                preCloseDepositTotal: totals.preCloseDepositTotal,
-            });
 
             batch.set(doc(db, 'cierres_caja', editForm.id), {
                 date: editedClosureDate,
@@ -7513,6 +8804,13 @@ function CashClosureHistory({ data }) {
                                             )}
                                             <button
                                                 type="button"
+                                                onClick={() => exportClosureRcReport(closure)}
+                                                className="rounded-xl border border-emerald-300 bg-emerald-50 px-3 py-2 text-[10px] font-black uppercase tracking-[0.16em] text-emerald-800 transition hover:bg-emerald-100"
+                                            >
+                                                RC XLS
+                                            </button>
+                                            <button
+                                                type="button"
                                                 onClick={() => openEditClosure(closure)}
                                                 className="rounded-xl bg-slate-950 px-3 py-2 text-[10px] font-black uppercase tracking-[0.16em] text-white transition hover:bg-[#e30613]"
                                             >
@@ -7547,11 +8845,14 @@ function CashClosureHistory({ data }) {
                 closure={detailClosure}
                 onClose={() => setDetailClosure(null)}
                 onEdit={openEditClosure}
+                onExport={exportClosureRcReport}
             />
             <CashClosureEditModal
                 form={editForm}
                 clients={clients}
                 saving={editSaving}
+                rcValue={editClosureRc}
+                rcBlocked={isEditClosureRcPositive}
                 onClose={closeEditClosure}
                 onSave={saveEditedClosure}
                 onUndoConciliation={undoClosureConciliation}
