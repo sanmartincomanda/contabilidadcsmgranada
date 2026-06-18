@@ -564,6 +564,13 @@ const getRecordDate = (value) => {
     return String(value).substring(0, 10);
 };
 
+const matchesHistoryDateFilters = (value, selectedMonth = '', selectedDate = '') => {
+    const recordDate = getRecordDate(value);
+    if (selectedDate) return recordDate === selectedDate;
+    if (!selectedMonth) return true;
+    return getMonth(recordDate) === selectedMonth;
+};
+
 const createLineId = (prefix = 'line') => `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
 const getCashDifferencePendingAmount = (item = {}) => {
@@ -5062,6 +5069,7 @@ function CashReceiptHistory({ data }) {
     const isMaster = isMasterEmail(user?.email);
     const [search, setSearch] = useState('');
     const [selectedMonth, setSelectedMonth] = useState(getMonth(todayString()));
+    const [selectedDate, setSelectedDate] = useState('');
     const [page, setPage] = useState(1);
     const [message, setMessage] = useState('');
     const [printTarget, setPrintTarget] = useState(null);
@@ -5145,8 +5153,8 @@ function CashReceiptHistory({ data }) {
     ]), [receipts, search]);
 
     const filteredReceipts = useMemo(() => (
-        searchedReceipts.filter((receipt) => !selectedMonth || getMonth(receipt.date) === selectedMonth)
-    ), [searchedReceipts, selectedMonth]);
+        searchedReceipts.filter((receipt) => matchesHistoryDateFilters(receipt.date, selectedMonth, selectedDate))
+    ), [searchedReceipts, selectedMonth, selectedDate]);
 
     const pagedReceipts = useMemo(() => paginateRecords(filteredReceipts, page), [filteredReceipts, page]);
     const totals = useMemo(() => (
@@ -5159,7 +5167,7 @@ function CashReceiptHistory({ data }) {
         }), { amount: 0, retentionIr2: 0, retentionMunicipal1: 0, retentionTotal: 0, count: 0 })
     ), [filteredReceipts]);
 
-    useEffect(() => setPage(1), [search, selectedMonth]);
+    useEffect(() => setPage(1), [search, selectedMonth, selectedDate]);
     useEffect(() => {
         if (page !== pagedReceipts.page) setPage(pagedReceipts.page);
     }, [page, pagedReceipts.page]);
@@ -5319,11 +5327,27 @@ function CashReceiptHistory({ data }) {
                     </div>
                 )}
             >
-                <div className="grid gap-3 lg:grid-cols-[1fr_0.35fr]">
+                <div className="grid gap-3 lg:grid-cols-[1fr_0.35fr_0.35fr_auto]">
                     <SearchBox value={search} onChange={setSearch} placeholder="Buscar recibo, cliente, concepto o metodo..." resultLabel={`${searchedReceipts.length} encontrados`} />
                     <Field label="Mes">
                         <input className={inputClass} type="month" value={selectedMonth} onChange={(event) => setSelectedMonth(event.target.value)} />
                     </Field>
+                    <Field label="Dia especifico">
+                        <input className={inputClass} type="date" value={selectedDate} onChange={(event) => setSelectedDate(event.target.value)} />
+                    </Field>
+                    <div className="flex items-end">
+                        <button
+                            type="button"
+                            onClick={() => {
+                                setSearch('');
+                                setSelectedMonth('');
+                                setSelectedDate('');
+                            }}
+                            className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-xs font-black uppercase tracking-[0.16em] text-slate-600 transition hover:border-[#e30613] hover:text-[#e30613]"
+                        >
+                            Limpiar
+                        </button>
+                    </div>
                 </div>
                 {message && <div className="mt-3 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-bold text-slate-700">{message}</div>}
                 <div className="mt-5 grid gap-3 md:grid-cols-3">
@@ -6485,6 +6509,7 @@ const StampedInvoiceEditModal = ({
 function StampedInvoiceHistory({ data }) {
     const [search, setSearch] = useState('');
     const [selectedMonth, setSelectedMonth] = useState(getMonth(todayString()));
+    const [selectedDate, setSelectedDate] = useState('');
     const [paymentMethodFilter, setPaymentMethodFilter] = useState('');
     const [page, setPage] = useState(1);
     const [message, setMessage] = useState('');
@@ -6538,15 +6563,14 @@ function StampedInvoiceHistory({ data }) {
 
     const filteredInvoices = useMemo(() => (
         searchedInvoices.filter((invoice) => {
-            const invoiceMonth = getMonth(invoice.date || invoice.saleDate || '');
-            const matchesMonth = !selectedMonth || invoiceMonth === selectedMonth;
+            const matchesDate = matchesHistoryDateFilters(invoice.date || invoice.saleDate || '', selectedMonth, selectedDate);
             const paymentRows = normalizePaymentBreakdownRows(invoice.paymentBreakdown);
             const matchesPayment = !paymentMethodFilter
                 || normalizeText(invoice.paymentMethod) === normalizeText(paymentMethodFilter)
                 || paymentRows.some((row) => normalizeText(row.method) === normalizeText(paymentMethodFilter));
-            return matchesMonth && matchesPayment;
+            return matchesDate && matchesPayment;
         })
-    ), [searchedInvoices, selectedMonth, paymentMethodFilter]);
+    ), [searchedInvoices, selectedMonth, selectedDate, paymentMethodFilter]);
 
     const pagedInvoices = useMemo(() => (
         paginateRecords(filteredInvoices, page)
@@ -6565,7 +6589,7 @@ function StampedInvoiceHistory({ data }) {
 
     useEffect(() => {
         setPage(1);
-    }, [search, selectedMonth, paymentMethodFilter]);
+    }, [search, selectedMonth, selectedDate, paymentMethodFilter]);
 
     useEffect(() => {
         if (page !== pagedInvoices.page) setPage(pagedInvoices.page);
@@ -7059,7 +7083,7 @@ function StampedInvoiceHistory({ data }) {
                     eyebrow="Facturas ya registradas"
                     action={<Badge tone="green">{filteredInvoices.length} de {savedInvoices.length}</Badge>}
                 >
-                    <div className="grid gap-3 lg:grid-cols-[1.4fr_0.55fr_0.8fr_auto]">
+                    <div className="grid gap-3 lg:grid-cols-[1.4fr_0.5fr_0.5fr_0.8fr_auto]">
                         <SearchBox
                             value={search}
                             onChange={setSearch}
@@ -7068,6 +7092,9 @@ function StampedInvoiceHistory({ data }) {
                         />
                         <Field label="Mes">
                             <input className={inputClass} type="month" value={selectedMonth} onChange={(event) => setSelectedMonth(event.target.value)} />
+                        </Field>
+                        <Field label="Dia especifico">
+                            <input className={inputClass} type="date" value={selectedDate} onChange={(event) => setSelectedDate(event.target.value)} />
                         </Field>
                         <Field label="Metodo de pago">
                             <select className={inputClass} value={paymentMethodFilter} onChange={(event) => setPaymentMethodFilter(event.target.value)}>
@@ -7083,6 +7110,7 @@ function StampedInvoiceHistory({ data }) {
                                 onClick={() => {
                                     setSearch('');
                                     setSelectedMonth('');
+                                    setSelectedDate('');
                                     setPaymentMethodFilter('');
                                 }}
                                 className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-xs font-black uppercase tracking-[0.16em] text-slate-600 transition hover:border-[#e30613] hover:text-[#e30613]"
@@ -7287,11 +7315,17 @@ function CashDifferences({ data }) {
     const { user } = useAuth();
     const isMaster = isMasterEmail(user?.email);
     const [message, setMessage] = useState('');
+    const [selectedMonth, setSelectedMonth] = useState('');
+    const [selectedDate, setSelectedDate] = useState('');
 
     const differences = useMemo(() => (
         [...(data.diferencias_caja || [])]
             .sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')))
     ), [data.diferencias_caja]);
+
+    const filteredDifferences = useMemo(() => (
+        differences.filter((item) => matchesHistoryDateFilters(item.date, selectedMonth, selectedDate))
+    ), [differences, selectedMonth, selectedDate]);
 
     const byCashier = useMemo(() => {
         const map = new Map();
@@ -7431,7 +7465,27 @@ function CashDifferences({ data }) {
                 </div>
             </Section>
 
-            <Section title="Movimientos" eyebrow="Auditoria">
+            <Section title="Movimientos" eyebrow="Auditoria" action={<Badge tone="blue">{filteredDifferences.length} registros</Badge>}>
+                <div className="mb-4 grid gap-3 md:grid-cols-[0.4fr_0.4fr_auto]">
+                    <Field label="Mes">
+                        <input className={inputClass} type="month" value={selectedMonth} onChange={(event) => setSelectedMonth(event.target.value)} />
+                    </Field>
+                    <Field label="Dia especifico">
+                        <input className={inputClass} type="date" value={selectedDate} onChange={(event) => setSelectedDate(event.target.value)} />
+                    </Field>
+                    <div className="flex items-end">
+                        <button
+                            type="button"
+                            onClick={() => {
+                                setSelectedMonth('');
+                                setSelectedDate('');
+                            }}
+                            className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-xs font-black uppercase tracking-[0.16em] text-slate-600 transition hover:border-[#e30613] hover:text-[#e30613]"
+                        >
+                            Limpiar
+                        </button>
+                    </div>
+                </div>
                 <div className="overflow-x-auto">
                     <table className="min-w-full text-left text-sm">
                         <thead>
@@ -7445,7 +7499,7 @@ function CashDifferences({ data }) {
                             </tr>
                         </thead>
                         <tbody>
-                            {differences.map((item) => (
+                            {filteredDifferences.map((item) => (
                                 <tr key={item.id} className="border-b border-slate-100">
                                     <td className="py-3 pr-4 font-bold text-slate-700">{item.date || '-'}</td>
                                     <td className="py-3 pr-4 font-black text-slate-950">{item.cashierName || 'Sin cajero'}</td>
@@ -7455,7 +7509,7 @@ function CashDifferences({ data }) {
                                     <td className="py-3 text-right font-mono font-black text-slate-900">{fmt(getCashDifferencePendingAmount(item))}</td>
                                 </tr>
                             ))}
-                            {differences.length === 0 && (
+                            {filteredDifferences.length === 0 && (
                                 <tr>
                                     <td className="py-10 text-center text-sm font-bold text-slate-400" colSpan="6">Sin movimientos.</td>
                                 </tr>
@@ -8289,6 +8343,7 @@ function CashClosureHistory({ data }) {
     const isMaster = isMasterEmail(user?.email);
     const [search, setSearch] = useState('');
     const [selectedMonth, setSelectedMonth] = useState(getMonth(todayString()));
+    const [selectedDate, setSelectedDate] = useState('');
     const [statusFilter, setStatusFilter] = useState('');
     const [page, setPage] = useState(1);
     const [detailClosure, setDetailClosure] = useState(null);
@@ -8345,11 +8400,11 @@ function CashClosureHistory({ data }) {
 
     const filteredClosures = useMemo(() => (
         searchedClosures.filter((closure) => {
-            const matchesMonth = !selectedMonth || getMonth(closure.date) === selectedMonth;
+            const matchesDate = matchesHistoryDateFilters(closure.date, selectedMonth, selectedDate);
             const matchesStatus = !statusFilter || normalizeText(closure.status) === normalizeText(statusFilter);
-            return matchesMonth && matchesStatus;
+            return matchesDate && matchesStatus;
         })
-    ), [searchedClosures, selectedMonth, statusFilter]);
+    ), [searchedClosures, selectedMonth, selectedDate, statusFilter]);
 
     const pagedClosures = useMemo(() => paginateRecords(filteredClosures, page), [filteredClosures, page]);
 
@@ -8366,7 +8421,7 @@ function CashClosureHistory({ data }) {
 
     useEffect(() => {
         setPage(1);
-    }, [search, selectedMonth, statusFilter]);
+    }, [search, selectedMonth, selectedDate, statusFilter]);
 
     useEffect(() => {
         if (page !== pagedClosures.page) setPage(pagedClosures.page);
@@ -8714,7 +8769,7 @@ function CashClosureHistory({ data }) {
     return (
         <div className="space-y-5">
             <Section title="Historial de cierres de caja" eyebrow="Auditoria de caja" action={<Badge tone="blue">{filteredClosures.length} cierres</Badge>}>
-                <div className="grid gap-3 lg:grid-cols-[1.4fr_0.55fr_0.7fr_auto]">
+                <div className="grid gap-3 lg:grid-cols-[1.4fr_0.5fr_0.5fr_0.7fr_auto]">
                     <SearchBox
                         value={search}
                         onChange={setSearch}
@@ -8723,6 +8778,9 @@ function CashClosureHistory({ data }) {
                     />
                     <Field label="Mes">
                         <input className={inputClass} type="month" value={selectedMonth} onChange={(event) => setSelectedMonth(event.target.value)} />
+                    </Field>
+                    <Field label="Dia especifico">
+                        <input className={inputClass} type="date" value={selectedDate} onChange={(event) => setSelectedDate(event.target.value)} />
                     </Field>
                     <Field label="Estado">
                         <select className={inputClass} value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}>
@@ -8738,6 +8796,7 @@ function CashClosureHistory({ data }) {
                             onClick={() => {
                                 setSearch('');
                                 setSelectedMonth('');
+                                setSelectedDate('');
                                 setStatusFilter('');
                             }}
                             className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-xs font-black uppercase tracking-[0.16em] text-slate-600 transition hover:border-[#e30613] hover:text-[#e30613]"
@@ -8872,6 +8931,7 @@ function CashClosureHistory({ data }) {
 function RetentionHistory({ data, type }) {
     const [search, setSearch] = useState('');
     const [selectedMonth, setSelectedMonth] = useState(getMonth(todayString()));
+    const [selectedDate, setSelectedDate] = useState('');
     const [page, setPage] = useState(1);
     const isMunicipal = type === 'municipal';
     const amountField = isMunicipal ? 'retentionMunicipal1' : 'retentionIr2';
@@ -8909,8 +8969,8 @@ function RetentionHistory({ data, type }) {
     ]), [retentions, search]);
 
     const filteredRetentions = useMemo(() => (
-        searchedRetentions.filter((invoice) => !selectedMonth || getMonth(invoice.date) === selectedMonth)
-    ), [searchedRetentions, selectedMonth]);
+        searchedRetentions.filter((invoice) => matchesHistoryDateFilters(invoice.date, selectedMonth, selectedDate))
+    ), [searchedRetentions, selectedMonth, selectedDate]);
 
     const pagedRetentions = useMemo(() => paginateRecords(filteredRetentions, page), [filteredRetentions, page]);
     const totalRetention = useMemo(() => (
@@ -8919,7 +8979,7 @@ function RetentionHistory({ data, type }) {
 
     useEffect(() => {
         setPage(1);
-    }, [search, selectedMonth]);
+    }, [search, selectedMonth, selectedDate]);
 
     useEffect(() => {
         if (page !== pagedRetentions.page) setPage(pagedRetentions.page);
@@ -8928,7 +8988,7 @@ function RetentionHistory({ data, type }) {
     return (
         <div className="space-y-5">
             <Section title={title} eyebrow={eyebrow} action={<Badge tone="amber">No editable</Badge>}>
-                <div className="grid gap-3 md:grid-cols-[1fr_0.35fr_auto]">
+                <div className="grid gap-3 md:grid-cols-[1fr_0.35fr_0.35fr_auto]">
                     <SearchBox
                         value={search}
                         onChange={setSearch}
@@ -8938,12 +8998,16 @@ function RetentionHistory({ data, type }) {
                     <Field label="Mes">
                         <input className={inputClass} type="month" value={selectedMonth} onChange={(event) => setSelectedMonth(event.target.value)} />
                     </Field>
+                    <Field label="Dia especifico">
+                        <input className={inputClass} type="date" value={selectedDate} onChange={(event) => setSelectedDate(event.target.value)} />
+                    </Field>
                     <div className="flex items-end">
                         <button
                             type="button"
                             onClick={() => {
                                 setSearch('');
                                 setSelectedMonth('');
+                                setSelectedDate('');
                             }}
                             className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-xs font-black uppercase tracking-[0.16em] text-slate-600 transition hover:border-[#e30613] hover:text-[#e30613]"
                         >
