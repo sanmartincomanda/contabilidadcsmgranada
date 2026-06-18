@@ -1184,7 +1184,7 @@ function AppContent() {
             <Header moduleAccess={moduleAccess} isMaster={isMaster} defaultPath={defaultAllowedPath} />
             <AnimatePresence mode="wait" initial={false}>
                 <motion.main
-                    key={`${location.pathname}${location.search}`}
+                    key={location.pathname}
                     className="app-route-shell p-4 md:p-6"
                     initial={pageMotion.initial}
                     animate={pageMotion.animate}
