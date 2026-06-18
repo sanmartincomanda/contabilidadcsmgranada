@@ -246,19 +246,21 @@ async function main() {
 
     if (!lastCorId) {
       lastCorId = await getCurrentMaxCorId(connection);
-      writeState(options.statePath, {
-        lastCorId,
-        bootstrappedAt: new Date().toISOString(),
-        startupBackfillDays: options.skipStartupBackfill ? 0 : Math.max(1, Math.min(Number(options.startupBackfillDays || DEFAULT_STARTUP_BACKFILL_DAYS), 31)),
-        note: 'Estado inicial creado con MAX(cor_id); antes de escuchar nuevos cierres se verifica un backfill reciente idempotente.',
-      });
-      console.log(`[${new Date().toISOString()}] Watcher de cierres iniciado desde cor_id ${lastCorId}.`);
+      if (!options.preview) {
+        writeState(options.statePath, {
+          lastCorId,
+          bootstrappedAt: new Date().toISOString(),
+          startupBackfillDays: options.skipStartupBackfill ? 0 : Math.max(1, Math.min(Number(options.startupBackfillDays || DEFAULT_STARTUP_BACKFILL_DAYS), 31)),
+          note: 'Estado inicial creado con MAX(cor_id); antes de escuchar nuevos cierres se verifica un backfill reciente idempotente.',
+        });
+      }
+      console.log(`[${new Date().toISOString()}] Watcher de cierres iniciado${options.preview ? ' en preview' : ''} desde cor_id ${lastCorId}.`);
     } else {
       if (backfill.maxCorId > lastCorId) {
         lastCorId = backfill.maxCorId;
-        writeState(options.statePath, { ...state, lastCorId });
+        if (!options.preview) writeState(options.statePath, { ...state, lastCorId });
       }
-      console.log(`[${new Date().toISOString()}] Watcher de cierres iniciado. Ultimo cor_id conocido: ${lastCorId}.`);
+      console.log(`[${new Date().toISOString()}] Watcher de cierres iniciado${options.preview ? ' en preview' : ''}. Ultimo cor_id conocido: ${lastCorId}.`);
     }
 
     do {
@@ -267,14 +269,14 @@ async function main() {
           const recentBackfill = await processRecentBackfill({ connection, db, options });
           if (recentBackfill.maxCorId > lastCorId) {
             lastCorId = recentBackfill.maxCorId;
-            writeState(options.statePath, { ...readState(options.statePath), lastCorId });
+            if (!options.preview) writeState(options.statePath, { ...readState(options.statePath), lastCorId });
           }
         }
 
         const result = await processNewClosures({ connection, db, lastCorId, options });
         if (result.lastCorId !== lastCorId) {
           lastCorId = result.lastCorId;
-          writeState(options.statePath, { ...readState(options.statePath), lastCorId });
+          if (!options.preview) writeState(options.statePath, { ...readState(options.statePath), lastCorId });
         }
       } catch (error) {
         console.error(`[${new Date().toISOString()}] Error sincronizando cierres SICAR:`, error.message || error);
