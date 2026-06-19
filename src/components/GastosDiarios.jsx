@@ -266,6 +266,9 @@ export default function GastosDiarios({ categories = [], providers = [] }) {
     const [pinInput, setPinInput] = useState('');
     const [depositAmount, setDepositAmount] = useState('10000');
     const [depositConfirmPin, setDepositConfirmPin] = useState('');
+    const [adjustTargetBalance, setAdjustTargetBalance] = useState('');
+    const [adjustConfirmPin, setAdjustConfirmPin] = useState('');
+    const [adjustReason, setAdjustReason] = useState('');
     const [cashMovements, setCashMovements] = useState([]);
     const [cashboxError, setCashboxError] = useState('');
     const [voucherToPrint, setVoucherToPrint] = useState(null);
@@ -426,6 +429,70 @@ export default function GastosDiarios({ categories = [], providers = [] }) {
         } catch (error) {
             console.error('Error depositando caja chica:', error);
             setCashboxError('No se pudo registrar el deposito: ' + error.message);
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    const handleManualBalanceAdjustment = async (e) => {
+        e.preventDefault();
+        const targetBalance = Number(adjustTargetBalance);
+        if (!cashboxUnlocked) return;
+        if (adjustConfirmPin !== PETTY_CASH_PIN) {
+            setCashboxError('Confirma el ajuste repitiendo el PIN correcto.');
+            return;
+        }
+        if (!Number.isFinite(targetBalance) || targetBalance < 0) {
+            setCashboxError('Ingrese un saldo manual valido.');
+            return;
+        }
+
+        const currentBalance = Number(cashboxBalance.toFixed(2));
+        const difference = Number((targetBalance - currentBalance).toFixed(2));
+        if (difference === 0) {
+            setCashboxError('El saldo ingresado es igual al saldo actual. No se genero ajuste.');
+            return;
+        }
+
+        setLoading(true);
+        try {
+            const adjustmentRef = createPettyCashRef();
+            const direction = difference > 0 ? 'entrada' : 'salida';
+            const amount = Math.abs(difference);
+            const description = [
+                `AJUSTE MANUAL CAJA CHICA ${fmt(currentBalance)} A ${fmt(targetBalance)}`,
+                adjustReason.trim() ? `MOTIVO: ${adjustReason.trim()}` : '',
+            ].filter(Boolean).join(' - ');
+            const batch = writeBatch(db);
+            batch.set(adjustmentRef, {
+                ...buildPettyCashMovementPayload({
+                    direction,
+                    movementType: 'ajuste',
+                    fecha: getToday(),
+                    amount,
+                    accountingTotal: amount,
+                    cashPaidAmount: amount,
+                    description,
+                    paymentType: 'EFECTIVO',
+                    paymentReference: 'AJUSTE MANUAL',
+                    sourceCollection: 'caja_chica_ajustes',
+                    sourceDocId: adjustmentRef.id,
+                }),
+                previousBalance: currentBalance,
+                adjustedBalance: Number(targetBalance.toFixed(2)),
+                balanceDifference: difference,
+                adjustmentReason: adjustReason.trim(),
+                requiresPin: true,
+            });
+            await batch.commit();
+            setAdjustTargetBalance('');
+            setAdjustConfirmPin('');
+            setAdjustReason('');
+            setCashboxError('');
+            await cargarMovimientosCaja();
+        } catch (error) {
+            console.error('Error ajustando caja chica:', error);
+            setCashboxError('No se pudo registrar el ajuste: ' + error.message);
         } finally {
             setLoading(false);
         }
@@ -917,6 +984,41 @@ export default function GastosDiarios({ categories = [], providers = [] }) {
                                     />
                                     <Button type="submit" variant="success" disabled={loading} className="w-full">
                                         {loading ? 'Depositando...' : 'Confirmar deposito'}
+                                    </Button>
+                                </form>
+                                <form onSubmit={handleManualBalanceAdjustment} className="space-y-3 rounded-xl border border-amber-200 bg-amber-50 p-4">
+                                    <div>
+                                        <div className="text-xs font-black uppercase tracking-[0.22em] text-amber-800">Ajustar saldo manualmente</div>
+                                        <div className="mt-1 text-xs font-semibold text-amber-700">
+                                            Ingresa el saldo real contado. El sistema registrara solo la diferencia como ajuste auditado.
+                                        </div>
+                                    </div>
+                                    <Input
+                                        label="Saldo real contado"
+                                        type="number"
+                                        step="0.01"
+                                        min="0"
+                                        icon="dollar"
+                                        placeholder="0.00"
+                                        value={adjustTargetBalance}
+                                        onChange={e => setAdjustTargetBalance(e.target.value)}
+                                    />
+                                    <Input
+                                        label="Motivo / nota opcional"
+                                        icon="fileText"
+                                        placeholder="Ej: arqueo, sobrante, faltante..."
+                                        value={adjustReason}
+                                        onChange={e => setAdjustReason(e.target.value)}
+                                    />
+                                    <Input
+                                        label="Confirmar PIN"
+                                        type="password"
+                                        icon="cash"
+                                        value={adjustConfirmPin}
+                                        onChange={e => setAdjustConfirmPin(e.target.value)}
+                                    />
+                                    <Button type="submit" variant="warning" disabled={loading} className="w-full">
+                                        {loading ? 'Ajustando...' : 'Aplicar ajuste de saldo'}
                                     </Button>
                                 </form>
                                 <Button type="button" variant="ghost" onClick={() => setCashboxUnlocked(false)} className="w-full">
