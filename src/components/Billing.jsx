@@ -2188,6 +2188,7 @@ function CashClosure({ data }) {
     const [closureReceiptPage, setClosureReceiptPage] = useState(1);
     const [quickInvoiceNumber, setQuickInvoiceNumber] = useState('');
     const [activeClosureInvoiceLocalId, setActiveClosureInvoiceLocalId] = useState('');
+    const [closureSuccessOpen, setClosureSuccessOpen] = useState(false);
 
     const selectedClosure = useMemo(() => (
         sicarClosures.find((closure) => closure.id === selectedClosureId) || null
@@ -2343,7 +2344,32 @@ function CashClosure({ data }) {
     const difference = safeNumber(manualTotal - expectedAfterRetentions);
     const shouldTrackDifference = Math.abs(difference) > CASH_DIFFERENCE_THRESHOLD;
 
+    const resetClosureWorkspace = () => {
+        setActiveClosureDocId('');
+        setSelectedClosureId('');
+        setClosureDate(todayString());
+        setCashierName('');
+        setCashCount({});
+        setDollarCashCount({});
+        setPreCloseDeposit({ cordobas: '', dollars: '' });
+        setTransfers({ bac: [], bac2: [], banpro: [], lafise: [], bacUsd: [], lafiseUsd: [] });
+        setPosDetails({ bac: [], banpro: [], lafise: [] });
+        setClosureInvoices([]);
+        setClosureCashReceipts([]);
+        setNotes('');
+        setMessage('');
+        setSicarClosureSearch('');
+        setSicarClosurePage(1);
+        setClosureInvoiceSearch('');
+        setClosureInvoicePage(1);
+        setClosureReceiptSearch('');
+        setClosureReceiptPage(1);
+        setQuickInvoiceNumber('');
+        setActiveClosureInvoiceLocalId('');
+    };
+
     const loadClosure = (closure) => {
+        setClosureSuccessOpen(false);
         setActiveClosureDocId(closure.corId ? `cierre_${closure.date || getRecordDate(closure.closureDateTime || closure.fecha)}_${closure.corId}` : '');
         setSelectedClosureId(closure.id);
         setClosureDate(closure.date || getRecordDate(closure.closureDateTime || closure.fecha) || todayString());
@@ -2351,6 +2377,7 @@ function CashClosure({ data }) {
     };
 
     const loadWaitingClosure = (closure) => {
+        setClosureSuccessOpen(false);
         setActiveClosureDocId(closure.id || '');
         setClosureDate(closure.date || todayString());
         setCashierName(closure.cashierName || '');
@@ -2893,7 +2920,12 @@ function CashClosure({ data }) {
                 }, { merge: true });
             }
 
-            setMessage(isWaiting ? 'Cierre guardado en espera. Podes volver y continuar luego.' : 'Cierre guardado con facturas y recibos membretados conciliados.');
+            if (isWaiting) {
+                setMessage('Cierre guardado en espera. Podes volver y continuar luego.');
+            } else {
+                resetClosureWorkspace();
+                setClosureSuccessOpen(true);
+            }
         } catch (error) {
             console.error(error);
             setMessage(error?.message || 'No se pudo guardar el cierre.');
@@ -2903,6 +2935,37 @@ function CashClosure({ data }) {
     };
 
     return (
+        <>
+        {closureSuccessOpen && (
+            <div className="fixed inset-0 z-[1000] flex items-center justify-center bg-slate-950/45 px-4 py-6 backdrop-blur-sm">
+                <div className="w-full max-w-md rounded-[2rem] border border-emerald-100 bg-white p-7 text-center shadow-2xl shadow-slate-950/25">
+                    <div className="mx-auto flex h-20 w-20 items-center justify-center rounded-full bg-emerald-100 text-emerald-700 shadow-inner">
+                        <svg viewBox="0 0 24 24" className="h-11 w-11" aria-hidden="true">
+                            <path
+                                fill="none"
+                                stroke="currentColor"
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                                strokeWidth="2.6"
+                                d="M5 12.5l4.3 4.3L19 7"
+                            />
+                        </svg>
+                    </div>
+                    <div className="mt-5 text-[11px] font-black uppercase tracking-[0.28em] text-emerald-700">Conciliacion completada</div>
+                    <h3 className="mt-2 text-2xl font-black text-slate-950">Cierre guardado exitosamente</h3>
+                    <p className="mt-3 text-sm font-bold leading-6 text-slate-500">
+                        El cierre quedo registrado y la pantalla ya esta limpia para iniciar un nuevo cierre.
+                    </p>
+                    <button
+                        type="button"
+                        onClick={() => setClosureSuccessOpen(false)}
+                        className="mt-6 w-full rounded-2xl bg-emerald-600 px-5 py-4 text-sm font-black uppercase tracking-[0.2em] text-white shadow-lg shadow-emerald-950/20 transition hover:-translate-y-0.5 hover:bg-emerald-700"
+                    >
+                        Iniciar nuevo cierre
+                    </button>
+                </div>
+            </div>
+        )}
         <div className="grid gap-5 xl:grid-cols-[0.9fr_1.3fr]">
             <div className="space-y-5">
                 <Section
@@ -3444,6 +3507,7 @@ function CashClosure({ data }) {
                 </Section>
             </div>
         </div>
+        </>
     );
 }
 
