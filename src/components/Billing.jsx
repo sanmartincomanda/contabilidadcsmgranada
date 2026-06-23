@@ -489,12 +489,17 @@ const isSicarInvoicePendingAccounting = (invoice = {}, loadedIndex = buildLoaded
     if (accountingDocSources.some((sources) => invoiceKeys.some((key) => sources.has(key)))) return false;
 
     const explicitAccountingSourceKey = normalizeInvoiceMatchKey(invoice.accountingSourceSicarInvoiceId || invoice.accountingSicarInvoiceId);
-    const hasActiveAccountingDoc = accountingDocKeys.some((key) => loadedIndex.docIds?.has(key));
+    const hasMatchingOrLegacyAccountingDoc = accountingDocKeys.some((key) => {
+        if (!loadedIndex.docIds?.has(key)) return false;
+        const knownSources = loadedIndex.docSourceKeys.get(key);
+        if (!knownSources || knownSources.size === 0) return true;
+        return invoiceKeys.some((invoiceKey) => knownSources.has(invoiceKey));
+    });
     if (
         explicitAccountingSourceKey
         && isAccountingLoadedStatus(invoice.accountingStatus || invoice.estadoContable)
         && invoiceKeys.includes(explicitAccountingSourceKey)
-        && hasActiveAccountingDoc
+        && hasMatchingOrLegacyAccountingDoc
     ) {
         return false;
     }
@@ -5879,15 +5884,30 @@ function StampedInvoices({ data }) {
                 }, { merge: true });
             }
 
-            if (form.sourceSicarInvoiceId) {
-                await setDoc(doc(db, 'sicar_facturas_membretadas', form.sourceSicarInvoiceId), {
+            const sicarAccountingGroups = new Map();
+            invoiceMeta.forEach(({ invoice, docId }) => {
+                const sourceId = String(invoice.sourceSicarInvoiceId || '').trim();
+                if (!sourceId) return;
+                const current = sicarAccountingGroups.get(sourceId) || {
+                    docIds: [],
+                    invoiceNumbers: [],
+                    sourceSicarInvoiceNumber: invoice.sourceSicarInvoiceNumber || '',
+                };
+                current.docIds.push(docId);
+                current.invoiceNumbers.push(String(invoice.invoiceNumber || '').trim());
+                current.sourceSicarInvoiceNumber = current.sourceSicarInvoiceNumber || invoice.sourceSicarInvoiceNumber || '';
+                sicarAccountingGroups.set(sourceId, current);
+            });
+
+            for (const [sourceId, accountingGroup] of sicarAccountingGroups.entries()) {
+                await setDoc(doc(db, 'sicar_facturas_membretadas', sourceId), {
                     accountingStatus: 'contabilizada',
-                    accountingInvoiceId: primaryDocId,
-                    accountingInvoiceIds: invoiceMeta.map(({ docId }) => docId),
-                    accountingInvoiceNumber: form.invoiceNumber.trim(),
-                    accountingInvoiceNumbers: invoicesToSave.map((invoice) => String(invoice.invoiceNumber || '').trim()),
-                    accountingSourceSicarInvoiceId: form.sourceSicarInvoiceId,
-                    sourceSicarInvoiceNumber: form.sourceSicarInvoiceNumber || '',
+                    accountingInvoiceId: accountingGroup.docIds[0] || '',
+                    accountingInvoiceIds: accountingGroup.docIds,
+                    accountingInvoiceNumber: accountingGroup.invoiceNumbers[0] || '',
+                    accountingInvoiceNumbers: accountingGroup.invoiceNumbers,
+                    accountingSourceSicarInvoiceId: sourceId,
+                    sourceSicarInvoiceNumber: accountingGroup.sourceSicarInvoiceNumber || '',
                     accountingLoadedAt: serverTimestamp(),
                     updatedAt: serverTimestamp(),
                 }, { merge: true });
@@ -7046,19 +7066,34 @@ function StampedInvoiceHistory({ data }) {
                 }, { merge: true });
             });
 
-            if (editForm.sourceSicarInvoiceId) {
-                batch.set(doc(db, 'sicar_facturas_membretadas', editForm.sourceSicarInvoiceId), {
+            const editedSicarAccountingGroups = new Map();
+            invoiceMeta.forEach(({ invoice, docId }) => {
+                const sourceId = String(invoice.sourceSicarInvoiceId || '').trim();
+                if (!sourceId) return;
+                const current = editedSicarAccountingGroups.get(sourceId) || {
+                    docIds: [],
+                    invoiceNumbers: [],
+                    sourceSicarInvoiceNumber: invoice.sourceSicarInvoiceNumber || '',
+                };
+                current.docIds.push(docId);
+                current.invoiceNumbers.push(String(invoice.invoiceNumber || '').trim());
+                current.sourceSicarInvoiceNumber = current.sourceSicarInvoiceNumber || invoice.sourceSicarInvoiceNumber || '';
+                editedSicarAccountingGroups.set(sourceId, current);
+            });
+
+            editedSicarAccountingGroups.forEach((accountingGroup, sourceId) => {
+                batch.set(doc(db, 'sicar_facturas_membretadas', sourceId), {
                     accountingStatus: 'contabilizada',
-                    accountingInvoiceId: originalDocId,
-                    accountingInvoiceIds: invoiceMeta.map(({ docId }) => docId),
-                    accountingInvoiceNumber: String(editForm.invoiceNumber || '').trim(),
-                    accountingInvoiceNumbers: invoicesToSave.map((invoice) => String(invoice.invoiceNumber || '').trim()),
-                    accountingSourceSicarInvoiceId: editForm.sourceSicarInvoiceId,
-                    sourceSicarInvoiceNumber: editForm.sourceSicarInvoiceNumber || '',
+                    accountingInvoiceId: accountingGroup.docIds[0] || '',
+                    accountingInvoiceIds: accountingGroup.docIds,
+                    accountingInvoiceNumber: accountingGroup.invoiceNumbers[0] || '',
+                    accountingInvoiceNumbers: accountingGroup.invoiceNumbers,
+                    accountingSourceSicarInvoiceId: sourceId,
+                    sourceSicarInvoiceNumber: accountingGroup.sourceSicarInvoiceNumber || '',
                     accountingLoadedAt: serverTimestamp(),
                     updatedAt: serverTimestamp(),
                 }, { merge: true });
-            }
+            });
 
             if (editForm.linkedCashClosureId && closureIndex.has(editForm.linkedCashClosureId)) {
                 const closure = closureIndex.get(editForm.linkedCashClosureId) || {};

@@ -285,13 +285,15 @@ async function fetchClosuresByIds(connection, corIds = []) {
 }
 
 function normalizeInvoiceRow(row, sourceDate = '') {
-  const invoiceDate = toDateString(sourceDate || row.fecha || row.ventaFecha);
+  const invoiceDate = toDateString(row.fecha || sourceDate || row.ventaFecha);
+  const linkedSaleDate = toDateString(row.ventaFecha || sourceDate);
   const invoiceNumber = [row.letraFolio, row.folio].filter(Boolean).join('').trim() || String(row.fac_id || '');
   return {
     id: `sicar_factura_${row.fac_id}`,
     rawId: `factura_membretada_${row.fac_id}`,
     date: invoiceDate,
     saleDate: invoiceDate,
+    linkedSaleDate,
     month: invoiceDate.substring(0, 7),
     facId: row.fac_id,
     invoiceNumber,
