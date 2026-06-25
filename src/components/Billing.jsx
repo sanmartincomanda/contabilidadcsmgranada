@@ -2194,6 +2194,7 @@ function CashClosure({ data }) {
     const [quickInvoiceNumber, setQuickInvoiceNumber] = useState('');
     const [activeClosureInvoiceLocalId, setActiveClosureInvoiceLocalId] = useState('');
     const [closureSuccessOpen, setClosureSuccessOpen] = useState(false);
+    const [lastSavedClosure, setLastSavedClosure] = useState(null);
 
     const selectedClosure = useMemo(() => (
         sicarClosures.find((closure) => closure.id === selectedClosureId) || null
@@ -2864,6 +2865,8 @@ function CashClosure({ data }) {
                     subtotal: safeNumber(invoice.subtotal),
                     iva: safeNumber(invoice.iva),
                     total: safeNumber(invoice.total),
+                    retentionIr2: safeNumber(invoice.retentionIr2),
+                    retentionMunicipal1: safeNumber(invoice.retentionMunicipal1),
                     retentionTotal: safeNumber(invoice.retentionTotal),
                     paymentMethod: invoice.paymentMethod,
                     paymentBreakdown: normalizePaymentBreakdownRows(invoice.paymentBreakdown),
@@ -2928,6 +2931,7 @@ function CashClosure({ data }) {
             if (isWaiting) {
                 setMessage('Cierre guardado en espera. Podes volver y continuar luego.');
             } else {
+                setLastSavedClosure({ id: docId, ...payload });
                 resetClosureWorkspace();
                 setClosureSuccessOpen(true);
             }
@@ -2963,14 +2967,23 @@ function CashClosure({ data }) {
                     </p>
                     <button
                         type="button"
+                        onClick={printCashClosureTicket}
+                        disabled={!lastSavedClosure}
+                        className="mt-6 w-full rounded-2xl border border-slate-200 bg-white px-5 py-4 text-sm font-black uppercase tracking-[0.2em] text-slate-800 transition hover:-translate-y-0.5 hover:border-emerald-300 hover:bg-emerald-50 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                        Imprimir ticket 80mm
+                    </button>
+                    <button
+                        type="button"
                         onClick={() => setClosureSuccessOpen(false)}
-                        className="mt-6 w-full rounded-2xl bg-emerald-600 px-5 py-4 text-sm font-black uppercase tracking-[0.2em] text-white shadow-lg shadow-emerald-950/20 transition hover:-translate-y-0.5 hover:bg-emerald-700"
+                        className="mt-3 w-full rounded-2xl bg-emerald-600 px-5 py-4 text-sm font-black uppercase tracking-[0.2em] text-white shadow-lg shadow-emerald-950/20 transition hover:-translate-y-0.5 hover:bg-emerald-700"
                     >
                         Iniciar nuevo cierre
                     </button>
                 </div>
             </div>
         )}
+        <CashClosureTicketPrint closure={lastSavedClosure} />
         <div className="grid gap-5 xl:grid-cols-[0.9fr_1.3fr]">
             <div className="space-y-5">
                 <Section
@@ -7929,6 +7942,208 @@ const buildCashClosureReportContext = (closure = {}) => {
     };
 };
 
+const formatCashClosureTicketCode = (code = '') => {
+    const value = String(code || '').trim();
+    if (!value) return '-';
+    return /^\d+$/.test(value) ? value.padStart(3, '0') : value;
+};
+
+const sumInvoiceField = (invoices = [], field) => safeNumber(
+    invoices.reduce((sum, invoice) => sum + safeNumber(invoice[field]), 0)
+);
+
+const buildCashClosureTicketData = (closure = {}) => {
+    const context = buildCashClosureReportContext(closure);
+    const invoices = context.linkedInvoices || [];
+    const receipts = context.linkedReceipts || [];
+    const summary = context.detailAccountingSummary || {};
+    const payment = summary.paymentBreakdown || {};
+    const invoiceTotal = safeNumber(invoices.reduce((sum, invoice) => sum + safeNumber(invoice.total), 0));
+    const receiptTotal = safeNumber(receipts.reduce((sum, receipt) => sum + safeNumber(receipt.amount), 0));
+    const invoiceRetentionIr = sumInvoiceField(invoices, 'retentionIr2');
+    const invoiceRetentionMunicipal = sumInvoiceField(invoices, 'retentionMunicipal1');
+    const receiptRetentionIr = sumInvoiceField(receipts, 'retentionIr2');
+    const receiptRetentionMunicipal = sumInvoiceField(receipts, 'retentionMunicipal1');
+
+    return {
+        code: formatCashClosureTicketCode(context.code),
+        cashierName: closure.cashierName || 'Sin cajero',
+        date: closure.date || '-',
+        stampedInvoiceTotal: invoiceTotal,
+        stampedCashReceiptTotal: receiptTotal,
+        stampedIncomeTotal: safeNumber(invoiceTotal + receiptTotal),
+        retentionIr: safeNumber(invoiceRetentionIr + receiptRetentionIr),
+        retentionMunicipal: safeNumber(invoiceRetentionMunicipal + receiptRetentionMunicipal),
+        posBac: safeNumber(payment.posBac ?? closure.posTotals?.bac),
+        posBanpro: safeNumber(payment.posBanpro ?? closure.posTotals?.banpro),
+        posLafise: safeNumber(payment.posLafise ?? closure.posTotals?.lafise),
+        transferBac: safeNumber(
+            safeNumber(payment.transferBac ?? closure.transferTotals?.bac)
+            + safeNumber(payment.transferBac2 ?? closure.transferTotals?.bac2)
+            + safeNumber(payment.transferBacUsd ?? closure.transferTotals?.bacUsd)
+        ),
+        transferLafise: safeNumber(
+            safeNumber(payment.transferLafise ?? closure.transferTotals?.lafise)
+            + safeNumber(payment.transferLafiseUsd ?? closure.transferTotals?.lafiseUsd)
+        ),
+        transferBanpro: safeNumber(payment.transferBanpro ?? closure.transferTotals?.banpro),
+        rc: getCashClosureRcValue(summary),
+        invoices: invoices.map((invoice) => ({
+            id: invoice.id || invoice.docId || invoice.invoiceNumber || invoice.numeroFactura,
+            number: invoice.invoiceNumber || invoice.numeroFactura || invoice.document || '-',
+            total: safeNumber(invoice.total),
+        })),
+    };
+};
+
+const printCashClosureTicket = () => {
+    document.body.classList.add('print-cash-closure-ticket');
+    const cleanup = () => {
+        document.body.classList.remove('print-cash-closure-ticket');
+        window.removeEventListener('afterprint', cleanup);
+    };
+    window.addEventListener('afterprint', cleanup);
+    window.setTimeout(() => {
+        window.print();
+        window.setTimeout(cleanup, 1000);
+    }, 60);
+};
+
+const CashClosureTicketPrint = ({ closure }) => {
+    if (!closure) return null;
+    const ticket = buildCashClosureTicketData(closure);
+    const lineRows = [
+        ['Fact membretadas:', ticket.stampedInvoiceTotal],
+        ['Recibo de caja membretados:', ticket.stampedCashReceiptTotal],
+        ['TOTAL INGRESO MEMBRETADO:', ticket.stampedIncomeTotal],
+        ['Retenciones IR:', ticket.retentionIr],
+        ['Retenciones Municipal:', ticket.retentionMunicipal],
+    ];
+    const paymentRows = [
+        ['POS BAC', ticket.posBac],
+        ['POS BANPRO', ticket.posBanpro],
+        ['POS LAFISE', ticket.posLafise],
+        ['Transferencia BAC', ticket.transferBac],
+        ['Transferencia Lafise', ticket.transferLafise],
+        ['Transferencia BANPRO', ticket.transferBanpro],
+        ['RC (EFECTIVO):', ticket.rc],
+    ];
+
+    return (
+        <>
+            <div className="cash-closure-ticket-print-area">
+                <div className="cash-closure-ticket">
+                    <div className="ticket-title">Cierre de Caja {ticket.code}</div>
+                    <div className="ticket-meta">
+                        <div><span>Cajero:</span> {ticket.cashierName}</div>
+                        <div><span>Fecha:</span> {ticket.date}</div>
+                    </div>
+                    <div className="ticket-section">
+                        {lineRows.map(([label, value]) => (
+                            <div className="ticket-row" key={label}>
+                                <span>{label}</span>
+                                <strong>{fmt(value)}</strong>
+                            </div>
+                        ))}
+                    </div>
+                    <div className="ticket-subtitle">Desglose metodo de pago</div>
+                    <div className="ticket-section">
+                        {paymentRows.map(([label, value]) => (
+                            <div className="ticket-row" key={label}>
+                                <span>{label}</span>
+                                <strong>{fmt(value)}</strong>
+                            </div>
+                        ))}
+                    </div>
+                    <div className="ticket-subtitle">Desglose de facturas</div>
+                    <div className="ticket-section">
+                        {ticket.invoices.length ? ticket.invoices.map((invoice) => (
+                            <div className="ticket-row" key={invoice.id}>
+                                <span>{invoice.number}</span>
+                                <strong>{fmt(invoice.total)}</strong>
+                            </div>
+                        )) : (
+                            <div className="ticket-empty">Sin facturas membretadas vinculadas.</div>
+                        )}
+                    </div>
+                </div>
+            </div>
+            <style>{`
+                .cash-closure-ticket-print-area { display: none; }
+                @media print {
+                    @page { size: 80mm 220mm; margin: 3mm; }
+                    body.print-cash-closure-ticket * { visibility: hidden !important; }
+                    body.print-cash-closure-ticket .cash-closure-ticket-print-area,
+                    body.print-cash-closure-ticket .cash-closure-ticket-print-area * { visibility: visible !important; }
+                    body.print-cash-closure-ticket .cash-closure-ticket-print-area {
+                        display: block !important;
+                        position: fixed;
+                        inset: 0 auto auto 0;
+                        width: 74mm;
+                        background: #fff;
+                        color: #000;
+                        font-family: "Arial", sans-serif;
+                    }
+                    body.print-cash-closure-ticket .cash-closure-ticket {
+                        width: 74mm;
+                        padding: 0;
+                        font-size: 10px;
+                        line-height: 1.32;
+                    }
+                    body.print-cash-closure-ticket .ticket-title {
+                        border-bottom: 1px dashed #000;
+                        font-size: 13px;
+                        font-weight: 800;
+                        padding-bottom: 5px;
+                        text-align: center;
+                        text-transform: uppercase;
+                    }
+                    body.print-cash-closure-ticket .ticket-meta {
+                        border-bottom: 1px dashed #000;
+                        margin-bottom: 6px;
+                        padding: 5px 0;
+                    }
+                    body.print-cash-closure-ticket .ticket-meta span,
+                    body.print-cash-closure-ticket .ticket-row span {
+                        font-weight: 700;
+                    }
+                    body.print-cash-closure-ticket .ticket-section {
+                        border-bottom: 1px dashed #000;
+                        margin-bottom: 7px;
+                        padding-bottom: 6px;
+                    }
+                    body.print-cash-closure-ticket .ticket-row {
+                        align-items: flex-start;
+                        display: flex;
+                        gap: 6px;
+                        justify-content: space-between;
+                        padding: 1px 0;
+                    }
+                    body.print-cash-closure-ticket .ticket-row strong {
+                        font-family: "Consolas", "Courier New", monospace;
+                        font-weight: 800;
+                        text-align: right;
+                        white-space: nowrap;
+                    }
+                    body.print-cash-closure-ticket .ticket-subtitle {
+                        font-size: 10px;
+                        font-weight: 800;
+                        margin: 5px 0 3px;
+                        text-align: center;
+                        text-transform: uppercase;
+                    }
+                    body.print-cash-closure-ticket .ticket-empty {
+                        font-size: 10px;
+                        font-weight: 700;
+                        padding: 4px 0;
+                        text-align: center;
+                    }
+                }
+            `}</style>
+        </>
+    );
+};
+
 const buildCashClosureRcReportSheets = (closure = {}) => {
     const context = buildCashClosureReportContext(closure);
     const stamped = context.detailAccountingSummary?.stampedDocuments || {};
@@ -8148,7 +8363,7 @@ const CashClosureEditModal = ({
     );
 };
 
-const CashClosureDetailModal = ({ closure, onClose, onEdit, onExport }) => {
+const CashClosureDetailModal = ({ closure, onClose, onEdit, onExport, onPrintTicket }) => {
     const { user } = useAuth();
     const isMaster = isMasterEmail(user?.email);
 
@@ -8198,6 +8413,13 @@ const CashClosureDetailModal = ({ closure, onClose, onEdit, onExport }) => {
                             className="rounded-2xl border border-emerald-300 bg-emerald-50 px-4 py-2 text-xs font-black uppercase tracking-[0.18em] text-emerald-800 transition hover:bg-emerald-100"
                         >
                             Reporte RC XLS
+                        </button>
+                        <button
+                            type="button"
+                            onClick={() => onPrintTicket?.(closure)}
+                            className="rounded-2xl border border-amber-300 bg-amber-50 px-4 py-2 text-xs font-black uppercase tracking-[0.18em] text-amber-800 transition hover:bg-amber-100"
+                        >
+                            Ticket 80mm
                         </button>
                         <button
                             type="button"
@@ -8462,6 +8684,7 @@ function CashClosureHistory({ data }) {
     const [editClosure, setEditClosure] = useState(null);
     const [editForm, setEditForm] = useState(null);
     const [editSaving, setEditSaving] = useState(false);
+    const [ticketClosure, setTicketClosure] = useState(null);
     const [message, setMessage] = useState('');
 
     const closures = useMemo(() => (
@@ -8559,6 +8782,12 @@ function CashClosureHistory({ data }) {
         const filename = `reporte-contador-rc-${closure.date || todayString()}-${slugify(context.code || closure.id || 'cierre')}.xls`;
         downloadClosureReportXls(filename, buildCashClosureRcReportSheets(closure));
         setMessage(`Reporte contador RC generado para el cierre ${context.code || closure.id}.`);
+    };
+
+    const reprintClosureTicket = (closure) => {
+        if (!closure?.id) return;
+        setTicketClosure(closure);
+        window.setTimeout(printCashClosureTicket, 80);
     };
 
     const editAccountingSummary = useMemo(() => {
@@ -8981,6 +9210,15 @@ function CashClosureHistory({ data }) {
                                             >
                                                 RC XLS
                                             </button>
+                                            {isMaster && (
+                                                <button
+                                                    type="button"
+                                                    onClick={() => reprintClosureTicket(closure)}
+                                                    className="rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-[10px] font-black uppercase tracking-[0.16em] text-amber-800 transition hover:bg-amber-100"
+                                                >
+                                                    Ticket
+                                                </button>
+                                            )}
                                             <button
                                                 type="button"
                                                 onClick={() => openEditClosure(closure)}
@@ -9018,7 +9256,9 @@ function CashClosureHistory({ data }) {
                 onClose={() => setDetailClosure(null)}
                 onEdit={openEditClosure}
                 onExport={exportClosureRcReport}
+                onPrintTicket={reprintClosureTicket}
             />
+            <CashClosureTicketPrint closure={ticketClosure} />
             <CashClosureEditModal
                 form={editForm}
                 clients={clients}
