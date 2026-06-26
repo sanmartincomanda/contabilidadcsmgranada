@@ -8186,13 +8186,15 @@ const CashClosureTicketPrint = ({ closure }) => {
                     body.print-cash-closure-ticket .cash-closure-ticket {
                         width: 74mm;
                         padding: 0;
-                        font-size: 10px;
-                        line-height: 1.32;
+                        font-family: Arial, sans-serif;
+                        font-size: 12px;
+                        font-weight: 400;
+                        line-height: 1.36;
                     }
                     body.print-cash-closure-ticket .ticket-title {
                         border-bottom: 1px dashed #000;
-                        font-size: 13px;
-                        font-weight: 800;
+                        font-size: 12px;
+                        font-weight: 400;
                         padding-bottom: 5px;
                         text-align: center;
                         text-transform: uppercase;
@@ -8204,7 +8206,7 @@ const CashClosureTicketPrint = ({ closure }) => {
                     }
                     body.print-cash-closure-ticket .ticket-meta span,
                     body.print-cash-closure-ticket .ticket-row span {
-                        font-weight: 700;
+                        font-weight: 400;
                     }
                     body.print-cash-closure-ticket .ticket-section {
                         border-bottom: 1px dashed #000;
@@ -8219,21 +8221,21 @@ const CashClosureTicketPrint = ({ closure }) => {
                         padding: 1px 0;
                     }
                     body.print-cash-closure-ticket .ticket-row strong {
-                        font-family: "Consolas", "Courier New", monospace;
-                        font-weight: 800;
+                        font-family: Arial, sans-serif;
+                        font-weight: 400;
                         text-align: right;
                         white-space: nowrap;
                     }
                     body.print-cash-closure-ticket .ticket-subtitle {
-                        font-size: 10px;
-                        font-weight: 800;
+                        font-size: 12px;
+                        font-weight: 400;
                         margin: 5px 0 3px;
                         text-align: center;
                         text-transform: uppercase;
                     }
                     body.print-cash-closure-ticket .ticket-empty {
-                        font-size: 10px;
-                        font-weight: 700;
+                        font-size: 12px;
+                        font-weight: 400;
                         padding: 4px 0;
                         text-align: center;
                     }
