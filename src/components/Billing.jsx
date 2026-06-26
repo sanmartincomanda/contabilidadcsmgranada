@@ -7992,6 +7992,27 @@ const splitStampedInvoiceRetentionsForTicket = (invoice = {}) => {
     };
 };
 
+const getStampedInvoiceTicketAmounts = (invoice = {}) => {
+    const rows = getInvoicePaymentRows(invoice);
+    const total = safeNumber(invoice.total);
+    if (!rows.length) {
+        return isCreditPaymentMethod(invoice.paymentMethod)
+            ? { credit: total, cash: 0 }
+            : { credit: 0, cash: total };
+    }
+
+    const creditRowsTotal = safeNumber(rows.reduce((sum, row) => (
+        sum + (isCreditPaymentMethod(row.method) ? safeNumber(row.amount) : 0)
+    ), 0));
+    const cashRowsTotal = safeNumber(rows.reduce((sum, row) => (
+        sum + (!isCreditPaymentMethod(row.method) ? safeNumber(row.amount) : 0)
+    ), 0));
+
+    if (creditRowsTotal > 0 && cashRowsTotal <= 0) return { credit: total, cash: 0 };
+    if (cashRowsTotal > 0 && creditRowsTotal <= 0) return { credit: 0, cash: total };
+    return { credit: creditRowsTotal, cash: cashRowsTotal };
+};
+
 const buildCashClosureTicketData = (closure = {}) => {
     const context = buildCashClosureReportContext(closure);
     const invoices = context.linkedInvoices || [];
@@ -7999,6 +8020,13 @@ const buildCashClosureTicketData = (closure = {}) => {
     const summary = context.detailAccountingSummary || {};
     const payment = summary.paymentBreakdown || {};
     const invoiceTotal = safeNumber(invoices.reduce((sum, invoice) => sum + safeNumber(invoice.total), 0));
+    const invoicePaymentTotals = invoices.reduce((acc, invoice) => {
+        const amounts = getStampedInvoiceTicketAmounts(invoice);
+        return {
+            credit: safeNumber(acc.credit + amounts.credit),
+            cash: safeNumber(acc.cash + amounts.cash),
+        };
+    }, { credit: 0, cash: 0 });
     const receiptTotal = safeNumber(receipts.reduce((sum, receipt) => sum + safeNumber(receipt.amount), 0));
     const invoiceRetentions = invoices.reduce((acc, invoice) => {
         const split = splitStampedInvoiceRetentionsForTicket(invoice);
@@ -8009,16 +8037,23 @@ const buildCashClosureTicketData = (closure = {}) => {
     }, { ir: 0, municipal: 0 });
     const receiptRetentionIr = sumInvoiceField(receipts, 'retentionIr2');
     const receiptRetentionMunicipal = sumInvoiceField(receipts, 'retentionMunicipal1');
+    const retentionIr = safeNumber(invoiceRetentions.ir + receiptRetentionIr);
+    const retentionMunicipal = safeNumber(invoiceRetentions.municipal + receiptRetentionMunicipal);
+    const retentionTotal = safeNumber(retentionIr + retentionMunicipal);
 
     return {
         code: formatCashClosureTicketCode(context.code),
         cashierName: closure.cashierName || 'Sin cajero',
         date: closure.date || '-',
+        stampedCreditInvoiceTotal: invoicePaymentTotals.credit,
+        stampedCashInvoiceTotal: invoicePaymentTotals.cash,
         stampedInvoiceTotal: invoiceTotal,
         stampedCashReceiptTotal: receiptTotal,
-        stampedIncomeTotal: safeNumber(invoiceTotal + receiptTotal),
-        retentionIr: safeNumber(invoiceRetentions.ir + receiptRetentionIr),
-        retentionMunicipal: safeNumber(invoiceRetentions.municipal + receiptRetentionMunicipal),
+        stampedIncomeTotal: safeNumber(invoicePaymentTotals.cash + receiptTotal),
+        retentionTotal,
+        retentionIr,
+        retentionMunicipal,
+        cashIncomeTotal: safeNumber(invoicePaymentTotals.cash + receiptTotal - retentionTotal),
         posBac: safeNumber(payment.posBac ?? closure.posTotals?.bac),
         posBanpro: safeNumber(payment.posBanpro ?? closure.posTotals?.banpro),
         posLafise: safeNumber(payment.posLafise ?? closure.posTotals?.lafise),
@@ -8063,11 +8098,14 @@ const CashClosureTicketPrint = ({ closure }) => {
     if (!closure) return null;
     const ticket = buildCashClosureTicketData(closure);
     const lineRows = [
-        ['Ingresos fact Membretada:', ticket.stampedInvoiceTotal],
-        ['Recibo caja Membretados:', ticket.stampedCashReceiptTotal],
-        ['Total Ingresos:', ticket.stampedIncomeTotal],
+        ['Factura Membretadas Credito:', ticket.stampedCreditInvoiceTotal],
+        ['Venta Fact Membretadas:', ticket.stampedCashInvoiceTotal],
+        ['Total Ventas:', ticket.stampedInvoiceTotal],
+        ['Recibo de caja Membretada:', ticket.stampedCashReceiptTotal],
+        ['Retenciones:', ticket.retentionTotal],
         ['Retencion IR:', ticket.retentionIr],
         ['Retenciones Municipal:', ticket.retentionMunicipal],
+        ['Total Ingreso de caja:', ticket.cashIncomeTotal],
     ];
     const paymentRows = [
         ['POS BAC', ticket.posBac],
