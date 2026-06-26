@@ -7952,6 +7952,46 @@ const sumInvoiceField = (invoices = [], field) => safeNumber(
     invoices.reduce((sum, invoice) => sum + safeNumber(invoice[field]), 0)
 );
 
+const splitStampedInvoiceRetentionsForTicket = (invoice = {}) => {
+    const hasIr = hasNumericValue(invoice.retentionIr2);
+    const hasMunicipal = hasNumericValue(invoice.retentionMunicipal1);
+    if (hasIr || hasMunicipal) {
+        return {
+            ir: safeNumber(invoice.retentionIr2),
+            municipal: safeNumber(invoice.retentionMunicipal1),
+        };
+    }
+
+    const totalRetention = safeNumber(invoice.retentionTotal);
+    if (!totalRetention) return { ir: 0, municipal: 0 };
+
+    const subtotal = safeNumber(invoice.subtotal || invoice.amount);
+    const expectedIr = safeNumber(subtotal * 0.02);
+    const expectedMunicipal = safeNumber(subtotal * 0.01);
+    const expectedBoth = safeNumber(expectedIr + expectedMunicipal);
+
+    if (subtotal > 0 && Math.abs(totalRetention - expectedIr) <= 0.1) {
+        return { ir: totalRetention, municipal: 0 };
+    }
+
+    if (subtotal > 0 && Math.abs(totalRetention - expectedMunicipal) <= 0.1) {
+        return { ir: 0, municipal: totalRetention };
+    }
+
+    if (subtotal > 0 && Math.abs(totalRetention - expectedBoth) <= 0.15) {
+        return {
+            ir: expectedIr,
+            municipal: safeNumber(totalRetention - expectedIr),
+        };
+    }
+
+    const inferredIr = safeNumber(totalRetention * (2 / 3));
+    return {
+        ir: inferredIr,
+        municipal: safeNumber(totalRetention - inferredIr),
+    };
+};
+
 const buildCashClosureTicketData = (closure = {}) => {
     const context = buildCashClosureReportContext(closure);
     const invoices = context.linkedInvoices || [];
@@ -7960,8 +8000,13 @@ const buildCashClosureTicketData = (closure = {}) => {
     const payment = summary.paymentBreakdown || {};
     const invoiceTotal = safeNumber(invoices.reduce((sum, invoice) => sum + safeNumber(invoice.total), 0));
     const receiptTotal = safeNumber(receipts.reduce((sum, receipt) => sum + safeNumber(receipt.amount), 0));
-    const invoiceRetentionIr = sumInvoiceField(invoices, 'retentionIr2');
-    const invoiceRetentionMunicipal = sumInvoiceField(invoices, 'retentionMunicipal1');
+    const invoiceRetentions = invoices.reduce((acc, invoice) => {
+        const split = splitStampedInvoiceRetentionsForTicket(invoice);
+        return {
+            ir: safeNumber(acc.ir + split.ir),
+            municipal: safeNumber(acc.municipal + split.municipal),
+        };
+    }, { ir: 0, municipal: 0 });
     const receiptRetentionIr = sumInvoiceField(receipts, 'retentionIr2');
     const receiptRetentionMunicipal = sumInvoiceField(receipts, 'retentionMunicipal1');
 
@@ -7972,8 +8017,8 @@ const buildCashClosureTicketData = (closure = {}) => {
         stampedInvoiceTotal: invoiceTotal,
         stampedCashReceiptTotal: receiptTotal,
         stampedIncomeTotal: safeNumber(invoiceTotal + receiptTotal),
-        retentionIr: safeNumber(invoiceRetentionIr + receiptRetentionIr),
-        retentionMunicipal: safeNumber(invoiceRetentionMunicipal + receiptRetentionMunicipal),
+        retentionIr: safeNumber(invoiceRetentions.ir + receiptRetentionIr),
+        retentionMunicipal: safeNumber(invoiceRetentions.municipal + receiptRetentionMunicipal),
         posBac: safeNumber(payment.posBac ?? closure.posTotals?.bac),
         posBanpro: safeNumber(payment.posBanpro ?? closure.posTotals?.banpro),
         posLafise: safeNumber(payment.posLafise ?? closure.posTotals?.lafise),
@@ -7987,11 +8032,16 @@ const buildCashClosureTicketData = (closure = {}) => {
             + safeNumber(payment.transferLafiseUsd ?? closure.transferTotals?.lafiseUsd)
         ),
         transferBanpro: safeNumber(payment.transferBanpro ?? closure.transferTotals?.banpro),
-        rc: getCashClosureRcValue(summary),
+        rc: Math.abs(getCashClosureRcValue(summary)),
         invoices: invoices.map((invoice) => ({
             id: invoice.id || invoice.docId || invoice.invoiceNumber || invoice.numeroFactura,
             number: invoice.invoiceNumber || invoice.numeroFactura || invoice.document || '-',
             total: safeNumber(invoice.total),
+        })),
+        receipts: receipts.map((receipt) => ({
+            id: receipt.id || receipt.docId || receipt.receiptNumber,
+            number: receipt.receiptNumber || receipt.numeroRecibo || receipt.document || '-',
+            total: safeNumber(receipt.amount),
         })),
     };
 };
@@ -8013,10 +8063,10 @@ const CashClosureTicketPrint = ({ closure }) => {
     if (!closure) return null;
     const ticket = buildCashClosureTicketData(closure);
     const lineRows = [
-        ['Fact membretadas:', ticket.stampedInvoiceTotal],
-        ['Recibo de caja membretados:', ticket.stampedCashReceiptTotal],
-        ['TOTAL INGRESO MEMBRETADO:', ticket.stampedIncomeTotal],
-        ['Retenciones IR:', ticket.retentionIr],
+        ['Ingresos fact Membretada:', ticket.stampedInvoiceTotal],
+        ['Recibo caja Membretados:', ticket.stampedCashReceiptTotal],
+        ['Total Ingresos:', ticket.stampedIncomeTotal],
+        ['Retencion IR:', ticket.retentionIr],
         ['Retenciones Municipal:', ticket.retentionMunicipal],
     ];
     const paymentRows = [
@@ -8026,7 +8076,7 @@ const CashClosureTicketPrint = ({ closure }) => {
         ['Transferencia BAC', ticket.transferBac],
         ['Transferencia Lafise', ticket.transferLafise],
         ['Transferencia BANPRO', ticket.transferBanpro],
-        ['RC (EFECTIVO):', ticket.rc],
+        ['RC EFECTIVO:', ticket.rc],
     ];
 
     return (
@@ -8046,7 +8096,7 @@ const CashClosureTicketPrint = ({ closure }) => {
                             </div>
                         ))}
                     </div>
-                    <div className="ticket-subtitle">Desglose metodo de pago</div>
+                    <div className="ticket-subtitle">DESGLOSE DE METODO PAGO</div>
                     <div className="ticket-section">
                         {paymentRows.map(([label, value]) => (
                             <div className="ticket-row" key={label}>
@@ -8055,7 +8105,7 @@ const CashClosureTicketPrint = ({ closure }) => {
                             </div>
                         ))}
                     </div>
-                    <div className="ticket-subtitle">Desglose de facturas</div>
+                    <div className="ticket-subtitle">DESGLOSE FACTURAS MEMBRETADAS</div>
                     <div className="ticket-section">
                         {ticket.invoices.length ? ticket.invoices.map((invoice) => (
                             <div className="ticket-row" key={invoice.id}>
@@ -8064,6 +8114,17 @@ const CashClosureTicketPrint = ({ closure }) => {
                             </div>
                         )) : (
                             <div className="ticket-empty">Sin facturas membretadas vinculadas.</div>
+                        )}
+                    </div>
+                    <div className="ticket-subtitle">DESGLOSE DE RECIBO DE CAJA</div>
+                    <div className="ticket-section">
+                        {ticket.receipts.length ? ticket.receipts.map((receipt) => (
+                            <div className="ticket-row" key={receipt.id}>
+                                <span>{receipt.number}</span>
+                                <strong>{fmt(receipt.total)}</strong>
+                            </div>
+                        )) : (
+                            <div className="ticket-empty">Sin recibos de caja vinculados.</div>
                         )}
                     </div>
                 </div>
