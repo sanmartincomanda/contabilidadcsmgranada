@@ -765,7 +765,7 @@ const buildClosureAccountingSummary = ({
     );
     const transferTotalWithoutBac2 = safeNumber(transferTotal - safeNumber(transferTotals.bac2));
     const cashTotal = safeNumber(cashCordobasTotal + dollarCashTotalCordobas + preCloseDepositTotal);
-    const rc = safeNumber(cardTotal + transferTotalWithoutBac2 - stampedCashTotal - cashReceiptGrossTotal);
+    const rc = safeNumber(cardTotal + transferTotalWithoutBac2 - stampedCashTotal - cashReceiptNetTotal);
 
     return {
         general: {
@@ -804,7 +804,7 @@ const buildClosureAccountingSummary = ({
         },
         internalRatio: {
             rc,
-            formula: 'Tarjeta + transferencia sin BAC (2) - facturas membretadas contado - recibos de caja membretados sin retenciones',
+            formula: 'Tarjeta + transferencia sin BAC (2) - facturas membretadas contado - recibos de caja membretados con retenciones',
         },
     };
 };
@@ -818,6 +818,22 @@ const normalizeClosureAccountingSummarySales = (summary = {}, netSalesTotals = {
     const stampedCashInvoices = safeNumber(stamped.stampedCashInvoices);
     const stampedCreditInvoices = safeNumber(stamped.stampedCreditInvoices);
     const stampedCashReceipts = safeNumber(stamped.stampedCashReceipts);
+    const stampedCashReceiptsNet = hasNumericValue(stamped.stampedCashReceiptsNet)
+        ? safeNumber(stamped.stampedCashReceiptsNet)
+        : safeNumber(stampedCashReceipts - safeNumber(stamped.stampedCashReceiptRetentions));
+    const cardTotal = safeNumber(payment.cardTotal);
+    const transferTotal = hasNumericValue(payment.transferTotal)
+        ? safeNumber(payment.transferTotal)
+        : safeNumber(
+            safeNumber(payment.transferBac)
+            + safeNumber(payment.transferBac2)
+            + safeNumber(payment.transferBanpro)
+            + safeNumber(payment.transferLafise)
+            + safeNumber(payment.transferBacUsd)
+            + safeNumber(payment.transferLafiseUsd)
+        );
+    const transferTotalWithoutBac2 = safeNumber(transferTotal - safeNumber(payment.transferBac2));
+    const rc = safeNumber(cardTotal + transferTotalWithoutBac2 - stampedCashInvoices - stampedCashReceiptsNet);
     const cashCordobas = safeNumber(payment.cashCordobas ?? closure.cashCordobasTotal);
     const cashDollarsConverted = safeNumber(payment.cashDollarsConverted ?? closure.dollarCashTotalCordobas);
     const preCloseDepositTotal = safeNumber(payment.preCloseDepositTotal ?? closure.preCloseDepositTotal ?? closure.preCloseDeposit?.totalCordobas);
@@ -841,6 +857,11 @@ const normalizeClosureAccountingSummarySales = (summary = {}, netSalesTotals = {
             cashCordobas,
             cashDollarsConverted,
             preCloseDepositTotal,
+        },
+        internalRatio: {
+            ...(summary.internalRatio || {}),
+            rc,
+            formula: 'Tarjeta + transferencia sin BAC (2) - facturas membretadas contado - recibos de caja membretados con retenciones',
         },
     };
 };
@@ -1014,7 +1035,7 @@ const syncLinkedClosureForCashReceipt = async (receiptId = '', receiptPayload = 
     const payment = closure.accountingSummary?.paymentBreakdown || {};
     const stamped = closure.accountingSummary?.stampedDocuments || {};
     const transferTotalWithoutBac2 = safeNumber(safeNumber(payment.transferTotal) - safeNumber(payment.transferBac2));
-    const rc = safeNumber(safeNumber(payment.cardTotal) + transferTotalWithoutBac2 - safeNumber(stamped.stampedCashInvoices) - cashReceiptGrossTotal);
+    const rc = safeNumber(safeNumber(payment.cardTotal) + transferTotalWithoutBac2 - safeNumber(stamped.stampedCashInvoices) - cashReceiptNetTotal);
     const accountingSummary = closure.accountingSummary ? {
         ...closure.accountingSummary,
         stampedDocuments: {
@@ -1030,6 +1051,7 @@ const syncLinkedClosureForCashReceipt = async (receiptId = '', receiptPayload = 
         internalRatio: {
             ...(closure.accountingSummary.internalRatio || {}),
             rc,
+            formula: 'Tarjeta + transferencia sin BAC (2) - facturas membretadas contado - recibos de caja membretados con retenciones',
         },
     } : null;
 
