@@ -118,6 +118,34 @@ const slugify = (value = '') => (
         .slice(0, 20) || 'SIN-NOMBRE'
 );
 
+const getCashierName = (record = {}) => (
+    record.cashierName || record.cajero || record.cashier || ''
+);
+
+const getCashierCode = (cashierName = '') => (
+    cashierName ? `CAJ-${slugify(cashierName)}` : ''
+);
+
+const getRecordCashierCode = (record = {}) => (
+    record.cashierCode || record.codigoCajero || getCashierCode(getCashierName(record))
+);
+
+const isSameCashier = (record = {}, cashierName = '') => {
+    const targetName = normalizeText(cashierName);
+    if (!targetName) return false;
+    const targetCode = normalizeText(getCashierCode(cashierName));
+    return normalizeText(getCashierName(record)) === targetName
+        || normalizeText(getRecordCashierCode(record)) === targetCode;
+};
+
+const getStampedInvoiceDisplayNumber = (invoice = {}) => (
+    invoice.invoiceNumber || invoice.numeroFactura || invoice.document || invoice.id || invoice.docId || ''
+);
+
+const buildMissingClosureInvoiceMessage = (invoice = {}) => (
+    `Fact ${getStampedInvoiceDisplayNumber(invoice) || 'sin numero'} no esta registrado en cierre.`
+);
+
 const recordExistsByName = (records = [], name = '') => {
     const normalized = normalizeText(name);
     return Boolean(normalized) && records.some((record) => normalizeText(record.name || record.nombre) === normalized);
@@ -514,6 +542,8 @@ const normalizeStampedInvoiceRecord = (item = {}) => ({
     customerName: item.customerName || item.cliente || '',
     customerRfc: item.customerRfc || item.rfc || '',
     customerAddress: item.customerAddress || item.address || '',
+    cashierName: getCashierName(item),
+    cashierCode: getRecordCashierCode(item),
     paymentMethod: getInvoicePaymentMethodLabel(item),
     paymentBreakdown: normalizePaymentBreakdownRows(item.paymentBreakdown),
     paymentNetTotal: safeNumber(item.paymentNetTotal || getPaymentBreakdownTotal(item.paymentBreakdown) || getInvoicePaymentTargetAmount(item)),
@@ -900,6 +930,8 @@ const createInvoiceDraft = (invoice = {}, fallbackDate = todayString()) => {
         date,
         invoiceNumber,
         customerName: invoice.customerName || invoice.cliente || '',
+        cashierName: getCashierName(invoice),
+        cashierCode: getRecordCashierCode(invoice),
         paymentMethod: getInvoicePaymentMethodLabel(invoice),
         paymentBreakdown: normalizePaymentBreakdownRows(invoice.paymentBreakdown),
         paymentNetTotal: safeNumber(invoice.paymentNetTotal || getPaymentBreakdownTotal(invoice.paymentBreakdown) || getInvoicePaymentTargetAmount(invoice)),
@@ -2145,6 +2177,8 @@ function CashClosure({ data }) {
                 ...item,
                 date: item.saleDate || item.date || '',
                 invoiceNumber: item.numeroFactura || item.invoiceNumber || '',
+                cashierName: getCashierName(item),
+                cashierCode: getRecordCashierCode(item),
                 retentionTotal: safeNumber(item.retentionTotal ?? (safeNumber(item.retentionIr2) + safeNumber(item.retentionMunicipal1))),
             }))
             .filter((invoice) => !isInvoiceExcludedFromCashClosureSelection(invoice))
@@ -2221,14 +2255,21 @@ function CashClosure({ data }) {
         stampedInvoices.filter((invoice) => String(invoice.date || '').substring(0, 10) === closureDate)
     ), [stampedInvoices, closureDate]);
 
-    const filteredStampedInvoices = useMemo(() => filterRecords(dayStampedInvoices, closureInvoiceSearch, [
+    const cashierStampedInvoices = useMemo(() => (
+        cashierName
+            ? dayStampedInvoices.filter((invoice) => isSameCashier(invoice, cashierName))
+            : []
+    ), [cashierName, dayStampedInvoices]);
+
+    const filteredStampedInvoices = useMemo(() => filterRecords(cashierStampedInvoices, closureInvoiceSearch, [
         'date',
         'invoiceNumber',
         'numeroFactura',
+        'cashierName',
         'customerName',
         'cliente',
         'total',
-    ]), [dayStampedInvoices, closureInvoiceSearch]);
+    ]), [cashierStampedInvoices, closureInvoiceSearch]);
 
     const pagedStampedInvoices = useMemo(() => (
         paginateRecords(filteredStampedInvoices, closureInvoicePage, 6)
@@ -2287,9 +2328,37 @@ function CashClosure({ data }) {
         if (closureReceiptPage !== pagedCashReceipts.page) setClosureReceiptPage(pagedCashReceipts.page);
     }, [closureReceiptPage, pagedCashReceipts.page]);
 
+    useEffect(() => {
+        if (!cashierName) return;
+        const requiredIds = new Set(cashierStampedInvoices.map((invoice) => invoice.id || invoice.docId).filter(Boolean));
+        setClosureInvoices((prev) => {
+            const existingByDocId = new Map(
+                prev
+                    .filter((invoice) => invoice.docId)
+                    .map((invoice) => [invoice.docId, invoice])
+            );
+            const requiredDrafts = cashierStampedInvoices.map((invoice) => (
+                existingByDocId.get(invoice.id || invoice.docId) || createInvoiceDraft(invoice, closureDate)
+            ));
+            const manualDrafts = prev.filter((invoice) => (
+                !invoice.docId
+                && hasInvoiceDraftContent(invoice)
+                && !requiredIds.has(invoice.id)
+            ));
+            return [...requiredDrafts, ...manualDrafts];
+        });
+    }, [cashierName, cashierStampedInvoices, closureDate]);
+
     const selectedInvoiceIds = useMemo(() => (
         closureInvoices.map((invoice) => invoice.docId).filter(Boolean)
     ), [closureInvoices]);
+
+    const missingClosureInvoices = useMemo(() => {
+        const selectedKeys = new Set(selectedInvoiceIds.map((id) => normalizeInvoiceMatchKey(id)));
+        return cashierStampedInvoices.filter((invoice) => (
+            !selectedKeys.has(normalizeInvoiceMatchKey(invoice.id || invoice.docId))
+        ));
+    }, [cashierStampedInvoices, selectedInvoiceIds]);
 
     const cashTotal = useMemo(() => (
         CASH_DENOMINATIONS.reduce((sum, denomination) => sum + denomination * safeNumber(cashCount[denomination]), 0)
@@ -2468,10 +2537,14 @@ function CashClosure({ data }) {
     const addQuickClosureInvoice = () => {
         const query = String(quickInvoiceNumber || '').trim();
         if (!query) return;
+        if (!cashierName) {
+            setMessage('Selecciona cajero antes de agregar facturas al cierre.');
+            return;
+        }
         const normalizedQuery = normalizeText(query);
-        const invoice = dayStampedInvoices.find((item) => normalizeText(item.invoiceNumber || item.numeroFactura || '') === normalizedQuery);
+        const invoice = cashierStampedInvoices.find((item) => normalizeText(item.invoiceNumber || item.numeroFactura || '') === normalizedQuery);
         if (!invoice) {
-            setMessage(`No encontre la factura ${query} en las membretadas del dia ${closureDate}.`);
+            setMessage(`No encontre la factura ${query} en las membretadas del dia ${closureDate} para ${cashierName}.`);
             return;
         }
         addClosureInvoice(invoice);
@@ -2671,6 +2744,15 @@ function CashClosure({ data }) {
 
     const saveClosure = async (mode = 'closed') => {
         setMessage('');
+        const safeCashierName = String(cashierName || '').trim();
+        if (!safeCashierName) {
+            setMessage('Selecciona cajero antes de guardar el cierre.');
+            return;
+        }
+        if (mode !== 'waiting' && missingClosureInvoices.length) {
+            setMessage(buildMissingClosureInvoiceMessage(missingClosureInvoices[0]));
+            return;
+        }
         if (mode !== 'waiting') {
             try {
                 assertCashClosureRcAllowed(closureAccountingSummary);
@@ -2682,7 +2764,7 @@ function CashClosure({ data }) {
         setSaving(true);
         try {
             await ensurePeopleRecords();
-            const cashierCode = cashierName ? `CAJ-${slugify(cashierName)}` : '';
+            const cashierCode = getCashierCode(safeCashierName);
             const docId = activeClosureDocId || (selectedClosure?.corId
                 ? `cierre_${closureDate}_${selectedClosure.corId}`
                 : `cierre_${closureDate}_${Date.now()}`);
@@ -2700,6 +2782,8 @@ function CashClosure({ data }) {
                 }
 
                 const invoiceDate = invoice.date || closureDate;
+                const invoiceCashierName = String(invoice.cashierName || safeCashierName).trim();
+                const invoiceCashierCode = getCashierCode(invoiceCashierName);
                 const invoiceDocId = invoice.docId || `membretada_${slugify(invoice.invoiceNumber)}_${invoiceDate.replace(/-/g, '')}`;
                 const fiscal = buildFiscalPayload({
                     subtotal: safeNumber(invoice.subtotal),
@@ -2723,6 +2807,8 @@ function CashClosure({ data }) {
                     retentionMunicipal1: fiscal.retentionMunicipal1,
                     retentionTotal: fiscal.retentionTotal,
                     netTotal: fiscal.netTotal,
+                    cashierName: invoiceCashierName,
+                    cashierCode: invoiceCashierCode,
                     paymentMethod: getInvoicePaymentMethodLabel(invoice),
                     paymentBreakdown: normalizePaymentBreakdownRows(invoice.paymentBreakdown),
                     paymentNetTotal: safeNumber(invoice.paymentNetTotal || getPaymentBreakdownTotal(invoice.paymentBreakdown) || getInvoicePaymentTargetAmount({ ...invoice, ...fiscal })),
@@ -2749,6 +2835,8 @@ function CashClosure({ data }) {
                     numeroFactura: String(invoice.invoiceNumber || '').trim(),
                     invoiceNumber: String(invoice.invoiceNumber || '').trim(),
                     customerName: String(invoice.customerName || '').trim(),
+                    cashierName: invoice.cashierName || safeCashierName,
+                    cashierCode: invoice.cashierCode || getCashierCode(invoice.cashierName || safeCashierName),
                     paymentMethod: String(paymentMethod || '').trim(),
                     paymentBreakdown,
                     paymentNetTotal: paymentBreakdown.length ? getPaymentBreakdownTotal(paymentBreakdown) : getInvoicePaymentTargetAmount(invoice),
@@ -2817,7 +2905,7 @@ function CashClosure({ data }) {
                 date: closureDate,
                 month: getMonth(closureDate),
                 status: isWaiting ? 'en_espera' : (shouldTrackDifference ? 'con_diferencia' : 'cuadrado'),
-                cashierName: cashierName || '',
+                cashierName: safeCashierName,
                 cashierCode,
                 linkedSicarClosureId: selectedClosure?.id || '',
                 linkedSicarCorId: selectedClosure?.corId || selectedClosure?.cor_id || null,
@@ -2862,6 +2950,8 @@ function CashClosure({ data }) {
                     id: invoice.id,
                     invoiceNumber: invoice.invoiceNumber,
                     date: invoice.saleDate || invoice.date,
+                    cashierName: invoice.cashierName || safeCashierName,
+                    cashierCode: invoice.cashierCode || getCashierCode(invoice.cashierName || safeCashierName),
                     subtotal: safeNumber(invoice.subtotal),
                     iva: safeNumber(invoice.iva),
                     total: safeNumber(invoice.total),
@@ -3249,7 +3339,7 @@ function CashClosure({ data }) {
                     <div className="mb-4 flex flex-col gap-3 rounded-3xl border border-slate-200 bg-slate-50/70 p-4 xl:flex-row xl:items-center xl:justify-between">
                         <div>
                             <div className="text-sm font-black text-slate-950">Facturas aplicadas al cierre</div>
-                            <div className="text-xs font-semibold text-slate-500">Solo se muestran facturas del dia {closureDate}. Agrega por numero y Enter para trabajar rapido.</div>
+                            <div className="text-xs font-semibold text-slate-500">Se cargan automaticamente las facturas del dia {closureDate} registradas por el cajero seleccionado.</div>
                         </div>
                         <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
                             <input
@@ -3278,12 +3368,16 @@ function CashClosure({ data }) {
                             value={closureInvoiceSearch}
                             onChange={setClosureInvoiceSearch}
                             placeholder="Buscar factura del dia por numero o cliente..."
-                            resultLabel={`${filteredStampedInvoices.length} de ${dayStampedInvoices.length} del dia`}
+                            resultLabel={`${filteredStampedInvoices.length} de ${cashierStampedInvoices.length} del cajero`}
                         />
                     </div>
 
                     <div className="grid gap-3 md:grid-cols-2">
-                        {stampedInvoices.length === 0 ? (
+                        {!cashierName ? (
+                            <div className="rounded-3xl border border-dashed border-slate-300 p-8 text-center text-sm font-bold text-slate-400 md:col-span-2">
+                                Selecciona un cajero para cargar automaticamente sus facturas membretadas.
+                            </div>
+                        ) : stampedInvoices.length === 0 ? (
                             <div className="rounded-3xl border border-dashed border-slate-300 p-8 text-center text-sm font-bold text-slate-400 md:col-span-2">
                                 No hay facturas membretadas guardadas todavia.
                             </div>
@@ -3292,15 +3386,16 @@ function CashClosure({ data }) {
                                 No hay facturas membretadas del dia {closureDate} que coincidan con la busqueda.
                             </div>
                         ) : pagedStampedInvoices.records.map((invoice) => (
-                            <label key={invoice.id} className="flex cursor-pointer items-center gap-3 rounded-2xl border border-slate-200 bg-white p-3 transition hover:border-[#e30613]">
+                            <label key={invoice.id} className="flex cursor-default items-center gap-3 rounded-2xl border border-emerald-200 bg-emerald-50/50 p-3">
                                 <input
                                     type="checkbox"
                                     checked={selectedInvoiceIds.includes(invoice.id)}
+                                    disabled
                                     onChange={(event) => toggleClosureInvoice(invoice, event.target.checked)}
                                 />
                                 <div className="min-w-0 flex-1">
                                     <div className="truncate text-sm font-black text-slate-950">Factura {invoice.invoiceNumber || '-'}</div>
-                                    <div className="text-xs font-bold text-slate-500">{invoice.date} · Ret. {fmt(invoice.retentionTotal)}</div>
+                                    <div className="text-xs font-bold text-slate-500">{invoice.date} · {invoice.cashierName || 'Sin cajero'} · Ret. {fmt(invoice.retentionTotal)}</div>
                                 </div>
                                 <div className="font-mono text-sm font-black text-slate-900">{fmt(invoice.total)}</div>
                             </label>
@@ -3662,6 +3757,7 @@ const createStampedInvoiceForm = () => ({
     customerName: '',
     customerAddress: '',
     customerRfc: '',
+    cashierName: '',
     subtotal: '',
     iva: '',
     total: '',
@@ -3683,6 +3779,8 @@ const createStampedInvoiceEditForm = (invoice = {}) => ({
     customerName: invoice.customerName || invoice.cliente || '',
     customerAddress: invoice.customerAddress || invoice.address || '',
     customerRfc: invoice.customerRfc || invoice.rfc || '',
+    cashierName: getCashierName(invoice),
+    cashierCode: getRecordCashierCode(invoice),
     subtotal: String(safeNumber(invoice.subtotal)),
     iva: String(safeNumber(invoice.iva)),
     total: String(safeNumber(invoice.total) || safeNumber(invoice.subtotal) + safeNumber(invoice.iva)),
@@ -5601,6 +5699,9 @@ function StampedInvoices({ data }) {
     }, [sicarInvoicePage, pagedSicarInvoices.page]);
 
     const update = (key, value) => {
+        if (key === 'cashierName') {
+            setSplitInvoice((prev) => prev ? { ...prev, cashierName: value } : prev);
+        }
         setForm((prev) => {
             const next = { ...prev, [key]: value };
             if (key === 'subtotal' || key === 'iva') {
@@ -5647,6 +5748,7 @@ function StampedInvoices({ data }) {
                     ...prev,
                     sourceSicarInvoiceId: '',
                     sourceSicarInvoiceNumber: '',
+                    cashierName: prev.cashierName || '',
                     paymentBreakdown: [],
                     paymentNetTotal: 0,
                     ...applyItemTotals(items),
@@ -5655,6 +5757,7 @@ function StampedInvoices({ data }) {
             return {
                 ...createStampedInvoiceForm(),
                 date: prev.date || todayString(),
+                cashierName: prev.cashierName || '',
                 paymentMethod: prev.paymentMethod || '',
                 paymentBreakdown: [],
                 paymentNetTotal: 0,
@@ -5672,6 +5775,7 @@ function StampedInvoices({ data }) {
             customerName: invoice.customerName || invoice.cliente || '',
             customerAddress: invoice.customerAddress || invoice.address || '',
             customerRfc: invoice.customerRfc || invoice.rfc || '',
+            cashierName: form.cashierName || getCashierName(invoice),
             subtotal: String(safeNumber(invoice.subtotal)),
             iva: String(safeNumber(invoice.iva)),
             total: String(safeNumber(invoice.total)),
@@ -5817,6 +5921,7 @@ function StampedInvoices({ data }) {
 
             invoicesToSave.forEach((invoice) => {
                 if (!String(invoice.invoiceNumber || '').trim()) throw new Error('Ingresa el numero de factura.');
+                if (!String(invoice.cashierName || '').trim()) throw new Error(`Selecciona cajero para la factura ${invoice.invoiceNumber || ''}.`);
                 if (!safeNumber(invoice.subtotal) && !safeNumber(invoice.total)) throw new Error(`Ingresa subtotal o total para la factura ${invoice.invoiceNumber}.`);
                 validatePaymentBreakdownForInvoice(invoice);
             });
@@ -5847,6 +5952,8 @@ function StampedInvoices({ data }) {
             }
 
             for (const { invoice, docId } of invoiceMeta) {
+                const cashierName = String(invoice.cashierName || '').trim();
+                const cashierCode = getCashierCode(cashierName);
                 const paymentBreakdown = validatePaymentBreakdownForInvoice(invoice);
                 const paymentMethod = getPaymentMethodFromBreakdown(paymentBreakdown, invoice.paymentMethod);
                 const itemFiscal = calculateInvoiceItemsFiscal(invoice.items || []);
@@ -5877,6 +5984,8 @@ function StampedInvoices({ data }) {
                     customerName: String(invoice.customerName || '').trim(),
                     customerAddress: String(invoice.customerAddress || '').trim(),
                     customerRfc: String(invoice.customerRfc || '').trim(),
+                    cashierName,
+                    cashierCode,
                     paymentMethod: String(paymentMethod || '').trim(),
                     paymentBreakdown,
                     paymentNetTotal: paymentBreakdown.length ? getPaymentBreakdownTotal(paymentBreakdown) : getInvoicePaymentTargetAmount({ ...invoice, ...invoiceFiscal }),
@@ -5978,6 +6087,14 @@ function StampedInvoices({ data }) {
                                     Origen SICAR: factura {form.sourceSicarInvoiceNumber || form.sourceSicarInvoiceId}. Este numero no se copia como consecutivo de la app.
                                 </div>
                             )}
+                        </Field>
+                        <Field label="Cajero">
+                            <select className={inputClass} value={form.cashierName || ''} onChange={(event) => update('cashierName', event.target.value)} required>
+                                <option value="">Seleccionar cajero...</option>
+                                {CASHIER_OPTIONS.map((cashier) => (
+                                    <option key={cashier} value={cashier}>{cashier}</option>
+                                ))}
+                            </select>
                         </Field>
                         <Field label="Cliente">
                             <input className={inputClass} list="stamped-invoice-clients" value={form.customerName} onChange={(event) => update('customerName', event.target.value)} placeholder="Cliente / razon social" />
@@ -6336,6 +6453,7 @@ const StampedInvoiceDetailModal = ({
                             <div className="mt-2 space-y-1 text-sm font-semibold text-slate-600">
                                 <div>RUC/RFC: {invoice.customerRfc || invoice.rfc || '-'}</div>
                                 <div>Direccion: {invoice.customerAddress || invoice.address || '-'}</div>
+                                <div>Cajero: {invoice.cashierName || 'Sin cajero'}</div>
                             </div>
                         </div>
 
@@ -6509,6 +6627,14 @@ const StampedInvoiceEditModal = ({
                         </Field>
                         <Field label="Numero factura app / membretada">
                             <input className={inputClass} value={form.invoiceNumber || ''} onChange={(event) => onUpdate('invoiceNumber', event.target.value)} />
+                        </Field>
+                        <Field label="Cajero">
+                            <select className={inputClass} value={form.cashierName || ''} onChange={(event) => onUpdate('cashierName', event.target.value)} required>
+                                <option value="">Seleccionar cajero...</option>
+                                {CASHIER_OPTIONS.map((cashier) => (
+                                    <option key={cashier} value={cashier}>{cashier}</option>
+                                ))}
+                            </select>
                         </Field>
                         <Field label="Cliente">
                             <input className={inputClass} value={form.customerName || ''} onChange={(event) => onUpdate('customerName', event.target.value)} />
@@ -6830,6 +6956,9 @@ function StampedInvoiceHistory({ data }) {
     };
 
     const updateEditField = (key, value) => {
+        if (key === 'cashierName') {
+            setSplitEditInvoice((prev) => prev ? { ...prev, cashierName: value, cashierCode: getCashierCode(value) } : prev);
+        }
         setEditForm((prev) => {
             if (!prev) return prev;
             const next = { ...prev, [key]: value };
@@ -6993,6 +7122,7 @@ function StampedInvoiceHistory({ data }) {
 
             invoicesToSave.forEach((invoice) => {
                 if (!String(invoice.invoiceNumber || '').trim()) throw new Error('Ingresa el numero de factura.');
+                if (!String(invoice.cashierName || '').trim()) throw new Error(`Selecciona cajero para la factura ${invoice.invoiceNumber || ''}.`);
                 if (!safeNumber(invoice.subtotal) && !safeNumber(invoice.total)) throw new Error(`Ingresa subtotal o total para la factura ${invoice.invoiceNumber}.`);
                 validatePaymentBreakdownForInvoice(invoice);
             });
@@ -7024,6 +7154,8 @@ function StampedInvoiceHistory({ data }) {
 
             invoiceMeta.forEach(({ invoice, docId }) => {
                 const existingSavedInvoice = savedInvoices.find((item) => getInvoiceDocId(item) === docId) || {};
+                const cashierName = String(invoice.cashierName || '').trim();
+                const cashierCode = getCashierCode(cashierName);
                 const paymentBreakdown = validatePaymentBreakdownForInvoice(invoice);
                 const paymentMethod = getPaymentMethodFromBreakdown(paymentBreakdown, invoice.paymentMethod);
                 assertInvoiceCreditMethodChangeAllowed(existingSavedInvoice, paymentMethod);
@@ -7054,6 +7186,8 @@ function StampedInvoiceHistory({ data }) {
                     customerName: String(invoice.customerName || '').trim(),
                     customerAddress: String(invoice.customerAddress || '').trim(),
                     customerRfc: String(invoice.customerRfc || '').trim(),
+                    cashierName,
+                    cashierCode,
                     paymentMethod: String(paymentMethod || '').trim(),
                     paymentBreakdown,
                     paymentNetTotal: paymentBreakdown.length ? getPaymentBreakdownTotal(paymentBreakdown) : getInvoicePaymentTargetAmount({ ...invoice, ...invoiceFiscal }),
@@ -7128,6 +7262,8 @@ function StampedInvoiceHistory({ data }) {
                         id: docId,
                         invoiceNumber: String(invoice.invoiceNumber || '').trim(),
                         date: invoice.saleDate || invoice.date,
+                        cashierName: String(invoice.cashierName || '').trim(),
+                        cashierCode: getCashierCode(invoice.cashierName || ''),
                         subtotal: safeNumber(invoiceFiscal.subtotal),
                         iva: safeNumber(invoiceFiscal.iva),
                         total: safeNumber(invoiceFiscal.total),
@@ -7276,6 +7412,7 @@ function StampedInvoiceHistory({ data }) {
                                         <div className="flex flex-wrap items-center gap-2">
                                             <div className={`truncate text-base font-black ${isAnnulled ? 'text-red-900' : 'text-slate-950'}`}>Factura {invoice.invoiceNumber || '-'}</div>
                                             <Badge tone={invoice.source === 'sicar_factura' ? 'blue' : 'slate'}>{invoice.source === 'sicar_factura' ? 'SICAR' : 'Manual'}</Badge>
+                                            <Badge tone={invoice.cashierName ? 'green' : 'amber'}>{invoice.cashierName || 'Sin cajero'}</Badge>
                                             <Badge tone={closureInfo.status === 'vinculada' ? 'green' : closureInfo.status === 'sin_cierre' ? 'amber' : 'slate'}>{closureInfo.status === 'vinculada' ? 'Con cierre' : closureInfo.status === 'sin_cierre' ? 'Sin cierre' : 'Pendiente'}</Badge>
                                             {isAnnulled && <Badge tone="red">ANULADA</Badge>}
                                             {invoice.creditStatusLabel && (
@@ -8057,11 +8194,7 @@ const buildCashClosureTicketData = (closure = {}) => {
         posBac: safeNumber(payment.posBac ?? closure.posTotals?.bac),
         posBanpro: safeNumber(payment.posBanpro ?? closure.posTotals?.banpro),
         posLafise: safeNumber(payment.posLafise ?? closure.posTotals?.lafise),
-        transferBac: safeNumber(
-            safeNumber(payment.transferBac ?? closure.transferTotals?.bac)
-            + safeNumber(payment.transferBac2 ?? closure.transferTotals?.bac2)
-            + safeNumber(payment.transferBacUsd ?? closure.transferTotals?.bacUsd)
-        ),
+        transferBac: safeNumber(payment.transferBac ?? closure.transferTotals?.bac),
         transferLafise: safeNumber(
             safeNumber(payment.transferLafise ?? closure.transferTotals?.lafise)
             + safeNumber(payment.transferLafiseUsd ?? closure.transferTotals?.lafiseUsd)
