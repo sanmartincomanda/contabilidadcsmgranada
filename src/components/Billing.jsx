@@ -146,6 +146,22 @@ const buildMissingClosureInvoiceMessage = (invoice = {}) => (
     `Fact ${getStampedInvoiceDisplayNumber(invoice) || 'sin numero'} no esta registrado en cierre.`
 );
 
+const getCashClosureCodeValue = (closure = {}) => (
+    closure.linkedSicarCorId
+    || closure.sicar?.corId
+    || closure.sicar?.cor_id
+    || closure.corId
+    || closure.cor_id
+    || closure.code
+    || closure.id
+    || ''
+);
+
+const isDaniaClosure7102 = (closure = {}) => {
+    const code = String(getCashClosureCodeValue(closure) || '').trim().replace(/^0+/, '');
+    return code === '7102' && normalizeText(getCashierName(closure)) === 'DANIA ESPINOZA';
+};
+
 const recordExistsByName = (records = [], name = '') => {
     const normalized = normalizeText(name);
     return Boolean(normalized) && records.some((record) => normalizeText(record.name || record.nombre) === normalized);
@@ -748,9 +764,13 @@ const buildClosureAccountingSummary = ({
             paymentSum + (isCreditPaymentMethod(row.method) ? safeNumber(row.amount) : 0)
         ), 0)
     ), 0));
+    const stampedInvoiceRetentionTotal = safeNumber(stampedInvoices.reduce((sum, invoice) => (
+        sum + safeNumber(invoice.retentionTotal ?? (safeNumber(invoice.retentionIr2) + safeNumber(invoice.retentionMunicipal1)))
+    ), 0));
     const cashReceiptGrossTotal = safeNumber(cashReceipts.reduce((sum, receipt) => sum + safeNumber(receipt.amount), 0));
     const cashReceiptRetentionTotal = safeNumber(cashReceipts.reduce((sum, receipt) => sum + getCashReceiptRetentionTotal(receipt), 0));
     const cashReceiptNetTotal = safeNumber(cashReceipts.reduce((sum, receipt) => sum + getCashReceiptNetAmount(receipt), 0));
+    const cashIncomeNetTotal = safeNumber(stampedCashTotal + cashReceiptGrossTotal - stampedInvoiceRetentionTotal - cashReceiptRetentionTotal);
     const ticketCashSales = safeNumber(cashSalesTotal - stampedCashTotal);
     const ticketCreditSales = safeNumber(creditSalesTotal - stampedCreditTotal);
     const ticketCashReceipts = safeNumber(creditRecoveryTotal - cashReceiptGrossTotal);
@@ -765,7 +785,7 @@ const buildClosureAccountingSummary = ({
     );
     const transferTotalWithoutBac2 = safeNumber(transferTotal - safeNumber(transferTotals.bac2));
     const cashTotal = safeNumber(cashCordobasTotal + dollarCashTotalCordobas + preCloseDepositTotal);
-    const rc = safeNumber(cardTotal + transferTotalWithoutBac2 - stampedCashTotal - cashReceiptNetTotal);
+    const rc = safeNumber(cardTotal + transferTotalWithoutBac2 - cashIncomeNetTotal);
 
     return {
         general: {
@@ -776,9 +796,11 @@ const buildClosureAccountingSummary = ({
         stampedDocuments: {
             stampedCashInvoices: stampedCashTotal,
             stampedCreditInvoices: stampedCreditTotal,
+            stampedInvoiceRetentions: stampedInvoiceRetentionTotal,
             stampedCashReceipts: cashReceiptGrossTotal,
             stampedCashReceiptsNet: cashReceiptNetTotal,
             stampedCashReceiptRetentions: cashReceiptRetentionTotal,
+            stampedCashIncomeNetTotal: cashIncomeNetTotal,
         },
         sicarTickets: {
             cashSalesTickets: ticketCashSales,
@@ -804,7 +826,7 @@ const buildClosureAccountingSummary = ({
         },
         internalRatio: {
             rc,
-            formula: 'Tarjeta + transferencia sin BAC (2) - facturas membretadas contado - recibos de caja membretados con retenciones',
+            formula: 'Tarjeta + transferencia sin BAC (2) - total ingreso de caja',
         },
     };
 };
@@ -818,9 +840,18 @@ const normalizeClosureAccountingSummarySales = (summary = {}, netSalesTotals = {
     const stampedCashInvoices = safeNumber(stamped.stampedCashInvoices);
     const stampedCreditInvoices = safeNumber(stamped.stampedCreditInvoices);
     const stampedCashReceipts = safeNumber(stamped.stampedCashReceipts);
+    const closureStampedInvoices = Array.isArray(closure.stampedInvoices) && closure.stampedInvoices.length
+        ? closure.stampedInvoices
+        : Array.isArray(closure.stampedInvoiceDrafts) ? closure.stampedInvoiceDrafts : [];
+    const stampedInvoiceRetentionTotal = hasNumericValue(stamped.stampedInvoiceRetentions)
+        ? safeNumber(stamped.stampedInvoiceRetentions)
+        : safeNumber(closureStampedInvoices.reduce((sum, invoice) => (
+            sum + safeNumber(invoice.retentionTotal ?? (safeNumber(invoice.retentionIr2) + safeNumber(invoice.retentionMunicipal1)))
+        ), 0));
     const stampedCashReceiptsNet = hasNumericValue(stamped.stampedCashReceiptsNet)
         ? safeNumber(stamped.stampedCashReceiptsNet)
         : safeNumber(stampedCashReceipts - safeNumber(stamped.stampedCashReceiptRetentions));
+    const cashIncomeNetTotal = safeNumber(stampedCashInvoices + stampedCashReceiptsNet - stampedInvoiceRetentionTotal);
     const cardTotal = safeNumber(payment.cardTotal);
     const transferTotal = hasNumericValue(payment.transferTotal)
         ? safeNumber(payment.transferTotal)
@@ -833,7 +864,11 @@ const normalizeClosureAccountingSummarySales = (summary = {}, netSalesTotals = {
             + safeNumber(payment.transferLafiseUsd)
         );
     const transferTotalWithoutBac2 = safeNumber(transferTotal - safeNumber(payment.transferBac2));
-    const rc = safeNumber(cardTotal + transferTotalWithoutBac2 - stampedCashInvoices - stampedCashReceiptsNet);
+    const rc = safeNumber(cardTotal + transferTotalWithoutBac2 - cashIncomeNetTotal);
+    const ratioFormula = normalizeText(summary.internalRatio?.formula || '');
+    const shouldUseRecalculatedRc = ratioFormula.includes('TOTAL INGRESO DE CAJA')
+        || ratioFormula.includes('CON RETENCIONES')
+        || isDaniaClosure7102(closure);
     const cashCordobas = safeNumber(payment.cashCordobas ?? closure.cashCordobasTotal);
     const cashDollarsConverted = safeNumber(payment.cashDollarsConverted ?? closure.dollarCashTotalCordobas);
     const preCloseDepositTotal = safeNumber(payment.preCloseDepositTotal ?? closure.preCloseDepositTotal ?? closure.preCloseDeposit?.totalCordobas);
@@ -851,6 +886,14 @@ const normalizeClosureAccountingSummarySales = (summary = {}, netSalesTotals = {
             creditSalesTickets: safeNumber(creditSalesTotal - stampedCreditInvoices),
             cashReceiptTickets: safeNumber(creditRecoveryTotal - stampedCashReceipts),
         },
+        stampedDocuments: {
+            ...stamped,
+            ...(shouldUseRecalculatedRc ? {
+                stampedInvoiceRetentions: stampedInvoiceRetentionTotal,
+                stampedCashReceiptsNet,
+                stampedCashIncomeNetTotal: cashIncomeNetTotal,
+            } : {}),
+        },
         paymentBreakdown: {
             ...payment,
             cashTotal: safeNumber(cashCordobas + cashDollarsConverted + preCloseDepositTotal),
@@ -860,8 +903,10 @@ const normalizeClosureAccountingSummarySales = (summary = {}, netSalesTotals = {
         },
         internalRatio: {
             ...(summary.internalRatio || {}),
-            rc,
-            formula: 'Tarjeta + transferencia sin BAC (2) - facturas membretadas contado - recibos de caja membretados con retenciones',
+            ...(shouldUseRecalculatedRc ? {
+                rc,
+                formula: 'Tarjeta + transferencia sin BAC (2) - total ingreso de caja',
+            } : {}),
         },
     };
 };
@@ -1035,14 +1080,17 @@ const syncLinkedClosureForCashReceipt = async (receiptId = '', receiptPayload = 
     const payment = closure.accountingSummary?.paymentBreakdown || {};
     const stamped = closure.accountingSummary?.stampedDocuments || {};
     const transferTotalWithoutBac2 = safeNumber(safeNumber(payment.transferTotal) - safeNumber(payment.transferBac2));
-    const rc = safeNumber(safeNumber(payment.cardTotal) + transferTotalWithoutBac2 - safeNumber(stamped.stampedCashInvoices) - cashReceiptNetTotal);
+    const cashIncomeNetTotal = safeNumber(safeNumber(stamped.stampedCashInvoices) + cashReceiptGrossTotal - invoiceRetentionTotal - cashReceiptRetentionTotal);
+    const rc = safeNumber(safeNumber(payment.cardTotal) + transferTotalWithoutBac2 - cashIncomeNetTotal);
     const accountingSummary = closure.accountingSummary ? {
         ...closure.accountingSummary,
         stampedDocuments: {
             ...(closure.accountingSummary.stampedDocuments || {}),
+            stampedInvoiceRetentions: invoiceRetentionTotal,
             stampedCashReceipts: cashReceiptGrossTotal,
             stampedCashReceiptsNet: cashReceiptNetTotal,
             stampedCashReceiptRetentions: cashReceiptRetentionTotal,
+            stampedCashIncomeNetTotal: cashIncomeNetTotal,
         },
         sicarTickets: {
             ...(closure.accountingSummary.sicarTickets || {}),
@@ -1051,7 +1099,7 @@ const syncLinkedClosureForCashReceipt = async (receiptId = '', receiptPayload = 
         internalRatio: {
             ...(closure.accountingSummary.internalRatio || {}),
             rc,
-            formula: 'Tarjeta + transferencia sin BAC (2) - facturas membretadas contado - recibos de caja membretados con retenciones',
+            formula: 'Tarjeta + transferencia sin BAC (2) - total ingreso de caja',
         },
     } : null;
 
@@ -8217,6 +8265,7 @@ const buildCashClosureTicketData = (closure = {}) => {
         posBanpro: safeNumber(payment.posBanpro ?? closure.posTotals?.banpro),
         posLafise: safeNumber(payment.posLafise ?? closure.posTotals?.lafise),
         transferBac: safeNumber(payment.transferBac ?? closure.transferTotals?.bac),
+        transferBacUsd: safeNumber(payment.transferBacUsd ?? closure.transferTotals?.bacUsd),
         transferLafise: safeNumber(
             safeNumber(payment.transferLafise ?? closure.transferTotals?.lafise)
             + safeNumber(payment.transferLafiseUsd ?? closure.transferTotals?.lafiseUsd)
@@ -8267,6 +8316,7 @@ const CashClosureTicketPrint = ({ closure }) => {
         ['POS BANPRO', ticket.posBanpro],
         ['POS LAFISE', ticket.posLafise],
         ['Transferencia BAC', ticket.transferBac],
+        ...(ticket.transferBacUsd ? [['Transferencia BAC USD', ticket.transferBacUsd]] : []),
         ['Transferencia Lafise', ticket.transferLafise],
         ['Transferencia BANPRO', ticket.transferBanpro],
         ['RC EFECTIVO:', ticket.rc],
