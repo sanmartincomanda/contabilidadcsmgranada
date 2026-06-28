@@ -644,12 +644,22 @@ const getCashDifferencePendingAmount = (item = {}) => {
     return Math.abs(safeNumber(item.amount));
 };
 
+const getEffectiveCashDifferencePendingAmount = (item = {}) => (
+    hasNumericValue(item.effectivePendingAmount)
+        ? safeNumber(item.effectivePendingAmount)
+        : getCashDifferencePendingAmount(item)
+);
+
 const getCashDifferenceType = (amount = 0) => (safeNumber(amount) < 0 ? 'faltante' : 'sobrante');
 
 const getCashClosureComparableExpectedTotal = (sicarExpected = 0) => safeNumber(sicarExpected);
 
-const getCashClosureDifference = (manualTotal = 0, sicarExpected = 0) => (
-    safeNumber(safeNumber(manualTotal) - getCashClosureComparableExpectedTotal(sicarExpected))
+const getCashClosureManualTotalWithRetentions = (manualTotal = 0, retentionAdjustment = 0) => (
+    safeNumber(safeNumber(manualTotal) + safeNumber(retentionAdjustment))
+);
+
+const getCashClosureDifference = (manualTotal = 0, sicarExpected = 0, retentionAdjustment = 0) => (
+    safeNumber(getCashClosureManualTotalWithRetentions(manualTotal, retentionAdjustment) - getCashClosureComparableExpectedTotal(sicarExpected))
 );
 
 const getCashClosureStatusFromDifference = (currentStatus = '', difference = 0) => {
@@ -660,16 +670,33 @@ const getCashClosureStatusFromDifference = (currentStatus = '', difference = 0) 
 
 const normalizeCashClosureStoredTotals = (closure = {}) => {
     const manualTotal = safeNumber(closure.manualTotal);
+    const retentionAdjustment = safeNumber(closure.retentionAdjustment);
     const sicarExpected = safeNumber(closure.sicarExpected);
     const expectedAfterRetentions = getCashClosureComparableExpectedTotal(sicarExpected);
-    const difference = getCashClosureDifference(manualTotal, sicarExpected);
+    const manualTotalWithRetentions = getCashClosureManualTotalWithRetentions(manualTotal, retentionAdjustment);
+    const difference = getCashClosureDifference(manualTotal, sicarExpected, retentionAdjustment);
     return {
         manualTotal,
+        manualTotalWithRetentions,
+        retentionAdjustment,
         sicarExpected,
         expectedAfterRetentions,
         difference,
         status: getCashClosureStatusFromDifference(closure.status || 'cerrado', difference),
     };
+};
+
+const getReconciledCashDifferencePendingAmount = (item = {}, closureIndex = new Map()) => {
+    const closureId = item.closureId || '';
+    const closure = closureId ? closureIndex.get(closureId) : null;
+    if (!closure) return getCashDifferencePendingAmount(item);
+
+    const totals = normalizeCashClosureStoredTotals(closure);
+    if (['en_espera', 'anulado', 'anulada'].includes(totals.status)) return 0;
+    if (Math.abs(totals.difference) <= CASH_DIFFERENCE_THRESHOLD) return 0;
+
+    const paidAmount = safeNumber(item.paidAmount);
+    return safeNumber(Math.max(Math.abs(totals.difference) - paidAmount, 0));
 };
 
 const MIXED_PAYMENT_METHOD = 'MIXTO';
@@ -1112,7 +1139,7 @@ const syncLinkedClosureForCashReceipt = async (receiptId = '', receiptPayload = 
     const sicarExpected = safeNumber(closure.sicarExpected);
     const manualTotal = safeNumber(closure.manualTotal);
     const expectedAfterRetentions = getCashClosureComparableExpectedTotal(sicarExpected);
-    const difference = getCashClosureDifference(manualTotal, sicarExpected);
+    const difference = getCashClosureDifference(manualTotal, sicarExpected, retentionAdjustment);
     const payment = closure.accountingSummary?.paymentBreakdown || {};
     const stamped = closure.accountingSummary?.stampedDocuments || {};
     const transferTotalWithoutBac2 = safeNumber(safeNumber(payment.transferTotal) - safeNumber(payment.transferBac2));
@@ -1144,6 +1171,7 @@ const syncLinkedClosureForCashReceipt = async (receiptId = '', receiptPayload = 
         ...(cashReceiptDrafts.length ? { cashReceiptDrafts } : {}),
         retentionAdjustment,
         expectedAfterRetentions,
+        manualTotalWithRetentions: getCashClosureManualTotalWithRetentions(manualTotal, retentionAdjustment),
         difference,
         ...(accountingSummary ? { accountingSummary } : {}),
         updatedAt: serverTimestamp(),
@@ -1194,13 +1222,14 @@ const syncLinkedClosureForStampedInvoice = async (invoiceId = '', invoicePayload
     const sicarExpected = safeNumber(closure.sicarExpected);
     const manualTotal = safeNumber(closure.manualTotal);
     const expectedAfterRetentions = getCashClosureComparableExpectedTotal(sicarExpected);
-    const difference = getCashClosureDifference(manualTotal, sicarExpected);
+    const difference = getCashClosureDifference(manualTotal, sicarExpected, retentionAdjustment);
 
     await setDoc(closureRef, {
         ...(stampedInvoices.length ? { stampedInvoices } : {}),
         ...(stampedInvoiceDrafts.length ? { stampedInvoiceDrafts } : {}),
         retentionAdjustment,
         expectedAfterRetentions,
+        manualTotalWithRetentions: getCashClosureManualTotalWithRetentions(manualTotal, retentionAdjustment),
         difference,
         accountingSummary,
         updatedAt: serverTimestamp(),
@@ -2523,7 +2552,8 @@ function CashClosure({ data }) {
     const closureRc = getCashClosureRcValue(closureAccountingSummary);
     const isClosureRcPositive = isPositiveCashClosureRc(closureRc);
     const expectedAfterRetentions = getCashClosureComparableExpectedTotal(sicarExpected);
-    const difference = getCashClosureDifference(manualTotal, sicarExpected);
+    const manualTotalWithRetentions = getCashClosureManualTotalWithRetentions(manualTotal, retentionTotal);
+    const difference = getCashClosureDifference(manualTotal, sicarExpected, retentionTotal);
     const shouldTrackDifference = Math.abs(difference) > CASH_DIFFERENCE_THRESHOLD;
 
     const resetClosureWorkspace = () => {
@@ -3098,6 +3128,7 @@ function CashClosure({ data }) {
                     ...receipt,
                     docId: receipt.docId || receipt.id || '',
                 })) : [],
+                manualTotalWithRetentions,
                 notes,
                 source: 'manual_app',
                 sourceType: 'cash_closure',
@@ -3358,7 +3389,7 @@ function CashClosure({ data }) {
                     <div className="mt-5 grid gap-3 md:grid-cols-4">
                         <SummaryCard label="SICAR esperado" value={fmt(sicarExpected)} tone="blue" />
                         <SummaryCard label="Retenciones membretadas" value={fmt(retentionTotal)} tone="amber" />
-                        <SummaryCard label="Total contado app" value={fmt(manualTotal)} tone="slate" />
+                        <SummaryCard label="App + retenciones" value={fmt(manualTotalWithRetentions)} tone="slate" />
                         <SummaryCard label="Diferencia" value={fmt(difference)} tone={shouldTrackDifference ? 'red' : 'green'} />
                     </div>
 
@@ -7691,10 +7722,22 @@ function CashDifferences({ data }) {
     const [selectedMonth, setSelectedMonth] = useState('');
     const [selectedDate, setSelectedDate] = useState('');
 
+    const closureIndex = useMemo(() => {
+        const map = new Map();
+        (data.cierres_caja || []).forEach((closure) => {
+            if (closure.id) map.set(closure.id, closure);
+        });
+        return map;
+    }, [data.cierres_caja]);
+
     const differences = useMemo(() => (
         [...(data.diferencias_caja || [])]
+            .map((item) => ({
+                ...item,
+                effectivePendingAmount: getReconciledCashDifferencePendingAmount(item, closureIndex),
+            }))
             .sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')))
-    ), [data.diferencias_caja]);
+    ), [closureIndex, data.diferencias_caja]);
 
     const filteredDifferences = useMemo(() => (
         differences.filter((item) => matchesHistoryDateFilters(item.date, selectedMonth, selectedDate))
@@ -7703,7 +7746,7 @@ function CashDifferences({ data }) {
     const byCashier = useMemo(() => {
         const map = new Map();
         differences.forEach((item) => {
-            const pendingAmount = getCashDifferencePendingAmount(item);
+            const pendingAmount = getEffectiveCashDifferencePendingAmount(item);
             if (pendingAmount <= 0.01) return;
             const key = item.cashierCode || item.cashierName || 'SIN-CAJERO';
             const current = map.get(key) || {
@@ -7737,7 +7780,7 @@ function CashDifferences({ data }) {
         const cashierKey = cashier.cashierCode || cashier.cashierName || 'SIN-CAJERO';
         const pendingRows = differences
             .filter((item) => (item.cashierCode || item.cashierName || 'SIN-CAJERO') === cashierKey)
-            .filter((item) => getCashDifferencePendingAmount(item) > 0.01)
+            .filter((item) => getEffectiveCashDifferencePendingAmount(item) > 0.01)
             .sort((a, b) => String(a.date || '').localeCompare(String(b.date || '')));
 
         let remaining = requestedAmount;
@@ -7746,7 +7789,7 @@ function CashDifferences({ data }) {
 
         pendingRows.forEach((item) => {
             if (remaining <= 0.01) return;
-            const pendingAmount = getCashDifferencePendingAmount(item);
+            const pendingAmount = getEffectiveCashDifferencePendingAmount(item);
             const applied = safeNumber(Math.min(pendingAmount, remaining));
             const nextPending = safeNumber(Math.max(pendingAmount - applied, 0));
             remaining = safeNumber(remaining - applied);
@@ -7879,7 +7922,7 @@ function CashDifferences({ data }) {
                                     <td className="py-3 pr-4 font-bold capitalize text-slate-600">{item.differenceType || getCashDifferenceType(item.amount)}</td>
                                     <td className="py-3 pr-4"><Badge tone={item.status === 'pendiente' ? 'red' : 'green'}>{item.status || 'pendiente'}</Badge></td>
                                     <td className="py-3 pr-4 text-right font-mono font-black text-red-700">{fmt(item.amount)}</td>
-                                    <td className="py-3 text-right font-mono font-black text-slate-900">{fmt(getCashDifferencePendingAmount(item))}</td>
+                                    <td className="py-3 text-right font-mono font-black text-slate-900">{fmt(getEffectiveCashDifferencePendingAmount(item))}</td>
                                 </tr>
                             ))}
                             {filteredDifferences.length === 0 && (
@@ -7956,7 +7999,8 @@ const calculateClosureEditTotals = (form = {}) => {
     const retentionAdjustment = safeNumber(form.retentionAdjustment);
     const sicarExpected = safeNumber(form.sicarExpected);
     const expectedAfterRetentions = getCashClosureComparableExpectedTotal(sicarExpected);
-    const difference = getCashClosureDifference(manualTotal, sicarExpected);
+    const manualTotalWithRetentions = getCashClosureManualTotalWithRetentions(manualTotal, retentionAdjustment);
+    const difference = getCashClosureDifference(manualTotal, sicarExpected, retentionAdjustment);
     const shouldTrackDifference = Math.abs(difference) > CASH_DIFFERENCE_THRESHOLD;
 
     return {
@@ -7970,6 +8014,7 @@ const calculateClosureEditTotals = (form = {}) => {
         transferTotals,
         posTotals,
         manualTotal,
+        manualTotalWithRetentions,
         retentionAdjustment,
         sicarExpected,
         expectedAfterRetentions,
@@ -8626,8 +8671,9 @@ const CashClosureEditModal = ({
                         </Field>
                     </div>
 
-                    <div className="grid gap-3 md:grid-cols-6">
+                    <div className="grid gap-3 md:grid-cols-3 xl:grid-cols-7">
                         <SummaryCard label="Ingresado app" value={fmt(totals.manualTotal)} tone="green" />
+                        <SummaryCard label="App + retenciones" value={fmt(totals.manualTotalWithRetentions)} tone="amber" />
                         <SummaryCard label="SICAR esperado" value={fmt(totals.expectedAfterRetentions)} tone="blue" />
                         <SummaryCard label="Diferencia" value={fmt(totals.difference)} tone={Math.abs(totals.difference) > 0.01 ? 'red' : 'green'} />
                         <SummaryCard label="Efectivo total" value={fmt(totals.cashTotal)} />
@@ -8789,10 +8835,11 @@ const CashClosureDetailModal = ({ closure, onClose, onEdit, onExport, onPrintTic
                 </div>
 
                 <div className="overflow-y-auto p-5">
-                    <div className="grid gap-3 md:grid-cols-3 xl:grid-cols-6">
+                    <div className="grid gap-3 md:grid-cols-3 xl:grid-cols-7">
                         <SummaryCard label="SICAR esperado" value={fmt(closure.sicarExpected)} tone="blue" />
                         <SummaryCard label="Retenciones" value={fmt(closure.retentionAdjustment)} tone="amber" />
                         <SummaryCard label="Ingresado app" value={fmt(closure.manualTotal)} tone="green" />
+                        <SummaryCard label="App + retenciones" value={fmt(closure.manualTotalWithRetentions ?? getCashClosureManualTotalWithRetentions(closure.manualTotal, closure.retentionAdjustment))} tone="amber" />
                         <SummaryCard label="Diferencia" value={fmt(closure.difference)} tone={Math.abs(safeNumber(closure.difference)) > 0.01 ? 'red' : 'green'} />
                         <SummaryCard label="Efectivo total" value={fmt(closure.cashTotal)} tone="slate" />
                         <SummaryCard label="Pre-cierre" value={fmt(closure.preCloseDepositTotal)} tone="blue" />
@@ -9048,11 +9095,12 @@ function CashClosureHistory({ data }) {
                     cashboxName: closure.sicar?.cashboxName || closure.sicar?.cajaName || closure.cashboxName || closure.cajaName || 'Caja',
                     code: closure.linkedSicarCorId || closure.sicar?.corId || closure.sicar?.cor_id || closure.id,
                     manualTotal: totals.manualTotal,
+                    manualTotalWithRetentions: totals.manualTotalWithRetentions,
                     sicarExpected: totals.sicarExpected,
                     expectedAfterRetentions: totals.expectedAfterRetentions,
                     cashTotal: safeNumber(closure.cashTotal),
                     difference: totals.difference,
-                    retentionAdjustment: safeNumber(closure.retentionAdjustment),
+                    retentionAdjustment: totals.retentionAdjustment,
                     status: totals.status,
                 };
             })
@@ -9101,12 +9149,13 @@ function CashClosureHistory({ data }) {
     const stats = useMemo(() => (
         filteredClosures.reduce((acc, closure) => {
             acc.manualTotal = safeNumber(acc.manualTotal + closure.manualTotal);
+            acc.manualTotalWithRetentions = safeNumber(acc.manualTotalWithRetentions + (closure.manualTotalWithRetentions ?? getCashClosureManualTotalWithRetentions(closure.manualTotal, closure.retentionAdjustment)));
             acc.cashTotal = safeNumber(acc.cashTotal + closure.cashTotal);
             acc.difference = safeNumber(acc.difference + closure.difference);
             acc.retentionAdjustment = safeNumber(acc.retentionAdjustment + closure.retentionAdjustment);
             acc.invoiceCount += closure.invoiceCount;
             return acc;
-        }, { manualTotal: 0, cashTotal: 0, difference: 0, retentionAdjustment: 0, invoiceCount: 0 })
+        }, { manualTotal: 0, manualTotalWithRetentions: 0, cashTotal: 0, difference: 0, retentionAdjustment: 0, invoiceCount: 0 })
     ), [filteredClosures]);
 
     useEffect(() => {
@@ -9321,6 +9370,7 @@ function CashClosureHistory({ data }) {
                 posDetails: editForm.posDetails || {},
                 posTotals: totals.posTotals,
                 manualTotal: totals.manualTotal,
+                manualTotalWithRetentions: totals.manualTotalWithRetentions,
                 difference: totals.difference,
                 cashReceiptIds: linkedCashReceipts.map((receipt) => receipt.id || receipt.docId).filter(Boolean),
                 cashReceipts: linkedCashReceipts,
@@ -9502,9 +9552,10 @@ function CashClosureHistory({ data }) {
                     </div>
                 </div>
 
-                <div className="mt-5 grid gap-3 md:grid-cols-5">
+                <div className="mt-5 grid gap-3 md:grid-cols-3 xl:grid-cols-6">
                     <SummaryCard label="Cierres" value={filteredClosures.length} />
-                    <SummaryCard label="Total ingresado" value={fmt(stats.manualTotal)} tone="green" />
+                    <SummaryCard label="Ingresado app" value={fmt(stats.manualTotal)} tone="green" />
+                    <SummaryCard label="App + retenciones" value={fmt(stats.manualTotalWithRetentions)} tone="amber" />
                     <SummaryCard label="Efectivo contado" value={fmt(stats.cashTotal)} tone="blue" />
                     <SummaryCard label="Diferencia" value={fmt(stats.difference)} tone={Math.abs(stats.difference) > 0.01 ? 'red' : 'green'} />
                     <SummaryCard label="Retenciones" value={fmt(stats.retentionAdjustment)} tone="amber" />
@@ -9527,7 +9578,7 @@ function CashClosureHistory({ data }) {
                                 <th className="px-4 py-3">Cajero</th>
                                 <th className="px-4 py-3">Estado</th>
                                 <th className="px-4 py-3 text-right">Facturas</th>
-                                <th className="px-4 py-3 text-right">Ingresado</th>
+                                <th className="px-4 py-3 text-right">App + ret.</th>
                                 <th className="px-4 py-3 text-right">Diferencia</th>
                                 <th className="px-4 py-3 text-right">Acciones</th>
                             </tr>
@@ -9545,7 +9596,7 @@ function CashClosureHistory({ data }) {
                                         </Badge>
                                     </td>
                                     <td className="px-4 py-3 text-right font-mono font-black text-slate-900">{closure.invoiceCount}</td>
-                                    <td className="px-4 py-3 text-right font-mono font-black text-emerald-700">{fmt(closure.manualTotal)}</td>
+                                    <td className="px-4 py-3 text-right font-mono font-black text-emerald-700">{fmt(closure.manualTotalWithRetentions ?? getCashClosureManualTotalWithRetentions(closure.manualTotal, closure.retentionAdjustment))}</td>
                                     <td className={`px-4 py-3 text-right font-mono font-black ${Math.abs(closure.difference) > 0.01 ? 'text-red-700' : 'text-emerald-700'}`}>{fmt(closure.difference)}</td>
                                     <td className="px-4 py-3 text-right">
                                         <div className="flex justify-end gap-2">
