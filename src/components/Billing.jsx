@@ -57,6 +57,26 @@ const safeNumber = (value) => {
     return Number.isFinite(parsed) ? Math.round(parsed * 100) / 100 : 0;
 };
 
+const isPlainObject = (value) => (
+    value
+    && typeof value === 'object'
+    && (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null)
+);
+
+const sanitizeFirestoreData = (value, { inArray = false } = {}) => {
+    if (value === undefined || typeof value === 'function') return inArray ? null : undefined;
+    if (Array.isArray(value)) {
+        return value.map((item) => sanitizeFirestoreData(item, { inArray: true }));
+    }
+    if (!isPlainObject(value)) return value;
+
+    return Object.fromEntries(
+        Object.entries(value)
+            .map(([key, item]) => [key, sanitizeFirestoreData(item)])
+            .filter(([, item]) => item !== undefined)
+    );
+};
+
 const getCashClosureRcValue = (summary = {}) => safeNumber(summary?.internalRatio?.rc);
 
 const isPositiveCashClosureRc = (value = 0) => safeNumber(value) > CASH_CLOSURE_POSITIVE_RC_THRESHOLD;
@@ -3136,7 +3156,8 @@ function CashClosure({ data }) {
                 createdAt: serverTimestamp(),
             };
 
-            await setDoc(doc(db, 'cierres_caja', docId), payload, { merge: true });
+            const cleanPayload = sanitizeFirestoreData(payload);
+            await setDoc(doc(db, 'cierres_caja', docId), cleanPayload, { merge: true });
             setActiveClosureDocId(docId);
 
             if (!isWaiting && cashierCode && shouldTrackDifference) {
@@ -3163,7 +3184,7 @@ function CashClosure({ data }) {
             if (isWaiting) {
                 setMessage('Cierre guardado en espera. Podes volver y continuar luego.');
             } else {
-                setLastSavedClosure({ id: docId, ...payload });
+                setLastSavedClosure({ id: docId, ...cleanPayload });
                 resetClosureWorkspace();
                 setClosureSuccessOpen(true);
             }
@@ -7412,14 +7433,14 @@ function StampedInvoiceHistory({ data }) {
                         retentionTotal: safeNumber(invoiceFiscal.retentionTotal),
                     };
                 });
-                batch.set(doc(db, 'cierres_caja', editForm.linkedCashClosureId), {
+                batch.set(doc(db, 'cierres_caja', editForm.linkedCashClosureId), sanitizeFirestoreData({
                     stampedInvoiceIds: nextIds,
                     stampedInvoices: [
                         ...previousInvoices.filter((invoice) => !editedDocKeySet.has(normalizeInvoiceMatchKey(invoice.id || invoice.docId))),
                         ...nextSummaries,
                     ],
                     updatedAt: serverTimestamp(),
-                }, { merge: true });
+                }), { merge: true });
             }
 
             await batch.commit();
@@ -9334,7 +9355,7 @@ function CashClosureHistory({ data }) {
             const nextDifferenceId = `${editForm.id}_${cashierCode}`;
             const editedClosureDate = editForm.date || todayString();
 
-            batch.set(doc(db, 'cierres_caja', editForm.id), {
+            batch.set(doc(db, 'cierres_caja', editForm.id), sanitizeFirestoreData({
                 date: editedClosureDate,
                 month: getMonth(editedClosureDate),
                 status: nextStatus,
@@ -9378,7 +9399,7 @@ function CashClosureHistory({ data }) {
                 notes: editForm.notes || '',
                 editedWithPinAt: serverTimestamp(),
                 updatedAt: serverTimestamp(),
-            }, { merge: true });
+            }), { merge: true });
 
             markClosureDifferencesVoided(
                 batch,
@@ -9487,7 +9508,7 @@ function CashClosureHistory({ data }) {
             });
 
             markClosureDifferencesVoided(batch, editForm.id, 'Conciliacion deshecha');
-            batch.set(doc(db, 'cierres_caja', editForm.id), {
+            batch.set(doc(db, 'cierres_caja', editForm.id), sanitizeFirestoreData({
                 status: 'en_espera',
                 stampedInvoiceIds: [],
                 stampedInvoices: [],
@@ -9499,7 +9520,7 @@ function CashClosureHistory({ data }) {
                 conciliationUndoneAt: serverTimestamp(),
                 conciliationUndoneWithPin: true,
                 updatedAt: serverTimestamp(),
-            }, { merge: true });
+            }), { merge: true });
 
             await batch.commit();
             setMessage('Conciliacion deshecha. El cierre quedo en espera y los documentos membretados quedaron libres.');
