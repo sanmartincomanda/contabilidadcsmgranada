@@ -1059,12 +1059,13 @@ function AppContent() {
     const { user, logout } = useAuth();
     const location = useLocation();
     const { loading: accessLoading, moduleAccess, isMaster } = useUserModuleAccess(user);
+    const effectiveIsMaster = isMaster || isMasterEmail(user?.email);
     useInactivityLogout(user, logout);
     const [themeMode, setThemeMode] = useState(() => {
         if (typeof window === 'undefined') return 'dark';
         return window.localStorage.getItem('csm-theme-mode') || 'dark';
     });
-    const effectiveThemeMode = user && !accessLoading && !isMaster ? 'light' : themeMode;
+    const effectiveThemeMode = user && !accessLoading && !effectiveIsMaster ? 'light' : themeMode;
 
     useEffect(() => {
         document.documentElement.dataset.theme = effectiveThemeMode;
@@ -1072,27 +1073,27 @@ function AppContent() {
     }, [effectiveThemeMode]);
 
     useEffect(() => {
-        if (user && !accessLoading && !isMaster && themeMode !== 'light') {
+        if (user && !accessLoading && !effectiveIsMaster && themeMode !== 'light') {
             setThemeMode('light');
         }
-    }, [accessLoading, isMaster, themeMode, user]);
+    }, [accessLoading, effectiveIsMaster, themeMode, user]);
 
     const toggleTheme = useCallback(() => {
-        if (!isMaster) {
+        if (!effectiveIsMaster) {
             setThemeMode('light');
             return;
         }
         setThemeMode((current) => (current === 'dark' ? 'light' : 'dark'));
-    }, [isMaster]);
+    }, [effectiveIsMaster]);
 
-    const canAccess = useCallback((moduleId) => canUseModule(moduleAccess, moduleId), [moduleAccess]);
-    const defaultAllowedPath = useMemo(() => getDefaultAllowedPath(moduleAccess), [moduleAccess]);
+    const canAccess = useCallback((moduleId) => effectiveIsMaster || canUseModule(moduleAccess, moduleId), [effectiveIsMaster, moduleAccess]);
+    const defaultAllowedPath = useMemo(() => (effectiveIsMaster ? '/' : getDefaultAllowedPath(moduleAccess)), [effectiveIsMaster, moduleAccess]);
     const currentPath = location.pathname;
     const needsCategories = (
         (currentPath === '/ingresar' && canAccess('ingresar'))
         || (currentPath === '/gastos-diarios' && canAccess('caja_chica'))
         || (currentPath.startsWith('/maestros/categorias') && canAccess('categorias'))
-        || (currentPath.startsWith('/configuraciones') && isMaster)
+        || (currentPath.startsWith('/configuraciones') && effectiveIsMaster)
     );
     const currentMonth = useMemo(() => getMonthOffset(0), []);
     const dataEntryStartMonth = useMemo(() => getMonthOffset(DATA_ENTRY_HISTORY_MONTHS), []);
@@ -1181,7 +1182,7 @@ function AppContent() {
 
     return (
         <>
-            <Header moduleAccess={moduleAccess} isMaster={isMaster} defaultPath={defaultAllowedPath} />
+            <Header moduleAccess={moduleAccess} isMaster={effectiveIsMaster} defaultPath={defaultAllowedPath} />
             <AnimatePresence mode="wait" initial={false}>
                 <motion.main
                     key={location.pathname}
@@ -1193,16 +1194,16 @@ function AppContent() {
                 >
                     <Routes location={location}>
                         <Route path="/login" element={<Navigate to={defaultAllowedPath} replace />} />
-                        <Route path="/" element={<PrivateRoute element={canAccess('dashboard') ? (dashboardLoading ? <AppLoadingState /> : dashboardError ? <AppErrorState error={dashboardError} /> : <Dashboard data={dashboardData} themeMode={effectiveThemeMode} onThemeToggle={isMaster ? toggleTheme : undefined} />) : <Navigate to={defaultAllowedPath} replace />} />} />
+                        <Route path="/" element={<PrivateRoute element={canAccess('dashboard') ? (dashboardLoading ? <AppLoadingState /> : dashboardError ? <AppErrorState error={dashboardError} /> : <Dashboard data={dashboardData} themeMode={effectiveThemeMode} onThemeToggle={effectiveIsMaster ? toggleTheme : undefined} />) : <Navigate to={defaultAllowedPath} replace />} />} />
                         <Route path="/ingresar" element={<PrivateRoute element={canAccess('ingresar') ? (dataEntryLoading ? <AppLoadingState /> : dataEntryError ? <AppErrorState error={dataEntryError} /> : <DataEntry data={dataEntryData} categories={categoriesList} />) : <Navigate to={defaultAllowedPath} replace />} />} />
                         <Route path="/gastos-diarios" element={<PrivateRoute element={canAccess('caja_chica') ? <GastosDiarios categories={categoriesList} providers={categoriesData.proveedores || []} /> : <Navigate to={defaultAllowedPath} replace />} />} />
                         <Route path="/conciliacion" element={<PrivateRoute element={<Navigate to={defaultAllowedPath} replace />} />} />
                         <Route path="/facturacion" element={<PrivateRoute element={canAccess('facturacion') ? (billingLoading ? <AppLoadingState /> : billingError ? <AppErrorState error={billingError} /> : <Billing data={billingData} />) : <Navigate to={defaultAllowedPath} replace />} />} />
                         <Route path="/cuentas-pagar" element={<PrivateRoute element={canAccess('cuentas_pagar') ? (accountsPayableLoading ? <AppLoadingState /> : accountsPayableError ? <AppErrorState error={accountsPayableError} /> : <AccountsPayable data={accountsPayableData} />) : <Navigate to={defaultAllowedPath} replace />} />} />
                         <Route path="/reportes" element={<PrivateRoute element={canAccess('reportes') ? (reportsLoading ? <AppLoadingState /> : reportsError ? <AppErrorState error={reportsError} /> : <Reports data={reportsData} />) : <Navigate to={defaultAllowedPath} replace />} />} />
-                        <Route path="/configuraciones" element={<PrivateRoute element={isMaster ? <Settings /> : <Navigate to={defaultAllowedPath} replace />} />} />
+                        <Route path="/configuraciones" element={<PrivateRoute element={effectiveIsMaster ? <Settings /> : <Navigate to={defaultAllowedPath} replace />} />} />
                         <Route path="/maestros/categorias" element={<PrivateRoute element={canAccess('categorias') ? <CategoryManager categories={categoriesList} /> : <Navigate to={defaultAllowedPath} replace />} />} />
-                        <Route path="/sin-permisos" element={<PrivateRoute element={<AppErrorState error={{ message: 'Este usuario no tiene modulos asignados. Pide al usuario master que active sus permisos en Configuraciones > Usuarios.' }} />} />} />
+                        <Route path="/sin-permisos" element={<PrivateRoute element={effectiveIsMaster ? <Navigate to="/" replace /> : <AppErrorState error={{ message: 'Este usuario no tiene modulos asignados. Pide al usuario master que active sus permisos en Configuraciones > Usuarios.' }} />} />} />
                         <Route path="*" element={<Navigate to={defaultAllowedPath} replace />} />
                     </Routes>
                 </motion.main>
