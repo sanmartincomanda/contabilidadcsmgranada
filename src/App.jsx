@@ -18,7 +18,10 @@ import Settings from './components/Settings';
 import { AccountsPayable } from './components/AccountsPayable';
 import ExecutiveFlowDiagram from './components/ExecutiveFlowDiagram';
 import { APP_BRAND_LOGO, APP_BRAND_NAME, fmt } from './constants';
-import { resolveReportIncomeEntries } from './services/incomeAggregation';
+import {
+    resolvePurchaseDiscountEntries,
+    resolveSalesIncomeEntries,
+} from './services/incomeAggregation';
 import {
     USER_PROFILES_COLLECTION,
     canUseModule,
@@ -317,18 +320,22 @@ const Dashboard = ({ data = {}, themeMode = 'dark', onThemeToggle }) => {
     const greetingIcon = hour < 12 ? ICON.sun : hour < 18 ? ICON.sun : ICON.moon;
     const mesLabel = now.toLocaleDateString('es-ES', { month: 'long', year: 'numeric' });
 
-    const ingresos = resolveReportIncomeEntries(data.ingresos || []);
+    const ingresos = resolveSalesIncomeEntries(data.ingresos || []);
+    const descuentosCompras = resolvePurchaseDiscountEntries(data.ingresos || []);
     const gastos = data.gastos || [];
     const compras = data.compras || [];
     const facturas = data.cuentas_por_pagar || [];
 
     const mesIngresos = ingresos.filter(i => (i.month || (i.date || '').substring(0, 7)) === currentMonth);
+    const mesDescuentosCompras = descuentosCompras.filter(i => (i.month || (i.date || '').substring(0, 7)) === currentMonth);
     const mesGastos = gastos.filter(g => (g.date || '').substring(0, 7) === currentMonth);
     const mesCompras = compras.filter(c => (c.month || (c.date || '').substring(0, 7)) === currentMonth);
 
     const totalIngresos = mesIngresos.reduce((s, i) => s + (Number(i.amount) || 0), 0);
     const totalGastos = mesGastos.reduce((s, g) => s + (Number(g.amount) || 0), 0);
-    const totalCompras = mesCompras.reduce((s, c) => s + (Number(c.amount) || 0), 0);
+    const totalComprasBrutas = mesCompras.reduce((s, c) => s + (Number(c.amount) || 0), 0);
+    const totalDescuentosCompras = mesDescuentosCompras.reduce((s, c) => s + (Number(c.amount) || 0), 0);
+    const totalCompras = totalComprasBrutas - totalDescuentosCompras;
     const utilidad = totalIngresos - totalGastos - totalCompras;
 
     const facturasPendientes = facturas.filter(f => (Number(f.saldo) || 0) > 0.01);
@@ -389,19 +396,20 @@ const Dashboard = ({ data = {}, themeMode = 'dark', onThemeToggle }) => {
             purchase: 0,
         }));
 
-        const addToBucket = (item, key) => {
+        const addToBucket = (item, key, multiplier = 1) => {
             const date = item.date || item.fecha || item.saleDate || '';
             const day = Number(String(date).substring(8, 10));
             if (!day || !buckets[day - 1]) return;
-            buckets[day - 1][key] += Number(item.subtotal ?? item.amount ?? item.monto ?? item.total) || 0;
+            buckets[day - 1][key] += (Number(item.subtotal ?? item.amount ?? item.monto ?? item.total) || 0) * multiplier;
         };
 
         mesIngresos.forEach((item) => addToBucket(item, 'income'));
         mesGastos.forEach((item) => addToBucket(item, 'expense'));
         mesCompras.forEach((item) => addToBucket(item, 'purchase'));
+        mesDescuentosCompras.forEach((item) => addToBucket(item, 'purchase', -1));
 
         return buckets;
-    }, [mesCompras, mesGastos, mesIngresos, now]);
+    }, [mesCompras, mesDescuentosCompras, mesGastos, mesIngresos, now]);
 
     const maxDailyActivity = Math.max(1, ...dailyActivity.map((day) => Math.max(day.income, day.expense + day.purchase)));
     const flowBase = Math.max(totalIngresos, totalGastos + totalCompras, Math.abs(utilidad), 1);
@@ -424,6 +432,14 @@ const Dashboard = ({ data = {}, themeMode = 'dark', onThemeToggle }) => {
             date: item.date || item.fecha || '',
             accent: 'amber',
         })),
+        ...mesDescuentosCompras.map((item) => ({
+            id: `descuento-compra-${item.id || item.reference || item.date}`,
+            type: 'Desc. compras',
+            title: item.description || item.detalle || item.reference || 'Descuento sobre compras',
+            amount: -(Number(item.subtotal ?? item.amount ?? item.total ?? 0) || 0),
+            date: item.date || item.fecha || '',
+            accent: 'emerald',
+        })),
         ...mesGastos.map((item) => ({
             id: `gasto-${item.id || item.invoiceNumber || item.date}`,
             type: 'Gasto',
@@ -432,7 +448,7 @@ const Dashboard = ({ data = {}, themeMode = 'dark', onThemeToggle }) => {
             date: item.date || item.fecha || '',
             accent: 'rose',
         })),
-    ].sort((a, b) => String(b.date).localeCompare(String(a.date))).slice(0, 7)), [mesCompras, mesGastos, mesIngresos]);
+    ].sort((a, b) => String(b.date).localeCompare(String(a.date))).slice(0, 7)), [mesCompras, mesDescuentosCompras, mesGastos, mesIngresos]);
 
     return (
         <>

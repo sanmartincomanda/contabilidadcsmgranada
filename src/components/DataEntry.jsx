@@ -8,7 +8,11 @@ import {
 } from 'firebase/firestore';
 import Papa from 'papaparse';
 import { APP_BRAND_NAME, DEFAULT_BRANCH_ID, DEFAULT_BRANCH_NAME, fmt, branchName } from '../constants';
-import { resolveIncomeEntries } from '../services/incomeAggregation';
+import {
+    PURCHASE_DISCOUNT_ADJUSTMENT_TYPE,
+    isPurchaseDiscountAdjustment,
+    resolveIncomeEntries,
+} from '../services/incomeAggregation';
 import { syncSicarDailyIncome } from '../services/sicarIncomeSync';
 import { deleteExpenseTransaction, deletePurchaseTransaction, updateExpenseTransaction, updatePurchaseTransaction } from '../services/linkedTransactions';
 import {
@@ -738,6 +742,18 @@ const EditableRow = ({ item, collectionName, fields, providers = [], onUpdate, o
                 await updatePurchaseTransaction(item.id, dataToSave, { previousData: item });
             } else if (collectionName === 'gastos') {
                 await updateExpenseTransaction(item.id, dataToSave, { previousData: item });
+            } else if (collectionName === 'ingresos') {
+                const mergedIncome = { ...item, ...dataToSave };
+                const isPurchaseDiscount = isPurchaseDiscountAdjustment(mergedIncome);
+                await updateDoc(doc(db, collectionName, item.id), {
+                    ...dataToSave,
+                    accountingType: isPurchaseDiscount ? 'cost_adjustment' : 'income',
+                    costAdjustmentType: isPurchaseDiscount ? PURCHASE_DISCOUNT_ADJUSTMENT_TYPE : '',
+                    costEffect: isPurchaseDiscount ? 'decrease' : '',
+                    affectsRevenue: !isPurchaseDiscount,
+                    affectsCost: isPurchaseDiscount,
+                    sourceLabel: isPurchaseDiscount ? 'DESCUENTO SOBRE COMPRAS' : (item.source === 'sicar' ? 'SICAR' : 'MANUAL'),
+                });
             } else {
                 await updateDoc(doc(db, collectionName, item.id), dataToSave);
             }
@@ -1391,6 +1407,7 @@ const UnregisteredTransactionsPanel = ({ transactions = [] }) => {
 
 const IncomeForm = ({ loading, setLoading, onSuccess }) => {
     const [date, setDate] = useState(new Date().toISOString().substring(0, 10));
+    const [entryType, setEntryType] = useState('income');
     const [description, setDescription] = useState('VENTA DEL DIA');
     const [reference, setReference] = useState('');
     const [amount, setAmount] = useState('');
@@ -1402,6 +1419,7 @@ const IncomeForm = ({ loading, setLoading, onSuccess }) => {
         const numAmount = Number(amount);
         if (!description.trim()) return alert('Complete fecha, detalle y monto.');
         if (isNaN(numAmount) || numAmount <= 0) return alert('Monto inv?lido.');
+        const isPurchaseDiscount = entryType === PURCHASE_DISCOUNT_ADJUSTMENT_TYPE;
 
         setLoading(true);
         try {
@@ -1415,13 +1433,20 @@ const IncomeForm = ({ loading, setLoading, onSuccess }) => {
                 subtotalExento: 0,
                 iva: 0,
                 total: numAmount,
+                entryType,
+                accountingType: isPurchaseDiscount ? 'cost_adjustment' : 'income',
+                costAdjustmentType: isPurchaseDiscount ? PURCHASE_DISCOUNT_ADJUSTMENT_TYPE : '',
+                costEffect: isPurchaseDiscount ? 'decrease' : '',
+                affectsRevenue: !isPurchaseDiscount,
+                affectsCost: isPurchaseDiscount,
                 branch: DEFAULT_BRANCH_ID,
                 branchName: DEFAULT_BRANCH_NAME,
                 source: 'manual',
-                sourceLabel: 'MANUAL',
+                sourceLabel: isPurchaseDiscount ? 'DESCUENTO SOBRE COMPRAS' : 'MANUAL',
                 timestamp: Timestamp.now(),
                 is_conciled: false,
             });
+            setEntryType('income');
             setDescription('VENTA DEL DIA');
             setReference('');
             setAmount('');
@@ -1474,11 +1499,37 @@ const IncomeForm = ({ loading, setLoading, onSuccess }) => {
 
             <form onSubmit={handleSubmit} className="space-y-3 rounded-xl border border-stone-200 bg-white p-4">
                 <h4 className="text-xs font-bold uppercase tracking-wider text-stone-600">Ingreso manual</h4>
+                <Select
+                    label="Tipo de registro"
+                    icon="tag"
+                    value={entryType}
+                    onChange={(e) => {
+                        const value = e.target.value;
+                        setEntryType(value);
+                        if (value === PURCHASE_DISCOUNT_ADJUSTMENT_TYPE && description === 'VENTA DEL DIA') {
+                            setDescription('DESCUENTO SOBRE COMPRAS');
+                        }
+                        if (value === 'income' && description === 'DESCUENTO SOBRE COMPRAS') {
+                            setDescription('VENTA DEL DIA');
+                        }
+                    }}
+                    options={
+                        <>
+                            <option value="income">Ingreso normal</option>
+                            <option value={PURCHASE_DISCOUNT_ADJUSTMENT_TYPE}>Descuento sobre compras</option>
+                        </>
+                    }
+                />
+                {entryType === PURCHASE_DISCOUNT_ADJUSTMENT_TYPE && (
+                    <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-xs font-semibold text-amber-800">
+                        Este registro no aumenta ventas. Se usa como ajuste positivo que resta del costo de ventas en reportes.
+                    </div>
+                )}
                 <Input label="Fecha" type="date" icon="calendar" value={date} onChange={e => setDate(e.target.value)} required />
-                <Input label="Detalle del ingreso" icon="fileText" placeholder="Ej: Venta del dia, deposito..." value={description} onChange={e => setDescription(e.target.value)} required />
+                <Input label={entryType === PURCHASE_DISCOUNT_ADJUSTMENT_TYPE ? 'Detalle del descuento' : 'Detalle del ingreso'} icon="fileText" placeholder={entryType === PURCHASE_DISCOUNT_ADJUSTMENT_TYPE ? 'Ej: Nota de credito proveedor, descuento aplicado...' : 'Ej: Venta del dia, deposito...'} value={description} onChange={e => setDescription(e.target.value)} required />
                 <Input label="Referencia" icon="receipt" placeholder="Ej: Cierre caja, nota interna..." value={reference} onChange={e => setReference(e.target.value)} />
-                <Input label="Monto" type="number" step="0.01" icon="dollar" placeholder="0.00" className="text-lg font-bold text-emerald-600" value={amount} onChange={e => setAmount(e.target.value)} required />
-                <Button type="submit" variant="success" disabled={loading} className="w-full">{loading ? 'Guardando...' : 'Registrar Ingreso'}</Button>
+                <Input label={entryType === PURCHASE_DISCOUNT_ADJUSTMENT_TYPE ? 'Monto del descuento' : 'Monto'} type="number" step="0.01" icon="dollar" placeholder="0.00" className={`text-lg font-bold ${entryType === PURCHASE_DISCOUNT_ADJUSTMENT_TYPE ? 'text-amber-700' : 'text-emerald-600'}`} value={amount} onChange={e => setAmount(e.target.value)} required />
+                <Button type="submit" variant="success" disabled={loading} className="w-full">{loading ? 'Guardando...' : (entryType === PURCHASE_DISCOUNT_ADJUSTMENT_TYPE ? 'Registrar Descuento sobre Compras' : 'Registrar Ingreso')}</Button>
             </form>
         </div>
     );
@@ -2513,6 +2564,14 @@ export function DataEntry({ categories, data }) {
     const fieldsConfig = {
         Ingresos: {
             date: { label: 'Fecha', type: 'date' },
+            entryType: {
+                label: 'Tipo',
+                type: 'select',
+                options: [
+                    { value: 'income', label: 'Ingreso normal' },
+                    { value: PURCHASE_DISCOUNT_ADJUSTMENT_TYPE, label: 'Descuento sobre compras' },
+                ],
+            },
             description: { label: 'Detalle', type: 'text' },
             reference: { label: 'Referencia', type: 'text' },
             sourceLabel: { label: 'Origen', type: 'text', readonly: true },
@@ -2636,7 +2695,9 @@ export function DataEntry({ categories, data }) {
                 subtotal: Number(item.subtotal ?? item.amount ?? item.monto ?? 0) || 0,
                 iva: Number(item.iva ?? 0) || 0,
                 total: Number(item.total ?? item.amount ?? item.monto ?? 0) || 0,
-                sourceLabel: item.source === 'sicar' ? 'SICAR' : 'MANUAL',
+                sourceLabel: isPurchaseDiscountAdjustment(item)
+                    ? 'DESCUENTO SOBRE COMPRAS'
+                    : (item.source === 'sicar' ? 'SICAR' : 'MANUAL'),
             }));
         }
 

@@ -8,6 +8,35 @@ const normalizeDate = (value) => {
 
 const normalizeSource = (value) => value === 'sicar' ? 'sicar' : 'manual';
 const normalizeAmount = (value) => Number(value ?? 0) || 0;
+const normalizeText = (value = '') => (
+    String(value || '')
+        .trim()
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .toUpperCase()
+);
+
+export const PURCHASE_DISCOUNT_ADJUSTMENT_TYPE = 'purchase_discount';
+
+export const isPurchaseDiscountAdjustment = (income = {}) => {
+    const entryType = String(income?.entryType || '').trim();
+    const costAdjustmentType = String(income?.costAdjustmentType || '').trim();
+    const accountingType = String(income?.accountingType || '').trim();
+    if (entryType) return entryType === PURCHASE_DISCOUNT_ADJUSTMENT_TYPE;
+    if (costAdjustmentType) return costAdjustmentType === PURCHASE_DISCOUNT_ADJUSTMENT_TYPE;
+    if (accountingType) return accountingType === 'cost_adjustment';
+
+    const searchable = normalizeText([
+        income?.type,
+        income?.category,
+        income?.description,
+        income?.detalle,
+        income?.reference,
+        income?.referencia,
+    ].filter(Boolean).join(' '));
+
+    return searchable.includes('DESCUENTO SOBRE COMPRAS');
+};
 
 export const getIncomeDate = (income) => normalizeDate(income?.date || income?.fecha || income?.timestamp);
 export const getIncomeAmount = (income) => {
@@ -23,6 +52,7 @@ const normalizeIncomeEntry = (income) => {
     if (!date) return null;
 
     const source = normalizeSource(income?.source);
+    const isPurchaseDiscount = isPurchaseDiscountAdjustment(income);
 
     return {
         ...income,
@@ -35,8 +65,11 @@ const normalizeIncomeEntry = (income) => {
         total: normalizeAmount(income?.total ?? income?.amount ?? income?.monto ?? 0),
         description: income?.description || income?.detalle || (source === 'sicar' ? 'Ingreso diario SICAR' : 'Ingreso manual'),
         reference: income?.reference || income?.referencia || '',
+        entryType: income?.entryType || (isPurchaseDiscount ? PURCHASE_DISCOUNT_ADJUSTMENT_TYPE : 'income'),
+        accountingType: income?.accountingType || (isPurchaseDiscount ? 'cost_adjustment' : 'income'),
+        costAdjustmentType: income?.costAdjustmentType || (isPurchaseDiscount ? PURCHASE_DISCOUNT_ADJUSTMENT_TYPE : ''),
         source,
-        sourceLabel: source === 'sicar' ? 'SICAR' : 'MANUAL',
+        sourceLabel: isPurchaseDiscount ? 'DESCUENTO SOBRE COMPRAS' : (source === 'sicar' ? 'SICAR' : 'MANUAL'),
     };
 };
 
@@ -59,14 +92,33 @@ export const resolveReportIncomeEntries = (ingresos = []) => {
 
     return Array.from(groupedByDate.values()).flatMap((items) => {
         const sicarItems = items.filter((item) => item.source === 'sicar');
-        return sicarItems.length > 0 ? sicarItems : items;
+        const adjustmentItems = items.filter(isPurchaseDiscountAdjustment);
+        return sicarItems.length > 0
+            ? [...sicarItems, ...adjustmentItems]
+            : items;
     });
+};
+
+export const resolveSalesIncomeEntries = (ingresos = []) => (
+    resolveReportIncomeEntries(ingresos).filter((income) => !isPurchaseDiscountAdjustment(income))
+);
+
+export const resolvePurchaseDiscountEntries = (ingresos = []) => (
+    resolveReportIncomeEntries(ingresos).filter(isPurchaseDiscountAdjustment)
+);
+
+export const sumPurchaseDiscountsForMonth = (ingresos = [], month) => {
+    if (!month) return 0;
+
+    return resolvePurchaseDiscountEntries(ingresos)
+        .filter((income) => income.date?.startsWith(month))
+        .reduce((total, income) => total + getIncomeAmount(income), 0);
 };
 
 export const sumIncomeForMonth = (ingresos = [], month) => {
     if (!month) return 0;
 
-    return resolveReportIncomeEntries(ingresos)
+    return resolveSalesIncomeEntries(ingresos)
         .filter((income) => income.date?.startsWith(month))
         .reduce((total, income) => total + income.amount, 0);
 };

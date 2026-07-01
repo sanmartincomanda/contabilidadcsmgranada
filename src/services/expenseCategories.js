@@ -13,6 +13,7 @@ export const EXPENSE_CATEGORY_TREE = [
             'Material de empaque directo',
             'Hielo / conservacion directa',
             'Otros costos de producto',
+            'Descuentos sobre compras',
         ],
     },
     {

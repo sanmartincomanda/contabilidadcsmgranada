@@ -4,7 +4,10 @@ import { APP_BRAND_LOGO, APP_BRAND_NAME, fmt, peso, branchName, resolveBranchId 
 import BalanceSheet from './BalanceSheet';
 import DashboardGeneral from './DashboardGeneral';
 import ExecutiveFlowDiagram from './ExecutiveFlowDiagram';
-import { resolveReportIncomeEntries } from '../services/incomeAggregation';
+import {
+    resolvePurchaseDiscountEntries,
+    resolveSalesIncomeEntries,
+} from '../services/incomeAggregation';
 import { DEFAULT_PURCHASE_CATEGORY_ID, getExpenseCategoryFromRecord } from '../services/expenseCategories';
 
 // --- ICONOS SVG INLINE ---
@@ -206,6 +209,16 @@ const isCostCategory = (item) => (
     getExpenseCategoryFromRecord(item, DEFAULT_PURCHASE_CATEGORY_ID).category === 'Costos de venta / compras'
 );
 
+const PURCHASE_DISCOUNT_CATEGORY_RECORD = {
+    category: 'Costos de venta / compras',
+    categoria: 'Costos de venta / compras',
+    subcategory: 'Descuentos sobre compras',
+    subcategoria: 'Descuentos sobre compras',
+    expenseCategory: 'Costos de venta / compras',
+    expenseSubcategory: 'Descuentos sobre compras',
+    categoryLabel: 'Costos de venta / compras / Descuentos sobre compras',
+};
+
 const isDepreciationOrAmortization = (item = {}) => {
     const categoryInfo = getExpenseCategoryFromRecord(item);
     const normalized = `${categoryInfo.category} ${categoryInfo.subcategory} ${categoryInfo.label || ''} ${item.description || item.descripcion || ''}`
@@ -378,7 +391,8 @@ const ExpenseDetailModal = ({ category, expenses, onClose }) => {
 const aggregateData = (data) => {
     const results = {};
     const { ingresos = [], gastos = [], inventarios = [], compras = [], presupuestos = [], cuentas_por_pagar: facturasCredito = [] } = data;
-    const normalizedIngresos = resolveReportIncomeEntries(ingresos);
+    const normalizedIngresos = resolveSalesIncomeEntries(ingresos);
+    const purchaseDiscountEntries = resolvePurchaseDiscountEntries(ingresos);
     const accountingAmount = (item) => peso(item.subtotal ?? item.amount ?? item.monto);
 
     const getDateString = (firestoreDate, fallback = '') => {
@@ -497,6 +511,28 @@ const aggregateData = (data) => {
                 categoryLabel: categoryInfo.label,
             });
         }
+    });
+
+    purchaseDiscountEntries.forEach(item => {
+        const month = getMonthString(item, ['date', 'fecha']);
+        const branchId = resolveBranchId(item.branch || item.branchId || item.sucursal || item.branchName);
+        const amount = accountingAmount(item);
+
+        if (!amount || !month) return;
+        results[month] = results[month] || {};
+
+        if (!branchId) {
+            legacyPurchasesByMonth[month] = (legacyPurchasesByMonth[month] || 0) - amount;
+            return;
+        }
+
+        const branchData = ensureBranchData(month, branchId);
+        if (!branchData) return;
+        branchData.totalPurchases -= amount;
+        addCategoryAmount(branchData.costTree, {
+            ...item,
+            ...PURCHASE_DISCOUNT_CATEGORY_RECORD,
+        }, -amount, DEFAULT_PURCHASE_CATEGORY_ID);
     });
 
     facturasCredito.forEach(item => {
@@ -622,8 +658,10 @@ const buildTaxReport = (data, selectedMonth) => {
     const fiscalIva = (item) => peso(item.iva);
     const invoiceLabel = (item) => item.invoiceNumber || item.numeroFactura || item.factura || item.numero || item.reference || item.dailySaleCode || '';
     const dailySaleKey = (item) => item.dailySaleCode || item.reference || (getDocDate(item) ? `VENTA-${getDocDate(item).replaceAll('-', '')}` : '');
+    const salesIncomeEntries = resolveSalesIncomeEntries(data.ingresos || []);
+    const purchaseDiscountEntries = resolvePurchaseDiscountEntries(data.ingresos || []);
 
-    const incomeRows = resolveReportIncomeEntries(data.ingresos || [])
+    const incomeRows = salesIncomeEntries
         .filter(inMonth)
         .map((item) => ({
             type: 'IVA vendido',
@@ -636,13 +674,26 @@ const buildTaxReport = (data, selectedMonth) => {
             total: fiscalTotal(item),
         }));
 
-    const dailySales = resolveReportIncomeEntries(data.ingresos || [])
+    const dailySales = salesIncomeEntries
         .filter(inMonth)
         .filter((item) => item.source === 'sicar' || item.sourceType === 'daily_sale' || item.dailySaleCode)
         .map((item) => ({
             id: item.id || '',
             date: getDocDate(item),
             dailySaleCode: dailySaleKey(item),
+            subtotal: accountingAmount(item),
+            iva: fiscalIva(item),
+            total: fiscalTotal(item),
+        }));
+
+    const purchaseDiscountRows = purchaseDiscountEntries
+        .filter(inMonth)
+        .map((item) => ({
+            type: 'Descuento sobre compras',
+            date: getDocDate(item),
+            source: item.sourceLabel || 'Ajuste manual',
+            document: item.reference || item.referencia || item.id || '',
+            description: item.description || item.detalle || 'DESCUENTO SOBRE COMPRAS',
             subtotal: accountingAmount(item),
             iva: fiscalIva(item),
             total: fiscalTotal(item),
@@ -858,6 +909,16 @@ const buildTaxReport = (data, selectedMonth) => {
             if (isDepreciationOrAmortization(item)) depreciationAmortization += amount;
             addCategoryAmount(operatingExpenseTree, item, amount);
         });
+    const purchaseDiscountSubtotal = sumBy(purchaseDiscountRows, 'subtotal');
+    purchaseDiscountRows.forEach((item) => {
+        const amount = peso(item.subtotal);
+        if (!amount) return;
+        purchaseSubtotal -= amount;
+        addCategoryAmount(purchaseCategoryTree, {
+            ...item,
+            ...PURCHASE_DISCOUNT_CATEGORY_RECORD,
+        }, -amount, DEFAULT_PURCHASE_CATEGORY_ID);
+    });
     const stampedInvoiceTotal = sumBy(stampedInvoiceRows, 'total');
     const grossProfit = salesSubtotal - purchaseSubtotal;
     const operatingProfit = grossProfit - operatingExpenseSubtotal;
@@ -891,6 +952,7 @@ const buildTaxReport = (data, selectedMonth) => {
             stampedInvoiceNet: sumBy(stampedInvoiceRows, 'netTotal'),
             salesSubtotal,
             purchaseSubtotal,
+            purchaseDiscountSubtotal,
             operatingExpenseSubtotal,
             grossProfit,
             operatingProfit,
