@@ -37,6 +37,7 @@ const CATEGORY_COLLECTIONS = ['categorias', 'proveedores'];
 const DATA_ENTRY_HISTORY_MONTHS = 6;
 const REPORT_HISTORY_MONTHS = 24;
 const ACCOUNT_HISTORY_MONTHS = 12;
+const BILLING_HISTORY_MONTHS = 2;
 const MAX_ROUTE_BLOCKING_MS = 900;
 const INACTIVITY_TIMEOUT_MS = 3 * 60 * 60 * 1000;
 
@@ -945,12 +946,6 @@ const useFirestoreCollections = (collections = [], enabled = true, live = true) 
             }
         };
 
-        if (!live && hasCachedData) {
-            window.clearTimeout(unblockTimer);
-            setLoading(false);
-            return;
-        }
-
         configs.forEach((config) => {
             const { name, constraints } = config;
             if (!live) { loadOnce(name); return; }
@@ -1115,6 +1110,7 @@ function AppContent() {
     const dataEntryStartMonth = useMemo(() => getMonthOffset(DATA_ENTRY_HISTORY_MONTHS), []);
     const reportStartMonth = useMemo(() => getMonthOffset(REPORT_HISTORY_MONTHS), []);
     const accountStartMonth = useMemo(() => getMonthOffset(ACCOUNT_HISTORY_MONTHS), []);
+    const billingStartMonth = useMemo(() => getMonthOffset(BILLING_HISTORY_MONTHS), []);
     const currentMonthStart = `${currentMonth}-01`;
     const nextMonthStart = getNextMonthStart(currentMonth);
 
@@ -1155,20 +1151,20 @@ function AppContent() {
     ], [accountStartMonth]);
 
     const billingCollections = useMemo(() => [
-        collectionConfig('sicar_cierres_caja', [where('date', '>=', `${accountStartMonth}-01`)]),
-        collectionConfig('sicar_facturas_membretadas', [where('date', '>=', `${accountStartMonth}-01`)]),
-        collectionConfig('cierres_caja', [where('date', '>=', `${accountStartMonth}-01`)]),
-        collectionConfig('diferencias_caja', [where('date', '>=', `${accountStartMonth}-01`)]),
-        collectionConfig('facturas_membretadas_ventas', [where('saleDate', '>=', `${accountStartMonth}-01`)]),
-        collectionConfig('recibos_caja_membretados', [where('date', '>=', `${accountStartMonth}-01`)]),
+        collectionConfig('sicar_cierres_caja', [where('date', '>=', `${billingStartMonth}-01`)]),
+        collectionConfig('sicar_facturas_membretadas', [where('date', '>=', `${billingStartMonth}-01`)]),
+        collectionConfig('cierres_caja', [where('date', '>=', `${billingStartMonth}-01`)]),
+        collectionConfig('diferencias_caja', [where('date', '>=', `${billingStartMonth}-01`)]),
+        collectionConfig('facturas_membretadas_ventas', [where('saleDate', '>=', `${billingStartMonth}-01`)]),
+        collectionConfig('recibos_caja_membretados', [where('date', '>=', `${billingStartMonth}-01`)]),
         'clientes_facturacion',
         'cajeros',
-    ], [accountStartMonth]);
+    ], [billingStartMonth]);
 
-    const { data: categoriesData } = useFirestoreCollections(CATEGORY_COLLECTIONS, !!user && !accessLoading && needsCategories, true);
+    const { data: categoriesData } = useFirestoreCollections(CATEGORY_COLLECTIONS, !!user && !accessLoading && needsCategories, false);
     const { data: dataEntryData, loading: dataEntryLoading, error: dataEntryError } = useFirestoreCollections(dataEntryCollections, !!user && !accessLoading && canAccess('ingresar') && currentPath === '/ingresar', true);
     const { data: accountsPayableData, loading: accountsPayableLoading, error: accountsPayableError } = useFirestoreCollections(accountsPayableCollections, !!user && !accessLoading && canAccess('cuentas_pagar') && currentPath === '/cuentas-pagar', true);
-    const { data: reportsData, loading: reportsLoading, error: reportsError } = useFirestoreCollections(reportCollections, !!user && !accessLoading && canAccess('reportes') && currentPath === '/reportes', true);
+    const { data: reportsData, loading: reportsLoading, error: reportsError } = useFirestoreCollections(reportCollections, !!user && !accessLoading && canAccess('reportes') && currentPath === '/reportes', false);
     const { data: dashboardData, loading: dashboardLoading, error: dashboardError } = useFirestoreCollections(dashboardCollections, !!user && !accessLoading && canAccess('dashboard') && currentPath === '/', false);
     const { data: billingData, loading: billingLoading, error: billingError } = useFirestoreCollections(billingCollections, !!user && !accessLoading && canAccess('facturacion') && currentPath === '/facturacion', true);
 

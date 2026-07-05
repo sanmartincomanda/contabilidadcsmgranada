@@ -15,6 +15,7 @@ const {
 
 const DEFAULT_STATE_PATH = 'C:\\SICAR\\state\\sicar-cash-closure-watch.json';
 const DEFAULT_INTERVAL_MS = 15000;
+const DEFAULT_RECENT_BACKFILL_INTERVAL_MS = 60000;
 const DEFAULT_BATCH_SIZE = 20;
 const DEFAULT_STARTUP_BACKFILL_DAYS = 3;
 const DEFAULT_POLL_BACKFILL_DAYS = 2;
@@ -28,6 +29,7 @@ function parseArgs(argv) {
     else if (arg === '--skipStartupBackfill') acc.skipStartupBackfill = true;
     else if (arg.startsWith('--intervalMs=')) acc.intervalMs = Number(arg.slice('--intervalMs='.length));
     else if (arg.startsWith('--batchSize=')) acc.batchSize = Number(arg.slice('--batchSize='.length));
+    else if (arg.startsWith('--recentBackfillIntervalMs=')) acc.recentBackfillIntervalMs = Number(arg.slice('--recentBackfillIntervalMs='.length));
     else if (arg.startsWith('--pollBackfillDays=')) acc.pollBackfillDays = Number(arg.slice('--pollBackfillDays='.length));
     else if (arg.startsWith('--statePath=')) acc.statePath = arg.slice('--statePath='.length);
     else if (arg.startsWith('--startCorId=')) acc.startCorId = Number(arg.slice('--startCorId='.length));
@@ -39,6 +41,7 @@ function parseArgs(argv) {
     once: false,
     preview: false,
     pollBackfillDays: Number(process.env.SICAR_CASH_CLOSURE_WATCH_POLL_BACKFILL_DAYS || DEFAULT_POLL_BACKFILL_DAYS),
+    recentBackfillIntervalMs: Number(process.env.SICAR_CASH_CLOSURE_RECENT_BACKFILL_INTERVAL_MS || DEFAULT_RECENT_BACKFILL_INTERVAL_MS),
     resetState: false,
     skipStartupBackfill: String(process.env.SICAR_CASH_CLOSURE_SKIP_STARTUP_BACKFILL || '').toLowerCase() === 'true',
     stageOnly: false,
@@ -233,6 +236,7 @@ async function main() {
 
   const options = parseArgs(process.argv.slice(2));
   options.intervalMs = Math.max(15000, Math.min(Number(options.intervalMs || DEFAULT_INTERVAL_MS), 300000));
+  options.recentBackfillIntervalMs = Math.max(options.intervalMs, Math.min(Number(options.recentBackfillIntervalMs || DEFAULT_RECENT_BACKFILL_INTERVAL_MS), 600000));
 
   const connection = await mysql.createConnection(getMysqlConfig());
   const db = options.preview ? null : initFirebase();
@@ -263,10 +267,13 @@ async function main() {
       console.log(`[${new Date().toISOString()}] Watcher de cierres iniciado${options.preview ? ' en preview' : ''}. Ultimo cor_id conocido: ${lastCorId}.`);
     }
 
+    let lastRecentBackfillAt = 0;
     do {
       try {
-        if (!options.once) {
+        const now = Date.now();
+        if (!options.once && now - lastRecentBackfillAt >= options.recentBackfillIntervalMs) {
           const recentBackfill = await processRecentBackfill({ connection, db, options });
+          lastRecentBackfillAt = now;
           if (recentBackfill.maxCorId > lastCorId) {
             lastCorId = recentBackfill.maxCorId;
             if (!options.preview) writeState(options.statePath, { ...readState(options.statePath), lastCorId });

@@ -622,11 +622,12 @@ async function processPurchaseDocument(docSnapshot) {
 
 async function main() {
   const allowedStatuses = requeueErrors ? new Set(['pending', 'error']) : new Set(['pending']);
-  const snapshot = await db.collection('integraciones_privadas/sicar/compras_raw').get();
-  const candidates = snapshot.docs
-    .filter((doc) => allowedStatuses.has(normalizeComparableText(doc.data()?.status || 'pending')))
-    .sort((left, right) => left.id.localeCompare(right.id))
-    .slice(0, limit);
+  const baseQuery = db
+    .collection('integraciones_privadas/sicar/compras_raw')
+    .where('status', 'in', [...allowedStatuses])
+    .limit(limit);
+  const snapshot = await baseQuery.get();
+  const candidates = snapshot.docs.sort((left, right) => left.id.localeCompare(right.id));
 
   const results = [];
   for (const doc of candidates) {

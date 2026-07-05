@@ -563,6 +563,31 @@ function buildClosureFingerprint(entry = {}) {
   });
 }
 
+function buildInvoiceFingerprint(entry = {}) {
+  return stableStringify({
+    cashboxId: entry.cashboxId,
+    cashboxName: entry.cashboxName,
+    customerAddress: entry.customerAddress,
+    customerName: entry.customerName,
+    customerRuc: entry.customerRuc,
+    date: entry.date,
+    facId: entry.facId,
+    invoiceNumber: entry.invoiceNumber,
+    iva: entry.iva,
+    items: (entry.items || []).map((item) => ({
+      productName: item.productName,
+      quantity: item.quantity,
+      subtotal: item.subtotal,
+      total: item.total,
+      unitPrice: item.unitPrice,
+    })),
+    paymentCondition: entry.paymentCondition,
+    saleId: entry.saleId,
+    subtotal: entry.subtotal,
+    total: entry.total,
+  });
+}
+
 async function writeClosure(db, entry, options) {
   const FieldValue = admin.firestore.FieldValue;
   const batch = db.batch();
@@ -660,6 +685,24 @@ async function writeInvoice(db, entry, options) {
   await batch.commit();
 }
 
+async function writeInvoiceIfChanged(db, entry, options = {}) {
+  if (options.stageOnly) {
+    await writeInvoice(db, entry, options);
+    return { written: true, reason: 'stage-only' };
+  }
+
+  const fingerprint = buildInvoiceFingerprint(entry);
+  const visibleRef = db.collection('sicar_facturas_membretadas').doc(entry.id);
+  const snapshot = await visibleRef.get();
+
+  if (snapshot.exists && snapshot.get('sicarFingerprint') === fingerprint) {
+    return { written: false, reason: 'unchanged' };
+  }
+
+  await writeInvoice(db, { ...entry, sicarFingerprint: fingerprint }, options);
+  return { written: true, reason: snapshot.exists ? 'changed' : 'new' };
+}
+
 async function main() {
   const rootDir = path.resolve(__dirname, '..', '..');
   const functionsDir = path.resolve(__dirname, '..');
@@ -686,8 +729,12 @@ async function main() {
     }
 
     const db = initFirebase();
-    for (const entry of closures) await writeClosure(db, entry, { stageOnly: args.stageOnly });
-    for (const entry of invoices) await writeInvoice(db, entry, { stageOnly: args.stageOnly });
+    const closureResults = [];
+    for (const entry of closures) closureResults.push(await writeClosureIfChanged(db, entry, { stageOnly: args.stageOnly }));
+    const invoiceResults = [];
+    for (const entry of invoices) invoiceResults.push(await writeInvoiceIfChanged(db, entry, { stageOnly: args.stageOnly }));
+    const closureWrittenCount = closureResults.filter((result) => result.written).length;
+    const invoiceWrittenCount = invoiceResults.filter((result) => result.written).length;
 
     await db.collection('sicar_sync_logs').add({
       syncType: 'facturacion',
@@ -698,6 +745,8 @@ async function main() {
       endDate,
       closureCount: closures.length,
       invoiceCount: invoices.length,
+      closureWrittenCount,
+      invoiceWrittenCount,
       closureTotal: money(closures.reduce((sum, entry) => sum + entry.calculatedTotal, 0)),
       invoiceTotal: money(invoices.reduce((sum, entry) => sum + entry.total, 0)),
       stageOnly: args.stageOnly,
@@ -713,6 +762,8 @@ async function main() {
       endDate,
       closureCount: closures.length,
       invoiceCount: invoices.length,
+      closureWrittenCount,
+      invoiceWrittenCount,
       closures: closures.map((entry) => ({
         id: entry.id,
         date: entry.date,
@@ -754,4 +805,5 @@ module.exports = {
   writeClosure,
   writeClosureIfChanged,
   writeInvoice,
+  writeInvoiceIfChanged,
 };

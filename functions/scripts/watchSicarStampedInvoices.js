@@ -10,7 +10,7 @@ const {
   initFirebase,
   loadEnvFile,
   toDateString,
-  writeInvoice,
+  writeInvoiceIfChanged,
 } = require('./syncSicarBilling');
 
 const DEFAULT_STATE_PATH = 'C:\\SICAR\\state\\sicar-stamped-invoice-watch.json';
@@ -113,17 +113,23 @@ async function processStartupBackfill({ connection, db, options }) {
     return { count: invoices.length, maxFacId };
   }
 
+  let writtenCount = 0;
+  let skippedCount = 0;
   for (const invoice of invoices) {
-    await writeInvoice(db, invoice, { stageOnly: options.stageOnly });
+    const result = await writeInvoiceIfChanged(db, invoice, { stageOnly: options.stageOnly });
+    if (result.written) writtenCount += 1;
+    else skippedCount += 1;
   }
 
-  if (invoices.length > 0) {
+  if (writtenCount > 0) {
     await db.collection('sicar_sync_logs').add({
       syncType: 'facturacion_watch_startup_backfill',
       sourceMode: 'local-worker-watch',
       startDate,
       endDate,
       invoiceCount: invoices.length,
+      writtenCount,
+      skippedCount,
       invoiceFacIds: invoices.map((invoice) => invoice.facId),
       invoiceTotal: invoices.reduce((sum, invoice) => sum + Number(invoice.total || 0), 0),
       stageOnly: options.stageOnly,
@@ -132,7 +138,7 @@ async function processStartupBackfill({ connection, db, options }) {
     });
   }
 
-  console.log(`[${new Date().toISOString()}] Backfill inicial ${startDate} a ${endDate}: ${invoices.length} factura/s verificadas en Firestore.`);
+  console.log(`[${new Date().toISOString()}] Backfill inicial ${startDate} a ${endDate}: ${invoices.length} factura/s revisadas, ${writtenCount} escrita/s, ${skippedCount} sin cambios.`);
   return { count: invoices.length, maxFacId };
 }
 
@@ -167,16 +173,25 @@ async function processNewInvoices({ connection, db, lastFacId, options }) {
       })),
     }, null, 2));
   } else {
+    let writtenCount = 0;
+    let skippedCount = 0;
     for (const invoice of invoices) {
-      await writeInvoice(db, invoice, { stageOnly: options.stageOnly });
-      console.log(`[${new Date().toISOString()}] Factura SICAR ${invoice.invoiceNumber || invoice.facId} sincronizada (${invoice.items?.length || 0} articulo/s).`);
+      const result = await writeInvoiceIfChanged(db, invoice, { stageOnly: options.stageOnly });
+      if (result.written) {
+        writtenCount += 1;
+        console.log(`[${new Date().toISOString()}] Factura SICAR ${invoice.invoiceNumber || invoice.facId} sincronizada (${invoice.items?.length || 0} articulo/s).`);
+      } else {
+        skippedCount += 1;
+      }
     }
 
-    if (invoices.length > 0) {
+    if (writtenCount > 0) {
       await db.collection('sicar_sync_logs').add({
         syncType: 'facturacion_watch',
         sourceMode: 'local-worker-watch',
         invoiceCount: invoices.length,
+        writtenCount,
+        skippedCount,
         invoiceFacIds: invoices.map((invoice) => invoice.facId),
         invoiceTotal: invoices.reduce((sum, invoice) => sum + Number(invoice.total || 0), 0),
         stageOnly: options.stageOnly,

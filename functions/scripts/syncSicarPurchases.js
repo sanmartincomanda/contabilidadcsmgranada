@@ -54,8 +54,14 @@ function parseArgs(argv) {
     else if (arg.startsWith('--startDate=')) acc.startDate = arg.slice('--startDate='.length);
     else if (arg.startsWith('--endDate=')) acc.endDate = arg.slice('--endDate='.length);
     else if (arg.startsWith('--lookbackDays=')) acc.lookbackDays = arg.slice('--lookbackDays='.length);
+    else if (arg === '--cleanupExcluded') acc.cleanupExcluded = true;
+    else if (arg === '--noCleanupExcluded') acc.cleanupExcluded = false;
     return acc;
-  }, { preview: false, stageOnly: false });
+  }, {
+    cleanupExcluded: String(process.env.SICAR_PURCHASE_CLEANUP_EXCLUDED || '').toLowerCase() === 'true',
+    preview: false,
+    stageOnly: false,
+  });
 }
 
 function normalizeLookbackDays(value) {
@@ -229,6 +235,22 @@ function buildSyncFingerprint(entry) {
       paymentTypeNames: entry.paymentTypeNames,
       dueDate: entry.dueDate || '',
       status: 'active',
+    }))
+    .digest('hex');
+}
+
+function buildCancelledFingerprint(entry) {
+  return createHash('sha1')
+    .update(JSON.stringify({
+      date: entry.date,
+      invoiceNumber: entry.invoiceNumber,
+      supplier: entry.supplier,
+      subtotal: entry.subtotal,
+      iva: entry.iva,
+      total: entry.total,
+      status: entry.status,
+      cancelledByCashboxId: entry.cancelledByCashboxId,
+      cancelledByClosureId: entry.cancelledByClosureId,
     }))
     .digest('hex');
 }
@@ -476,7 +498,11 @@ async function fetchCancelledPurchases(connection, startDate, endExclusive) {
 
 async function deleteExcludedPurchases(db, excludedEntries, options) {
   if (options.stageOnly || excludedEntries.length === 0) {
-    return { deletedCount: 0 };
+    return { deletedCount: 0, skippedCount: excludedEntries.length };
+  }
+
+  if (!options.cleanupExcluded) {
+    return { deletedCount: 0, skippedCount: excludedEntries.length };
   }
 
   const batch = db.batch();
@@ -487,18 +513,42 @@ async function deleteExcludedPurchases(db, excludedEntries, options) {
     batch.delete(db.collection('cuentas_por_pagar').doc(entry.cuentaPorPagarId));
   });
   await batch.commit();
-  return { deletedCount: excludedEntries.length };
+  return { deletedCount: excludedEntries.length, skippedCount: 0 };
 }
 
 async function cancelPurchases(db, cancelledEntries, options) {
   if (cancelledEntries.length === 0) {
-    return { cancelledCount: 0 };
+    return { cancelledCount: 0, skippedUnchanged: 0 };
   }
 
   const FieldValue = admin.firestore.FieldValue;
   const batch = db.batch();
+  const entriesToCancel = [];
 
-  cancelledEntries.forEach((entry) => {
+  for (const entry of cancelledEntries) {
+    const rawRef = db.collection('integraciones_privadas').doc('sicar').collection('compras_raw').doc(entry.rawId);
+    const cancellationFingerprint = buildCancelledFingerprint(entry);
+    if (!options.stageOnly) {
+      // Read one small staging doc to avoid repeating three visible deletes every worker run.
+      // This trades a cheap status read for preventing delete/write storms on old cancellations.
+      // eslint-disable-next-line no-await-in-loop
+      const rawSnapshot = await rawRef.get();
+      if (
+        rawSnapshot.exists
+        && rawSnapshot.get('status') === 'cancelled'
+        && rawSnapshot.get('cancellationFingerprint') === cancellationFingerprint
+      ) {
+        continue;
+      }
+    }
+    entriesToCancel.push({ ...entry, cancellationFingerprint });
+  }
+
+  if (entriesToCancel.length === 0) {
+    return { cancelledCount: 0, skippedUnchanged: cancelledEntries.length };
+  }
+
+  entriesToCancel.forEach((entry) => {
     const rawRef = db.collection('integraciones_privadas').doc('sicar').collection('compras_raw').doc(entry.rawId);
     batch.set(rawRef, {
       sourceSystem: 'SICAR',
@@ -526,6 +576,7 @@ async function cancelPurchases(db, cancelledEntries, options) {
       },
       status: options.stageOnly ? 'pending_cancelled' : 'cancelled',
       isCancelled: true,
+      cancellationFingerprint: entry.cancellationFingerprint,
       cancelledAt: FieldValue.serverTimestamp(),
       lastSeenAt: FieldValue.serverTimestamp(),
       syncedAt: FieldValue.serverTimestamp(),
@@ -540,7 +591,10 @@ async function cancelPurchases(db, cancelledEntries, options) {
   });
 
   await batch.commit();
-  return { cancelledCount: options.stageOnly ? 0 : cancelledEntries.length };
+  return {
+    cancelledCount: options.stageOnly ? 0 : entriesToCancel.length,
+    skippedUnchanged: cancelledEntries.length - entriesToCancel.length,
+  };
 }
 
 async function writePurchase(db, entry, options) {
@@ -827,7 +881,10 @@ async function main() {
       return;
     }
 
-    const excludedCleanup = await deleteExcludedPurchases(db, excludedEntries, { stageOnly: args.stageOnly });
+    const excludedCleanup = await deleteExcludedPurchases(db, excludedEntries, {
+      cleanupExcluded: args.cleanupExcluded,
+      stageOnly: args.stageOnly,
+    });
     const cancelledCleanup = await cancelPurchases(db, cancelledEntries, { stageOnly: args.stageOnly });
     const writeResults = [];
     for (const entry of entries) {
@@ -855,7 +912,10 @@ async function main() {
       excludedIva: money(excludedEntries.reduce((sum, entry) => sum + entry.iva, 0)),
       excludedTotal: money(excludedEntries.reduce((sum, entry) => sum + entry.total, 0)),
       excludedDeletedCount: excludedCleanup.deletedCount,
+      excludedSkippedCleanupCount: excludedCleanup.skippedCount,
+      cleanupExcluded: args.cleanupExcluded,
       cancelledDeletedCount: cancelledCleanup.cancelledCount,
+      cancelledSkippedUnchangedCount: cancelledCleanup.skippedUnchanged,
       routes,
       writtenCount,
       skippedUnchanged,
@@ -882,7 +942,10 @@ async function main() {
       excludedIva: money(excludedEntries.reduce((sum, entry) => sum + entry.iva, 0)),
       excludedTotal: money(excludedEntries.reduce((sum, entry) => sum + entry.total, 0)),
       excludedDeletedCount: excludedCleanup.deletedCount,
+      excludedSkippedCleanupCount: excludedCleanup.skippedCount,
+      cleanupExcluded: args.cleanupExcluded,
       cancelledDeletedCount: cancelledCleanup.cancelledCount,
+      cancelledSkippedUnchangedCount: cancelledCleanup.skippedUnchanged,
       routes,
       writtenCount,
       skippedUnchanged,
