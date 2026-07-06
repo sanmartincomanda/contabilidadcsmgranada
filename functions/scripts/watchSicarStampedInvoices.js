@@ -4,13 +4,14 @@ const mysql = require('mysql2/promise');
 const admin = require('firebase-admin');
 const {
   addDays,
+  buildInvoiceFingerprint,
   fetchStampedInvoices,
   fetchStampedInvoicesByIds,
   getMysqlConfig,
   initFirebase,
   loadEnvFile,
   toDateString,
-  writeInvoiceIfChanged,
+  writeInvoice,
 } = require('./syncSicarBilling');
 
 const DEFAULT_STATE_PATH = 'C:\\SICAR\\state\\sicar-stamped-invoice-watch.json';
@@ -69,6 +70,28 @@ function writeState(statePath, state) {
   }, null, 2)}\n`, 'utf8');
 }
 
+function ensureStateShape(state = {}) {
+  return {
+    ...state,
+    invoiceFingerprints: { ...(state.invoiceFingerprints || {}) },
+  };
+}
+
+function rememberInvoice(state, invoice, fingerprint) {
+  if (!state.invoiceFingerprints) state.invoiceFingerprints = {};
+  state.invoiceFingerprints[invoice.id] = {
+    date: invoice.date,
+    facId: invoice.facId,
+    fingerprint,
+    invoiceNumber: invoice.invoiceNumber,
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+function invoiceMatchesLocalState(state, invoice, fingerprint) {
+  return state?.invoiceFingerprints?.[invoice.id]?.fingerprint === fingerprint;
+}
+
 async function getCurrentMaxFacId(connection) {
   const [rows] = await connection.execute(`
     SELECT COALESCE(MAX(fac_id), 0) AS maxFacId
@@ -87,7 +110,7 @@ function getBackfillRange(days) {
   };
 }
 
-async function processStartupBackfill({ connection, db, options }) {
+async function processStartupBackfill({ connection, db, options, state }) {
   if (options.skipStartupBackfill) return { count: 0, maxFacId: 0 };
 
   const { startDate, endDate } = getBackfillRange(options.startupBackfillDays);
@@ -110,15 +133,21 @@ async function processStartupBackfill({ connection, db, options }) {
         total: invoice.total,
       })),
     }, null, 2));
-    return { count: invoices.length, maxFacId };
+    return { count: invoices.length, maxFacId, skippedCount: 0, writtenCount: 0 };
   }
 
   let writtenCount = 0;
   let skippedCount = 0;
   for (const invoice of invoices) {
-    const result = await writeInvoiceIfChanged(db, invoice, { stageOnly: options.stageOnly });
-    if (result.written) writtenCount += 1;
-    else skippedCount += 1;
+    const fingerprint = buildInvoiceFingerprint(invoice);
+    if (!options.stageOnly && invoiceMatchesLocalState(state, invoice, fingerprint)) {
+      skippedCount += 1;
+      continue;
+    }
+    // eslint-disable-next-line no-await-in-loop
+    await writeInvoice(db, { ...invoice, sicarFingerprint: fingerprint }, { stageOnly: options.stageOnly });
+    rememberInvoice(state, invoice, fingerprint);
+    writtenCount += 1;
   }
 
   if (writtenCount > 0) {
@@ -139,7 +168,7 @@ async function processStartupBackfill({ connection, db, options }) {
   }
 
   console.log(`[${new Date().toISOString()}] Backfill inicial ${startDate} a ${endDate}: ${invoices.length} factura/s revisadas, ${writtenCount} escrita/s, ${skippedCount} sin cambios.`);
-  return { count: invoices.length, maxFacId };
+  return { count: invoices.length, maxFacId, skippedCount, writtenCount };
 }
 
 async function fetchNewFacturaIds(connection, lastFacId, batchSize) {
@@ -155,7 +184,7 @@ async function fetchNewFacturaIds(connection, lastFacId, batchSize) {
   return rows.map((row) => Number(row.fac_id)).filter(Number.isFinite);
 }
 
-async function processNewInvoices({ connection, db, lastFacId, options }) {
+async function processNewInvoices({ connection, db, lastFacId, options, state }) {
   const ids = await fetchNewFacturaIds(connection, lastFacId, options.batchSize);
   if (ids.length === 0) return { count: 0, lastFacId };
 
@@ -176,13 +205,16 @@ async function processNewInvoices({ connection, db, lastFacId, options }) {
     let writtenCount = 0;
     let skippedCount = 0;
     for (const invoice of invoices) {
-      const result = await writeInvoiceIfChanged(db, invoice, { stageOnly: options.stageOnly });
-      if (result.written) {
-        writtenCount += 1;
-        console.log(`[${new Date().toISOString()}] Factura SICAR ${invoice.invoiceNumber || invoice.facId} sincronizada (${invoice.items?.length || 0} articulo/s).`);
-      } else {
+      const fingerprint = buildInvoiceFingerprint(invoice);
+      if (!options.stageOnly && invoiceMatchesLocalState(state, invoice, fingerprint)) {
         skippedCount += 1;
+        continue;
       }
+      // eslint-disable-next-line no-await-in-loop
+      await writeInvoice(db, { ...invoice, sicarFingerprint: fingerprint }, { stageOnly: options.stageOnly });
+      rememberInvoice(state, invoice, fingerprint);
+      writtenCount += 1;
+      console.log(`[${new Date().toISOString()}] Factura SICAR ${invoice.invoiceNumber || invoice.facId} sincronizada (${invoice.items?.length || 0} articulo/s).`);
     }
 
     if (writtenCount > 0) {
@@ -221,34 +253,41 @@ async function main() {
 
   try {
     if (options.resetState && fs.existsSync(options.statePath)) fs.unlinkSync(options.statePath);
-    const state = readState(options.statePath);
+    const state = ensureStateShape(readState(options.statePath));
     let lastFacId = Number(options.startFacId || state.lastFacId || 0);
 
-    const backfill = await processStartupBackfill({ connection, db, options });
+    const backfill = await processStartupBackfill({ connection, db, options, state });
 
     if (!lastFacId) {
       lastFacId = await getCurrentMaxFacId(connection);
+      state.lastFacId = lastFacId;
+      state.bootstrappedAt = new Date().toISOString();
+      state.startupBackfillDays = options.skipStartupBackfill ? 0 : Math.max(1, Math.min(Number(options.startupBackfillDays || DEFAULT_STARTUP_BACKFILL_DAYS), 31));
+      state.note = 'Estado inicial creado con MAX(fac_id); los fingerprints locales evitan leer Firestore si MySQL no cambio.';
       writeState(options.statePath, {
-        lastFacId,
-        bootstrappedAt: new Date().toISOString(),
-        startupBackfillDays: options.skipStartupBackfill ? 0 : Math.max(1, Math.min(Number(options.startupBackfillDays || DEFAULT_STARTUP_BACKFILL_DAYS), 31)),
-        note: 'Estado inicial creado con MAX(fac_id); antes de escuchar nuevas facturas se verifica un backfill reciente idempotente.',
+        ...state,
       });
       console.log(`[${new Date().toISOString()}] Watcher iniciado desde fac_id ${lastFacId}. Backfill reciente aplicado antes de escuchar nuevas facturas.`);
     } else {
       if (backfill.maxFacId > lastFacId) {
         lastFacId = backfill.maxFacId;
-        writeState(options.statePath, { ...state, lastFacId });
+        state.lastFacId = lastFacId;
+        writeState(options.statePath, state);
+      } else if (backfill.writtenCount > 0) {
+        writeState(options.statePath, state);
       }
       console.log(`[${new Date().toISOString()}] Watcher iniciado. Ultimo fac_id conocido: ${lastFacId}.`);
     }
 
     do {
       try {
-        const result = await processNewInvoices({ connection, db, lastFacId, options });
+        const result = await processNewInvoices({ connection, db, lastFacId, options, state });
         if (result.lastFacId !== lastFacId) {
           lastFacId = result.lastFacId;
-          writeState(options.statePath, { ...state, lastFacId });
+          state.lastFacId = lastFacId;
+          writeState(options.statePath, state);
+        } else if (result.count > 0) {
+          writeState(options.statePath, state);
         }
       } catch (error) {
         console.error(`[${new Date().toISOString()}] Error sincronizando facturas membretadas:`, error.message || error);

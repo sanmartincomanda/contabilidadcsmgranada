@@ -9,6 +9,7 @@ const BRANCH_ID = 'granada';
 const BRANCH_NAME = 'CARNES SAN MARTIN GRANADA';
 const TIMEZONE = 'America/Managua';
 const DEFAULT_KEY_PATH = 'C:\\SICAR\\keys\\firebase-adminsdk.json';
+const DEFAULT_STATE_PATH = 'C:\\SICAR\\state\\sicar-purchases-sync-state.json';
 const DEFAULT_EXCLUDED_SUPPLIER_ID = 136;
 const DEFAULT_EXCLUDED_SUPPLIER_NAME = 'CARNES AMPARITO';
 const PURCHASE_CATEGORY_PAYLOAD = {
@@ -54,14 +55,107 @@ function parseArgs(argv) {
     else if (arg.startsWith('--startDate=')) acc.startDate = arg.slice('--startDate='.length);
     else if (arg.startsWith('--endDate=')) acc.endDate = arg.slice('--endDate='.length);
     else if (arg.startsWith('--lookbackDays=')) acc.lookbackDays = arg.slice('--lookbackDays='.length);
+    else if (arg.startsWith('--statePath=')) acc.statePath = arg.slice('--statePath='.length);
     else if (arg === '--cleanupExcluded') acc.cleanupExcluded = true;
     else if (arg === '--noCleanupExcluded') acc.cleanupExcluded = false;
+    else if (arg === '--forceFirebaseCheck') acc.forceFirebaseCheck = true;
+    else if (arg === '--logEveryRun') acc.logEveryRun = true;
+    else if (arg === '--resetState') acc.resetState = true;
     return acc;
   }, {
     cleanupExcluded: String(process.env.SICAR_PURCHASE_CLEANUP_EXCLUDED || '').toLowerCase() === 'true',
+    forceFirebaseCheck: String(process.env.SICAR_PURCHASE_FORCE_FIREBASE_CHECK || '').toLowerCase() === 'true',
+    logEveryRun: String(process.env.SICAR_PURCHASE_SYNC_LOG_EVERY_RUN || '').toLowerCase() === 'true',
     preview: false,
+    resetState: false,
     stageOnly: false,
+    statePath: process.env.SICAR_PURCHASE_SYNC_STATE_PATH || DEFAULT_STATE_PATH,
   });
+}
+
+function ensureDir(filePath) {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+}
+
+function readState(statePath) {
+  if (!statePath || !fs.existsSync(statePath)) return {};
+  try {
+    return JSON.parse(fs.readFileSync(statePath, 'utf8')) || {};
+  } catch {
+    return {};
+  }
+}
+
+function writeState(statePath, state) {
+  if (!statePath) return;
+  ensureDir(statePath);
+  fs.writeFileSync(statePath, `${JSON.stringify({
+    ...state,
+    updatedAt: new Date().toISOString(),
+  }, null, 2)}\n`, 'utf8');
+}
+
+function pruneState(state, minDate) {
+  const next = {
+    ...state,
+    purchases: { ...(state.purchases || {}) },
+    cancellations: { ...(state.cancellations || {}) },
+  };
+
+  Object.entries(next.purchases).forEach(([rawId, record]) => {
+    if (record?.date && record.date < minDate) delete next.purchases[rawId];
+  });
+
+  Object.entries(next.cancellations).forEach(([rawId, record]) => {
+    if (record?.date && record.date < minDate) delete next.cancellations[rawId];
+  });
+
+  return next;
+}
+
+function getPurchaseCacheRecord(state, entry) {
+  return state?.purchases?.[entry.rawId] || null;
+}
+
+function purchaseMatchesLocalState(state, entry, fingerprint) {
+  const cached = getPurchaseCacheRecord(state, entry);
+  return Boolean(
+    cached
+    && cached.fingerprint === fingerprint
+    && cached.route === entry.paymentRoute
+    && cached.targetCompraId === entry.compraId
+  );
+}
+
+function rememberPurchase(state, entry, fingerprint) {
+  if (!state.purchases) state.purchases = {};
+  if (!state.cancellations) state.cancellations = {};
+  state.purchases[entry.rawId] = {
+    date: entry.date,
+    fingerprint,
+    route: entry.paymentRoute,
+    targetCompraId: entry.compraId,
+    targetGastoDiarioId: entry.paymentRoute === 'efectivo' ? entry.gastoDiarioId : null,
+    targetCuentaPorPagarId: entry.paymentRoute === 'credito' ? entry.cuentaPorPagarId : null,
+    updatedAt: new Date().toISOString(),
+  };
+  delete state.cancellations[entry.rawId];
+}
+
+function cancellationMatchesLocalState(state, entry, fingerprint) {
+  const cached = state?.cancellations?.[entry.rawId] || null;
+  return Boolean(cached && cached.fingerprint === fingerprint);
+}
+
+function rememberCancellation(state, entry, fingerprint) {
+  if (!state.purchases) state.purchases = {};
+  if (!state.cancellations) state.cancellations = {};
+  state.cancellations[entry.rawId] = {
+    date: entry.date,
+    fingerprint,
+    updatedAt: new Date().toISOString(),
+  };
+  delete state.purchases[entry.rawId];
 }
 
 function normalizeLookbackDays(value) {
@@ -528,7 +622,13 @@ async function cancelPurchases(db, cancelledEntries, options) {
   for (const entry of cancelledEntries) {
     const rawRef = db.collection('integraciones_privadas').doc('sicar').collection('compras_raw').doc(entry.rawId);
     const cancellationFingerprint = buildCancelledFingerprint(entry);
-    if (!options.stageOnly) {
+    if (
+      options.useLocalState
+      && cancellationMatchesLocalState(options.localState, entry, cancellationFingerprint)
+    ) {
+      continue;
+    }
+    if (!options.stageOnly && !options.skipRemoteUnchangedCheck) {
       // Read one small staging doc to avoid repeating three visible deletes every worker run.
       // This trades a cheap status read for preventing delete/write storms on old cancellations.
       // eslint-disable-next-line no-await-in-loop
@@ -591,6 +691,9 @@ async function cancelPurchases(db, cancelledEntries, options) {
   });
 
   await batch.commit();
+  entriesToCancel.forEach((entry) => {
+    if (options.localState) rememberCancellation(options.localState, entry, entry.cancellationFingerprint);
+  });
   return {
     cancelledCount: options.stageOnly ? 0 : entriesToCancel.length,
     skippedUnchanged: cancelledEntries.length - entriesToCancel.length,
@@ -614,7 +717,7 @@ async function writePurchase(db, entry, options) {
     cuentaPorPagarId: route === 'credito' ? entry.cuentaPorPagarId : null,
   };
 
-  if (!options.stageOnly) {
+  if (!options.stageOnly && !options.skipRemoteUnchangedCheck) {
     const existingRawSnapshot = await rawRef.get();
     if (existingRawSnapshot.exists && existingRawSnapshot.data()?.syncFingerprint === syncFingerprint) {
       const targetSnapshots = await Promise.all([
@@ -835,6 +938,9 @@ async function main() {
 
   const connection = await mysql.createConnection(getMysqlConfig());
   const db = initFirebase();
+  if (args.resetState && args.statePath && fs.existsSync(args.statePath)) fs.unlinkSync(args.statePath);
+  const useLocalState = !args.preview && !args.stageOnly && !args.forceFirebaseCheck;
+  const state = useLocalState ? pruneState(readState(args.statePath), startDate) : {};
 
   try {
     const entries = await fetchPurchases(connection, startDate, addDays(endDate, 1));
@@ -885,44 +991,84 @@ async function main() {
       cleanupExcluded: args.cleanupExcluded,
       stageOnly: args.stageOnly,
     });
-    const cancelledCleanup = await cancelPurchases(db, cancelledEntries, { stageOnly: args.stageOnly });
+    const cancelledCleanup = await cancelPurchases(db, cancelledEntries, {
+      localState: state,
+      skipRemoteUnchangedCheck: useLocalState,
+      stageOnly: args.stageOnly,
+      useLocalState,
+    });
     const writeResults = [];
+    let skippedByLocalState = 0;
     for (const entry of entries) {
-      writeResults.push(await writePurchase(db, entry, { stageOnly: args.stageOnly }));
+      const fingerprint = buildSyncFingerprint(entry);
+      if (useLocalState && purchaseMatchesLocalState(state, entry, fingerprint)) {
+        skippedByLocalState += 1;
+        continue;
+      }
+
+      // eslint-disable-next-line no-await-in-loop
+      const result = await writePurchase(db, entry, {
+        skipRemoteUnchangedCheck: useLocalState,
+        stageOnly: args.stageOnly,
+      });
+      writeResults.push(result);
+      if (!result?.skipped && useLocalState) rememberPurchase(state, entry, fingerprint);
     }
     const skippedUnchanged = writeResults.filter((result) => result?.skipped).length;
     const writtenCount = writeResults.length - skippedUnchanged;
+    const shouldWriteLog = args.logEveryRun
+      || writtenCount > 0
+      || cancelledCleanup.cancelledCount > 0
+      || excludedCleanup.deletedCount > 0;
 
-    await db.collection('sicar_sync_logs').add({
-      syncType: 'compras',
-      sourceMode: 'local-worker',
-      branchId: BRANCH_ID,
-      branchName: BRANCH_NAME,
-      startDate,
-      endDate,
-      entryCount: entries.length,
-      subtotal: money(entries.reduce((sum, entry) => sum + entry.subtotal, 0)),
-      iva: money(entries.reduce((sum, entry) => sum + entry.iva, 0)),
-      total: money(entries.reduce((sum, entry) => sum + entry.total, 0)),
-      excludedSupplierId: getExcludedSupplierId(),
-      excludedSupplierName: getExcludedSupplierName(),
-      excludedCount: excludedEntries.length,
-      cancelledCount: cancelledEntries.length,
-      excludedSubtotal: money(excludedEntries.reduce((sum, entry) => sum + entry.subtotal, 0)),
-      excludedIva: money(excludedEntries.reduce((sum, entry) => sum + entry.iva, 0)),
-      excludedTotal: money(excludedEntries.reduce((sum, entry) => sum + entry.total, 0)),
-      excludedDeletedCount: excludedCleanup.deletedCount,
-      excludedSkippedCleanupCount: excludedCleanup.skippedCount,
-      cleanupExcluded: args.cleanupExcluded,
-      cancelledDeletedCount: cancelledCleanup.cancelledCount,
-      cancelledSkippedUnchangedCount: cancelledCleanup.skippedUnchanged,
-      routes,
-      writtenCount,
-      skippedUnchanged,
-      stageOnly: args.stageOnly,
-      status: 'ok',
-      createdAt: admin.firestore.FieldValue.serverTimestamp(),
-    });
+    if (useLocalState) {
+      writeState(args.statePath, {
+        ...state,
+        lastRun: {
+          endDate,
+          skippedByLocalState,
+          skippedUnchanged,
+          startDate,
+          writtenCount,
+        },
+        version: 2,
+      });
+    }
+
+    if (shouldWriteLog) {
+      await db.collection('sicar_sync_logs').add({
+        syncType: 'compras',
+        sourceMode: 'local-worker',
+        branchId: BRANCH_ID,
+        branchName: BRANCH_NAME,
+        startDate,
+        endDate,
+        entryCount: entries.length,
+        subtotal: money(entries.reduce((sum, entry) => sum + entry.subtotal, 0)),
+        iva: money(entries.reduce((sum, entry) => sum + entry.iva, 0)),
+        total: money(entries.reduce((sum, entry) => sum + entry.total, 0)),
+        excludedSupplierId: getExcludedSupplierId(),
+        excludedSupplierName: getExcludedSupplierName(),
+        excludedCount: excludedEntries.length,
+        cancelledCount: cancelledEntries.length,
+        excludedSubtotal: money(excludedEntries.reduce((sum, entry) => sum + entry.subtotal, 0)),
+        excludedIva: money(excludedEntries.reduce((sum, entry) => sum + entry.iva, 0)),
+        excludedTotal: money(excludedEntries.reduce((sum, entry) => sum + entry.total, 0)),
+        excludedDeletedCount: excludedCleanup.deletedCount,
+        excludedSkippedCleanupCount: excludedCleanup.skippedCount,
+        cleanupExcluded: args.cleanupExcluded,
+        cancelledDeletedCount: cancelledCleanup.cancelledCount,
+        cancelledSkippedUnchangedCount: cancelledCleanup.skippedUnchanged,
+        localStateEnabled: useLocalState,
+        skippedByLocalState,
+        routes,
+        writtenCount,
+        skippedUnchanged,
+        stageOnly: args.stageOnly,
+        status: 'ok',
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+    }
 
     console.log(JSON.stringify({
       ok: true,
@@ -947,6 +1093,8 @@ async function main() {
       cancelledDeletedCount: cancelledCleanup.cancelledCount,
       cancelledSkippedUnchangedCount: cancelledCleanup.skippedUnchanged,
       routes,
+      localStateEnabled: useLocalState,
+      skippedByLocalState,
       writtenCount,
       skippedUnchanged,
     }, null, 2));

@@ -4,13 +4,14 @@ const mysql = require('mysql2/promise');
 const admin = require('firebase-admin');
 const {
   addDays,
+  buildClosureFingerprint,
   fetchClosures,
   fetchClosuresByIds,
   getMysqlConfig,
   initFirebase,
   loadEnvFile,
   toDateString,
-  writeClosureIfChanged,
+  writeClosure,
 } = require('./syncSicarBilling');
 
 const DEFAULT_STATE_PATH = 'C:\\SICAR\\state\\sicar-cash-closure-watch.json';
@@ -75,7 +76,7 @@ async function processRecentBackfill({ connection, db, options }) {
     return { count: closures.length, maxCorId, writtenCount: 0, skippedCount: 0 };
   }
 
-  const result = await writeClosures(db, closures, options);
+  const result = await writeClosures(db, closures, options, options.state);
   if (result.writtenCount > 0) {
     console.log(`[${new Date().toISOString()}] Backfill vivo cierres ${startDate} a ${endDate}: ${closures.length} revisado/s, ${result.writtenCount} escrito/s, ${result.skippedCount} sin cambios.`);
   }
@@ -107,6 +108,28 @@ function writeState(statePath, state) {
   }, null, 2)}\n`, 'utf8');
 }
 
+function ensureStateShape(state = {}) {
+  return {
+    ...state,
+    closureFingerprints: { ...(state.closureFingerprints || {}) },
+  };
+}
+
+function rememberClosure(state, closure, fingerprint) {
+  if (!state.closureFingerprints) state.closureFingerprints = {};
+  state.closureFingerprints[closure.id] = {
+    cashboxName: closure.cashboxName,
+    corId: closure.corId,
+    date: closure.date,
+    fingerprint,
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+function closureMatchesLocalState(state, closure, fingerprint) {
+  return state?.closureFingerprints?.[closure.id]?.fingerprint === fingerprint;
+}
+
 async function getCurrentMaxCorId(connection) {
   const [rows] = await connection.execute(`
     SELECT COALESCE(MAX(cor_id), 0) AS maxCorId
@@ -124,16 +147,23 @@ function getBackfillRange(days) {
   };
 }
 
-async function writeClosures(db, closures, options) {
+async function writeClosures(db, closures, options, state) {
   let writtenCount = 0;
   let skippedCount = 0;
   const results = [];
 
   for (const closure of closures) {
-    const result = await writeClosureIfChanged(db, closure, { stageOnly: options.stageOnly });
-    if (result.written) writtenCount += 1;
-    else skippedCount += 1;
-    results.push({ closure, result });
+    const fingerprint = buildClosureFingerprint(closure);
+    if (!options.stageOnly && closureMatchesLocalState(state, closure, fingerprint)) {
+      skippedCount += 1;
+      results.push({ closure, result: { written: false, reason: 'local-cache' } });
+      continue;
+    }
+    // eslint-disable-next-line no-await-in-loop
+    await writeClosure(db, { ...closure, sicarFingerprint: fingerprint }, { stageOnly: options.stageOnly });
+    rememberClosure(state, closure, fingerprint);
+    writtenCount += 1;
+    results.push({ closure, result: { written: true, reason: 'local-fingerprint-changed' } });
   }
 
   if (writtenCount > 0) {
@@ -180,7 +210,7 @@ async function processStartupBackfill({ connection, db, options }) {
     return { count: closures.length, maxCorId, writtenCount: 0, skippedCount: 0 };
   }
 
-  const result = await writeClosures(db, closures, options);
+  const result = await writeClosures(db, closures, options, options.state);
   console.log(`[${new Date().toISOString()}] Backfill cierres ${startDate} a ${endDate}: ${closures.length} revisado/s, ${result.writtenCount} escrito/s, ${result.skippedCount} sin cambios.`);
   return { count: closures.length, maxCorId, ...result };
 }
@@ -216,7 +246,7 @@ async function processNewClosures({ connection, db, lastCorId, options }) {
       })),
     }, null, 2));
   } else {
-    const result = await writeClosures(db, closures, options);
+    const result = await writeClosures(db, closures, options, options.state);
     if (result.writtenCount > 0) {
       console.log(`[${new Date().toISOString()}] ${result.writtenCount} cierre/s SICAR sincronizado/s.`);
     }
@@ -243,26 +273,29 @@ async function main() {
 
   try {
     if (options.resetState && fs.existsSync(options.statePath)) fs.unlinkSync(options.statePath);
-    const state = readState(options.statePath);
+    const state = ensureStateShape(readState(options.statePath));
+    options.state = state;
     let lastCorId = Number(options.startCorId || state.lastCorId || 0);
 
     const backfill = await processStartupBackfill({ connection, db, options });
 
     if (!lastCorId) {
       lastCorId = await getCurrentMaxCorId(connection);
+      state.lastCorId = lastCorId;
+      state.bootstrappedAt = new Date().toISOString();
+      state.startupBackfillDays = options.skipStartupBackfill ? 0 : Math.max(1, Math.min(Number(options.startupBackfillDays || DEFAULT_STARTUP_BACKFILL_DAYS), 31));
+      state.note = 'Estado inicial creado con MAX(cor_id); los fingerprints locales evitan leer Firestore si MySQL no cambio.';
       if (!options.preview) {
-        writeState(options.statePath, {
-          lastCorId,
-          bootstrappedAt: new Date().toISOString(),
-          startupBackfillDays: options.skipStartupBackfill ? 0 : Math.max(1, Math.min(Number(options.startupBackfillDays || DEFAULT_STARTUP_BACKFILL_DAYS), 31)),
-          note: 'Estado inicial creado con MAX(cor_id); antes de escuchar nuevos cierres se verifica un backfill reciente idempotente.',
-        });
+        writeState(options.statePath, state);
       }
       console.log(`[${new Date().toISOString()}] Watcher de cierres iniciado${options.preview ? ' en preview' : ''} desde cor_id ${lastCorId}.`);
     } else {
       if (backfill.maxCorId > lastCorId) {
         lastCorId = backfill.maxCorId;
-        if (!options.preview) writeState(options.statePath, { ...state, lastCorId });
+        state.lastCorId = lastCorId;
+        if (!options.preview) writeState(options.statePath, state);
+      } else if (backfill.writtenCount > 0) {
+        if (!options.preview) writeState(options.statePath, state);
       }
       console.log(`[${new Date().toISOString()}] Watcher de cierres iniciado${options.preview ? ' en preview' : ''}. Ultimo cor_id conocido: ${lastCorId}.`);
     }
@@ -276,14 +309,18 @@ async function main() {
           lastRecentBackfillAt = now;
           if (recentBackfill.maxCorId > lastCorId) {
             lastCorId = recentBackfill.maxCorId;
-            if (!options.preview) writeState(options.statePath, { ...readState(options.statePath), lastCorId });
+            state.lastCorId = lastCorId;
+            if (!options.preview) writeState(options.statePath, state);
+          } else if (recentBackfill.writtenCount > 0) {
+            if (!options.preview) writeState(options.statePath, state);
           }
         }
 
         const result = await processNewClosures({ connection, db, lastCorId, options });
         if (result.lastCorId !== lastCorId) {
           lastCorId = result.lastCorId;
-          if (!options.preview) writeState(options.statePath, { ...readState(options.statePath), lastCorId });
+          state.lastCorId = lastCorId;
+          if (!options.preview) writeState(options.statePath, state);
         }
       } catch (error) {
         console.error(`[${new Date().toISOString()}] Error sincronizando cierres SICAR:`, error.message || error);
