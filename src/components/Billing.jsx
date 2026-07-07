@@ -55,6 +55,7 @@ const CASHIER_OPTIONS = [
 const BANK_DEPOSIT_OWNER = 'LUIS MANUEL SAENZ ROBLERO';
 const BANK_DEPOSIT_DEFAULT_NIO_ACCOUNT = '362705105';
 const BANK_DEPOSIT_DEFAULT_USD_ACCOUNT = '366250942';
+const BANK_DEPOSIT_AVAILABLE_FROM_DATE = '2026-07-07';
 
 const BANK_DEPOSIT_NIO_ACCOUNTS = [
     { accountNumber: '362705105', bank: 'BAC', holder: BANK_DEPOSIT_OWNER, label: 'BAC 362705105 - LUIS MANUEL SAENZ ROBLERO' },
@@ -10413,6 +10414,7 @@ function BankDeposits({ data }) {
         [...(data.cierres_caja || [])]
             .filter((closure) => closure.id)
             .filter((closure) => !['EN_ESPERA', 'ANULADO'].includes(normalizeText(closure.status)))
+            .filter((closure) => String(closure.date || getRecordDate(closure.createdAt || closure.updatedAt) || '').substring(0, 10) >= BANK_DEPOSIT_AVAILABLE_FROM_DATE)
             .filter((closure) => !closure.bankDepositId && !depositedClosureIds.has(closure.id))
             .map((closure) => ({
                 ...closure,
