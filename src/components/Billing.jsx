@@ -8419,21 +8419,20 @@ const buildCashClosureTicketData = (closure = {}) => {
     const posBanproTotal = safeNumber(payment.posBanpro ?? closure.posTotals?.banpro);
     const posLafiseTotal = safeNumber(payment.posLafise ?? closure.posTotals?.lafise);
     const transferBacTotal = safeNumber(payment.transferBac ?? closure.transferTotals?.bac);
-    const transferBac2Total = safeNumber(payment.transferBac2 ?? closure.transferTotals?.bac2);
     const transferBacUsdTotal = safeNumber(payment.transferBacUsd ?? closure.transferTotals?.bacUsd);
     const transferLafiseTotal = safeNumber(payment.transferLafise ?? closure.transferTotals?.lafise);
     const transferLafiseUsdTotal = safeNumber(payment.transferLafiseUsd ?? closure.transferTotals?.lafiseUsd);
     const transferBanproTotal = safeNumber(payment.transferBanpro ?? closure.transferTotals?.banpro);
-    const cardTotalForRc = safeNumber(posBacTotal + posBanproTotal + posLafiseTotal);
-    const transferTotalForRc = safeNumber(
+    const visibleCardTotal = safeNumber(posBacTotal + posBanproTotal + posLafiseTotal);
+    // BAC (2) no se imprime; queda absorbido en efectivo para cuadrar el ticket.
+    const visibleTransferTotal = safeNumber(
         transferBacTotal
-        + transferBac2Total
         + transferBacUsdTotal
         + transferLafiseTotal
         + transferLafiseUsdTotal
         + transferBanproTotal
     );
-    const rcIncludingBac2 = Math.abs(safeNumber(cardTotalForRc + transferTotalForRc - cashIncomeTotal));
+    const efectivoResidual = safeNumber(cashIncomeTotal - visibleCardTotal - visibleTransferTotal);
     const paymentMethods = [
         buildTicketPaymentMethod({
             label: 'POS BAC TOTAL:',
@@ -8514,7 +8513,7 @@ const buildCashClosureTicketData = (closure = {}) => {
         transferBacUsd: transferBacUsdTotal,
         transferLafise: safeNumber(transferLafiseTotal + transferLafiseUsdTotal),
         transferBanpro: transferBanproTotal,
-        rc: rcIncludingBac2,
+        rc: efectivoResidual,
         paymentMethods,
         invoices: invoices.map((invoice) => ({
             id: invoice.id || invoice.docId || invoice.invoiceNumber || invoice.numeroFactura,
