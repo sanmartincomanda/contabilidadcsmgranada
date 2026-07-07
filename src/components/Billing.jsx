@@ -856,9 +856,8 @@ const buildClosureAccountingSummary = ({
         + (transferTotals.bacUsd || 0)
         + (transferTotals.lafiseUsd || 0)
     );
-    const transferTotalWithoutBac2 = safeNumber(transferTotal - safeNumber(transferTotals.bac2));
     const cashTotal = safeNumber(cashCordobasTotal + dollarCashTotalCordobas + preCloseDepositTotal);
-    const rc = safeNumber(cardTotal + transferTotalWithoutBac2 - cashIncomeNetTotal);
+    const rc = safeNumber(cardTotal + transferTotal - cashIncomeNetTotal);
 
     return {
         general: {
@@ -899,7 +898,7 @@ const buildClosureAccountingSummary = ({
         },
         internalRatio: {
             rc,
-            formula: 'Tarjeta + transferencia sin BAC (2) - total ingreso de caja',
+            formula: 'Tarjeta + transferencia total - flujo de caja',
         },
     };
 };
@@ -936,8 +935,7 @@ const normalizeClosureAccountingSummarySales = (summary = {}, netSalesTotals = {
             + safeNumber(payment.transferBacUsd)
             + safeNumber(payment.transferLafiseUsd)
         );
-    const transferTotalWithoutBac2 = safeNumber(transferTotal - safeNumber(payment.transferBac2));
-    const rc = safeNumber(cardTotal + transferTotalWithoutBac2 - cashIncomeNetTotal);
+    const rc = safeNumber(cardTotal + transferTotal - cashIncomeNetTotal);
     const ratioFormula = normalizeText(summary.internalRatio?.formula || '');
     const shouldUseRecalculatedRc = ratioFormula.includes('TOTAL INGRESO DE CAJA')
         || ratioFormula.includes('CON RETENCIONES')
@@ -978,7 +976,7 @@ const normalizeClosureAccountingSummarySales = (summary = {}, netSalesTotals = {
             ...(summary.internalRatio || {}),
             ...(shouldUseRecalculatedRc ? {
                 rc,
-                formula: 'Tarjeta + transferencia sin BAC (2) - total ingreso de caja',
+                formula: 'Tarjeta + transferencia total - flujo de caja',
             } : {}),
         },
     };
@@ -1162,9 +1160,8 @@ const syncLinkedClosureForCashReceipt = async (receiptId = '', receiptPayload = 
     const difference = getCashClosureDifference(manualTotal, sicarExpected, retentionAdjustment);
     const payment = closure.accountingSummary?.paymentBreakdown || {};
     const stamped = closure.accountingSummary?.stampedDocuments || {};
-    const transferTotalWithoutBac2 = safeNumber(safeNumber(payment.transferTotal) - safeNumber(payment.transferBac2));
     const cashIncomeNetTotal = safeNumber(safeNumber(stamped.stampedCashInvoices) + cashReceiptNetTotal);
-    const rc = safeNumber(safeNumber(payment.cardTotal) + transferTotalWithoutBac2 - cashIncomeNetTotal);
+    const rc = safeNumber(safeNumber(payment.cardTotal) + safeNumber(payment.transferTotal) - cashIncomeNetTotal);
     const accountingSummary = closure.accountingSummary ? {
         ...closure.accountingSummary,
         stampedDocuments: {
@@ -1182,7 +1179,7 @@ const syncLinkedClosureForCashReceipt = async (receiptId = '', receiptPayload = 
         internalRatio: {
             ...(closure.accountingSummary.internalRatio || {}),
             rc,
-            formula: 'Tarjeta + transferencia sin BAC (2) - total ingreso de caja',
+            formula: 'Tarjeta + transferencia total - flujo de caja',
         },
     } : null;
 
@@ -8417,12 +8414,13 @@ const buildCashClosureTicketData = (closure = {}) => {
     const cardTotalForRc = safeNumber(posBacTotal + posBanproTotal + posLafiseTotal);
     const transferTotalForRc = safeNumber(
         transferBacTotal
+        + transferBac2Total
         + transferBacUsdTotal
         + transferLafiseTotal
         + transferLafiseUsdTotal
         + transferBanproTotal
     );
-    const rcExcludingBac2 = Math.abs(safeNumber(cardTotalForRc + transferTotalForRc - cashIncomeTotal));
+    const rcIncludingBac2 = Math.abs(safeNumber(cardTotalForRc + transferTotalForRc - cashIncomeTotal));
     const paymentMethods = [
         buildTicketPaymentMethod({
             label: 'POS BAC TOTAL:',
@@ -8446,12 +8444,6 @@ const buildCashClosureTicketData = (closure = {}) => {
             label: 'TRANSFERENCIA BAC TOTAL:',
             total: transferBacTotal,
             rows: getRowsByBankKey(context.transferRows, 'bac'),
-            type: 'transfer',
-        }),
-        buildTicketPaymentMethod({
-            label: 'TRANSFERENCIA BAC (2) TOTAL:',
-            total: transferBac2Total,
-            rows: getRowsByBankKey(context.transferRows, 'bac2'),
             type: 'transfer',
         }),
         buildTicketPaymentMethod({
@@ -8506,7 +8498,7 @@ const buildCashClosureTicketData = (closure = {}) => {
         transferBacUsd: transferBacUsdTotal,
         transferLafise: safeNumber(transferLafiseTotal + transferLafiseUsdTotal),
         transferBanpro: transferBanproTotal,
-        rc: rcExcludingBac2,
+        rc: rcIncludingBac2,
         paymentMethods,
         invoices: invoices.map((invoice) => ({
             id: invoice.id || invoice.docId || invoice.invoiceNumber || invoice.numeroFactura,
