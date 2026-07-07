@@ -8345,6 +8345,17 @@ const normalizeTicketDetailAmount = (row = {}) => (
     safeNumber(row.amountCordobas ?? row.amount ?? row.total ?? row.value)
 );
 
+const formatTicketUsdAmount = (value = 0) => (
+    `$${safeNumber(value).toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })}`
+);
+
+const getTicketPaymentConversionLabel = (row = {}) => {
+    const currency = String(row.currency || '').toUpperCase();
+    if (currency !== 'USD') return '';
+    const dollarAmount = safeNumber(row.amount ?? row.total ?? row.value);
+    return dollarAmount > 0 ? `Conv: ${formatTicketUsdAmount(dollarAmount)}` : '';
+};
+
 const getTicketPaymentDetailLabel = (row = {}, type = 'transfer') => {
     const clientName = String(row.clientName || row.customerName || '').trim();
     const reference = String(row.reference || row.ref || '').trim();
@@ -8354,14 +8365,16 @@ const getTicketPaymentDetailLabel = (row = {}, type = 'transfer') => {
     return clientName || reference || 'Sin referencia';
 };
 
-const buildTicketPaymentMethod = ({ label, total = 0, rows = [], type = 'transfer' }) => ({
+const buildTicketPaymentMethod = ({ label, total = 0, rows = [], type = 'transfer', alwaysShow = false }) => ({
     label,
     total: safeNumber(total),
+    alwaysShow,
     details: rows
         .map((row, index) => ({
             id: row.localId || row.id || `${label}-${index}`,
             label: getTicketPaymentDetailLabel(row, type),
             amount: normalizeTicketDetailAmount(row),
+            conversionLabel: getTicketPaymentConversionLabel(row),
         }))
         .filter((row) => row.amount > 0),
 });
@@ -8427,18 +8440,21 @@ const buildCashClosureTicketData = (closure = {}) => {
             total: posBacTotal,
             rows: getRowsByBankKey(context.posRows, 'bac'),
             type: 'pos',
-        }),
-        buildTicketPaymentMethod({
-            label: 'POS BANPRO TOTAL:',
-            total: posBanproTotal,
-            rows: getRowsByBankKey(context.posRows, 'banpro'),
-            type: 'pos',
+            alwaysShow: true,
         }),
         buildTicketPaymentMethod({
             label: 'POS LAFISE TOTAL:',
             total: posLafiseTotal,
             rows: getRowsByBankKey(context.posRows, 'lafise'),
             type: 'pos',
+            alwaysShow: true,
+        }),
+        buildTicketPaymentMethod({
+            label: 'POS BANPRO TOTAL:',
+            total: posBanproTotal,
+            rows: getRowsByBankKey(context.posRows, 'banpro'),
+            type: 'pos',
+            alwaysShow: true,
         }),
         buildTicketPaymentMethod({
             label: 'TRANSFERENCIA BAC TOTAL:',
@@ -8470,7 +8486,7 @@ const buildCashClosureTicketData = (closure = {}) => {
             rows: getRowsByBankKey(context.transferRows, 'banpro'),
             type: 'transfer',
         }),
-    ].filter((method) => method.total > 0 || method.details.length);
+    ].filter((method) => method.alwaysShow || method.total > 0 || method.details.length);
 
     return {
         code: formatCashClosureTicketCode(context.code),
@@ -8593,7 +8609,10 @@ const CashClosureTicketPrint = ({ closure }) => {
                                 </div>
                                 {method.details.map((detail) => (
                                     <div className="ticket-row ticket-detail-row" key={detail.id}>
-                                        <span>{detail.label}</span>
+                                        <span>
+                                            {detail.label}
+                                            {detail.conversionLabel ? <small>{detail.conversionLabel}</small> : null}
+                                        </span>
                                         <strong>{fmt(detail.amount)}</strong>
                                     </div>
                                 ))}
@@ -8601,8 +8620,8 @@ const CashClosureTicketPrint = ({ closure }) => {
                         )) : (
                             <div className="ticket-empty">Sin metodos de pago detallados.</div>
                         )}
-                        <div className="ticket-row">
-                            <span>RC EFECTIVO:</span>
+                        <div className="ticket-row ticket-total-row">
+                            <span>EFECTIVO:</span>
                             <strong>{fmt(ticket.rc)}</strong>
                         </div>
                     </div>
@@ -8701,6 +8720,11 @@ const CashClosureTicketPrint = ({ closure }) => {
                     }
                     body.print-cash-closure-ticket .ticket-detail-row span {
                         max-width: 43mm;
+                    }
+                    body.print-cash-closure-ticket .ticket-detail-row small {
+                        display: block;
+                        font-size: 10px;
+                        line-height: 1.15;
                     }
                     body.print-cash-closure-ticket .ticket-row strong {
                         font-family: Arial, sans-serif;
