@@ -8405,58 +8405,76 @@ const buildCashClosureTicketData = (closure = {}) => {
     const exemptSubtotalRaw = safeNumber(invoiceTotal - invoiceVatTotal - taxableSubtotal);
     const exemptSubtotal = Math.abs(exemptSubtotalRaw) <= 0.05 ? 0 : safeNumber(Math.max(exemptSubtotalRaw, 0));
     const cashIncomeTotal = safeNumber(invoicePaymentTotals.cash + receiptTotal - retentionTotal);
+    const posBacTotal = safeNumber(payment.posBac ?? closure.posTotals?.bac);
+    const posBanproTotal = safeNumber(payment.posBanpro ?? closure.posTotals?.banpro);
+    const posLafiseTotal = safeNumber(payment.posLafise ?? closure.posTotals?.lafise);
+    const transferBacTotal = safeNumber(payment.transferBac ?? closure.transferTotals?.bac);
+    const transferBac2Total = safeNumber(payment.transferBac2 ?? closure.transferTotals?.bac2);
+    const transferBacUsdTotal = safeNumber(payment.transferBacUsd ?? closure.transferTotals?.bacUsd);
+    const transferLafiseTotal = safeNumber(payment.transferLafise ?? closure.transferTotals?.lafise);
+    const transferLafiseUsdTotal = safeNumber(payment.transferLafiseUsd ?? closure.transferTotals?.lafiseUsd);
+    const transferBanproTotal = safeNumber(payment.transferBanpro ?? closure.transferTotals?.banpro);
+    const cardTotalForRc = safeNumber(posBacTotal + posBanproTotal + posLafiseTotal);
+    const transferTotalForRc = safeNumber(
+        transferBacTotal
+        + transferBacUsdTotal
+        + transferLafiseTotal
+        + transferLafiseUsdTotal
+        + transferBanproTotal
+    );
+    const rcExcludingBac2 = Math.abs(safeNumber(cardTotalForRc + transferTotalForRc - cashIncomeTotal));
     const paymentMethods = [
         buildTicketPaymentMethod({
             label: 'POS BAC TOTAL:',
-            total: safeNumber(payment.posBac ?? closure.posTotals?.bac),
+            total: posBacTotal,
             rows: getRowsByBankKey(context.posRows, 'bac'),
             type: 'pos',
         }),
         buildTicketPaymentMethod({
             label: 'POS BANPRO TOTAL:',
-            total: safeNumber(payment.posBanpro ?? closure.posTotals?.banpro),
+            total: posBanproTotal,
             rows: getRowsByBankKey(context.posRows, 'banpro'),
             type: 'pos',
         }),
         buildTicketPaymentMethod({
             label: 'POS LAFISE TOTAL:',
-            total: safeNumber(payment.posLafise ?? closure.posTotals?.lafise),
+            total: posLafiseTotal,
             rows: getRowsByBankKey(context.posRows, 'lafise'),
             type: 'pos',
         }),
         buildTicketPaymentMethod({
             label: 'TRANSFERENCIA BAC TOTAL:',
-            total: safeNumber(payment.transferBac ?? closure.transferTotals?.bac),
+            total: transferBacTotal,
             rows: getRowsByBankKey(context.transferRows, 'bac'),
             type: 'transfer',
         }),
         buildTicketPaymentMethod({
             label: 'TRANSFERENCIA BAC (2) TOTAL:',
-            total: safeNumber(payment.transferBac2 ?? closure.transferTotals?.bac2),
+            total: transferBac2Total,
             rows: getRowsByBankKey(context.transferRows, 'bac2'),
             type: 'transfer',
         }),
         buildTicketPaymentMethod({
             label: 'TRANSFERENCIA BAC USD TOTAL:',
-            total: safeNumber(payment.transferBacUsd ?? closure.transferTotals?.bacUsd),
+            total: transferBacUsdTotal,
             rows: getRowsByBankKey(context.transferRows, 'bacUsd'),
             type: 'transfer',
         }),
         buildTicketPaymentMethod({
             label: 'TRANSFERENCIA LAFISE TOTAL:',
-            total: safeNumber(payment.transferLafise ?? closure.transferTotals?.lafise),
+            total: transferLafiseTotal,
             rows: getRowsByBankKey(context.transferRows, 'lafise'),
             type: 'transfer',
         }),
         buildTicketPaymentMethod({
             label: 'TRANSFERENCIA LAFISE USD TOTAL:',
-            total: safeNumber(payment.transferLafiseUsd ?? closure.transferTotals?.lafiseUsd),
+            total: transferLafiseUsdTotal,
             rows: getRowsByBankKey(context.transferRows, 'lafiseUsd'),
             type: 'transfer',
         }),
         buildTicketPaymentMethod({
             label: 'TRANSFERENCIA BANPRO TOTAL:',
-            total: safeNumber(payment.transferBanpro ?? closure.transferTotals?.banpro),
+            total: transferBanproTotal,
             rows: getRowsByBankKey(context.transferRows, 'banpro'),
             type: 'transfer',
         }),
@@ -8481,17 +8499,14 @@ const buildCashClosureTicketData = (closure = {}) => {
         retentionIr,
         retentionMunicipal,
         cashIncomeTotal,
-        posBac: safeNumber(payment.posBac ?? closure.posTotals?.bac),
-        posBanpro: safeNumber(payment.posBanpro ?? closure.posTotals?.banpro),
-        posLafise: safeNumber(payment.posLafise ?? closure.posTotals?.lafise),
-        transferBac: safeNumber(payment.transferBac ?? closure.transferTotals?.bac),
-        transferBacUsd: safeNumber(payment.transferBacUsd ?? closure.transferTotals?.bacUsd),
-        transferLafise: safeNumber(
-            safeNumber(payment.transferLafise ?? closure.transferTotals?.lafise)
-            + safeNumber(payment.transferLafiseUsd ?? closure.transferTotals?.lafiseUsd)
-        ),
-        transferBanpro: safeNumber(payment.transferBanpro ?? closure.transferTotals?.banpro),
-        rc: Math.abs(getCashClosureRcValue(summary)),
+        posBac: posBacTotal,
+        posBanpro: posBanproTotal,
+        posLafise: posLafiseTotal,
+        transferBac: transferBacTotal,
+        transferBacUsd: transferBacUsdTotal,
+        transferLafise: safeNumber(transferLafiseTotal + transferLafiseUsdTotal),
+        transferBanpro: transferBanproTotal,
+        rc: rcExcludingBac2,
         paymentMethods,
         invoices: invoices.map((invoice) => ({
             id: invoice.id || invoice.docId || invoice.invoiceNumber || invoice.numeroFactura,
