@@ -8526,32 +8526,32 @@ const CashClosureTicketPrint = ({ closure }) => {
         {
             title: 'VENTAS DEL DIA',
             rows: [
-                ['Ventas contado:', ticket.salesCashTotal],
-                ['Ventas Credito:', ticket.salesCreditTotal],
-                ['Total Venta:', ticket.salesTotal],
-                ['IVA Facturado:', ticket.invoiceVatTotal],
-                ['Subtotal Total Venta Gravada:', ticket.taxableSubtotal],
-                ['Subtotal Venta Exenta:', ticket.exemptSubtotal],
+                { label: 'Ventas contado:', value: ticket.salesCashTotal },
+                { label: 'Ventas Credito:', value: ticket.salesCreditTotal },
+                { label: 'Total Venta:', value: ticket.salesTotal, highlight: true },
+                { label: 'IVA Facturado:', value: ticket.invoiceVatTotal },
+                { label: 'Subtotal Total Venta Gravada:', value: ticket.taxableSubtotal },
+                { label: 'Subtotal Venta Exenta:', value: ticket.exemptSubtotal },
             ],
         },
         {
             title: 'RECIBOS DE CAJA',
             rows: [
-                ['Recibo caja membretados:', ticket.stampedCashReceiptTotal],
+                { label: 'Recibo caja membretados:', value: ticket.stampedCashReceiptTotal },
             ],
         },
         {
             title: 'DEDUCCIONES',
             rows: [
-                ['Retencion IR:', ticket.retentionIr],
-                ['Retencion Municipal:', ticket.retentionMunicipal],
-                ['Total Deducciones:', ticket.retentionTotal],
+                { label: 'Retencion IR:', value: ticket.retentionIr },
+                { label: 'Retencion Municipal:', value: ticket.retentionMunicipal },
+                { label: 'Total Deducciones:', value: ticket.retentionTotal, highlight: true },
             ],
         },
         {
             title: '',
             rows: [
-                ['Total Ingreso de caja:', ticket.cashIncomeTotal],
+                { label: 'Flujo de Caja:', value: ticket.cashIncomeTotal, highlight: true },
             ],
         },
     ];
@@ -8568,10 +8568,10 @@ const CashClosureTicketPrint = ({ closure }) => {
                     {sections.map((section) => (
                         <div className="ticket-section" key={section.title || 'total-income'}>
                             {section.title ? <div className="ticket-subtitle">{section.title}</div> : null}
-                            {section.rows.map(([label, value]) => (
-                                <div className="ticket-row" key={label}>
-                                    <span>{label}</span>
-                                    <strong>{fmt(value)}</strong>
+                            {section.rows.map((row) => (
+                                <div className={`ticket-row${row.highlight ? ' ticket-total-row' : ''}`} key={row.label}>
+                                    <span>{row.label}</span>
+                                    <strong>{fmt(row.value)}</strong>
                                 </div>
                             ))}
                         </div>
@@ -8580,7 +8580,7 @@ const CashClosureTicketPrint = ({ closure }) => {
                     <div className="ticket-section">
                         {ticket.paymentMethods.length ? ticket.paymentMethods.map((method) => (
                             <div className="ticket-method" key={method.label}>
-                                <div className="ticket-row">
+                                <div className="ticket-row ticket-total-row">
                                     <span>{method.label}</span>
                                     <strong>{fmt(method.total)}</strong>
                                 </div>
@@ -8675,6 +8675,15 @@ const CashClosureTicketPrint = ({ closure }) => {
                         gap: 6px;
                         justify-content: space-between;
                         padding: 1px 0;
+                    }
+                    body.print-cash-closure-ticket .ticket-total-row {
+                        border-bottom: 1px solid #d9d9d9;
+                        margin: 2px 0;
+                        padding-bottom: 2px;
+                    }
+                    body.print-cash-closure-ticket .ticket-total-row span,
+                    body.print-cash-closure-ticket .ticket-total-row strong {
+                        font-weight: 700;
                     }
                     body.print-cash-closure-ticket .ticket-method {
                         padding: 2px 0;
