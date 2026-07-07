@@ -4,7 +4,7 @@ import { collection, deleteDoc, doc, getDoc, serverTimestamp, setDoc, writeBatch
 import { db } from '../firebase';
 import { useAuth } from '../context/AuthContext';
 import { APP_BRAND_NAME, fmt } from '../constants';
-import { PAYMENT_METHODS, buildFiscalPayload, getSupportFiles, uploadFiscalSupportFiles } from '../services/fiscalUtils';
+import { PAYMENT_METHODS, buildFiscalPayload, getSupportFiles, uploadFiscalSupportFiles, uploadSupportFile } from '../services/fiscalUtils';
 import { isMasterEmail } from '../services/userAccess';
 
 const TRANSFER_BANKS = [
@@ -50,6 +50,23 @@ const CASHIER_OPTIONS = [
     'Katherine Obando',
     'Jose Flores',
     'Nicol Barbosa',
+];
+
+const BANK_DEPOSIT_OWNER = 'LUIS MANUEL SAENZ ROBLERO';
+const BANK_DEPOSIT_DEFAULT_NIO_ACCOUNT = '362705105';
+const BANK_DEPOSIT_DEFAULT_USD_ACCOUNT = '366250942';
+
+const BANK_DEPOSIT_NIO_ACCOUNTS = [
+    { accountNumber: '362705105', bank: 'BAC', holder: BANK_DEPOSIT_OWNER, label: 'BAC 362705105 - LUIS MANUEL SAENZ ROBLERO' },
+    { accountNumber: '362843534', bank: 'BAC', holder: BANK_DEPOSIT_OWNER, label: 'BAC 362843534 - LUIS MANUEL SAENZ ROBLERO' },
+    { accountNumber: '10013500002893', bank: 'BANPRO', holder: BANK_DEPOSIT_OWNER, label: 'BANPRO 10013500002893 - LUIS MANUEL SAENZ ROBLERO' },
+    { accountNumber: '106014315', bank: 'Lafise Bancentro', holder: BANK_DEPOSIT_OWNER, label: 'Lafise Bancentro 106014315 - LUIS MANUEL SAENZ ROBLERO' },
+];
+
+const BANK_DEPOSIT_USD_ACCOUNTS = [
+    { accountNumber: '366250942', bank: 'BAC USD', holder: BANK_DEPOSIT_OWNER, label: 'BAC USD 366250942 - LUIS MANUEL SAENZ ROBLERO' },
+    { accountNumber: '107233393', bank: 'Lafise Bancentro USD', holder: BANK_DEPOSIT_OWNER, label: 'Lafise Bancentro 107233393 - LUIS MANUEL SAENZ ROBLERO' },
+    { accountNumber: '362785164', bank: 'BAC USD', holder: BANK_DEPOSIT_OWNER, label: 'BAC USD 362785164 - LUIS MANUEL SAENZ ROBLERO' },
 ];
 
 const safeNumber = (value) => {
@@ -10113,16 +10130,680 @@ function AccountingRegister({ data }) {
     );
 }
 
-function ComingSoon() {
+const getBankDepositAccount = (accountNumber = '', currency = 'NIO') => {
+    const accounts = currency === 'USD' ? BANK_DEPOSIT_USD_ACCOUNTS : BANK_DEPOSIT_NIO_ACCOUNTS;
+    return accounts.find((account) => account.accountNumber === accountNumber) || accounts[0] || {};
+};
+
+const buildBankDepositAccountPayload = (accountNumber = '', currency = 'NIO') => {
+    const account = getBankDepositAccount(accountNumber, currency);
+    return {
+        accountNumber: account.accountNumber || accountNumber || '',
+        bank: account.bank || '',
+        holder: account.holder || BANK_DEPOSIT_OWNER,
+        label: account.label || `${account.bank || 'Banco'} ${account.accountNumber || accountNumber || ''}`.trim(),
+        currency,
+    };
+};
+
+const getBankDepositClosureCode = (closure = {}) => (
+    getCashClosureCodeValue(closure) || closure.code || closure.id || ''
+);
+
+const getBankDepositClosureLabel = (closure = {}) => {
+    const code = getBankDepositClosureCode(closure);
+    const date = closure.date || getRecordDate(closure.createdAt || closure.updatedAt);
+    return [code ? `Cierre ${code}` : 'Cierre sin codigo', date].filter(Boolean).join(' - ');
+};
+
+const getClosureCashForBankDeposit = (closure = {}) => {
+    const context = buildCashClosureReportContext(closure);
+    const payment = context.detailAccountingSummary?.paymentBreakdown || {};
+    const exchangeRate = safeNumber(context.exchangeRate) || CASH_CLOSURE_EXCHANGE_RATE;
+    const preClose = closure.preCloseDeposit || {};
+    const cashCordobasBase = hasNumericValue(closure.cashCordobasTotal)
+        ? safeNumber(closure.cashCordobasTotal)
+        : safeNumber(payment.cashCordobas);
+    const preCloseCordobas = safeNumber(preClose.cordobas);
+    const cashDollarsBase = hasNumericValue(closure.dollarCashTotal)
+        ? safeNumber(closure.dollarCashTotal)
+        : safeNumber(closure.dollarCashTotalCordobas) / exchangeRate;
+    const preCloseDollars = safeNumber(preClose.dollars);
+    const rcValue = Math.abs(safeNumber(context.detailAccountingSummary?.internalRatio?.rc ?? closure.accountingSummary?.internalRatio?.rc));
+
+    return {
+        closureId: closure.id || '',
+        code: getBankDepositClosureCode(closure),
+        label: getBankDepositClosureLabel(closure),
+        date: closure.date || getRecordDate(closure.createdAt || closure.updatedAt),
+        cashierName: closure.cashierName || '',
+        cashCordobas: safeNumber(cashCordobasBase + preCloseCordobas),
+        cashDollars: safeNumber(cashDollarsBase + preCloseDollars),
+        exchangeRate,
+        rcValue,
+    };
+};
+
+const calculateBankDepositAllocation = (closures = []) => {
+    const closureSummaries = closures.map(getClosureCashForBankDeposit).filter((item) => item.closureId);
+    const cashCordobas = safeNumber(closureSummaries.reduce((sum, item) => sum + item.cashCordobas, 0));
+    const cashDollars = safeNumber(closureSummaries.reduce((sum, item) => sum + item.cashDollars, 0));
+    const rcRequested = safeNumber(closureSummaries.reduce((sum, item) => sum + item.rcValue, 0));
+    const exchangeRate = CASH_CLOSURE_EXCHANGE_RATE;
+    const cashDollarsCordobas = safeNumber(cashDollars * exchangeRate);
+    const cashEquivalentTotal = safeNumber(cashCordobas + cashDollarsCordobas);
+    const rcTarget = safeNumber(Math.min(rcRequested, cashEquivalentTotal));
+    const efectivo2Target = safeNumber(Math.max(cashEquivalentTotal - rcTarget, 0));
+    const efectivo2UsdCordobas = safeNumber(Math.min(cashDollarsCordobas, efectivo2Target));
+    const efectivo2Usd = safeNumber(efectivo2UsdCordobas / exchangeRate);
+    const efectivo2Cordobas = safeNumber(Math.max(efectivo2Target - efectivo2UsdCordobas, 0));
+    const remainingUsdCordobas = safeNumber(Math.max(cashDollarsCordobas - efectivo2UsdCordobas, 0));
+    const efectivoRcUsdCordobas = safeNumber(Math.min(remainingUsdCordobas, rcTarget));
+    const efectivoRcUsd = safeNumber(efectivoRcUsdCordobas / exchangeRate);
+    const efectivoRcCordobas = safeNumber(Math.max(rcTarget - efectivoRcUsdCordobas, 0));
+
+    return {
+        closureSummaries,
+        closureIds: closureSummaries.map((item) => item.closureId),
+        closureCodes: closureSummaries.map((item) => item.code).filter(Boolean),
+        concept: closureSummaries.map((item) => item.label).join(', '),
+        cashCordobas,
+        cashDollars,
+        cashDollarsCordobas,
+        cashEquivalentTotal,
+        rcRequested,
+        rcTarget,
+        efectivo2Target,
+        efectivoRcCordobas,
+        efectivoRcUsd,
+        efectivoRcUsdCordobas,
+        efectivo2Cordobas,
+        efectivo2Usd,
+        efectivo2UsdCordobas,
+        exchangeRate,
+    };
+};
+
+const buildBankDepositDetails = (allocation = {}, accounts = {}) => {
+    const rows = [
+        {
+            id: 'efectivo_rc_nio',
+            type: 'efectivo_rc',
+            label: 'Efectivo RC C$',
+            currency: 'NIO',
+            amount: safeNumber(allocation.efectivoRcCordobas),
+            amountCordobas: safeNumber(allocation.efectivoRcCordobas),
+            account: buildBankDepositAccountPayload(accounts.efectivoRcNio, 'NIO'),
+        },
+        {
+            id: 'efectivo2_nio',
+            type: 'efectivo_2',
+            label: 'Efectivo (2) C$',
+            currency: 'NIO',
+            amount: safeNumber(allocation.efectivo2Cordobas),
+            amountCordobas: safeNumber(allocation.efectivo2Cordobas),
+            account: buildBankDepositAccountPayload(accounts.efectivo2Nio || BANK_DEPOSIT_DEFAULT_NIO_ACCOUNT, 'NIO'),
+        },
+        {
+            id: 'efectivo2_usd',
+            type: 'efectivo_2_usd',
+            label: 'Efectivo (2) USD',
+            currency: 'USD',
+            amount: safeNumber(allocation.efectivo2Usd),
+            amountCordobas: safeNumber(allocation.efectivo2UsdCordobas),
+            exchangeRate: allocation.exchangeRate || CASH_CLOSURE_EXCHANGE_RATE,
+            account: buildBankDepositAccountPayload(accounts.efectivo2Usd || BANK_DEPOSIT_DEFAULT_USD_ACCOUNT, 'USD'),
+        },
+        {
+            id: 'efectivo_rc_usd',
+            type: 'efectivo_rc_usd',
+            label: 'Efectivo RC USD',
+            currency: 'USD',
+            amount: safeNumber(allocation.efectivoRcUsd),
+            amountCordobas: safeNumber(allocation.efectivoRcUsdCordobas),
+            exchangeRate: allocation.exchangeRate || CASH_CLOSURE_EXCHANGE_RATE,
+            account: buildBankDepositAccountPayload(accounts.efectivoRcUsd, 'USD'),
+        },
+    ];
+
+    return rows
+        .filter((row) => row.amount > 0 || row.amountCordobas > 0)
+        .map((row) => ({
+            ...row,
+            concept: allocation.concept || 'Cierres de caja',
+            status: 'pendiente_confirmacion',
+        }));
+};
+
+const formatBankDepositAmount = (detail = {}) => (
+    detail.currency === 'USD'
+        ? `US$ ${safeNumber(detail.amount).toLocaleString('es-NI', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} / ${fmt(detail.amountCordobas)}`
+        : fmt(detail.amountCordobas)
+);
+
+const printBankDepositDetails = () => {
+    document.body.classList.add('print-bank-deposit-details');
+    const cleanup = () => {
+        document.body.classList.remove('print-bank-deposit-details');
+        window.removeEventListener('afterprint', cleanup);
+    };
+    window.addEventListener('afterprint', cleanup);
+    window.setTimeout(() => {
+        window.print();
+        window.setTimeout(cleanup, 1000);
+    }, 60);
+};
+
+const BankDepositPrintArea = ({ deposit }) => {
+    if (!deposit) return null;
+    const details = deposit.depositDetails || [];
+
     return (
-        <Section title="Depositos bancarios" eyebrow="Proximamente" action={<Badge tone="amber">En diseno</Badge>}>
-            <div className="rounded-[2rem] border border-dashed border-amber-300 bg-amber-50 p-10 text-center">
-                <div className="text-4xl font-black text-amber-600">PROXIMAMENTE</div>
-                <p className="mx-auto mt-3 max-w-xl text-sm font-semibold text-amber-800">
-                    Este espacio quedo reservado para formalizar depositos bancarios y conciliarlos con cierres de caja.
-                </p>
+        <>
+            <div className="bank-deposit-print-area">
+                {details.map((detail) => (
+                    <div className="bank-deposit-ticket" key={detail.id}>
+                        <div className="ticket-title">Detalle de deposito</div>
+                        <div className="ticket-row ticket-holder">{BANK_DEPOSIT_OWNER}</div>
+                        <div className="ticket-line">
+                            <span>Cuenta a depositar:</span>
+                            <strong>{detail.account?.label || detail.account?.accountNumber || '-'}</strong>
+                        </div>
+                        <div className="ticket-line">
+                            <span>Monto:</span>
+                            <strong>{formatBankDepositAmount(detail)}</strong>
+                        </div>
+                        <div className="ticket-line ticket-concept">
+                            <span>Concepto:</span>
+                            <strong>{detail.concept || deposit.concept || '-'}</strong>
+                        </div>
+                    </div>
+                ))}
             </div>
-        </Section>
+            <style>{`
+                .bank-deposit-print-area { display: none; }
+                @media print {
+                    body.print-bank-deposit-details * { visibility: hidden !important; }
+                    body.print-bank-deposit-details .bank-deposit-print-area,
+                    body.print-bank-deposit-details .bank-deposit-print-area * { visibility: visible !important; }
+                    body.print-bank-deposit-details .bank-deposit-print-area {
+                        display: block !important;
+                        position: fixed;
+                        inset: 0 auto auto 0;
+                        width: 80mm;
+                        background: #fff;
+                        color: #000;
+                        font-family: Arial, Helvetica, sans-serif;
+                    }
+                    body.print-bank-deposit-details .bank-deposit-ticket {
+                        width: 74mm;
+                        min-height: 55mm;
+                        padding: 4mm 3mm;
+                        page-break-after: always;
+                        font-size: 12px;
+                        line-height: 1.35;
+                    }
+                    body.print-bank-deposit-details .ticket-title {
+                        border-bottom: 1px dashed #000;
+                        margin-bottom: 6px;
+                        padding-bottom: 5px;
+                        text-align: center;
+                        text-transform: uppercase;
+                    }
+                    body.print-bank-deposit-details .ticket-row {
+                        padding: 4px 0;
+                        text-align: center;
+                    }
+                    body.print-bank-deposit-details .ticket-holder {
+                        font-size: 13px;
+                        font-weight: 700;
+                    }
+                    body.print-bank-deposit-details .ticket-line {
+                        border-top: 1px dashed #000;
+                        display: grid;
+                        gap: 3px;
+                        padding: 6px 0;
+                    }
+                    body.print-bank-deposit-details .ticket-line span {
+                        text-transform: uppercase;
+                    }
+                    body.print-bank-deposit-details .ticket-line strong {
+                        font-weight: 400;
+                    }
+                    body.print-bank-deposit-details .ticket-concept strong {
+                        text-align: left;
+                    }
+                }
+            `}</style>
+        </>
+    );
+};
+
+function BankDeposits({ data }) {
+    const { user } = useAuth();
+    const [activeDepositTab, setActiveDepositTab] = useState('ingresar');
+    const [selectedClosureIds, setSelectedClosureIds] = useState([]);
+    const [accountSelections, setAccountSelections] = useState({
+        efectivo2Nio: BANK_DEPOSIT_DEFAULT_NIO_ACCOUNT,
+        efectivo2Usd: BANK_DEPOSIT_DEFAULT_USD_ACCOUNT,
+        efectivoRcNio: BANK_DEPOSIT_NIO_ACCOUNTS[1]?.accountNumber || '',
+        efectivoRcUsd: BANK_DEPOSIT_USD_ACCOUNTS[1]?.accountNumber || '',
+    });
+    const [message, setMessage] = useState('');
+    const [saving, setSaving] = useState(false);
+    const [printDeposit, setPrintDeposit] = useState(null);
+    const [confirmationRefs, setConfirmationRefs] = useState({});
+    const [confirmationFiles, setConfirmationFiles] = useState({});
+    const [confirmingKey, setConfirmingKey] = useState('');
+
+    const deposits = useMemo(() => (
+        [...(data.depositos_bancarios || [])]
+            .sort((a, b) => String(b.createdAt?.seconds || b.date || '').localeCompare(String(a.createdAt?.seconds || a.date || '')))
+    ), [data.depositos_bancarios]);
+
+    const depositedClosureIds = useMemo(() => {
+        const ids = new Set();
+        deposits
+            .filter((deposit) => normalizeText(deposit.status) !== 'ANULADO')
+            .forEach((deposit) => (deposit.closureIds || []).forEach((id) => ids.add(id)));
+        return ids;
+    }, [deposits]);
+
+    const pendingClosures = useMemo(() => (
+        [...(data.cierres_caja || [])]
+            .filter((closure) => closure.id)
+            .filter((closure) => !['EN_ESPERA', 'ANULADO'].includes(normalizeText(closure.status)))
+            .filter((closure) => !closure.bankDepositId && !depositedClosureIds.has(closure.id))
+            .map((closure) => ({
+                ...closure,
+                depositCash: getClosureCashForBankDeposit(closure),
+            }))
+            .filter((closure) => safeNumber(closure.depositCash.cashCordobas + closure.depositCash.cashDollars * CASH_CLOSURE_EXCHANGE_RATE) > 0.01)
+            .sort((a, b) => String(a.date || '').localeCompare(String(b.date || '')))
+    ), [data.cierres_caja, depositedClosureIds]);
+
+    const selectedClosures = useMemo(() => (
+        pendingClosures.filter((closure) => selectedClosureIds.includes(closure.id))
+    ), [pendingClosures, selectedClosureIds]);
+
+    const allocation = useMemo(() => calculateBankDepositAllocation(selectedClosures), [selectedClosures]);
+    const depositDetails = useMemo(() => (
+        buildBankDepositDetails(allocation, accountSelections)
+    ), [allocation, accountSelections]);
+
+    const pendingConfirmationDeposits = useMemo(() => (
+        deposits.filter((deposit) => normalizeText(deposit.status) !== 'CONFIRMADO' && normalizeText(deposit.status) !== 'ANULADO')
+    ), [deposits]);
+
+    useEffect(() => {
+        setSelectedClosureIds((current) => current.filter((id) => pendingClosures.some((closure) => closure.id === id)));
+    }, [pendingClosures]);
+
+    const toggleClosure = (closureId) => {
+        setSelectedClosureIds((current) => (
+            current.includes(closureId)
+                ? current.filter((id) => id !== closureId)
+                : [...current, closureId]
+        ));
+    };
+
+    const toggleAllClosures = () => {
+        setSelectedClosureIds(
+            selectedClosureIds.length === pendingClosures.length
+                ? []
+                : pendingClosures.map((closure) => closure.id)
+        );
+    };
+
+    const updateAccountSelection = (key, value) => {
+        setAccountSelections((current) => ({ ...current, [key]: value }));
+    };
+
+    const saveBankDeposit = async () => {
+        setMessage('');
+        if (!selectedClosures.length) {
+            setMessage('Selecciona al menos un cierre para depositar.');
+            return;
+        }
+        if (!depositDetails.length) {
+            setMessage('No hay efectivo disponible para generar deposito.');
+            return;
+        }
+        const missingAccount = depositDetails.find((detail) => !detail.account?.accountNumber);
+        if (missingAccount) {
+            setMessage(`Selecciona cuenta para ${missingAccount.label}.`);
+            return;
+        }
+
+        setSaving(true);
+        try {
+            const depositId = `deposito_${todayString()}_${Date.now()}`;
+            const depositPayload = sanitizeFirestoreData({
+                id: depositId,
+                date: todayString(),
+                month: getMonth(todayString()),
+                status: 'pendiente_confirmacion',
+                owner: BANK_DEPOSIT_OWNER,
+                closureIds: allocation.closureIds,
+                closureCodes: allocation.closureCodes,
+                closures: allocation.closureSummaries,
+                concept: allocation.concept,
+                cashSummary: allocation,
+                depositDetails,
+                totalCordobas: safeNumber(depositDetails.reduce((sum, detail) => sum + safeNumber(detail.amountCordobas), 0)),
+                createdBy: user?.email || '',
+                source: 'cierres_caja',
+                sourceType: 'bank_deposit',
+                createdAt: serverTimestamp(),
+                updatedAt: serverTimestamp(),
+            });
+
+            const batch = writeBatch(db);
+            batch.set(doc(db, 'depositos_bancarios', depositId), depositPayload, { merge: true });
+            selectedClosures.forEach((closure) => {
+                batch.set(doc(db, 'cierres_caja', closure.id), {
+                    bankDepositId: depositId,
+                    bankDepositStatus: 'pendiente_confirmacion',
+                    bankDepositLinkedAt: serverTimestamp(),
+                    updatedAt: serverTimestamp(),
+                }, { merge: true });
+            });
+            await batch.commit();
+
+            setPrintDeposit({ ...depositPayload, createdAt: null, updatedAt: null });
+            setSelectedClosureIds([]);
+            setMessage('Deposito creado. Se movio a Confirmacion de depositos.');
+            window.setTimeout(printBankDepositDetails, 80);
+            setActiveDepositTab('confirmacion');
+        } catch (error) {
+            console.error(error);
+            setMessage(error?.message || 'No se pudo crear el deposito bancario.');
+        } finally {
+            setSaving(false);
+        }
+    };
+
+    const updateConfirmationReference = (depositId, detailId, value) => {
+        setConfirmationRefs((current) => ({ ...current, [`${depositId}_${detailId}`]: value }));
+    };
+
+    const updateConfirmationFile = (depositId, detailId, file) => {
+        setConfirmationFiles((current) => ({ ...current, [`${depositId}_${detailId}`]: file }));
+    };
+
+    const confirmDepositDetail = async (deposit, detail) => {
+        const formKey = `${deposit.id}_${detail.id}`;
+        const reference = String(confirmationRefs[formKey] || detail.reference || '').trim();
+        const file = confirmationFiles[formKey];
+        if (!reference) {
+            setMessage('Ingresa el numero de referencia del deposito.');
+            return;
+        }
+        if (!file && !detail.minuteSupport?.url) {
+            setMessage('Sube la foto de la minuta del deposito.');
+            return;
+        }
+
+        setConfirmingKey(formKey);
+        setMessage('');
+        try {
+            const uploadedSupport = file
+                ? await uploadSupportFile(file, 'depositos_bancarios', `${deposit.id}_${detail.id}`, 'minuta_deposito')
+                : detail.minuteSupport;
+            const nextDetails = (deposit.depositDetails || []).map((row) => (
+                row.id === detail.id
+                    ? {
+                        ...row,
+                        status: 'confirmado',
+                        reference,
+                        minuteSupport: uploadedSupport,
+                        confirmedAt: new Date().toISOString(),
+                        confirmedBy: user?.email || '',
+                    }
+                    : row
+            ));
+            const allConfirmed = nextDetails.every((row) => normalizeText(row.status) === 'CONFIRMADO');
+            const batch = writeBatch(db);
+            batch.set(doc(db, 'depositos_bancarios', deposit.id), sanitizeFirestoreData({
+                depositDetails: nextDetails,
+                status: allConfirmed ? 'confirmado' : 'pendiente_confirmacion',
+                confirmedAt: allConfirmed ? serverTimestamp() : undefined,
+                updatedAt: serverTimestamp(),
+            }), { merge: true });
+            if (allConfirmed) {
+                (deposit.closureIds || []).forEach((closureId) => {
+                    batch.set(doc(db, 'cierres_caja', closureId), {
+                        bankDepositStatus: 'confirmado',
+                        bankDepositConfirmedAt: serverTimestamp(),
+                        updatedAt: serverTimestamp(),
+                    }, { merge: true });
+                });
+            }
+            await batch.commit();
+            setConfirmationFiles((current) => {
+                const next = { ...current };
+                delete next[formKey];
+                return next;
+            });
+            setMessage(allConfirmed ? 'Deposito confirmado completamente.' : 'Detalle de deposito confirmado.');
+        } catch (error) {
+            console.error(error);
+            setMessage(error?.message || 'No se pudo confirmar el deposito.');
+        } finally {
+            setConfirmingKey('');
+        }
+    };
+
+    return (
+        <div className="space-y-5">
+            <BankDepositPrintArea deposit={printDeposit} />
+            <Section title="Depositos bancarios" eyebrow="Control de efectivo" action={<Badge tone="green">Cierres a banco</Badge>}>
+                <div className="flex flex-wrap gap-2">
+                    {[
+                        { key: 'ingresar', label: 'Ingresar depositos' },
+                        { key: 'confirmacion', label: 'Confirmacion de depositos' },
+                    ].map((tab) => (
+                        <button
+                            key={tab.key}
+                            type="button"
+                            onClick={() => setActiveDepositTab(tab.key)}
+                            className={`rounded-2xl px-4 py-3 text-xs font-black uppercase tracking-[0.16em] transition ${activeDepositTab === tab.key
+                                ? 'bg-[#e30613] text-white shadow-lg shadow-red-900/15'
+                                : 'border border-slate-200 bg-white text-slate-600 hover:border-[#e30613] hover:text-[#e30613]'}`}
+                        >
+                            {tab.label}
+                        </button>
+                    ))}
+                </div>
+                {message && (
+                    <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-bold text-slate-700">
+                        {message}
+                    </div>
+                )}
+            </Section>
+
+            {activeDepositTab === 'ingresar' && (
+                <div className="grid gap-5 xl:grid-cols-[1fr_1.1fr]">
+                    <Section title="Efectivo pendiente" eyebrow="Cierres cerrados" action={<Badge tone="blue">{pendingClosures.length} pendientes</Badge>}>
+                        <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+                            <button
+                                type="button"
+                                onClick={toggleAllClosures}
+                                disabled={!pendingClosures.length}
+                                className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-xs font-black uppercase tracking-[0.16em] text-slate-700 transition hover:border-[#e30613] hover:text-[#e30613] disabled:opacity-50"
+                            >
+                                {selectedClosureIds.length === pendingClosures.length && pendingClosures.length ? 'Limpiar seleccion' : 'Seleccionar todos'}
+                            </button>
+                            <div className="text-xs font-black uppercase tracking-[0.18em] text-slate-400">{selectedClosureIds.length} seleccionado(s)</div>
+                        </div>
+                        <div className="max-h-[34rem] space-y-3 overflow-y-auto pr-1">
+                            {pendingClosures.map((closure) => {
+                                const selected = selectedClosureIds.includes(closure.id);
+                                return (
+                                    <button
+                                        key={closure.id}
+                                        type="button"
+                                        onClick={() => toggleClosure(closure.id)}
+                                        className={`w-full rounded-3xl border p-4 text-left transition ${selected ? 'border-emerald-300 bg-emerald-50 shadow-lg shadow-emerald-950/10' : 'border-slate-200 bg-white hover:border-slate-300 hover:bg-slate-50'}`}
+                                    >
+                                        <div className="flex items-start justify-between gap-3">
+                                            <div>
+                                                <div className="text-sm font-black text-slate-950">{getBankDepositClosureLabel(closure)}</div>
+                                                <div className="mt-1 text-xs font-bold text-slate-500">{closure.cashierName || 'Sin cajero'}</div>
+                                            </div>
+                                            <Badge tone={selected ? 'green' : 'slate'}>{selected ? 'Seleccionado' : 'Pendiente'}</Badge>
+                                        </div>
+                                        <div className="mt-3 grid gap-2 sm:grid-cols-3">
+                                            <SummaryCard label="Efectivo C$" value={fmt(closure.depositCash.cashCordobas)} />
+                                            <SummaryCard label="Efectivo $" value={`US$ ${closure.depositCash.cashDollars.toFixed(2)}`} tone="green" />
+                                            <SummaryCard label="RC efectivo" value={fmt(closure.depositCash.rcValue)} tone="amber" />
+                                        </div>
+                                    </button>
+                                );
+                            })}
+                            {pendingClosures.length === 0 && (
+                                <div className="rounded-3xl border border-dashed border-slate-300 bg-slate-50 p-8 text-center text-sm font-bold text-slate-400">
+                                    No hay cierres con efectivo pendiente de deposito.
+                                </div>
+                            )}
+                        </div>
+                    </Section>
+
+                    <Section title="Preparar deposito" eyebrow="Distribucion bancaria" action={<Badge tone="amber">Tasa C$ {CASH_CLOSURE_EXCHANGE_RATE.toFixed(2)}</Badge>}>
+                        <div className="grid gap-3 md:grid-cols-2">
+                            <SummaryCard label="Efectivo total C$" value={fmt(allocation.cashEquivalentTotal)} tone="green" />
+                            <SummaryCard label="Efectivo $" value={`US$ ${allocation.cashDollars.toFixed(2)}`} tone="blue" />
+                            <SummaryCard label="Efectivo RC" value={fmt(allocation.rcTarget)} tone="amber" />
+                            <SummaryCard label="Efectivo (2)" value={fmt(allocation.efectivo2Target)} />
+                            <SummaryCard label="Efectivo (2) $" value={`US$ ${allocation.efectivo2Usd.toFixed(2)}`} tone="green" />
+                            <SummaryCard label="Efectivo RC $" value={`US$ ${allocation.efectivoRcUsd.toFixed(2)}`} tone="amber" />
+                        </div>
+
+                        <div className="mt-5 space-y-4">
+                            {depositDetails.map((detail) => {
+                                const accountKey = detail.id === 'efectivo_rc_nio'
+                                    ? 'efectivoRcNio'
+                                    : detail.id === 'efectivo_rc_usd'
+                                        ? 'efectivoRcUsd'
+                                        : detail.id === 'efectivo2_usd'
+                                            ? 'efectivo2Usd'
+                                            : 'efectivo2Nio';
+                                const accountOptions = detail.currency === 'USD' ? BANK_DEPOSIT_USD_ACCOUNTS : BANK_DEPOSIT_NIO_ACCOUNTS;
+                                return (
+                                    <div key={detail.id} className="rounded-3xl border border-slate-200 bg-slate-50 p-4">
+                                        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                                            <div>
+                                                <div className="text-[10px] font-black uppercase tracking-[0.22em] text-slate-400">{detail.label}</div>
+                                                <div className="font-mono text-2xl font-black text-slate-950">{formatBankDepositAmount(detail)}</div>
+                                            </div>
+                                            <Badge tone={detail.currency === 'USD' ? 'blue' : 'green'}>{detail.currency}</Badge>
+                                        </div>
+                                        <Field label="Seleccionar cuenta a depositar" span="mt-4">
+                                            <select className={inputClass} value={accountSelections[accountKey] || ''} onChange={(event) => updateAccountSelection(accountKey, event.target.value)}>
+                                                <option value="">Seleccionar cuenta...</option>
+                                                {accountOptions.map((account) => (
+                                                    <option key={account.accountNumber} value={account.accountNumber}>{account.label}</option>
+                                                ))}
+                                            </select>
+                                        </Field>
+                                    </div>
+                                );
+                            })}
+                            {depositDetails.length === 0 && (
+                                <div className="rounded-3xl border border-dashed border-slate-300 bg-white p-8 text-center text-sm font-bold text-slate-400">
+                                    Selecciona cierres para calcular los depositos.
+                                </div>
+                            )}
+                        </div>
+
+                        <button
+                            type="button"
+                            onClick={saveBankDeposit}
+                            disabled={saving || !selectedClosures.length || !depositDetails.length}
+                            className="mt-5 w-full rounded-2xl bg-[#e30613] px-5 py-4 text-sm font-black uppercase tracking-[0.2em] text-white shadow-lg shadow-red-950/20 transition hover:bg-[#9f111a] disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                            {saving ? 'Guardando deposito...' : 'Crear deposito e imprimir detalles'}
+                        </button>
+                    </Section>
+                </div>
+            )}
+
+            {activeDepositTab === 'confirmacion' && (
+                <Section title="Confirmacion de depositos" eyebrow="Referencia y minuta" action={<Badge tone="blue">{pendingConfirmationDeposits.length} pendientes</Badge>}>
+                    <div className="space-y-4">
+                        {pendingConfirmationDeposits.map((deposit) => (
+                            <div key={deposit.id} className="rounded-[1.8rem] border border-slate-200 bg-white p-4 shadow-sm">
+                                <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                                    <div>
+                                        <div className="text-[10px] font-black uppercase tracking-[0.22em] text-slate-400">{deposit.date || '-'}</div>
+                                        <div className="text-lg font-black text-slate-950">{deposit.closureCodes?.length ? `Cierres ${deposit.closureCodes.join(', ')}` : deposit.concept}</div>
+                                        <div className="mt-1 text-xs font-bold text-slate-500">{fmt(deposit.totalCordobas)} en {deposit.depositDetails?.length || 0} deposito(s)</div>
+                                    </div>
+                                    <button
+                                        type="button"
+                                        onClick={() => {
+                                            setPrintDeposit(deposit);
+                                            window.setTimeout(printBankDepositDetails, 80);
+                                        }}
+                                        className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-xs font-black uppercase tracking-[0.16em] text-slate-700 transition hover:border-[#e30613] hover:text-[#e30613]"
+                                    >
+                                        Reimprimir detalles
+                                    </button>
+                                </div>
+                                <div className="mt-4 grid gap-3 xl:grid-cols-2">
+                                    {(deposit.depositDetails || []).map((detail) => {
+                                        const formKey = `${deposit.id}_${detail.id}`;
+                                        const confirmed = normalizeText(detail.status) === 'CONFIRMADO';
+                                        return (
+                                            <div key={detail.id} className={`rounded-3xl border p-4 ${confirmed ? 'border-emerald-200 bg-emerald-50' : 'border-slate-200 bg-slate-50'}`}>
+                                                <div className="flex items-start justify-between gap-3">
+                                                    <div>
+                                                        <div className="text-[10px] font-black uppercase tracking-[0.22em] text-slate-400">{detail.label}</div>
+                                                        <div className="font-mono text-xl font-black text-slate-950">{formatBankDepositAmount(detail)}</div>
+                                                        <div className="mt-1 text-xs font-bold text-slate-500">{detail.account?.label || '-'}</div>
+                                                    </div>
+                                                    <Badge tone={confirmed ? 'green' : 'amber'}>{confirmed ? 'Confirmado' : 'Pendiente'}</Badge>
+                                                </div>
+                                                {confirmed ? (
+                                                    <div className="mt-4 rounded-2xl border border-emerald-200 bg-white p-3 text-sm font-bold text-emerald-800">
+                                                        Referencia: {detail.reference || '-'}
+                                                        {detail.minuteSupport?.url && (
+                                                            <a className="ml-2 underline" href={detail.minuteSupport.url} target="_blank" rel="noreferrer">Ver minuta</a>
+                                                        )}
+                                                    </div>
+                                                ) : (
+                                                    <div className="mt-4 grid gap-3">
+                                                        <Field label="Numero de referencia">
+                                                            <input className={inputClass} value={confirmationRefs[formKey] || ''} onChange={(event) => updateConfirmationReference(deposit.id, detail.id, event.target.value)} placeholder="Referencia bancaria" />
+                                                        </Field>
+                                                        <Field label="Foto de minuta">
+                                                            <input className={inputClass} type="file" accept="image/*,.pdf" onChange={(event) => updateConfirmationFile(deposit.id, detail.id, event.target.files?.[0] || null)} />
+                                                        </Field>
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => confirmDepositDetail(deposit, detail)}
+                                                            disabled={confirmingKey === formKey}
+                                                            className="rounded-2xl bg-emerald-600 px-4 py-3 text-xs font-black uppercase tracking-[0.16em] text-white transition hover:bg-emerald-700 disabled:opacity-50"
+                                                        >
+                                                            {confirmingKey === formKey ? 'Confirmando...' : 'Confirmar deposito'}
+                                                        </button>
+                                                    </div>
+                                                )}
+                                            </div>
+                                        );
+                                    })}
+                                </div>
+                            </div>
+                        ))}
+                        {pendingConfirmationDeposits.length === 0 && (
+                            <div className="rounded-3xl border border-dashed border-slate-300 bg-slate-50 p-8 text-center text-sm font-bold text-slate-400">
+                                No hay depositos pendientes de confirmacion.
+                            </div>
+                        )}
+                    </div>
+                </Section>
+            )}
+        </div>
     );
 }
 
@@ -10186,7 +10867,7 @@ export default function Billing({ data = {} }) {
             {activeTab === 'cierre' && <CashClosure data={data} />}
             {activeTab === 'registro' && <AccountingRegister data={data} />}
             {activeTab === 'historial' && <BillingHistory data={data} />}
-            {activeTab === 'depositos' && <ComingSoon />}
+            {activeTab === 'depositos' && <BankDeposits data={data} />}
         </div>
     );
 }

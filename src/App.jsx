@@ -1154,6 +1154,7 @@ function AppContent() {
         collectionConfig('sicar_cierres_caja', [where('date', '>=', `${billingStartMonth}-01`)]),
         collectionConfig('sicar_facturas_membretadas', [where('date', '>=', `${billingStartMonth}-01`)]),
         collectionConfig('cierres_caja', [where('date', '>=', `${billingStartMonth}-01`)]),
+        collectionConfig('depositos_bancarios', [where('date', '>=', `${billingStartMonth}-01`)]),
         collectionConfig('diferencias_caja', [where('date', '>=', `${billingStartMonth}-01`)]),
         collectionConfig('facturas_membretadas_ventas', [where('saleDate', '>=', `${billingStartMonth}-01`)]),
         collectionConfig('recibos_caja_membretados', [where('date', '>=', `${billingStartMonth}-01`)]),
