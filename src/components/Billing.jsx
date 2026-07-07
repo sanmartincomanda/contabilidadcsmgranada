@@ -8202,6 +8202,7 @@ const buildCashClosureReportContext = (closure = {}) => {
     const transferRows = TRANSFER_BANKS.flatMap((bank) => (
         getClosureBankRows(closure.transferDetails, bank.key).map((row, index) => ({
             ...row,
+            bankKey: bank.key,
             bank: bank.label,
             currency: bank.currency || 'NIO',
             exchangeRate: getTransferBankExchangeRate(bank),
@@ -8212,6 +8213,7 @@ const buildCashClosureReportContext = (closure = {}) => {
     const posRows = POS_BANKS.flatMap((bank) => (
         getClosureBankRows(closure.posDetails, bank.key).map((row, index) => ({
             ...row,
+            bankKey: bank.key,
             bank: bank.label,
             id: row.localId || row.id || `${bank.key}-pos-${index}`,
         }))
@@ -8308,7 +8310,7 @@ const splitStampedInvoiceRetentionsForTicket = (invoice = {}) => {
 
 const getStampedInvoiceTicketAmounts = (invoice = {}) => {
     const rows = getInvoicePaymentRows(invoice);
-    const total = safeNumber(invoice.total);
+    const total = safeNumber(invoice.total || safeNumber(invoice.subtotal) + safeNumber(invoice.iva));
     if (!rows.length) {
         return isCreditPaymentMethod(invoice.paymentMethod)
             ? { credit: total, cash: 0 }
@@ -8324,8 +8326,52 @@ const getStampedInvoiceTicketAmounts = (invoice = {}) => {
 
     if (creditRowsTotal > 0 && cashRowsTotal <= 0) return { credit: total, cash: 0 };
     if (cashRowsTotal > 0 && creditRowsTotal <= 0) return { credit: 0, cash: total };
-    return { credit: creditRowsTotal, cash: cashRowsTotal };
+    const rowsTotal = safeNumber(creditRowsTotal + cashRowsTotal);
+    if (rowsTotal <= 0) return { credit: 0, cash: total };
+
+    const creditGross = safeNumber(total * (creditRowsTotal / rowsTotal));
+    return {
+        credit: creditGross,
+        cash: safeNumber(total - creditGross),
+    };
 };
+
+const getStampedInvoiceVatForTicket = (invoice = {}) => {
+    if (hasNumericValue(invoice.iva)) return safeNumber(invoice.iva);
+    if (hasNumericValue(invoice.tax)) return safeNumber(invoice.tax);
+    const total = safeNumber(invoice.total);
+    const subtotal = safeNumber(invoice.subtotal);
+    return total > 0 && subtotal > 0 ? safeNumber(Math.max(total - subtotal, 0)) : 0;
+};
+
+const normalizeTicketDetailAmount = (row = {}) => (
+    safeNumber(row.amountCordobas ?? row.amount ?? row.total ?? row.value)
+);
+
+const getTicketPaymentDetailLabel = (row = {}, type = 'transfer') => {
+    const clientName = String(row.clientName || row.customerName || '').trim();
+    const reference = String(row.reference || row.ref || '').trim();
+
+    if (type === 'pos') return reference || clientName || 'Sin referencia';
+    if (clientName && reference) return `${clientName} - ${reference}`;
+    return clientName || reference || 'Sin referencia';
+};
+
+const buildTicketPaymentMethod = ({ label, total = 0, rows = [], type = 'transfer' }) => ({
+    label,
+    total: safeNumber(total),
+    details: rows
+        .map((row, index) => ({
+            id: row.localId || row.id || `${label}-${index}`,
+            label: getTicketPaymentDetailLabel(row, type),
+            amount: normalizeTicketDetailAmount(row),
+        }))
+        .filter((row) => row.amount > 0),
+});
+
+const getRowsByBankKey = (rows = [], bankKey) => (
+    rows.filter((row) => row.bankKey === bankKey || row.key === bankKey)
+);
 
 const buildCashClosureTicketData = (closure = {}) => {
     const context = buildCashClosureReportContext(closure);
@@ -8334,6 +8380,7 @@ const buildCashClosureTicketData = (closure = {}) => {
     const summary = context.detailAccountingSummary || {};
     const payment = summary.paymentBreakdown || {};
     const invoiceTotal = safeNumber(invoices.reduce((sum, invoice) => sum + safeNumber(invoice.total), 0));
+    const invoiceVatTotal = safeNumber(invoices.reduce((sum, invoice) => sum + getStampedInvoiceVatForTicket(invoice), 0));
     const invoicePaymentTotals = invoices.reduce((acc, invoice) => {
         const amounts = getStampedInvoiceTicketAmounts(invoice);
         return {
@@ -8354,14 +8401,77 @@ const buildCashClosureTicketData = (closure = {}) => {
     const retentionIr = safeNumber(invoiceRetentions.ir + receiptRetentionIr);
     const retentionMunicipal = safeNumber(invoiceRetentions.municipal + receiptRetentionMunicipal);
     const retentionTotal = safeNumber(retentionIr + retentionMunicipal);
-    const cashIncomeTotal = hasNumericValue(summary.stampedDocuments?.stampedCashIncomeNetTotal)
-        ? safeNumber(summary.stampedDocuments.stampedCashIncomeNetTotal)
-        : safeNumber(invoicePaymentTotals.cash + receiptTotal - retentionTotal);
+    const taxableSubtotal = invoiceVatTotal > 0 ? safeNumber(invoiceVatTotal / 0.15) : 0;
+    const exemptSubtotalRaw = safeNumber(invoiceTotal - invoiceVatTotal - taxableSubtotal);
+    const exemptSubtotal = Math.abs(exemptSubtotalRaw) <= 0.05 ? 0 : safeNumber(Math.max(exemptSubtotalRaw, 0));
+    const cashIncomeTotal = safeNumber(invoicePaymentTotals.cash + receiptTotal - retentionTotal);
+    const paymentMethods = [
+        buildTicketPaymentMethod({
+            label: 'POS BAC TOTAL:',
+            total: safeNumber(payment.posBac ?? closure.posTotals?.bac),
+            rows: getRowsByBankKey(context.posRows, 'bac'),
+            type: 'pos',
+        }),
+        buildTicketPaymentMethod({
+            label: 'POS BANPRO TOTAL:',
+            total: safeNumber(payment.posBanpro ?? closure.posTotals?.banpro),
+            rows: getRowsByBankKey(context.posRows, 'banpro'),
+            type: 'pos',
+        }),
+        buildTicketPaymentMethod({
+            label: 'POS LAFISE TOTAL:',
+            total: safeNumber(payment.posLafise ?? closure.posTotals?.lafise),
+            rows: getRowsByBankKey(context.posRows, 'lafise'),
+            type: 'pos',
+        }),
+        buildTicketPaymentMethod({
+            label: 'TRANSFERENCIA BAC TOTAL:',
+            total: safeNumber(payment.transferBac ?? closure.transferTotals?.bac),
+            rows: getRowsByBankKey(context.transferRows, 'bac'),
+            type: 'transfer',
+        }),
+        buildTicketPaymentMethod({
+            label: 'TRANSFERENCIA BAC (2) TOTAL:',
+            total: safeNumber(payment.transferBac2 ?? closure.transferTotals?.bac2),
+            rows: getRowsByBankKey(context.transferRows, 'bac2'),
+            type: 'transfer',
+        }),
+        buildTicketPaymentMethod({
+            label: 'TRANSFERENCIA BAC USD TOTAL:',
+            total: safeNumber(payment.transferBacUsd ?? closure.transferTotals?.bacUsd),
+            rows: getRowsByBankKey(context.transferRows, 'bacUsd'),
+            type: 'transfer',
+        }),
+        buildTicketPaymentMethod({
+            label: 'TRANSFERENCIA LAFISE TOTAL:',
+            total: safeNumber(payment.transferLafise ?? closure.transferTotals?.lafise),
+            rows: getRowsByBankKey(context.transferRows, 'lafise'),
+            type: 'transfer',
+        }),
+        buildTicketPaymentMethod({
+            label: 'TRANSFERENCIA LAFISE USD TOTAL:',
+            total: safeNumber(payment.transferLafiseUsd ?? closure.transferTotals?.lafiseUsd),
+            rows: getRowsByBankKey(context.transferRows, 'lafiseUsd'),
+            type: 'transfer',
+        }),
+        buildTicketPaymentMethod({
+            label: 'TRANSFERENCIA BANPRO TOTAL:',
+            total: safeNumber(payment.transferBanpro ?? closure.transferTotals?.banpro),
+            rows: getRowsByBankKey(context.transferRows, 'banpro'),
+            type: 'transfer',
+        }),
+    ].filter((method) => method.total > 0 || method.details.length);
 
     return {
         code: formatCashClosureTicketCode(context.code),
         cashierName: closure.cashierName || 'Sin cajero',
         date: closure.date || '-',
+        salesCashTotal: invoicePaymentTotals.cash,
+        salesCreditTotal: invoicePaymentTotals.credit,
+        salesTotal: invoiceTotal,
+        invoiceVatTotal,
+        taxableSubtotal,
+        exemptSubtotal,
         stampedCreditInvoiceTotal: invoicePaymentTotals.credit,
         stampedCashInvoiceTotal: invoicePaymentTotals.cash,
         stampedInvoiceTotal: invoiceTotal,
@@ -8382,6 +8492,7 @@ const buildCashClosureTicketData = (closure = {}) => {
         ),
         transferBanpro: safeNumber(payment.transferBanpro ?? closure.transferTotals?.banpro),
         rc: Math.abs(getCashClosureRcValue(summary)),
+        paymentMethods,
         invoices: invoices.map((invoice) => ({
             id: invoice.id || invoice.docId || invoice.invoiceNumber || invoice.numeroFactura,
             number: invoice.invoiceNumber || invoice.numeroFactura || invoice.document || '-',
@@ -8411,25 +8522,38 @@ const printCashClosureTicket = () => {
 const CashClosureTicketPrint = ({ closure }) => {
     if (!closure) return null;
     const ticket = buildCashClosureTicketData(closure);
-    const lineRows = [
-        ['Factura Membretadas Credito:', ticket.stampedCreditInvoiceTotal],
-        ['Venta Fact Membretadas:', ticket.stampedCashInvoiceTotal],
-        ['Total Ventas:', ticket.stampedInvoiceTotal],
-        ['Recibo de caja Membretada:', ticket.stampedCashReceiptTotal],
-        ['Retenciones:', ticket.retentionTotal],
-        ['Retencion IR:', ticket.retentionIr],
-        ['Retenciones Municipal:', ticket.retentionMunicipal],
-        ['Total Ingreso de caja:', ticket.cashIncomeTotal],
-    ];
-    const paymentRows = [
-        ['POS BAC', ticket.posBac],
-        ['POS BANPRO', ticket.posBanpro],
-        ['POS LAFISE', ticket.posLafise],
-        ['Transferencia BAC', ticket.transferBac],
-        ...(ticket.transferBacUsd ? [['Transferencia BAC USD', ticket.transferBacUsd]] : []),
-        ['Transferencia Lafise', ticket.transferLafise],
-        ['Transferencia BANPRO', ticket.transferBanpro],
-        ['RC EFECTIVO:', ticket.rc],
+    const sections = [
+        {
+            title: 'VENTAS DEL DIA',
+            rows: [
+                ['Ventas contado:', ticket.salesCashTotal],
+                ['Ventas Credito:', ticket.salesCreditTotal],
+                ['Total Venta:', ticket.salesTotal],
+                ['IVA Facturado:', ticket.invoiceVatTotal],
+                ['Subtotal Total Venta Gravada:', ticket.taxableSubtotal],
+                ['Subtotal Venta Exenta:', ticket.exemptSubtotal],
+            ],
+        },
+        {
+            title: 'RECIBOS DE CAJA',
+            rows: [
+                ['Recibo caja membretados:', ticket.stampedCashReceiptTotal],
+            ],
+        },
+        {
+            title: 'DEDUCCIONES',
+            rows: [
+                ['Retencion IR:', ticket.retentionIr],
+                ['Retencion Municipal:', ticket.retentionMunicipal],
+                ['Total Deducciones:', ticket.retentionTotal],
+            ],
+        },
+        {
+            title: '',
+            rows: [
+                ['Total Ingreso de caja:', ticket.cashIncomeTotal],
+            ],
+        },
     ];
 
     return (
@@ -8441,22 +8565,39 @@ const CashClosureTicketPrint = ({ closure }) => {
                         <div><span>Cajero:</span> {ticket.cashierName}</div>
                         <div><span>Fecha:</span> {ticket.date}</div>
                     </div>
-                    <div className="ticket-section">
-                        {lineRows.map(([label, value]) => (
-                            <div className="ticket-row" key={label}>
-                                <span>{label}</span>
-                                <strong>{fmt(value)}</strong>
-                            </div>
-                        ))}
-                    </div>
+                    {sections.map((section) => (
+                        <div className="ticket-section" key={section.title || 'total-income'}>
+                            {section.title ? <div className="ticket-subtitle">{section.title}</div> : null}
+                            {section.rows.map(([label, value]) => (
+                                <div className="ticket-row" key={label}>
+                                    <span>{label}</span>
+                                    <strong>{fmt(value)}</strong>
+                                </div>
+                            ))}
+                        </div>
+                    ))}
                     <div className="ticket-subtitle">DESGLOSE DE METODO PAGO</div>
                     <div className="ticket-section">
-                        {paymentRows.map(([label, value]) => (
-                            <div className="ticket-row" key={label}>
-                                <span>{label}</span>
-                                <strong>{fmt(value)}</strong>
+                        {ticket.paymentMethods.length ? ticket.paymentMethods.map((method) => (
+                            <div className="ticket-method" key={method.label}>
+                                <div className="ticket-row">
+                                    <span>{method.label}</span>
+                                    <strong>{fmt(method.total)}</strong>
+                                </div>
+                                {method.details.map((detail) => (
+                                    <div className="ticket-row ticket-detail-row" key={detail.id}>
+                                        <span>{detail.label}</span>
+                                        <strong>{fmt(detail.amount)}</strong>
+                                    </div>
+                                ))}
                             </div>
-                        ))}
+                        )) : (
+                            <div className="ticket-empty">Sin metodos de pago detallados.</div>
+                        )}
+                        <div className="ticket-row">
+                            <span>RC EFECTIVO:</span>
+                            <strong>{fmt(ticket.rc)}</strong>
+                        </div>
                     </div>
                     <div className="ticket-subtitle">DESGLOSE FACTURAS MEMBRETADAS</div>
                     <div className="ticket-section">
@@ -8534,6 +8675,16 @@ const CashClosureTicketPrint = ({ closure }) => {
                         gap: 6px;
                         justify-content: space-between;
                         padding: 1px 0;
+                    }
+                    body.print-cash-closure-ticket .ticket-method {
+                        padding: 2px 0;
+                    }
+                    body.print-cash-closure-ticket .ticket-detail-row {
+                        padding-left: 8px;
+                        font-size: 12px;
+                    }
+                    body.print-cash-closure-ticket .ticket-detail-row span {
+                        max-width: 43mm;
                     }
                     body.print-cash-closure-ticket .ticket-row strong {
                         font-family: Arial, sans-serif;
