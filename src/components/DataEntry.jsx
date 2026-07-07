@@ -192,6 +192,101 @@ const normalizeFilterText = (value) => (
         .trim()
 );
 
+const QB_INVENTORY_ACCOUNT = '11060 INVENTARIO:Alimentos';
+const QB_VAT_ACCOUNT = '110702 IMPUESTOS ACREDITABLES:IVA';
+const QB_LINE_TAX_CODE = 'No VAT';
+
+const toQbMoney = (value = 0) => {
+    const amount = Number(value || 0);
+    return Number.isFinite(amount) ? Number(amount.toFixed(2)) : 0;
+};
+
+const getPurchaseInvoiceNumber = (item = {}) => (
+    String(item.invoiceNumber || item.numeroFactura || item.factura || item.numero || item.id || '').trim()
+);
+
+const getQuickBooksPurchaseSelectionId = (item = {}) => (
+    item.id || `${item.supplier || item.proveedor || 'proveedor'}-${getPurchaseInvoiceNumber(item)}-${item.date || item.fecha || ''}`
+);
+
+const formatQuickBooksDate = (value = '') => {
+    const rawDate = String(value || '').substring(0, 10);
+    const match = rawDate.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    return match ? `${match[3]}/${match[2]}/${match[1]}` : rawDate;
+};
+
+const getPurchaseQbDate = (item = {}, key = 'date') => (
+    formatQuickBooksDate(item[key] || item.fecha || item.date || '')
+);
+
+const getPurchaseQbSubtotal = (item = {}) => {
+    const subtotal = Number(item.subtotal ?? 0) || 0;
+    if (subtotal > 0) return toQbMoney(subtotal);
+    return toQbMoney((Number(item.total ?? item.amount ?? item.monto ?? 0) || 0) - (Number(item.iva ?? 0) || 0));
+};
+
+const getPurchaseQbIva = (item = {}) => toQbMoney(Number(item.iva ?? 0) || 0);
+
+const buildQuickBooksPurchaseRows = (items = []) => (
+    items.flatMap((item) => {
+        const billNo = getPurchaseInvoiceNumber(item);
+        const supplier = String(item.supplier || item.proveedor || 'PROVEEDOR NO IDENTIFICADO').trim();
+        const billDate = getPurchaseQbDate(item, 'date');
+        const dueDate = getPurchaseQbDate(item, 'dueDate') || getPurchaseQbDate(item, 'vencimiento') || billDate;
+        const subtotal = getPurchaseQbSubtotal(item);
+        const iva = getPurchaseQbIva(item);
+        const subcategory = String(item.subcategory || item.subcategoria || item.categoryLabel || item.category || 'Compra de mercancia').trim();
+        const base = {
+            'Bill no.': billNo,
+            Supplier: supplier,
+            'Bill Date': billDate,
+            'Due Date': dueDate,
+            'Line Tax Code': QB_LINE_TAX_CODE,
+        };
+        const rows = [];
+
+        if (subtotal > 0) {
+            rows.push({
+                ...base,
+                Account: QB_INVENTORY_ACCOUNT,
+                Description: subcategory,
+                'Line Amount': subtotal,
+            });
+        }
+
+        if (iva > 0) {
+            rows.push({
+                ...base,
+                Account: QB_VAT_ACCOUNT,
+                Description: `IVA ${billNo || subcategory}`.trim(),
+                'Line Amount': iva,
+            });
+        }
+
+        return rows;
+    })
+);
+
+const downloadQuickBooksPurchasesCsv = (items = []) => {
+    const rows = buildQuickBooksPurchaseRows(items);
+    if (!rows.length) {
+        window.alert('No hay compras seleccionadas con subtotal o IVA para exportar.');
+        return;
+    }
+
+    const csv = Papa.unparse(rows, {
+        columns: ['Bill no.', 'Supplier', 'Bill Date', 'Due Date', 'Account', 'Description', 'Line Amount', 'Line Tax Code'],
+    });
+    const blob = new Blob([`\uFEFF${csv}`], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    const today = new Date().toISOString().substring(0, 10);
+    link.href = url;
+    link.download = `quickbooks_compras_${today}.csv`;
+    link.click();
+    URL.revokeObjectURL(url);
+};
+
 const PHOTO_EDIT_FOLDERS = {
     ingresos: 'facturas/ventas',
     facturas_membretadas_ventas: 'facturas/membretadas',
@@ -711,7 +806,7 @@ const EditRecordModal = ({ item, collectionName, fields, onClose, onSaved, provi
 
 // --- COMPONENTE: EDITABLE LIST ---
 
-const EditableRow = ({ item, collectionName, fields, providers = [], onUpdate, onDelete }) => {
+const EditableRow = ({ item, collectionName, fields, providers = [], onUpdate, onDelete, leadingCell = null }) => {
     const [isEditing, setIsEditing] = useState(false);
     const [showViewModal, setShowViewModal] = useState(false);
     const [showEditModal, setShowEditModal] = useState(false);
@@ -879,6 +974,7 @@ const EditableRow = ({ item, collectionName, fields, providers = [], onUpdate, o
 
     return (
         <tr className="border-b border-stone-100 hover:bg-stone-50 transition-colors">
+            {leadingCell}
             {Object.keys(fields).map(key => (
                 <td key={key} className="py-2.5 px-3 text-sm">
                     {isEditing ? renderInput(key, editData[key]) : renderValue(key, item[key])}
@@ -1086,6 +1182,7 @@ const EditableList = ({
     onAdvancedFiltersChange,
 }) => {
     const [localData, setLocalData] = useState(data);
+    const [selectedQuickBooksPurchaseIds, setSelectedQuickBooksPurchaseIds] = useState([]);
 
     useEffect(() => {
         setLocalData(data);
@@ -1156,6 +1253,53 @@ const EditableList = ({
             return dateB - dateA;
         });
     }, [advancedFilterConfig, advancedFilters, filterType, filterValue, localData]);
+
+    const isQuickBooksPurchaseExport = collectionName === 'compras';
+    const quickBooksPurchaseIds = useMemo(() => (
+        isQuickBooksPurchaseExport ? filteredData.map(getQuickBooksPurchaseSelectionId).filter(Boolean) : []
+    ), [filteredData, isQuickBooksPurchaseExport]);
+    const quickBooksPurchaseIdsKey = quickBooksPurchaseIds.join('|');
+    const selectedQuickBooksIdSet = useMemo(() => new Set(selectedQuickBooksPurchaseIds), [selectedQuickBooksPurchaseIds]);
+    const selectedQuickBooksPurchases = useMemo(() => (
+        isQuickBooksPurchaseExport
+            ? filteredData.filter((item) => selectedQuickBooksIdSet.has(getQuickBooksPurchaseSelectionId(item)))
+            : []
+    ), [filteredData, isQuickBooksPurchaseExport, selectedQuickBooksIdSet]);
+    const allQuickBooksPurchasesSelected = (
+        isQuickBooksPurchaseExport
+        && quickBooksPurchaseIds.length > 0
+        && quickBooksPurchaseIds.every((id) => selectedQuickBooksIdSet.has(id))
+    );
+
+    useEffect(() => {
+        if (!isQuickBooksPurchaseExport) {
+            setSelectedQuickBooksPurchaseIds([]);
+            return;
+        }
+        setSelectedQuickBooksPurchaseIds((current) => current.filter((id) => quickBooksPurchaseIds.includes(id)));
+    }, [isQuickBooksPurchaseExport, quickBooksPurchaseIdsKey]);
+
+    const toggleQuickBooksPurchase = (item) => {
+        const id = getQuickBooksPurchaseSelectionId(item);
+        if (!id) return;
+        setSelectedQuickBooksPurchaseIds((current) => (
+            current.includes(id)
+                ? current.filter((itemId) => itemId !== id)
+                : [...current, id]
+        ));
+    };
+
+    const toggleAllQuickBooksPurchases = () => {
+        setSelectedQuickBooksPurchaseIds(allQuickBooksPurchasesSelected ? [] : quickBooksPurchaseIds);
+    };
+
+    const handleDownloadQuickBooksPurchases = () => {
+        if (!selectedQuickBooksPurchases.length) {
+            window.alert('Selecciona al menos una factura de compra para exportar a QuickBooks.');
+            return;
+        }
+        downloadQuickBooksPurchasesCsv(selectedQuickBooksPurchases);
+    };
 
     const hasData = filteredData && filteredData.length > 0;
     const filteredTotal = filteredData.reduce((sum, item) => sum + (Number(item.total ?? item.amount ?? item.monto ?? item.subtotal) || 0), 0);
@@ -1246,6 +1390,27 @@ const EditableList = ({
                 </div>
             ) : (
                 <div className="overflow-hidden rounded-[1.75rem] border border-slate-200 bg-white shadow-xl shadow-slate-900/5">
+                    {isQuickBooksPurchaseExport && (
+                        <div className="flex flex-col gap-3 border-b border-slate-200 bg-emerald-50/70 p-4 lg:flex-row lg:items-center lg:justify-between">
+                            <div>
+                                <div className="text-[10px] font-black uppercase tracking-[0.32em] text-emerald-700">Exportacion QuickBooks</div>
+                                <div className="mt-1 text-sm font-bold text-slate-700">
+                                    {selectedQuickBooksPurchases.length} factura(s) seleccionada(s) de {filteredData.length} visible(s)
+                                </div>
+                                <p className="mt-1 text-xs font-semibold text-slate-500">
+                                    Genera dos lineas por factura: subtotal a inventario e IVA a impuestos acreditables.
+                                </p>
+                            </div>
+                            <div className="flex flex-wrap gap-2">
+                                <Button type="button" variant="ghost" size="sm" onClick={toggleAllQuickBooksPurchases} disabled={!quickBooksPurchaseIds.length}>
+                                    {allQuickBooksPurchasesSelected ? 'Limpiar seleccion' : 'Seleccionar todas'}
+                                </Button>
+                                <Button type="button" variant="success" size="sm" onClick={handleDownloadQuickBooksPurchases} disabled={!selectedQuickBooksPurchases.length}>
+                                    Descargar Archivo QB
+                                </Button>
+                            </div>
+                        </div>
+                    )}
                     {topRecords.length > 0 && (
                         <div className="grid grid-cols-1 gap-3 border-b border-slate-200 bg-[#f8fafc] p-4 xl:grid-cols-3">
                             {topRecords.map((item) => (
@@ -1297,6 +1462,19 @@ const EditableList = ({
                     <table className="w-full text-sm">
                         <thead className="sticky top-0 z-10">
                             <tr className="text-left bg-slate-900 border-b border-slate-800">
+                                {isQuickBooksPurchaseExport && (
+                                    <th className="py-3 px-3 font-black text-white/80 text-xs uppercase tracking-wider">
+                                        <label className="flex items-center gap-2">
+                                            <input
+                                                type="checkbox"
+                                                checked={allQuickBooksPurchasesSelected}
+                                                onChange={toggleAllQuickBooksPurchases}
+                                                className="h-4 w-4 rounded border-white/30 text-emerald-500"
+                                            />
+                                            QB
+                                        </label>
+                                    </th>
+                                )}
                                 {Object.values(fields).map(field => (
                                     <th key={field.label} className="py-3 px-3 font-black text-white/80 text-xs uppercase tracking-wider">{field.label}</th>
                                 ))}
@@ -1314,6 +1492,16 @@ const EditableList = ({
                                     providers={providers}
                                     onUpdate={handleUpdate}
                                     onDelete={handleDelete}
+                                    leadingCell={isQuickBooksPurchaseExport ? (
+                                        <td className="py-2.5 px-3">
+                                            <input
+                                                type="checkbox"
+                                                checked={selectedQuickBooksIdSet.has(getQuickBooksPurchaseSelectionId(item))}
+                                                onChange={() => toggleQuickBooksPurchase(item)}
+                                                className="h-4 w-4 rounded border-slate-300 text-emerald-600"
+                                            />
+                                        </td>
+                                    ) : null}
                                 />
                             ))}
                         </tbody>
