@@ -56,7 +56,7 @@ const reportHints = [
     'Balance',
 ];
 
-export default function Header({ moduleAccess = {}, isMaster = false, defaultPath = '/' }) {
+export default function Header({ moduleAccess = {}, isMaster = false, defaultPath = '/', allowedDataEntryTabs = null }) {
     const { user, logout } = useAuth();
     const navigate = useNavigate();
     const location = useLocation();
@@ -66,6 +66,12 @@ export default function Header({ moduleAccess = {}, isMaster = false, defaultPat
     const navRef = useRef(null);
 
     const canAccess = (moduleId) => moduleAccess?.[moduleId] === true;
+    const visibleEntryTabs = useMemo(() => {
+        const allowedSet = Array.isArray(allowedDataEntryTabs) && allowedDataEntryTabs.length
+            ? new Set(allowedDataEntryTabs)
+            : null;
+        return allowedSet ? entryTabs.filter((item) => allowedSet.has(item.tab)) : entryTabs;
+    }, [allowedDataEntryTabs]);
     const isActive = (path) => {
         const cleanPath = path.split('?')[0];
         return cleanPath === '/' ? location.pathname === '/' : location.pathname.startsWith(cleanPath);
@@ -160,7 +166,7 @@ export default function Header({ moduleAccess = {}, isMaster = false, defaultPat
                             <div className="mt-1 text-xs font-semibold text-white/[0.68]">Selecciona el formulario que necesitas abrir.</div>
                         </div>
                         <div className="grid grid-cols-2 gap-1.5 p-1">
-                            {entryTabs.map((item) => (
+                            {visibleEntryTabs.map((item) => (
                                 <button
                                     key={item.tab}
                                     type="button"
@@ -349,7 +355,7 @@ export default function Header({ moduleAccess = {}, isMaster = false, defaultPat
                                     <div className="rounded-3xl border border-white/10 bg-white/[0.04] p-2">
                                         <div className="px-2 pb-2 text-[10px] font-black uppercase tracking-[0.28em] text-[#f5b51b]">Ingresar Datos</div>
                                         <div className="grid gap-1 sm:grid-cols-2">
-                                            {entryTabs.map((item) => (
+                                            {visibleEntryTabs.map((item) => (
                                                 <button key={item.tab} type="button" onClick={() => goToEntry(item.tab)} className="flex items-center gap-3 rounded-2xl px-3 py-3 text-left text-sm font-black text-white/[0.84] transition hover:bg-white/10 hover:text-white">
                                                     <span className={`grid h-9 w-9 place-items-center rounded-xl ${item.tone}`}>
                                                         <Icon path={Icons[item.icon]} />

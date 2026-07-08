@@ -2684,12 +2684,20 @@ const EquityForm = ({ loading, setLoading, onSuccess }) => {
 
 const VALID_TABS = ['Ingresos', 'Gastos', 'Inventario', 'Compras', 'Presupuesto', 'Cuentas por Cobrar', 'Patrimonio'];
 
-export function DataEntry({ categories, data }) {
+export function DataEntry({ categories, data, allowedTabs = null }) {
     const [searchParams] = useSearchParams();
     const urlTab = searchParams.get('tab');
+    const visibleTabs = useMemo(() => {
+        const allowedSet = Array.isArray(allowedTabs) && allowedTabs.length
+            ? new Set(allowedTabs)
+            : null;
+        const tabs = allowedSet ? VALID_TABS.filter((tab) => allowedSet.has(tab)) : VALID_TABS;
+        return tabs.length ? tabs : VALID_TABS;
+    }, [allowedTabs]);
+    const defaultTab = visibleTabs[0] || 'Ingresos';
 
     const [activeTab, setActiveTab] = useState(() => {
-        return VALID_TABS.includes(urlTab) ? urlTab : 'Ingresos';
+        return visibleTabs.includes(urlTab) ? urlTab : defaultTab;
     });
     const [entryView, setEntryView] = useState('ingresar');
     const [loading, setLoading] = useState(false);
@@ -2706,10 +2714,16 @@ export function DataEntry({ categories, data }) {
     ), [data.proveedores]);
 
     useEffect(() => {
-        if (urlTab && VALID_TABS.includes(urlTab)) {
+        if (urlTab && visibleTabs.includes(urlTab)) {
             setActiveTab(urlTab);
         }
-    }, [urlTab]);
+    }, [urlTab, visibleTabs]);
+
+    useEffect(() => {
+        if (!visibleTabs.includes(activeTab)) {
+            setActiveTab(defaultTab);
+        }
+    }, [activeTab, defaultTab, visibleTabs]);
 
     useEffect(() => {
         const sessionKey = 'csm-provider-migration-v1';
@@ -3050,7 +3064,7 @@ export function DataEntry({ categories, data }) {
 
                 <div className="border-t border-slate-200 p-3">
                     <div className="flex flex-wrap gap-1.5">
-                        {Object.entries(tabsConfig).map(([tab, config]) => (
+                        {Object.entries(tabsConfig).filter(([tab]) => visibleTabs.includes(tab)).map(([tab, config]) => (
                             <button
                                 key={tab}
                                 onClick={() => setActiveTab(tab)}
