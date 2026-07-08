@@ -29,6 +29,7 @@ const BILLING_TABS = [
     { key: 'depositos', label: 'Deposito Bancario' },
 ];
 const BILLING_TAB_KEYS = new Set(BILLING_TABS.map((tab) => tab.key));
+const BILLING_READ_ONLY_TABS = BILLING_TABS.filter((tab) => tab.key === 'historial');
 
 function getBillingTabFromSearch(search = '') {
     const tabFromUrl = new URLSearchParams(search).get('tab');
@@ -5472,7 +5473,7 @@ function CashReceipts({ data }) {
     );
 }
 
-function CashReceiptHistory({ data }) {
+function CashReceiptHistory({ data, canEdit = true }) {
     const { user } = useAuth();
     const isMaster = isMasterEmail(user?.email);
     const [search, setSearch] = useState('');
@@ -5791,7 +5792,7 @@ function CashReceiptHistory({ data }) {
                                     <td className="px-4 py-3 text-right font-mono font-black text-amber-700">{fmt(getCashReceiptRetentionTotal(receipt))}</td>
                                     <td className="px-4 py-3 text-right">
                                         <div className="flex justify-end gap-2">
-                                            {isMaster && (
+                                            {isMaster && canEdit && (
                                                 <button type="button" onClick={() => openEditReceipt(receipt)} className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-[10px] font-black uppercase tracking-[0.16em] text-slate-700 transition hover:border-sky-500 hover:text-sky-700">Editar</button>
                                             )}
                                             <button type="button" onClick={() => printReceipt(receipt)} className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-[10px] font-black uppercase tracking-[0.16em] text-slate-700 transition hover:border-[#e30613] hover:text-[#e30613]">Imprimir</button>
@@ -6627,6 +6628,7 @@ const StampedInvoiceDetailModal = ({
     onPrint,
     onEdit,
     onPaymentMethodChange,
+    canEdit = true,
     supportUploadFiles = {},
     onSupportFileChange,
     onSupportUpload,
@@ -6648,12 +6650,16 @@ const StampedInvoiceDetailModal = ({
                     </div>
                     <div className="flex flex-wrap gap-2">
                         {isAnnulled && <Badge tone="red">ANULADA</Badge>}
-                        <button type="button" onClick={() => onPrint(invoice)} className="rounded-2xl bg-[#e30613] px-4 py-2 text-xs font-black uppercase tracking-[0.16em] text-white transition hover:bg-red-700">
-                            Imprimir
-                        </button>
-                        <button type="button" onClick={() => onEdit(invoice)} disabled={isAnnulled} className="rounded-2xl border border-white/20 bg-white/10 px-4 py-2 text-xs font-black uppercase tracking-[0.16em] text-white transition hover:bg-white/20 disabled:cursor-not-allowed disabled:opacity-50">
-                            Editar
-                        </button>
+                        {canEdit && (
+                            <>
+                                <button type="button" onClick={() => onPrint(invoice)} className="rounded-2xl bg-[#e30613] px-4 py-2 text-xs font-black uppercase tracking-[0.16em] text-white transition hover:bg-red-700">
+                                    Imprimir
+                                </button>
+                                <button type="button" onClick={() => onEdit(invoice)} disabled={isAnnulled} className="rounded-2xl border border-white/20 bg-white/10 px-4 py-2 text-xs font-black uppercase tracking-[0.16em] text-white transition hover:bg-white/20 disabled:cursor-not-allowed disabled:opacity-50">
+                                    Editar
+                                </button>
+                            </>
+                        )}
                         <button type="button" onClick={onClose} className="rounded-2xl bg-white px-4 py-2 text-xs font-black uppercase tracking-[0.16em] text-slate-950 transition hover:bg-slate-200">
                             Cerrar
                         </button>
@@ -6689,7 +6695,7 @@ const StampedInvoiceDetailModal = ({
 
                         <div className="rounded-3xl border border-slate-200 bg-white p-4">
                         <Field label="Metodo de pago">
-                            <PaymentMethodSelect value={invoice.paymentMethod || ''} onChange={(value) => onPaymentMethodChange(invoice, value)} disabled={isAnnulled} />
+                            <PaymentMethodSelect value={invoice.paymentMethod || ''} onChange={(value) => onPaymentMethodChange(invoice, value)} disabled={isAnnulled || !canEdit} />
                             <PaymentBreakdownPreview invoice={invoice} />
                         </Field>
                         </div>
@@ -6703,6 +6709,7 @@ const StampedInvoiceDetailModal = ({
                                 <Badge tone={supportFiles.length ? 'green' : 'slate'}>{supportFiles.length}</Badge>
                             </div>
 
+                            {canEdit && (
                             <div className="mb-4 rounded-3xl border border-dashed border-red-200 bg-red-50/40 p-4">
                                 <div className="mb-3 text-[10px] font-black uppercase tracking-[0.24em] text-[#9f111a]">Adjuntar soportes</div>
                                 <div className="grid gap-3">
@@ -6740,6 +6747,7 @@ const StampedInvoiceDetailModal = ({
                                     {supportSaving ? 'Subiendo soportes...' : 'Guardar soportes'}
                                 </button>
                             </div>
+                            )}
 
                             {supportFiles.length === 0 ? (
                                 <div className="rounded-2xl border border-dashed border-slate-300 p-5 text-center text-sm font-bold text-slate-400">
@@ -6957,7 +6965,7 @@ const StampedInvoiceEditModal = ({
     );
 };
 
-function StampedInvoiceHistory({ data }) {
+function StampedInvoiceHistory({ data, canEdit = true }) {
     const [search, setSearch] = useState('');
     const [selectedMonth, setSelectedMonth] = useState(getMonth(todayString()));
     const [selectedDate, setSelectedDate] = useState('');
@@ -7047,6 +7055,10 @@ function StampedInvoiceHistory({ data }) {
     }, [page, pagedInvoices.page]);
 
     const updatePaymentMethod = async (invoice, paymentMethod) => {
+        if (!canEdit) {
+            setMessage('Este usuario solo tiene permiso para ver facturas membretadas.');
+            return;
+        }
         const invoiceId = invoice.id || invoice.docId;
         if (!invoiceId) return;
         if (isStampedInvoiceAnnulled(invoice)) {
@@ -7085,6 +7097,10 @@ function StampedInvoiceHistory({ data }) {
     };
 
     const markInvoiceWithoutClosure = async (invoice) => {
+        if (!canEdit) {
+            setMessage('Este usuario solo tiene permiso para ver facturas membretadas.');
+            return;
+        }
         const invoiceId = invoice.id || invoice.docId;
         if (!invoiceId) return;
         if (isStampedInvoiceAnnulled(invoice)) {
@@ -7123,6 +7139,10 @@ function StampedInvoiceHistory({ data }) {
     };
 
     const annulInvoice = async (invoice) => {
+        if (!canEdit) {
+            setMessage('Este usuario solo tiene permiso para ver facturas membretadas.');
+            return;
+        }
         const invoiceId = invoice.id || invoice.docId;
         if (!invoiceId) return;
         if (!window.confirm(`Estas seguro que deseas ANULAR la factura ${invoice.invoiceNumber || invoice.numeroFactura || invoiceId}? La factura quedara en cero y marcada en rojo.`)) return;
@@ -7153,6 +7173,10 @@ function StampedInvoiceHistory({ data }) {
     };
 
     const openInvoiceEdit = (invoice) => {
+        if (!canEdit) {
+            setMessage('Este usuario solo tiene permiso para ver facturas membretadas.');
+            return;
+        }
         if (isStampedInvoiceAnnulled(invoice)) {
             setMessage(`La factura ${invoice.invoiceNumber || invoice.numeroFactura || invoice.id || invoice.docId || ''} esta ANULADA y no se puede editar.`);
             return;
@@ -7511,6 +7535,10 @@ function StampedInvoiceHistory({ data }) {
     };
 
     const uploadDetailSupports = async () => {
+        if (!canEdit) {
+            setMessage('Este usuario solo tiene permiso para ver facturas membretadas.');
+            return;
+        }
         if (!detailTarget) return;
         const invoiceId = detailTarget.id || detailTarget.docId;
         if (!invoiceId) {
@@ -7668,7 +7696,7 @@ function StampedInvoiceHistory({ data }) {
                                     </div>
 
                                     <Field label="Metodo">
-                                        <PaymentMethodSelect value={invoice.paymentMethod || ''} onChange={(value) => updatePaymentMethod(invoice, value)} disabled={isAnnulled} />
+                                        <PaymentMethodSelect value={invoice.paymentMethod || ''} onChange={(value) => updatePaymentMethod(invoice, value)} disabled={isAnnulled || !canEdit} />
                                         <PaymentBreakdownPreview invoice={invoice} />
                                     </Field>
 
@@ -7680,39 +7708,43 @@ function StampedInvoiceHistory({ data }) {
                                         >
                                             Ver detalle
                                         </button>
-                                        <button
-                                            type="button"
-                                            onClick={() => openInvoiceEdit(invoice)}
-                                            disabled={isAnnulled}
-                                            className="rounded-xl bg-[#e30613] px-4 py-3 text-xs font-black uppercase tracking-[0.14em] text-white transition hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-50"
-                                        >
-                                            Editar
-                                        </button>
-                                        <button
-                                            type="button"
-                                            onClick={() => setPrintTarget(invoice)}
-                                            className="rounded-xl border border-slate-200 bg-white px-4 py-3 text-xs font-black uppercase tracking-[0.14em] text-slate-700 transition hover:border-[#e30613] hover:text-[#e30613]"
-                                        >
-                                            Imprimir
-                                        </button>
-                                        {closureInfo.status !== 'sin_cierre' && (
-                                            <button
-                                                type="button"
-                                                onClick={() => markInvoiceWithoutClosure(invoice)}
-                                                disabled={isAnnulled}
-                                                className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs font-black uppercase tracking-[0.14em] text-amber-800 transition hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-50"
-                                            >
-                                                Sin cierre
-                                            </button>
-                                        )}
-                                        {!isAnnulled && (
-                                            <button
-                                                type="button"
-                                                onClick={() => annulInvoice(invoice)}
-                                                className="rounded-xl border border-red-300 bg-red-50 px-4 py-3 text-xs font-black uppercase tracking-[0.14em] text-red-800 transition hover:bg-red-100"
-                                            >
-                                                Anular
-                                            </button>
+                                        {canEdit && (
+                                            <>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => openInvoiceEdit(invoice)}
+                                                    disabled={isAnnulled}
+                                                    className="rounded-xl bg-[#e30613] px-4 py-3 text-xs font-black uppercase tracking-[0.14em] text-white transition hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-50"
+                                                >
+                                                    Editar
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => setPrintTarget(invoice)}
+                                                    className="rounded-xl border border-slate-200 bg-white px-4 py-3 text-xs font-black uppercase tracking-[0.14em] text-slate-700 transition hover:border-[#e30613] hover:text-[#e30613]"
+                                                >
+                                                    Imprimir
+                                                </button>
+                                                {closureInfo.status !== 'sin_cierre' && (
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => markInvoiceWithoutClosure(invoice)}
+                                                        disabled={isAnnulled}
+                                                        className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs font-black uppercase tracking-[0.14em] text-amber-800 transition hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-50"
+                                                    >
+                                                        Sin cierre
+                                                    </button>
+                                                )}
+                                                {!isAnnulled && (
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => annulInvoice(invoice)}
+                                                        className="rounded-xl border border-red-300 bg-red-50 px-4 py-3 text-xs font-black uppercase tracking-[0.14em] text-red-800 transition hover:bg-red-100"
+                                                    >
+                                                        Anular
+                                                    </button>
+                                                )}
+                                            </>
                                         )}
                                     </div>
                                 </div>
@@ -7743,34 +7775,39 @@ function StampedInvoiceHistory({ data }) {
                 onPrint={setPrintTarget}
                 onEdit={openInvoiceEdit}
                 onPaymentMethodChange={updatePaymentMethod}
+                canEdit={canEdit}
                 supportUploadFiles={supportUploadFiles}
                 onSupportFileChange={updateSupportUploadFile}
                 onSupportUpload={uploadDetailSupports}
                 supportSaving={supportSaving}
             />
-            <StampedInvoiceEditModal
-                form={editForm}
-                splitInvoice={splitEditInvoice}
-                saving={editSaving}
-                onClose={closeInvoiceEdit}
-                onSave={saveEditedInvoice}
-                onUpdate={updateEditField}
-                onItemChange={updateEditItem}
-                onAddItem={addEditItem}
-                onRemoveItem={removeEditItem}
-                onSplit={splitEditedInvoice}
-                onSplitInvoiceNumberChange={updateSplitEditInvoiceNumber}
-                onOpenPaymentSplit={() => setEditPaymentSplitOpen(true)}
-            />
-            <PaymentSplitModal
-                open={editPaymentSplitOpen}
-                title={`Dividir pago factura ${editForm?.invoiceNumber || ''}`}
-                targetAmount={getInvoicePaymentTargetAmount(editForm || {})}
-                initialRows={editForm?.paymentBreakdown || []}
-                fallbackMethod={editForm?.paymentMethod || ''}
-                onClose={() => setEditPaymentSplitOpen(false)}
-                onSave={applyEditPaymentSplit}
-            />
+            {canEdit && (
+                <>
+                    <StampedInvoiceEditModal
+                        form={editForm}
+                        splitInvoice={splitEditInvoice}
+                        saving={editSaving}
+                        onClose={closeInvoiceEdit}
+                        onSave={saveEditedInvoice}
+                        onUpdate={updateEditField}
+                        onItemChange={updateEditItem}
+                        onAddItem={addEditItem}
+                        onRemoveItem={removeEditItem}
+                        onSplit={splitEditedInvoice}
+                        onSplitInvoiceNumberChange={updateSplitEditInvoiceNumber}
+                        onOpenPaymentSplit={() => setEditPaymentSplitOpen(true)}
+                    />
+                    <PaymentSplitModal
+                        open={editPaymentSplitOpen}
+                        title={`Dividir pago factura ${editForm?.invoiceNumber || ''}`}
+                        targetAmount={getInvoicePaymentTargetAmount(editForm || {})}
+                        initialRows={editForm?.paymentBreakdown || []}
+                        fallbackMethod={editForm?.paymentMethod || ''}
+                        onClose={() => setEditPaymentSplitOpen(false)}
+                        onSave={applyEditPaymentSplit}
+                    />
+                </>
+            )}
             <StampedInvoicePrintModal
                 invoice={printTarget}
                 layout={printLayout}
@@ -9025,11 +9062,8 @@ const CashClosureEditModal = ({
     );
 };
 
-const CashClosureDetailModal = ({ closure, onClose, onEdit, onExport, onPrintTicket }) => {
-    const { user } = useAuth();
-    const isMaster = isMasterEmail(user?.email);
-
-    if (!closure || !isMaster) return null;
+const CashClosureDetailModal = ({ closure, onClose, onEdit, onExport, onPrintTicket, canEdit = true }) => {
+    if (!closure) return null;
 
     const context = buildCashClosureReportContext(closure);
     const exchangeRate = context.exchangeRate;
@@ -9076,20 +9110,24 @@ const CashClosureDetailModal = ({ closure, onClose, onEdit, onExport, onPrintTic
                         >
                             Reporte RC XLS
                         </button>
-                        <button
-                            type="button"
-                            onClick={() => onPrintTicket?.(closure)}
-                            className="rounded-2xl border border-amber-300 bg-amber-50 px-4 py-2 text-xs font-black uppercase tracking-[0.18em] text-amber-800 transition hover:bg-amber-100"
-                        >
-                            Ticket 80mm
-                        </button>
-                        <button
-                            type="button"
-                            onClick={() => onEdit?.(closure)}
-                            className="rounded-2xl border border-white/15 bg-white/10 px-4 py-2 text-xs font-black uppercase tracking-[0.18em] text-white transition hover:bg-white hover:text-slate-950"
-                        >
-                            Editar
-                        </button>
+                        {canEdit && (
+                            <>
+                                <button
+                                    type="button"
+                                    onClick={() => onPrintTicket?.(closure)}
+                                    className="rounded-2xl border border-amber-300 bg-amber-50 px-4 py-2 text-xs font-black uppercase tracking-[0.18em] text-amber-800 transition hover:bg-amber-100"
+                                >
+                                    Ticket 80mm
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={() => onEdit?.(closure)}
+                                    className="rounded-2xl border border-white/15 bg-white/10 px-4 py-2 text-xs font-black uppercase tracking-[0.18em] text-white transition hover:bg-white hover:text-slate-950"
+                                >
+                                    Editar
+                                </button>
+                            </>
+                        )}
                         <button
                             type="button"
                             onClick={onClose}
@@ -9335,9 +9373,10 @@ const CashClosureDetailModal = ({ closure, onClose, onEdit, onExport, onPrintTic
     );
 };
 
-function CashClosureHistory({ data }) {
+function CashClosureHistory({ data, canEdit = true }) {
     const { user } = useAuth();
     const isMaster = isMasterEmail(user?.email);
+    const canManageClosures = isMaster && canEdit;
     const [search, setSearch] = useState('');
     const [selectedMonth, setSelectedMonth] = useState(getMonth(todayString()));
     const [selectedDate, setSelectedDate] = useState('');
@@ -9434,6 +9473,10 @@ function CashClosureHistory({ data }) {
 
     const openEditClosure = (closure) => {
         if (!closure?.id) return;
+        if (!canManageClosures) {
+            setMessage('Este usuario solo tiene permiso para ver cierres de caja.');
+            return;
+        }
         if (!requestCashClosureEditPin('editar cierre de caja')) return;
         setDetailClosure(null);
         setEditClosure(closure);
@@ -9866,15 +9909,13 @@ function CashClosureHistory({ data }) {
                                     <td className={`px-4 py-3 text-right font-mono font-black ${Math.abs(closure.difference) > 0.01 ? 'text-red-700' : 'text-emerald-700'}`}>{fmt(closure.difference)}</td>
                                     <td className="px-4 py-3 text-right">
                                         <div className="flex justify-end gap-2">
-                                            {isMaster && (
-                                                <button
-                                                    type="button"
-                                                    onClick={() => setDetailClosure(closure)}
-                                                    className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-[10px] font-black uppercase tracking-[0.16em] text-slate-700 transition hover:border-[#e30613] hover:bg-red-50 hover:text-[#e30613]"
-                                                >
-                                                    Ver
-                                                </button>
-                                            )}
+                                            <button
+                                                type="button"
+                                                onClick={() => setDetailClosure(closure)}
+                                                className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-[10px] font-black uppercase tracking-[0.16em] text-slate-700 transition hover:border-[#e30613] hover:bg-red-50 hover:text-[#e30613]"
+                                            >
+                                                Ver
+                                            </button>
                                             <button
                                                 type="button"
                                                 onClick={() => exportClosureRcReport(closure)}
@@ -9882,7 +9923,7 @@ function CashClosureHistory({ data }) {
                                             >
                                                 RC XLS
                                             </button>
-                                            {isMaster && (
+                                            {canManageClosures && (
                                                 <button
                                                     type="button"
                                                     onClick={() => reprintClosureTicket(closure)}
@@ -9891,13 +9932,15 @@ function CashClosureHistory({ data }) {
                                                     Ticket
                                                 </button>
                                             )}
-                                            <button
-                                                type="button"
-                                                onClick={() => openEditClosure(closure)}
-                                                className="rounded-xl bg-slate-950 px-3 py-2 text-[10px] font-black uppercase tracking-[0.16em] text-white transition hover:bg-[#e30613]"
-                                            >
-                                                Editar
-                                            </button>
+                                            {canManageClosures && (
+                                                <button
+                                                    type="button"
+                                                    onClick={() => openEditClosure(closure)}
+                                                    className="rounded-xl bg-slate-950 px-3 py-2 text-[10px] font-black uppercase tracking-[0.16em] text-white transition hover:bg-[#e30613]"
+                                                >
+                                                    Editar
+                                                </button>
+                                            )}
                                         </div>
                                     </td>
                                 </tr>
@@ -9929,25 +9972,28 @@ function CashClosureHistory({ data }) {
                 onEdit={openEditClosure}
                 onExport={exportClosureRcReport}
                 onPrintTicket={reprintClosureTicket}
+                canEdit={canManageClosures}
             />
             <CashClosureTicketPrint closure={ticketClosure} />
-            <CashClosureEditModal
-                form={editForm}
-                clients={clients}
-                saving={editSaving}
-                rcValue={editClosureRc}
-                rcBlocked={isEditClosureRcPositive}
-                onClose={closeEditClosure}
-                onSave={saveEditedClosure}
-                onUndoConciliation={undoClosureConciliation}
-                onFieldChange={updateEditField}
-                onCashCountChange={updateCashCount}
-                onDollarCashCountChange={updateDollarCashCount}
-                onPreCloseChange={updatePreClose}
-                onBankRowAdd={addBankRow}
-                onBankRowRemove={removeBankRow}
-                onBankRowChange={updateBankRow}
-            />
+            {canManageClosures && (
+                <CashClosureEditModal
+                    form={editForm}
+                    clients={clients}
+                    saving={editSaving}
+                    rcValue={editClosureRc}
+                    rcBlocked={isEditClosureRcPositive}
+                    onClose={closeEditClosure}
+                    onSave={saveEditedClosure}
+                    onUndoConciliation={undoClosureConciliation}
+                    onFieldChange={updateEditField}
+                    onCashCountChange={updateCashCount}
+                    onDollarCashCountChange={updateDollarCashCount}
+                    onPreCloseChange={updatePreClose}
+                    onBankRowAdd={addBankRow}
+                    onBankRowRemove={removeBankRow}
+                    onBankRowChange={updateBankRow}
+                />
+            )}
         </div>
     );
 }
@@ -10096,7 +10142,7 @@ function RetentionHistory({ data, type }) {
     );
 }
 
-function BillingHistory({ data }) {
+function BillingHistory({ data, canEdit = true }) {
     const [activeHistoryTab, setActiveHistoryTab] = useState('membretadas');
     const historyTabs = [
         { key: 'membretadas', label: 'Facturas Membretadas' },
@@ -10126,9 +10172,9 @@ function BillingHistory({ data }) {
                 </div>
             </Section>
 
-            {activeHistoryTab === 'membretadas' && <StampedInvoiceHistory data={data} />}
-            {activeHistoryTab === 'recibos' && <CashReceiptHistory data={data} />}
-            {activeHistoryTab === 'cierres' && <CashClosureHistory data={data} />}
+            {activeHistoryTab === 'membretadas' && <StampedInvoiceHistory data={data} canEdit={canEdit} />}
+            {activeHistoryTab === 'recibos' && <CashReceiptHistory data={data} canEdit={canEdit} />}
+            {activeHistoryTab === 'cierres' && <CashClosureHistory data={data} canEdit={canEdit} />}
             {activeHistoryTab === 'diferencias' && <CashDifferences data={data} />}
             {activeHistoryTab === 'municipal' && <RetentionHistory data={data} type="municipal" />}
             {activeHistoryTab === 'ir' && <RetentionHistory data={data} type="ir" />}
@@ -10895,17 +10941,22 @@ function BankDeposits({ data }) {
     );
 }
 
-export default function Billing({ data = {} }) {
+export default function Billing({ data = {}, canEdit = true }) {
     const location = useLocation();
     const navigate = useNavigate();
-    const [activeTab, setActiveTab] = useState(() => getBillingTabFromSearch(location.search));
+    const availableTabs = canEdit ? BILLING_TABS : BILLING_READ_ONLY_TABS;
+    const [activeTab, setActiveTab] = useState(() => (canEdit ? getBillingTabFromSearch(location.search) : 'historial'));
 
     useEffect(() => {
-        const nextTab = getBillingTabFromSearch(location.search);
+        const requestedTab = getBillingTabFromSearch(location.search);
+        const nextTab = canEdit ? requestedTab : 'historial';
         if (nextTab !== activeTab) {
             setActiveTab(nextTab);
         }
-    }, [activeTab, location.search]);
+        if (!canEdit && requestedTab !== 'historial') {
+            navigate('/facturacion?tab=historial', { replace: true });
+        }
+    }, [activeTab, canEdit, location.search, navigate]);
 
     const handleTabChange = useCallback((tabKey) => {
         setActiveTab(tabKey);
@@ -10925,6 +10976,7 @@ export default function Billing({ data = {} }) {
                             </p>
                         </div>
                         <div className="flex flex-wrap gap-2">
+                            {!canEdit && <Badge tone="amber">Solo lectura</Badge>}
                             <Badge tone="green">SICAR</Badge>
                             <Badge tone="blue">Caja</Badge>
                             <Badge tone="amber">Retenciones</Badge>
@@ -10934,7 +10986,7 @@ export default function Billing({ data = {} }) {
 
                 <div className="border-t border-slate-200 p-3">
                     <div className="flex flex-wrap gap-1.5">
-                        {BILLING_TABS.map((tab) => (
+                        {availableTabs.map((tab) => (
                             <button
                                 key={tab.key}
                                 type="button"
@@ -10952,10 +11004,16 @@ export default function Billing({ data = {} }) {
                 </div>
             </section>
 
-            {activeTab === 'cierre' && <CashClosure data={data} />}
-            {activeTab === 'registro' && <AccountingRegister data={data} />}
-            {activeTab === 'historial' && <BillingHistory data={data} />}
-            {activeTab === 'depositos' && <BankDeposits data={data} />}
+            {!canEdit && (
+                <div className="rounded-3xl border border-amber-200 bg-amber-50 px-5 py-4 text-sm font-bold text-amber-900">
+                    Acceso visualizador: este usuario puede consultar Historial de Facturacion, pero no crear cierres, registrar facturas, editar documentos ni confirmar depositos.
+                </div>
+            )}
+
+            {canEdit && activeTab === 'cierre' && <CashClosure data={data} />}
+            {canEdit && activeTab === 'registro' && <AccountingRegister data={data} />}
+            {activeTab === 'historial' && <BillingHistory data={data} canEdit={canEdit} />}
+            {canEdit && activeTab === 'depositos' && <BankDeposits data={data} />}
         </div>
     );
 }

@@ -2235,7 +2235,23 @@ function ensureMasterUser(auth, actionLabel = 'administrar usuarios') {
 
 function normalizeUserModules(modules = {}) {
   return USER_ACCESS_MODULES.reduce((acc, moduleId) => {
-    acc[moduleId] = modules?.[moduleId] === true;
+    const value = modules?.[moduleId];
+    acc[moduleId] = value === true || value === 'view' || value === 'edit' || value?.enabled === true;
+    return acc;
+  }, {});
+}
+
+function normalizeUserModuleModes(modules = {}, moduleModes = {}) {
+  const normalizedModules = normalizeUserModules(modules);
+  return USER_ACCESS_MODULES.reduce((acc, moduleId) => {
+    if (!normalizedModules[moduleId]) {
+      acc[moduleId] = 'none';
+      return acc;
+    }
+
+    const moduleValue = modules?.[moduleId];
+    const mode = moduleModes?.[moduleId] || (typeof moduleValue === 'string' ? moduleValue : moduleValue?.mode);
+    acc[moduleId] = mode === 'view' ? 'view' : 'edit';
     return acc;
   }, {});
 }
@@ -2250,6 +2266,7 @@ function publicAuthUserPayload(userRecord, profile = {}) {
     disabled: userRecord.disabled === true,
     active: profile.active !== false && userRecord.disabled !== true,
     modules: normalizeUserModules(profile.modules || {}),
+    moduleModes: normalizeUserModuleModes(profile.modules || {}, profile.moduleModes || {}),
     role: email === MASTER_USER_EMAIL ? 'master' : (profile.role || 'limited'),
     createdAt: userRecord.metadata?.creationTime || profile.createdAt || null,
     lastSignInAt: userRecord.metadata?.lastSignInTime || profile.lastSignInAt || null,
@@ -2307,6 +2324,7 @@ exports.adminCreateAppUser = onCall(ADMIN_CALLABLE_FUNCTION_OPTIONS, async (requ
   const displayName = normalizeText(payload.displayName || payload.name);
   const active = payload.active !== false;
   const modules = normalizeUserModules(payload.modules || {});
+  const moduleModes = normalizeUserModuleModes(modules, payload.moduleModes || {});
 
   if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
     throw new HttpsError('invalid-argument', 'Debes indicar un correo valido.');
@@ -2364,6 +2382,7 @@ exports.adminCreateAppUser = onCall(ADMIN_CALLABLE_FUNCTION_OPTIONS, async (requ
     active,
     role: 'limited',
     modules,
+    moduleModes,
     updatedAt: FieldValue.serverTimestamp(),
     updatedBy: actorEmail,
   };
@@ -2376,7 +2395,7 @@ exports.adminCreateAppUser = onCall(ADMIN_CALLABLE_FUNCTION_OPTIONS, async (requ
 
   return {
     ok: true,
-    user: publicAuthUserPayload(userRecord, { email, displayName, active, role: 'limited', modules }),
+    user: publicAuthUserPayload(userRecord, { email, displayName, active, role: 'limited', modules, moduleModes }),
   };
 });
 

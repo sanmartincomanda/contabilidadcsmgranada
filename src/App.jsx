@@ -24,9 +24,11 @@ import {
 } from './services/incomeAggregation';
 import {
     USER_PROFILES_COLLECTION,
+    canEditModule,
     canUseModule,
     getDefaultAllowedPath,
     getEffectiveModuleAccess,
+    getEffectiveModuleModes,
     isMasterEmail,
     userProfileDocId,
 } from './services/userAccess';
@@ -978,12 +980,13 @@ const useUserModuleAccess = (user) => {
         loading: false,
         profile: null,
         moduleAccess: {},
+        moduleModes: {},
         isMaster: false,
     });
 
     useEffect(() => {
         if (!user?.email) {
-            setState({ loading: false, profile: null, moduleAccess: {}, isMaster: false });
+            setState({ loading: false, profile: null, moduleAccess: {}, moduleModes: {}, isMaster: false });
             return undefined;
         }
 
@@ -992,6 +995,7 @@ const useUserModuleAccess = (user) => {
                 loading: false,
                 profile: { email: user.email, role: 'master', active: true },
                 moduleAccess: getEffectiveModuleAccess(user.email, null),
+                moduleModes: getEffectiveModuleModes(user.email, null),
                 isMaster: true,
             });
             return undefined;
@@ -1012,6 +1016,7 @@ const useUserModuleAccess = (user) => {
                     loading: false,
                     profile,
                     moduleAccess: getEffectiveModuleAccess(user.email, profile),
+                    moduleModes: getEffectiveModuleModes(user.email, profile),
                     isMaster: false,
                 });
             },
@@ -1021,6 +1026,7 @@ const useUserModuleAccess = (user) => {
                     loading: false,
                     profile: null,
                     moduleAccess: getEffectiveModuleAccess(user.email, null),
+                    moduleModes: getEffectiveModuleModes(user.email, null),
                     isMaster: false,
                 });
             }
@@ -1069,7 +1075,7 @@ const useInactivityLogout = (user, logout) => {
 function AppContent() {
     const { user, logout } = useAuth();
     const location = useLocation();
-    const { loading: accessLoading, moduleAccess, isMaster } = useUserModuleAccess(user);
+    const { loading: accessLoading, moduleAccess, moduleModes, isMaster } = useUserModuleAccess(user);
     const effectiveIsMaster = isMaster || isMasterEmail(user?.email);
     useInactivityLogout(user, logout);
     const [themeMode, setThemeMode] = useState(() => {
@@ -1098,6 +1104,7 @@ function AppContent() {
     }, [effectiveIsMaster]);
 
     const canAccess = useCallback((moduleId) => effectiveIsMaster || canUseModule(moduleAccess, moduleId), [effectiveIsMaster, moduleAccess]);
+    const canEdit = useCallback((moduleId) => effectiveIsMaster || canEditModule(moduleModes, moduleId), [effectiveIsMaster, moduleModes]);
     const defaultAllowedPath = useMemo(() => (effectiveIsMaster ? '/' : getDefaultAllowedPath(moduleAccess)), [effectiveIsMaster, moduleAccess]);
     const currentPath = location.pathname;
     const needsCategories = (
@@ -1211,7 +1218,7 @@ function AppContent() {
                         <Route path="/ingresar" element={<PrivateRoute element={canAccess('ingresar') ? (dataEntryLoading ? <AppLoadingState /> : dataEntryError ? <AppErrorState error={dataEntryError} /> : <DataEntry data={dataEntryData} categories={categoriesList} />) : <Navigate to={defaultAllowedPath} replace />} />} />
                         <Route path="/gastos-diarios" element={<PrivateRoute element={canAccess('caja_chica') ? <GastosDiarios categories={categoriesList} providers={categoriesData.proveedores || []} /> : <Navigate to={defaultAllowedPath} replace />} />} />
                         <Route path="/conciliacion" element={<PrivateRoute element={<Navigate to={defaultAllowedPath} replace />} />} />
-                        <Route path="/facturacion" element={<PrivateRoute element={canAccess('facturacion') ? (billingLoading ? <AppLoadingState /> : billingError ? <AppErrorState error={billingError} /> : <Billing data={billingData} />) : <Navigate to={defaultAllowedPath} replace />} />} />
+                        <Route path="/facturacion" element={<PrivateRoute element={canAccess('facturacion') ? (billingLoading ? <AppLoadingState /> : billingError ? <AppErrorState error={billingError} /> : <Billing data={billingData} canEdit={canEdit('facturacion')} />) : <Navigate to={defaultAllowedPath} replace />} />} />
                         <Route path="/cuentas-pagar" element={<PrivateRoute element={canAccess('cuentas_pagar') ? (accountsPayableLoading ? <AppLoadingState /> : accountsPayableError ? <AppErrorState error={accountsPayableError} /> : <AccountsPayable data={accountsPayableData} />) : <Navigate to={defaultAllowedPath} replace />} />} />
                         <Route path="/reportes" element={<PrivateRoute element={canAccess('reportes') ? (reportsLoading ? <AppLoadingState /> : reportsError ? <AppErrorState error={reportsError} /> : <Reports data={reportsData} />) : <Navigate to={defaultAllowedPath} replace />} />} />
                         <Route path="/configuraciones" element={<PrivateRoute element={effectiveIsMaster ? <Settings /> : <Navigate to={defaultAllowedPath} replace />} />} />

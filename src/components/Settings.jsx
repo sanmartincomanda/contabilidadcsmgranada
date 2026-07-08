@@ -9,10 +9,16 @@ import { getDeviceSettings, saveDeviceSettings } from '../services/deviceSetting
 import {
     ACCESS_MODULES,
     MASTER_USER_EMAIL,
+    MODULE_ACCESS_EDIT,
+    MODULE_ACCESS_NONE,
+    MODULE_ACCESS_VIEW,
     USER_PROFILES_COLLECTION,
     emptyModuleAccess,
+    emptyModuleModes,
+    getModuleModeLabel,
     isMasterEmail,
     normalizeModuleAccess,
+    normalizeModuleModes,
     normalizeUserEmail,
 } from '../services/userAccess';
 
@@ -52,6 +58,7 @@ const createEmptyUserForm = () => ({
     password: '',
     active: true,
     modules: emptyModuleAccess(),
+    moduleModes: emptyModuleModes(),
 });
 
 const sortListedUsers = (users = []) => [...users].sort((a, b) => {
@@ -73,6 +80,7 @@ const normalizeListedUser = (raw = {}) => {
         active: isProtectedMaster ? true : raw.active !== false && raw.disabled !== true,
         disabled: isProtectedMaster ? false : raw.disabled === true || raw.active === false,
         modules: isProtectedMaster ? {} : normalizeModuleAccess(raw.modules || {}),
+        moduleModes: isProtectedMaster ? {} : normalizeModuleModes(raw.modules || {}, raw.moduleModes || {}),
         role: isProtectedMaster ? 'master' : raw.role || 'limited',
         source: raw.source || 'auth',
     };
@@ -219,6 +227,26 @@ export default function Settings() {
                 ...current.modules,
                 [moduleId]: !current.modules?.[moduleId],
             },
+            moduleModes: {
+                ...current.moduleModes,
+                [moduleId]: !current.modules?.[moduleId]
+                    ? (current.moduleModes?.[moduleId] === MODULE_ACCESS_VIEW ? MODULE_ACCESS_VIEW : MODULE_ACCESS_EDIT)
+                    : MODULE_ACCESS_NONE,
+            },
+        }));
+    };
+
+    const updateUserModuleMode = (moduleId, mode) => {
+        setUserForm((current) => ({
+            ...current,
+            modules: {
+                ...current.modules,
+                [moduleId]: true,
+            },
+            moduleModes: {
+                ...current.moduleModes,
+                [moduleId]: mode,
+            },
         }));
     };
 
@@ -229,6 +257,7 @@ export default function Settings() {
             password: '',
             active: systemUser.active !== false && systemUser.disabled !== true,
             modules: normalizeModuleAccess(systemUser.modules || {}),
+            moduleModes: normalizeModuleModes(systemUser.modules || {}, systemUser.moduleModes || {}),
         });
         setUsersMessage('');
         setUsersError('');
@@ -270,6 +299,7 @@ export default function Settings() {
                 password: userForm.password.trim(),
                 active: userForm.active,
                 modules: normalizeModuleAccess(userForm.modules || {}),
+                moduleModes: normalizeModuleModes(userForm.modules || {}, userForm.moduleModes || {}),
             };
             const result = await saveUser(payload);
             const savedUser = normalizeListedUser(result.data?.user || {
@@ -277,6 +307,7 @@ export default function Settings() {
                 displayName: payload.displayName,
                 active: payload.active,
                 modules: payload.modules,
+                moduleModes: payload.moduleModes,
                 source: 'optimistic-save',
             });
             setSystemUsers((currentUsers) => mergeListedUsers(currentUsers, [savedUser]));
@@ -452,29 +483,46 @@ export default function Settings() {
                             </label>
 
                             <div className="space-y-2">
-                                <div className="text-xs font-black uppercase tracking-[0.18em] text-slate-500">Modulos permitidos</div>
+                                <div className="text-xs font-black uppercase tracking-[0.18em] text-slate-500">Modulos permitidos y permisos</div>
                                 <div className="grid gap-2">
-                                    {ACCESS_MODULES.map((module) => (
-                                        <label
-                                            key={module.id}
-                                            className={`flex cursor-pointer items-start gap-3 rounded-2xl border px-4 py-3 transition ${
-                                                userForm.modules?.[module.id]
-                                                    ? 'border-[#e30613]/30 bg-[#fff1f2]'
-                                                    : 'border-slate-200 bg-white hover:bg-slate-50'
-                                            }`}
-                                        >
-                                            <input
-                                                type="checkbox"
-                                                checked={userForm.modules?.[module.id] === true}
-                                                onChange={() => toggleUserModule(module.id)}
-                                                className="mt-1 h-4 w-4 accent-[#e30613]"
-                                            />
-                                            <span>
-                                                <span className="block text-sm font-black text-slate-900">{module.label}</span>
-                                                <span className="block text-xs font-semibold text-slate-500">{module.description}</span>
-                                            </span>
-                                        </label>
-                                    ))}
+                                    {ACCESS_MODULES.map((module) => {
+                                        const enabled = userForm.modules?.[module.id] === true;
+                                        const mode = userForm.moduleModes?.[module.id] === MODULE_ACCESS_VIEW ? MODULE_ACCESS_VIEW : MODULE_ACCESS_EDIT;
+
+                                        return (
+                                            <label
+                                                key={module.id}
+                                                className={`flex cursor-pointer flex-col gap-3 rounded-2xl border px-4 py-3 transition sm:flex-row sm:items-center sm:justify-between ${
+                                                    enabled
+                                                        ? 'border-[#e30613]/30 bg-[#fff1f2]'
+                                                        : 'border-slate-200 bg-white hover:bg-slate-50'
+                                                }`}
+                                            >
+                                                <span className="flex items-start gap-3">
+                                                    <input
+                                                        type="checkbox"
+                                                        checked={enabled}
+                                                        onChange={() => toggleUserModule(module.id)}
+                                                        className="mt-1 h-4 w-4 accent-[#e30613]"
+                                                    />
+                                                    <span>
+                                                        <span className="block text-sm font-black text-slate-900">{module.label}</span>
+                                                        <span className="block text-xs font-semibold text-slate-500">{module.description}</span>
+                                                    </span>
+                                                </span>
+                                                <select
+                                                    value={mode}
+                                                    disabled={!enabled}
+                                                    onClick={(event) => event.stopPropagation()}
+                                                    onChange={(event) => updateUserModuleMode(module.id, event.target.value)}
+                                                    className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-black uppercase tracking-[0.14em] text-slate-700 outline-none transition focus:border-[#e30613] focus:ring-2 focus:ring-[#e30613]/15 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400 sm:w-36"
+                                                >
+                                                    <option value={MODULE_ACCESS_EDIT}>Editar</option>
+                                                    <option value={MODULE_ACCESS_VIEW}>Solo ver</option>
+                                                </select>
+                                            </label>
+                                        );
+                                    })}
                                 </div>
                             </div>
 
@@ -584,7 +632,7 @@ export default function Settings() {
                                                             <span className="rounded-full bg-slate-900 px-2.5 py-1 text-[10px] font-black uppercase tracking-wider text-white">Todos</span>
                                                         ) : enabledModules.length ? enabledModules.map((module) => (
                                                             <span key={module.id} className="rounded-full bg-slate-100 px-2.5 py-1 text-[10px] font-black uppercase tracking-wider text-slate-600">
-                                                                {module.label}
+                                                                {module.label} / {getModuleModeLabel(systemUser.moduleModes?.[module.id])}
                                                             </span>
                                                         )) : (
                                                             <span className="text-xs font-bold text-rose-500">Sin modulos</span>
