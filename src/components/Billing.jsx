@@ -9377,6 +9377,7 @@ function CashClosureHistory({ data, canEdit = true }) {
     const { user } = useAuth();
     const isMaster = isMasterEmail(user?.email);
     const canManageClosures = isMaster && canEdit;
+    const canPrintClosureTicket = canManageClosures || !canEdit;
     const [search, setSearch] = useState('');
     const [selectedMonth, setSelectedMonth] = useState(getMonth(todayString()));
     const [selectedDate, setSelectedDate] = useState('');
@@ -9909,13 +9910,15 @@ function CashClosureHistory({ data, canEdit = true }) {
                                     <td className={`px-4 py-3 text-right font-mono font-black ${Math.abs(closure.difference) > 0.01 ? 'text-red-700' : 'text-emerald-700'}`}>{fmt(closure.difference)}</td>
                                     <td className="px-4 py-3 text-right">
                                         <div className="flex justify-end gap-2">
-                                            <button
-                                                type="button"
-                                                onClick={() => setDetailClosure(closure)}
-                                                className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-[10px] font-black uppercase tracking-[0.16em] text-slate-700 transition hover:border-[#e30613] hover:bg-red-50 hover:text-[#e30613]"
-                                            >
-                                                Ver
-                                            </button>
+                                            {canManageClosures && (
+                                                <button
+                                                    type="button"
+                                                    onClick={() => setDetailClosure(closure)}
+                                                    className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-[10px] font-black uppercase tracking-[0.16em] text-slate-700 transition hover:border-[#e30613] hover:bg-red-50 hover:text-[#e30613]"
+                                                >
+                                                    Ver
+                                                </button>
+                                            )}
                                             <button
                                                 type="button"
                                                 onClick={() => exportClosureRcReport(closure)}
@@ -9923,7 +9926,7 @@ function CashClosureHistory({ data, canEdit = true }) {
                                             >
                                                 RC XLS
                                             </button>
-                                            {canManageClosures && (
+                                            {canPrintClosureTicket && (
                                                 <button
                                                     type="button"
                                                     onClick={() => reprintClosureTicket(closure)}
@@ -10144,14 +10147,20 @@ function RetentionHistory({ data, type }) {
 
 function BillingHistory({ data, canEdit = true }) {
     const [activeHistoryTab, setActiveHistoryTab] = useState('membretadas');
-    const historyTabs = [
+    const historyTabs = useMemo(() => [
         { key: 'membretadas', label: 'Facturas Membretadas' },
         { key: 'recibos', label: 'Recibos de Caja' },
         { key: 'cierres', label: 'Cierres de caja' },
-        { key: 'diferencias', label: 'Diferencias de caja' },
+        ...(canEdit ? [{ key: 'diferencias', label: 'Diferencias de caja' }] : []),
         { key: 'municipal', label: 'Municipal' },
         { key: 'ir', label: 'Anticipo de IR' },
-    ];
+    ], [canEdit]);
+
+    useEffect(() => {
+        if (!historyTabs.some((tab) => tab.key === activeHistoryTab)) {
+            setActiveHistoryTab('membretadas');
+        }
+    }, [activeHistoryTab, historyTabs]);
 
     return (
         <div className="space-y-5">
