@@ -97,6 +97,28 @@ const sanitizeFirestoreData = (value, { inArray = false } = {}) => {
 
 const getCashClosureRcValue = (summary = {}) => safeNumber(summary?.internalRatio?.rc);
 
+const getCashClosureRcDisplayValue = (summary = {}) => {
+    const ratio = summary?.internalRatio || {};
+    if (hasNumericValue(ratio.cashResidual)) return safeNumber(ratio.cashResidual);
+    return Math.abs(safeNumber(ratio.rc));
+};
+
+const getRcEligibleTransferTotal = (transferTotals = {}) => safeNumber(
+    (transferTotals.bac || 0)
+    + (transferTotals.banpro || 0)
+    + (transferTotals.lafise || 0)
+    + (transferTotals.bacUsd || 0)
+    + (transferTotals.lafiseUsd || 0)
+);
+
+const getRcEligibleTransferTotalFromPayment = (payment = {}) => safeNumber(
+    safeNumber(payment.transferBac)
+    + safeNumber(payment.transferBanpro)
+    + safeNumber(payment.transferLafise)
+    + safeNumber(payment.transferBacUsd)
+    + safeNumber(payment.transferLafiseUsd)
+);
+
 const isPositiveCashClosureRc = (value = 0) => safeNumber(value) > CASH_CLOSURE_POSITIVE_RC_THRESHOLD;
 
 const buildPositiveCashClosureRcMessage = (rc = 0) => `${CASH_CLOSURE_POSITIVE_RC_MESSAGE} RC ACTUAL: ${fmt(rc)}.`;
@@ -874,8 +896,10 @@ const buildClosureAccountingSummary = ({
         + (transferTotals.bacUsd || 0)
         + (transferTotals.lafiseUsd || 0)
     );
+    const rcEligibleTransferTotal = getRcEligibleTransferTotal(transferTotals);
     const cashTotal = safeNumber(cashCordobasTotal + dollarCashTotalCordobas + preCloseDepositTotal);
-    const rc = safeNumber(cardTotal + transferTotal - cashIncomeNetTotal);
+    const rc = safeNumber(cardTotal + rcEligibleTransferTotal - cashIncomeNetTotal);
+    const cashResidual = safeNumber(cashIncomeNetTotal - cardTotal - rcEligibleTransferTotal);
 
     return {
         general: {
@@ -909,6 +933,7 @@ const buildClosureAccountingSummary = ({
             transferLafise: safeNumber(transferTotals.lafise),
             transferBacUsd: safeNumber(transferTotals.bacUsd),
             transferLafiseUsd: safeNumber(transferTotals.lafiseUsd),
+            rcEligibleTransferTotal,
             cashTotal,
             cashCordobas: safeNumber(cashCordobasTotal),
             cashDollarsConverted: safeNumber(dollarCashTotalCordobas),
@@ -916,7 +941,8 @@ const buildClosureAccountingSummary = ({
         },
         internalRatio: {
             rc,
-            formula: 'Tarjeta + transferencia total - flujo de caja',
+            cashResidual,
+            formula: 'Tarjeta + transferencias sin BAC (2) - flujo de caja',
         },
     };
 };
@@ -953,7 +979,11 @@ const normalizeClosureAccountingSummarySales = (summary = {}, netSalesTotals = {
             + safeNumber(payment.transferBacUsd)
             + safeNumber(payment.transferLafiseUsd)
         );
-    const rc = safeNumber(cardTotal + transferTotal - cashIncomeNetTotal);
+    const rcEligibleTransferTotal = hasNumericValue(payment.rcEligibleTransferTotal)
+        ? safeNumber(payment.rcEligibleTransferTotal)
+        : getRcEligibleTransferTotalFromPayment(payment);
+    const rc = safeNumber(cardTotal + rcEligibleTransferTotal - cashIncomeNetTotal);
+    const cashResidual = safeNumber(cashIncomeNetTotal - cardTotal - rcEligibleTransferTotal);
     const ratioFormula = normalizeText(summary.internalRatio?.formula || '');
     const shouldUseRecalculatedRc = ratioFormula.includes('TOTAL INGRESO DE CAJA')
         || ratioFormula.includes('CON RETENCIONES')
@@ -985,6 +1015,8 @@ const normalizeClosureAccountingSummarySales = (summary = {}, netSalesTotals = {
         },
         paymentBreakdown: {
             ...payment,
+            transferTotal,
+            rcEligibleTransferTotal,
             cashTotal: safeNumber(cashCordobas + cashDollarsConverted + preCloseDepositTotal),
             cashCordobas,
             cashDollarsConverted,
@@ -992,10 +1024,9 @@ const normalizeClosureAccountingSummarySales = (summary = {}, netSalesTotals = {
         },
         internalRatio: {
             ...(summary.internalRatio || {}),
-            ...(shouldUseRecalculatedRc ? {
-                rc,
-                formula: 'Tarjeta + transferencia total - flujo de caja',
-            } : {}),
+            rc,
+            cashResidual,
+            formula: 'Tarjeta + transferencias sin BAC (2) - flujo de caja',
         },
     };
 };
@@ -1179,7 +1210,11 @@ const syncLinkedClosureForCashReceipt = async (receiptId = '', receiptPayload = 
     const payment = closure.accountingSummary?.paymentBreakdown || {};
     const stamped = closure.accountingSummary?.stampedDocuments || {};
     const cashIncomeNetTotal = safeNumber(safeNumber(stamped.stampedCashInvoices) + cashReceiptNetTotal);
-    const rc = safeNumber(safeNumber(payment.cardTotal) + safeNumber(payment.transferTotal) - cashIncomeNetTotal);
+    const rcEligibleTransferTotal = hasNumericValue(payment.rcEligibleTransferTotal)
+        ? safeNumber(payment.rcEligibleTransferTotal)
+        : getRcEligibleTransferTotalFromPayment(payment);
+    const rc = safeNumber(safeNumber(payment.cardTotal) + rcEligibleTransferTotal - cashIncomeNetTotal);
+    const cashResidual = safeNumber(cashIncomeNetTotal - safeNumber(payment.cardTotal) - rcEligibleTransferTotal);
     const accountingSummary = closure.accountingSummary ? {
         ...closure.accountingSummary,
         stampedDocuments: {
@@ -1197,7 +1232,8 @@ const syncLinkedClosureForCashReceipt = async (receiptId = '', receiptPayload = 
         internalRatio: {
             ...(closure.accountingSummary.internalRatio || {}),
             rc,
-            formula: 'Tarjeta + transferencia total - flujo de caja',
+            cashResidual,
+            formula: 'Tarjeta + transferencias sin BAC (2) - flujo de caja',
         },
     } : null;
 
@@ -2259,6 +2295,7 @@ const ClosureAccountingSummaryPanel = ({ summary = {} }) => {
     const tickets = summary.sicarTickets || {};
     const payment = summary.paymentBreakdown || {};
     const ratio = summary.internalRatio || {};
+    const rcDisplay = getCashClosureRcDisplayValue(summary);
 
     return (
         <div className="rounded-[1.8rem] border border-slate-200 bg-white p-4 shadow-sm">
@@ -2267,7 +2304,7 @@ const ClosureAccountingSummaryPanel = ({ summary = {} }) => {
                     <div className="text-[10px] font-black uppercase tracking-[0.28em] text-[#e30613]">Resumen final del cierre</div>
                     <div className="text-lg font-black text-slate-950">Cuadre contable y ratio RC</div>
                 </div>
-                <Badge tone={isPositiveCashClosureRc(ratio.rc) ? 'red' : 'green'}>RC {fmt(ratio.rc)}</Badge>
+                <Badge tone={isPositiveCashClosureRc(ratio.rc) ? 'red' : 'green'}>RC {fmt(rcDisplay)}</Badge>
             </div>
             <div className="grid gap-4 xl:grid-cols-5">
                 <div className="rounded-3xl border border-slate-200 bg-slate-50 p-4">
@@ -2308,7 +2345,7 @@ const ClosureAccountingSummaryPanel = ({ summary = {} }) => {
                     <div className="mt-2 text-xs font-black text-slate-600">Cordobas {fmt(payment.cashCordobas)}</div>
                     <div className="text-xs font-black text-slate-600">Dolares {fmt(payment.cashDollarsConverted)}</div>
                     <div className="text-xs font-black text-slate-600">Pre-cierre {fmt(payment.preCloseDepositTotal)}</div>
-                    <div className="mt-3"><SummaryCard label="RC" value={fmt(ratio.rc)} tone={isPositiveCashClosureRc(ratio.rc) ? 'red' : 'green'} /></div>
+                    <div className="mt-3"><SummaryCard label="RC" value={fmt(rcDisplay)} tone={isPositiveCashClosureRc(ratio.rc) ? 'red' : 'green'} /></div>
                     <div className="mt-2 text-[11px] font-bold text-slate-500">{ratio.formula}</div>
                 </div>
             </div>
@@ -8795,7 +8832,7 @@ const buildCashClosureRcReportSheets = (closure = {}) => {
         { Seccion: '1.4 Metodos de pago', Concepto: 'Lafise', Detalle: '', Total: safeNumber(payment.transferLafise) },
         { Seccion: '1.4 Metodos de pago', Concepto: 'BAC USD', Detalle: '', Total: safeNumber(payment.transferBacUsd) },
         { Seccion: '1.4 Metodos de pago', Concepto: 'Lafise USD', Detalle: '', Total: safeNumber(payment.transferLafiseUsd) },
-        { Seccion: '1.5 Calculo interno', Concepto: 'RC EFECTIVO', Detalle: '', Total: Math.abs(safeNumber(ratio.rc)) },
+        { Seccion: '1.5 Calculo interno', Concepto: 'RC EFECTIVO', Detalle: '', Total: getCashClosureRcDisplayValue(context.detailAccountingSummary) },
     ];
 
     return [
@@ -8907,7 +8944,7 @@ const CashClosureEditModal = ({
                         <SummaryCard label="Diferencia" value={fmt(totals.difference)} tone={Math.abs(totals.difference) > 0.01 ? 'red' : 'green'} />
                         <SummaryCard label="Efectivo total" value={fmt(totals.cashTotal)} />
                         <SummaryCard label="Estado sugerido" value={form.status === 'en_espera' ? 'En espera' : totals.shouldTrackDifference ? 'Con diferencia' : 'Cuadrado'} tone={form.status === 'en_espera' ? 'amber' : totals.shouldTrackDifference ? 'red' : 'green'} />
-                        <SummaryCard label="RC" value={fmt(rcValue)} tone={rcBlocked ? 'red' : 'green'} />
+                        <SummaryCard label="RC" value={fmt(Math.abs(safeNumber(rcValue)))} tone={rcBlocked ? 'red' : 'green'} />
                     </div>
 
                     {rcBlocked && <CashClosureRcAlarm rc={rcValue} />}
@@ -10170,7 +10207,7 @@ const getClosureCashForBankDeposit = (closure = {}) => {
         ? safeNumber(closure.dollarCashTotal)
         : safeNumber(closure.dollarCashTotalCordobas) / exchangeRate;
     const preCloseDollars = safeNumber(preClose.dollars);
-    const rcValue = Math.abs(safeNumber(context.detailAccountingSummary?.internalRatio?.rc ?? closure.accountingSummary?.internalRatio?.rc));
+    const rcValue = getCashClosureRcDisplayValue(context.detailAccountingSummary || closure.accountingSummary || {});
 
     return {
         closureId: closure.id || '',
