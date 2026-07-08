@@ -10728,6 +10728,7 @@ function BankDeposits({ data }) {
                                             ? 'efectivo2Usd'
                                             : 'efectivo2Nio';
                                 const accountOptions = detail.currency === 'USD' ? BANK_DEPOSIT_USD_ACCOUNTS : BANK_DEPOSIT_NIO_ACCOUNTS;
+                                const isFixedAccount = detail.id === 'efectivo2_nio' || detail.id === 'efectivo2_usd';
                                 return (
                                     <div key={detail.id} className="rounded-3xl border border-slate-200 bg-slate-50 p-4">
                                         <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
@@ -10737,14 +10738,21 @@ function BankDeposits({ data }) {
                                             </div>
                                             <Badge tone={detail.currency === 'USD' ? 'blue' : 'green'}>{detail.currency}</Badge>
                                         </div>
-                                        <Field label="Seleccionar cuenta a depositar" span="mt-4">
-                                            <select className={inputClass} value={accountSelections[accountKey] || ''} onChange={(event) => updateAccountSelection(accountKey, event.target.value)}>
-                                                <option value="">Seleccionar cuenta...</option>
-                                                {accountOptions.map((account) => (
-                                                    <option key={account.accountNumber} value={account.accountNumber}>{account.label}</option>
-                                                ))}
-                                            </select>
-                                        </Field>
+                                        {isFixedAccount ? (
+                                            <div className="mt-4 rounded-2xl border border-slate-200 bg-white px-4 py-3">
+                                                <div className="text-[10px] font-black uppercase tracking-[0.22em] text-slate-400">Cuenta predeterminada unica</div>
+                                                <div className="mt-1 text-sm font-black text-slate-900">{detail.account?.label || '-'}</div>
+                                            </div>
+                                        ) : (
+                                            <Field label="Seleccionar cuenta a depositar" span="mt-4">
+                                                <select className={inputClass} value={accountSelections[accountKey] || ''} onChange={(event) => updateAccountSelection(accountKey, event.target.value)}>
+                                                    <option value="">Seleccionar cuenta...</option>
+                                                    {accountOptions.map((account) => (
+                                                        <option key={account.accountNumber} value={account.accountNumber}>{account.label}</option>
+                                                    ))}
+                                                </select>
+                                            </Field>
+                                        )}
                                     </div>
                                 );
                             })}
