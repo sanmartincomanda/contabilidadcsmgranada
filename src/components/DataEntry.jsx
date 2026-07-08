@@ -193,7 +193,9 @@ const normalizeFilterText = (value) => (
 );
 
 const QB_INVENTORY_ACCOUNT = '11060 INVENTARIO:Alimentos';
-const QB_VAT_ACCOUNT = '110702 IVA Acreditable';
+const QB_VAT_ACCOUNT = '110702 IMPUESTOS ACREDITABLES:IVA Acreditable';
+const QB_IR_RETENTION_ACCOUNT = '21041 IMPTOS CORRIENTES X PAGAR:Anticipo IR';
+const QB_MUNICIPAL_RETENTION_ACCOUNT = '21043 IMPTOS CORRIENTES X PAGAR:Impuestos Municipales';
 const QB_LINE_TAX_CODE = 'No VAT';
 
 const toQbMoney = (value = 0) => {
@@ -227,6 +229,14 @@ const getPurchaseQbSubtotal = (item = {}) => {
 
 const getPurchaseQbIva = (item = {}) => toQbMoney(Number(item.iva ?? 0) || 0);
 
+const getPurchaseQbRetentionIr = (item = {}) => toQbMoney(
+    Number(item.retentionIr2 ?? item.retencionIr2 ?? item.retencionIR ?? item.anticipoIr ?? 0) || 0
+);
+
+const getPurchaseQbRetentionMunicipal = (item = {}) => toQbMoney(
+    Number(item.retentionMunicipal1 ?? item.retencionMunicipal1 ?? item.retencionMunicipal ?? item.impuestoMunicipal ?? 0) || 0
+);
+
 const buildQuickBooksPurchaseRows = (items = []) => (
     items.flatMap((item) => {
         const billNo = getPurchaseInvoiceNumber(item);
@@ -235,6 +245,8 @@ const buildQuickBooksPurchaseRows = (items = []) => (
         const dueDate = getPurchaseQbDate(item, 'dueDate') || getPurchaseQbDate(item, 'vencimiento') || billDate;
         const subtotal = getPurchaseQbSubtotal(item);
         const iva = getPurchaseQbIva(item);
+        const retentionIr = getPurchaseQbRetentionIr(item);
+        const retentionMunicipal = getPurchaseQbRetentionMunicipal(item);
         const subcategory = String(item.subcategory || item.subcategoria || item.categoryLabel || item.category || 'Compra de mercancia').trim();
         const base = {
             'Bill no.': billNo,
@@ -260,6 +272,24 @@ const buildQuickBooksPurchaseRows = (items = []) => (
                 Account: QB_VAT_ACCOUNT,
                 Description: `IVA ${billNo || subcategory}`.trim(),
                 'Line Amount': iva,
+            });
+        }
+
+        if (retentionIr > 0) {
+            rows.push({
+                ...base,
+                Account: QB_IR_RETENTION_ACCOUNT,
+                Description: `Retencion anticipo IR ${billNo || subcategory}`.trim(),
+                'Line Amount': -retentionIr,
+            });
+        }
+
+        if (retentionMunicipal > 0) {
+            rows.push({
+                ...base,
+                Account: QB_MUNICIPAL_RETENTION_ACCOUNT,
+                Description: `Retencion municipal ${billNo || subcategory}`.trim(),
+                'Line Amount': -retentionMunicipal,
             });
         }
 
