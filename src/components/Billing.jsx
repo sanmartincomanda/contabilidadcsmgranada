@@ -10574,6 +10574,27 @@ const formatBankDepositAmount = (detail = {}) => (
         : fmt(detail.amountCordobas)
 );
 
+const isBankDepositDetailConfirmed = (detail = {}) => normalizeText(detail.status) === 'CONFIRMADO';
+
+const isBankDepositConfirmed = (deposit = {}) => (
+    normalizeText(deposit.status) === 'CONFIRMADO'
+    || ((deposit.depositDetails || []).length > 0 && (deposit.depositDetails || []).every(isBankDepositDetailConfirmed))
+);
+
+const getBankDepositPendingDetails = (deposit = {}) => (
+    (deposit.depositDetails || []).filter((detail) => !isBankDepositDetailConfirmed(detail))
+);
+
+const getBankDepositSupportUrl = (detail = {}) => (
+    detail.minuteSupport?.url || detail.support?.url || detail.minutaUrl || ''
+);
+
+const isBankDepositSupportImage = (detail = {}) => {
+    const contentType = String(detail.minuteSupport?.contentType || detail.support?.contentType || '').toLowerCase();
+    const url = String(getBankDepositSupportUrl(detail) || '').toLowerCase();
+    return contentType.startsWith('image/') || /\.(png|jpe?g|webp|gif)(\?|$)/.test(url);
+};
+
 const printBankDepositDetails = () => {
     document.body.classList.add('print-bank-deposit-details');
     const cleanup = () => {
@@ -10672,9 +10693,115 @@ const BankDepositPrintArea = ({ deposit }) => {
     );
 };
 
+const BankDepositHistoryModal = ({ deposit, onClose, onPrint }) => {
+    if (!deposit) return null;
+    const details = deposit.depositDetails || [];
+
+    return (
+        <div className="fixed inset-0 z-[130] flex items-center justify-center p-3 sm:p-6">
+            <button
+                type="button"
+                aria-label="Cerrar historial de deposito"
+                className="absolute inset-0 bg-slate-950/65 backdrop-blur-sm"
+                onClick={onClose}
+            />
+            <div className="relative flex max-h-[92vh] w-full max-w-5xl flex-col overflow-hidden rounded-[2rem] border border-white/30 bg-white shadow-2xl shadow-slate-950/30">
+                <div className="flex flex-col gap-4 border-b border-slate-200 bg-slate-950 px-5 py-5 text-white sm:flex-row sm:items-center sm:justify-between">
+                    <div>
+                        <div className="text-[10px] font-black uppercase tracking-[0.28em] text-[#ffc400]">Historial de deposito</div>
+                        <h3 className="text-2xl font-black">{deposit.closureCodes?.length ? `Cierres ${deposit.closureCodes.join(', ')}` : 'Deposito bancario'}</h3>
+                        <div className="mt-1 text-sm font-bold text-slate-300">
+                            {deposit.date || '-'} / {fmt(deposit.totalCordobas)} / {details.length} detalle(s)
+                        </div>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                        <button
+                            type="button"
+                            onClick={() => onPrint?.(deposit)}
+                            className="rounded-2xl border border-amber-300 bg-amber-50 px-4 py-2 text-xs font-black uppercase tracking-[0.18em] text-amber-800 transition hover:bg-amber-100"
+                        >
+                            Reimprimir
+                        </button>
+                        <button
+                            type="button"
+                            onClick={onClose}
+                            className="rounded-2xl border border-white/15 bg-white/10 px-4 py-2 text-xs font-black uppercase tracking-[0.18em] text-white transition hover:bg-white hover:text-slate-950"
+                        >
+                            Cerrar
+                        </button>
+                    </div>
+                </div>
+
+                <div className="overflow-y-auto p-5">
+                    <div className="grid gap-3 md:grid-cols-3">
+                        <SummaryCard label="Fecha" value={deposit.date || '-'} tone="blue" />
+                        <SummaryCard label="Total depositado" value={fmt(deposit.totalCordobas)} tone="green" />
+                        <SummaryCard label="Estado" value={String(deposit.status || '').replace(/_/g, ' ') || 'Confirmado'} tone="green" />
+                    </div>
+
+                    <div className="mt-5 rounded-3xl border border-slate-200 bg-slate-50/80 p-4">
+                        <div className="text-[10px] font-black uppercase tracking-[0.24em] text-slate-400">Concepto</div>
+                        <div className="mt-1 text-sm font-bold text-slate-700">{deposit.concept || '-'}</div>
+                    </div>
+
+                    <div className="mt-5 space-y-4">
+                        {details.map((detail) => {
+                            const supportUrl = getBankDepositSupportUrl(detail);
+                            const isImage = isBankDepositSupportImage(detail);
+                            return (
+                                <div key={detail.id} className="rounded-[1.8rem] border border-slate-200 bg-white p-4 shadow-sm">
+                                    <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                                        <div>
+                                            <div className="text-[10px] font-black uppercase tracking-[0.24em] text-[#e30613]">{detail.label}</div>
+                                            <div className="mt-1 font-mono text-2xl font-black text-slate-950">{formatBankDepositAmount(detail)}</div>
+                                            <div className="mt-1 text-xs font-bold text-slate-500">{detail.account?.label || '-'}</div>
+                                        </div>
+                                        <Badge tone={isBankDepositDetailConfirmed(detail) ? 'green' : 'amber'}>
+                                            {isBankDepositDetailConfirmed(detail) ? 'Confirmado' : 'Pendiente'}
+                                        </Badge>
+                                    </div>
+                                    <div className="mt-4 grid gap-3 md:grid-cols-2">
+                                        <ClosureInfoItem label="Referencia" value={detail.reference || detail.confirmationReference || '-'} />
+                                        <ClosureInfoItem label="Confirmado por" value={detail.confirmedBy || '-'} />
+                                    </div>
+                                    {supportUrl ? (
+                                        <div className="mt-4 rounded-3xl border border-slate-200 bg-slate-50 p-4">
+                                            <div className="mb-3 flex items-center justify-between gap-3">
+                                                <div>
+                                                    <div className="text-[10px] font-black uppercase tracking-[0.24em] text-slate-400">Minuta</div>
+                                                    <div className="text-sm font-black text-slate-950">Soporte del deposito</div>
+                                                </div>
+                                                <a className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-black uppercase tracking-[0.16em] text-slate-700 transition hover:border-[#e30613] hover:text-[#e30613]" href={supportUrl} target="_blank" rel="noreferrer">
+                                                    Abrir
+                                                </a>
+                                            </div>
+                                            {isImage ? (
+                                                <img src={supportUrl} alt="Minuta de deposito" className="max-h-[420px] w-full rounded-2xl border border-slate-200 object-contain" />
+                                            ) : (
+                                                <div className="rounded-2xl border border-dashed border-slate-300 bg-white p-6 text-center text-sm font-bold text-slate-500">
+                                                    Minuta disponible como archivo. Usa Abrir para verla.
+                                                </div>
+                                            )}
+                                        </div>
+                                    ) : (
+                                        <div className="mt-4 rounded-2xl border border-dashed border-slate-300 bg-slate-50 p-5 text-center text-sm font-bold text-slate-400">
+                                            Sin foto de minuta registrada.
+                                        </div>
+                                    )}
+                                </div>
+                            );
+                        })}
+                    </div>
+                </div>
+            </div>
+        </div>
+    );
+};
+
 function BankDeposits({ data }) {
     const { user } = useAuth();
     const [activeDepositTab, setActiveDepositTab] = useState('ingresar');
+    const [activeConfirmationTab, setActiveConfirmationTab] = useState('pendientes');
     const [selectedClosureIds, setSelectedClosureIds] = useState([]);
     const [accountSelections, setAccountSelections] = useState({
         efectivo2Nio: BANK_DEPOSIT_DEFAULT_NIO_ACCOUNT,
@@ -10688,6 +10815,7 @@ function BankDeposits({ data }) {
     const [confirmationRefs, setConfirmationRefs] = useState({});
     const [confirmationFiles, setConfirmationFiles] = useState({});
     const [confirmingKey, setConfirmingKey] = useState('');
+    const [historyDeposit, setHistoryDeposit] = useState(null);
 
     const deposits = useMemo(() => (
         [...(data.depositos_bancarios || [])]
@@ -10743,7 +10871,15 @@ function BankDeposits({ data }) {
     }, [depositDetails]);
 
     const pendingConfirmationDeposits = useMemo(() => (
-        deposits.filter((deposit) => normalizeText(deposit.status) !== 'CONFIRMADO' && normalizeText(deposit.status) !== 'ANULADO')
+        deposits.filter((deposit) => (
+            normalizeText(deposit.status) !== 'ANULADO'
+            && !isBankDepositConfirmed(deposit)
+            && getBankDepositPendingDetails(deposit).length > 0
+        ))
+    ), [deposits]);
+
+    const confirmedDeposits = useMemo(() => (
+        deposits.filter((deposit) => normalizeText(deposit.status) !== 'ANULADO' && isBankDepositConfirmed(deposit))
     ), [deposits]);
 
     useEffect(() => {
@@ -10896,6 +11032,7 @@ function BankDeposits({ data }) {
                 delete next[formKey];
                 return next;
             });
+            if (allConfirmed) setActiveConfirmationTab('historial');
             setMessage(allConfirmed ? 'Deposito confirmado completamente.' : 'Detalle de deposito confirmado.');
         } catch (error) {
             console.error(error);
@@ -11049,79 +11186,155 @@ function BankDeposits({ data }) {
 
             {activeDepositTab === 'confirmacion' && (
                 <Section title="Confirmacion de depositos" eyebrow="Referencia y minuta" action={<Badge tone="blue">{pendingConfirmationDeposits.length} pendientes</Badge>}>
-                    <div className="space-y-4">
-                        {pendingConfirmationDeposits.map((deposit) => (
-                            <div key={deposit.id} className="rounded-[1.8rem] border border-slate-200 bg-white p-4 shadow-sm">
-                                <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                                    <div>
-                                        <div className="text-[10px] font-black uppercase tracking-[0.22em] text-slate-400">{deposit.date || '-'}</div>
-                                        <div className="text-lg font-black text-slate-950">{deposit.closureCodes?.length ? `Cierres ${deposit.closureCodes.join(', ')}` : deposit.concept}</div>
-                                        <div className="mt-1 text-xs font-bold text-slate-500">{fmt(deposit.totalCordobas)} en {deposit.depositDetails?.length || 0} deposito(s)</div>
-                                    </div>
-                                    <button
-                                        type="button"
-                                        onClick={() => {
-                                            setPrintDeposit(deposit);
-                                            window.setTimeout(printBankDepositDetails, 80);
-                                        }}
-                                        className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-xs font-black uppercase tracking-[0.16em] text-slate-700 transition hover:border-[#e30613] hover:text-[#e30613]"
-                                    >
-                                        Reimprimir detalles
-                                    </button>
-                                </div>
-                                <div className="mt-4 grid gap-3 xl:grid-cols-2">
-                                    {(deposit.depositDetails || []).map((detail) => {
-                                        const formKey = `${deposit.id}_${detail.id}`;
-                                        const confirmed = normalizeText(detail.status) === 'CONFIRMADO';
-                                        return (
-                                            <div key={detail.id} className={`rounded-3xl border p-4 ${confirmed ? 'border-emerald-200 bg-emerald-50' : 'border-slate-200 bg-slate-50'}`}>
-                                                <div className="flex items-start justify-between gap-3">
-                                                    <div>
-                                                        <div className="text-[10px] font-black uppercase tracking-[0.22em] text-slate-400">{detail.label}</div>
-                                                        <div className="font-mono text-xl font-black text-slate-950">{formatBankDepositAmount(detail)}</div>
-                                                        <div className="mt-1 text-xs font-bold text-slate-500">{detail.account?.label || '-'}</div>
-                                                    </div>
-                                                    <Badge tone={confirmed ? 'green' : 'amber'}>{confirmed ? 'Confirmado' : 'Pendiente'}</Badge>
-                                                </div>
-                                                {confirmed ? (
-                                                    <div className="mt-4 rounded-2xl border border-emerald-200 bg-white p-3 text-sm font-bold text-emerald-800">
-                                                        Referencia: {detail.reference || '-'}
-                                                        {detail.minuteSupport?.url && (
-                                                            <a className="ml-2 underline" href={detail.minuteSupport.url} target="_blank" rel="noreferrer">Ver minuta</a>
-                                                        )}
-                                                    </div>
-                                                ) : (
-                                                    <div className="mt-4 grid gap-3">
-                                                        <Field label="Numero de referencia">
-                                                            <input className={inputClass} value={confirmationRefs[formKey] || ''} onChange={(event) => updateConfirmationReference(deposit.id, detail.id, event.target.value)} placeholder="Referencia bancaria" />
-                                                        </Field>
-                                                        <Field label="Foto de minuta">
-                                                            <input className={inputClass} type="file" accept="image/*,.pdf" onChange={(event) => updateConfirmationFile(deposit.id, detail.id, event.target.files?.[0] || null)} />
-                                                        </Field>
-                                                        <button
-                                                            type="button"
-                                                            onClick={() => confirmDepositDetail(deposit, detail)}
-                                                            disabled={confirmingKey === formKey}
-                                                            className="rounded-2xl bg-emerald-600 px-4 py-3 text-xs font-black uppercase tracking-[0.16em] text-white transition hover:bg-emerald-700 disabled:opacity-50"
-                                                        >
-                                                            {confirmingKey === formKey ? 'Confirmando...' : 'Confirmar deposito'}
-                                                        </button>
-                                                    </div>
-                                                )}
-                                            </div>
-                                        );
-                                    })}
-                                </div>
-                            </div>
+                    <div className="mb-5 flex flex-wrap gap-2 rounded-3xl border border-slate-200 bg-slate-50/70 p-2">
+                        {[
+                            { key: 'pendientes', label: 'Para confirmar pendientes', count: pendingConfirmationDeposits.length },
+                            { key: 'historial', label: 'Historial', count: confirmedDeposits.length },
+                        ].map((tab) => (
+                            <button
+                                key={tab.key}
+                                type="button"
+                                onClick={() => setActiveConfirmationTab(tab.key)}
+                                className={`rounded-2xl px-4 py-3 text-xs font-black uppercase tracking-[0.16em] transition ${activeConfirmationTab === tab.key
+                                    ? 'bg-slate-950 text-white shadow-lg shadow-slate-950/15'
+                                    : 'bg-white text-slate-600 hover:text-[#e30613]'
+                                }`}
+                            >
+                                {tab.label} ({tab.count})
+                            </button>
                         ))}
-                        {pendingConfirmationDeposits.length === 0 && (
-                            <div className="rounded-3xl border border-dashed border-slate-300 bg-slate-50 p-8 text-center text-sm font-bold text-slate-400">
-                                No hay depositos pendientes de confirmacion.
-                            </div>
-                        )}
                     </div>
+
+                    {activeConfirmationTab === 'pendientes' && (
+                        <div className="space-y-4">
+                            {pendingConfirmationDeposits.map((deposit) => {
+                                const pendingDetails = getBankDepositPendingDetails(deposit);
+                                return (
+                                    <div key={deposit.id} className="rounded-[1.8rem] border border-slate-200 bg-white p-4 shadow-sm">
+                                        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                                            <div>
+                                                <div className="text-[10px] font-black uppercase tracking-[0.22em] text-slate-400">{deposit.date || '-'}</div>
+                                                <div className="text-lg font-black text-slate-950">{deposit.closureCodes?.length ? `Cierres ${deposit.closureCodes.join(', ')}` : deposit.concept}</div>
+                                                <div className="mt-1 text-xs font-bold text-slate-500">{fmt(deposit.totalCordobas)} / {pendingDetails.length} pendiente(s) por confirmar</div>
+                                            </div>
+                                            <button
+                                                type="button"
+                                                onClick={() => {
+                                                    setPrintDeposit(deposit);
+                                                    window.setTimeout(printBankDepositDetails, 80);
+                                                }}
+                                                className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-xs font-black uppercase tracking-[0.16em] text-slate-700 transition hover:border-[#e30613] hover:text-[#e30613]"
+                                            >
+                                                Reimprimir detalles
+                                            </button>
+                                        </div>
+                                        <div className="mt-4 grid gap-3 xl:grid-cols-2">
+                                            {pendingDetails.map((detail) => {
+                                                const formKey = `${deposit.id}_${detail.id}`;
+                                                return (
+                                                    <div key={detail.id} className="rounded-3xl border border-slate-200 bg-slate-50 p-4">
+                                                        <div className="flex items-start justify-between gap-3">
+                                                            <div>
+                                                                <div className="text-[10px] font-black uppercase tracking-[0.22em] text-slate-400">{detail.label}</div>
+                                                                <div className="font-mono text-xl font-black text-slate-950">{formatBankDepositAmount(detail)}</div>
+                                                                <div className="mt-1 text-xs font-bold text-slate-500">{detail.account?.label || '-'}</div>
+                                                            </div>
+                                                            <Badge tone="amber">Pendiente</Badge>
+                                                        </div>
+                                                        <div className="mt-4 grid gap-3">
+                                                            <Field label="Numero de referencia">
+                                                                <input className={inputClass} value={confirmationRefs[formKey] || ''} onChange={(event) => updateConfirmationReference(deposit.id, detail.id, event.target.value)} placeholder="Referencia bancaria" />
+                                                            </Field>
+                                                            <Field label="Foto de minuta">
+                                                                <input className={inputClass} type="file" accept="image/*,.pdf" onChange={(event) => updateConfirmationFile(deposit.id, detail.id, event.target.files?.[0] || null)} />
+                                                            </Field>
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => confirmDepositDetail(deposit, detail)}
+                                                                disabled={confirmingKey === formKey}
+                                                                className="rounded-2xl bg-emerald-600 px-4 py-3 text-xs font-black uppercase tracking-[0.16em] text-white transition hover:bg-emerald-700 disabled:opacity-50"
+                                                            >
+                                                                {confirmingKey === formKey ? 'Confirmando...' : 'Confirmar deposito'}
+                                                            </button>
+                                                        </div>
+                                                    </div>
+                                                );
+                                            })}
+                                        </div>
+                                    </div>
+                                );
+                            })}
+                            {pendingConfirmationDeposits.length === 0 && (
+                                <div className="rounded-3xl border border-dashed border-slate-300 bg-slate-50 p-8 text-center text-sm font-bold text-slate-400">
+                                    No hay depositos pendientes de confirmacion.
+                                </div>
+                            )}
+                        </div>
+                    )}
+
+                    {activeConfirmationTab === 'historial' && (
+                        <div>
+                            <div className="mb-3 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-xs font-bold text-slate-500">
+                                Doble clic en un deposito para ver detalle, referencias y foto de minuta.
+                            </div>
+                            <div className="overflow-x-auto rounded-3xl border border-slate-200 bg-white">
+                                <table className="min-w-full text-left text-sm">
+                                    <thead>
+                                        <tr className="border-b border-slate-200 bg-slate-50 text-[10px] font-black uppercase tracking-[0.22em] text-slate-400">
+                                            <th className="px-4 py-3">Fecha</th>
+                                            <th className="px-4 py-3">Cierres</th>
+                                            <th className="px-4 py-3">Referencias</th>
+                                            <th className="px-4 py-3 text-right">Total</th>
+                                            <th className="px-4 py-3 text-right">Detalles</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {confirmedDeposits.map((deposit) => (
+                                            <tr
+                                                key={deposit.id}
+                                                onDoubleClick={() => setHistoryDeposit(deposit)}
+                                                className="cursor-pointer border-b border-slate-100 transition hover:bg-red-50/50"
+                                                title="Doble clic para ver detalle"
+                                            >
+                                                <td className="px-4 py-3 font-bold text-slate-700">{deposit.date || '-'}</td>
+                                                <td className="px-4 py-3 font-black text-slate-950">{deposit.closureCodes?.length ? deposit.closureCodes.join(', ') : '-'}</td>
+                                                <td className="px-4 py-3 font-bold text-slate-500">
+                                                    {(deposit.depositDetails || []).map((detail) => detail.reference).filter(Boolean).join(' / ') || '-'}
+                                                </td>
+                                                <td className="px-4 py-3 text-right font-mono font-black text-emerald-700">{fmt(deposit.totalCordobas)}</td>
+                                                <td className="px-4 py-3 text-right">
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => setHistoryDeposit(deposit)}
+                                                        className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-[10px] font-black uppercase tracking-[0.16em] text-slate-700 transition hover:border-[#e30613] hover:text-[#e30613]"
+                                                    >
+                                                        Ver
+                                                    </button>
+                                                </td>
+                                            </tr>
+                                        ))}
+                                        {confirmedDeposits.length === 0 && (
+                                            <tr>
+                                                <td colSpan={5} className="px-4 py-10 text-center text-sm font-bold text-slate-400">
+                                                    No hay depositos confirmados en historial.
+                                                </td>
+                                            </tr>
+                                        )}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    )}
                 </Section>
             )}
+            <BankDepositHistoryModal
+                deposit={historyDeposit}
+                onClose={() => setHistoryDeposit(null)}
+                onPrint={(deposit) => {
+                    setPrintDeposit(deposit);
+                    window.setTimeout(printBankDepositDetails, 80);
+                }}
+            />
         </div>
     );
 }
