@@ -193,7 +193,7 @@ const normalizeFilterText = (value) => (
 );
 
 const QB_INVENTORY_ACCOUNT = '11060 INVENTARIO:Alimentos';
-const QB_VAT_ACCOUNT = '110702 IMPUESTOS ACREDITABLES:IVA';
+const QB_VAT_ACCOUNT = '110702 IVA Acreditable';
 const QB_LINE_TAX_CODE = 'No VAT';
 
 const toQbMoney = (value = 0) => {
