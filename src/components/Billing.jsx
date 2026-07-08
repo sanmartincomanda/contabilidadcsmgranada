@@ -10262,6 +10262,29 @@ const calculateBankDepositAllocation = (closures = []) => {
     };
 };
 
+const roundBankDepositAmount = (value = 0) => Math.round(safeNumber(value));
+
+const roundBankDepositRow = (row = {}) => {
+    if (row.currency === 'USD') {
+        const roundedUsd = roundBankDepositAmount(row.amount);
+        const exchangeRate = safeNumber(row.exchangeRate) || CASH_CLOSURE_EXCHANGE_RATE;
+        return {
+            ...row,
+            amount: roundedUsd,
+            amountCordobas: safeNumber(roundedUsd * exchangeRate),
+            roundedDeposit: true,
+        };
+    }
+
+    const roundedNio = roundBankDepositAmount(row.amountCordobas);
+    return {
+        ...row,
+        amount: roundedNio,
+        amountCordobas: roundedNio,
+        roundedDeposit: true,
+    };
+};
+
 const buildBankDepositDetails = (allocation = {}, accounts = {}) => {
     const rows = [
         {
@@ -10305,6 +10328,7 @@ const buildBankDepositDetails = (allocation = {}, accounts = {}) => {
     ];
 
     return rows
+        .map(roundBankDepositRow)
         .filter((row) => row.amount > 0 || row.amountCordobas > 0)
         .map((row) => ({
             ...row,
@@ -10469,6 +10493,23 @@ function BankDeposits({ data }) {
     const depositDetails = useMemo(() => (
         buildBankDepositDetails(allocation, accountSelections)
     ), [allocation, accountSelections]);
+    const roundedDepositSummary = useMemo(() => {
+        const byId = Object.fromEntries(depositDetails.map((detail) => [detail.id, detail]));
+        const totalCordobas = safeNumber(depositDetails.reduce((sum, detail) => sum + safeNumber(detail.amountCordobas), 0));
+        const usdTotal = safeNumber(depositDetails
+            .filter((detail) => detail.currency === 'USD')
+            .reduce((sum, detail) => sum + safeNumber(detail.amount), 0));
+        const rcCordobas = safeNumber(safeNumber(byId.efectivo_rc_nio?.amountCordobas) + safeNumber(byId.efectivo_rc_usd?.amountCordobas));
+        const efectivo2Cordobas = safeNumber(safeNumber(byId.efectivo2_nio?.amountCordobas) + safeNumber(byId.efectivo2_usd?.amountCordobas));
+        return {
+            totalCordobas,
+            usdTotal,
+            rcCordobas,
+            efectivo2Cordobas,
+            efectivo2Usd: safeNumber(byId.efectivo2_usd?.amount),
+            efectivoRcUsd: safeNumber(byId.efectivo_rc_usd?.amount),
+        };
+    }, [depositDetails]);
 
     const pendingConfirmationDeposits = useMemo(() => (
         deposits.filter((deposit) => normalizeText(deposit.status) !== 'CONFIRMADO' && normalizeText(deposit.status) !== 'ANULADO')
@@ -10710,12 +10751,12 @@ function BankDeposits({ data }) {
 
                     <Section title="Preparar deposito" eyebrow="Distribucion bancaria" action={<Badge tone="amber">Tasa C$ {CASH_CLOSURE_EXCHANGE_RATE.toFixed(2)}</Badge>}>
                         <div className="grid gap-3 md:grid-cols-2">
-                            <SummaryCard label="Efectivo total C$" value={fmt(allocation.cashEquivalentTotal)} tone="green" />
-                            <SummaryCard label="Efectivo $" value={`US$ ${allocation.cashDollars.toFixed(2)}`} tone="blue" />
-                            <SummaryCard label="Efectivo RC" value={fmt(allocation.rcTarget)} tone="amber" />
-                            <SummaryCard label="Efectivo (2)" value={fmt(allocation.efectivo2Target)} />
-                            <SummaryCard label="Efectivo (2) $" value={`US$ ${allocation.efectivo2Usd.toFixed(2)}`} tone="green" />
-                            <SummaryCard label="Efectivo RC $" value={`US$ ${allocation.efectivoRcUsd.toFixed(2)}`} tone="amber" />
+                            <SummaryCard label="Efectivo total C$" value={fmt(roundedDepositSummary.totalCordobas)} tone="green" />
+                            <SummaryCard label="Efectivo $" value={`US$ ${roundedDepositSummary.usdTotal.toFixed(2)}`} tone="blue" />
+                            <SummaryCard label="Efectivo RC" value={fmt(roundedDepositSummary.rcCordobas)} tone="amber" />
+                            <SummaryCard label="Efectivo (2)" value={fmt(roundedDepositSummary.efectivo2Cordobas)} />
+                            <SummaryCard label="Efectivo (2) $" value={`US$ ${roundedDepositSummary.efectivo2Usd.toFixed(2)}`} tone="green" />
+                            <SummaryCard label="Efectivo RC $" value={`US$ ${roundedDepositSummary.efectivoRcUsd.toFixed(2)}`} tone="amber" />
                         </div>
 
                         <div className="mt-5 space-y-4">
