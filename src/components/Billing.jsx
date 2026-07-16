@@ -5,9 +5,12 @@ import { db } from '../firebase';
 import { useAuth } from '../context/AuthContext';
 import {
     APP_BRAND_NAME,
+    BRANCHES,
+    CONSOLIDATED_BRANCH_ID,
     DEFAULT_BRANCH_ID,
     buildDocumentDisplayNumber,
     fmt,
+    getBranchById,
     getBranchPayload,
     getRecordBranchId,
 } from '../constants';
@@ -7184,7 +7187,15 @@ const StampedInvoiceEditModal = ({
 
 function StampedInvoiceHistory({ data, canEdit = true, branchContext }) {
     const selectedBranchId = getActiveBillingBranchId(branchContext);
-    const invoiceBranchPayload = useMemo(() => getBranchPayload(selectedBranchId, 'invoice'), [selectedBranchId]);
+    const allowedBranchIds = useMemo(
+        () => (branchContext?.allowedBranchIds?.length ? branchContext.allowedBranchIds : [selectedBranchId]),
+        [branchContext?.allowedBranchIds, selectedBranchId]
+    );
+    const [branchFilter, setBranchFilter] = useState(selectedBranchId);
+    const isCombinedBranchFilter = branchFilter === CONSOLIDATED_BRANCH_ID;
+    const effectiveEditBranchId = isCombinedBranchFilter ? selectedBranchId : branchFilter;
+    const invoiceBranchPayload = useMemo(() => getBranchPayload(effectiveEditBranchId, 'invoice'), [effectiveEditBranchId]);
+    const canEditCurrentScope = canEdit && !isCombinedBranchFilter;
     const [search, setSearch] = useState('');
     const [selectedMonth, setSelectedMonth] = useState(getMonth(todayString()));
     const [selectedDate, setSelectedDate] = useState('');
@@ -7212,12 +7223,31 @@ function StampedInvoiceHistory({ data, canEdit = true, branchContext }) {
         saveNewPrintLayout,
     } = useStampedPrintTemplates(setMessage);
 
+    const branchFilterOptions = useMemo(() => {
+        const allowed = new Set(allowedBranchIds);
+        const branches = BRANCHES.filter((branch) => allowed.has(branch.id));
+        return branches.length > 1
+            ? [{ id: CONSOLIDATED_BRANCH_ID, shortName: 'Ambas sucursales', invoiceSeries: 'A+B' }, ...branches]
+            : branches;
+    }, [allowedBranchIds]);
+
+    useEffect(() => {
+        if (branchFilter !== CONSOLIDATED_BRANCH_ID && !allowedBranchIds.includes(branchFilter)) {
+            setBranchFilter(selectedBranchId || allowedBranchIds[0] || DEFAULT_BRANCH_ID);
+        }
+    }, [allowedBranchIds, branchFilter, selectedBranchId]);
+
     const savedInvoices = useMemo(() => (
         [...(data.facturas_membretadas_ventas || [])]
             .map(normalizeStampedInvoiceRecord)
-            .filter((invoice) => isRecordInBillingBranch(invoice, selectedBranchId))
+            .filter((invoice) => {
+                const invoiceBranchId = getRecordBranchId(invoice);
+                return isCombinedBranchFilter
+                    ? allowedBranchIds.includes(invoiceBranchId)
+                    : invoiceBranchId === branchFilter;
+            })
             .sort((a, b) => String(b.date).localeCompare(String(a.date)))
-    ), [data.facturas_membretadas_ventas, selectedBranchId]);
+    ), [allowedBranchIds, branchFilter, data.facturas_membretadas_ventas, isCombinedBranchFilter]);
 
     const closureIndex = useMemo(() => {
         const map = new Map();
@@ -7268,15 +7298,15 @@ function StampedInvoiceHistory({ data, canEdit = true, branchContext }) {
 
     useEffect(() => {
         setPage(1);
-    }, [search, selectedMonth, selectedDate, paymentMethodFilter]);
+    }, [search, selectedMonth, selectedDate, paymentMethodFilter, branchFilter]);
 
     useEffect(() => {
         if (page !== pagedInvoices.page) setPage(pagedInvoices.page);
     }, [page, pagedInvoices.page]);
 
     const updatePaymentMethod = async (invoice, paymentMethod) => {
-        if (!canEdit) {
-            setMessage('Este usuario solo tiene permiso para ver facturas membretadas.');
+        if (!canEditCurrentScope) {
+            setMessage(isCombinedBranchFilter ? 'Para editar, selecciona una sucursal especifica. La vista Ambas es solo consulta consolidada.' : 'Este usuario solo tiene permiso para ver facturas membretadas.');
             return;
         }
         const invoiceId = invoice.id || invoice.docId;
@@ -7317,8 +7347,8 @@ function StampedInvoiceHistory({ data, canEdit = true, branchContext }) {
     };
 
     const markInvoiceWithoutClosure = async (invoice) => {
-        if (!canEdit) {
-            setMessage('Este usuario solo tiene permiso para ver facturas membretadas.');
+        if (!canEditCurrentScope) {
+            setMessage(isCombinedBranchFilter ? 'Para editar, selecciona una sucursal especifica. La vista Ambas es solo consulta consolidada.' : 'Este usuario solo tiene permiso para ver facturas membretadas.');
             return;
         }
         const invoiceId = invoice.id || invoice.docId;
@@ -7359,8 +7389,8 @@ function StampedInvoiceHistory({ data, canEdit = true, branchContext }) {
     };
 
     const annulInvoice = async (invoice) => {
-        if (!canEdit) {
-            setMessage('Este usuario solo tiene permiso para ver facturas membretadas.');
+        if (!canEditCurrentScope) {
+            setMessage(isCombinedBranchFilter ? 'Para editar, selecciona una sucursal especifica. La vista Ambas es solo consulta consolidada.' : 'Este usuario solo tiene permiso para ver facturas membretadas.');
             return;
         }
         const invoiceId = invoice.id || invoice.docId;
@@ -7393,8 +7423,8 @@ function StampedInvoiceHistory({ data, canEdit = true, branchContext }) {
     };
 
     const openInvoiceEdit = (invoice) => {
-        if (!canEdit) {
-            setMessage('Este usuario solo tiene permiso para ver facturas membretadas.');
+        if (!canEditCurrentScope) {
+            setMessage(isCombinedBranchFilter ? 'Para editar, selecciona una sucursal especifica. La vista Ambas es solo consulta consolidada.' : 'Este usuario solo tiene permiso para ver facturas membretadas.');
             return;
         }
         if (isStampedInvoiceAnnulled(invoice)) {
@@ -7810,13 +7840,22 @@ function StampedInvoiceHistory({ data, canEdit = true, branchContext }) {
                     eyebrow="Facturas ya registradas"
                     action={<Badge tone="green">{filteredInvoices.length} de {savedInvoices.length}</Badge>}
                 >
-                    <div className="grid gap-3 lg:grid-cols-[1.4fr_0.5fr_0.5fr_0.8fr_auto]">
+                    <div className="grid gap-3 lg:grid-cols-[1.3fr_0.55fr_0.5fr_0.5fr_0.75fr_auto]">
                         <SearchBox
                             value={search}
                             onChange={setSearch}
                             placeholder="Buscar por factura, cliente, RUC, fecha o metodo..."
                             resultLabel={`${searchedInvoices.length} encontrados`}
                         />
+                        <Field label="Sucursal">
+                            <select className={inputClass} value={branchFilter} onChange={(event) => setBranchFilter(event.target.value)}>
+                                {branchFilterOptions.map((branch) => (
+                                    <option key={branch.id} value={branch.id}>
+                                        {branch.id === CONSOLIDATED_BRANCH_ID ? branch.shortName : `${branch.shortName} · Serie ${branch.invoiceSeries}`}
+                                    </option>
+                                ))}
+                            </select>
+                        </Field>
                         <Field label="Mes">
                             <input className={inputClass} type="month" value={selectedMonth} onChange={(event) => setSelectedMonth(event.target.value)} />
                         </Field>
@@ -7839,6 +7878,7 @@ function StampedInvoiceHistory({ data, canEdit = true, branchContext }) {
                                     setSelectedMonth('');
                                     setSelectedDate('');
                                     setPaymentMethodFilter('');
+                                    setBranchFilter(selectedBranchId);
                                 }}
                                 className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-xs font-black uppercase tracking-[0.16em] text-slate-600 transition hover:border-[#e30613] hover:text-[#e30613]"
                             >
@@ -7871,12 +7911,15 @@ function StampedInvoiceHistory({ data, canEdit = true, branchContext }) {
                         ) : pagedInvoices.records.map((invoice) => {
                             const closureInfo = getInvoiceClosureInfo(invoice, closureIndex);
                             const isAnnulled = isStampedInvoiceAnnulled(invoice);
+                            const invoiceBranch = getBranchById(getRecordBranchId(invoice));
+                            const invoiceSeries = invoice.invoiceSeries || invoice.documentSeries || invoiceBranch.invoiceSeries || '';
                             return (
                             <div key={invoice.id || `${invoice.invoiceNumber}-${invoice.date}`} className={`rounded-[1.6rem] border p-4 shadow-sm transition ${isAnnulled ? 'border-red-300 bg-red-50/70 shadow-red-100/40' : 'border-slate-200 bg-white hover:-translate-y-0.5 hover:border-red-200 hover:shadow-lg hover:shadow-slate-900/5'}`}>
                                 <div className="grid gap-4 xl:grid-cols-[1fr_0.58fr_0.8fr_auto] xl:items-center">
                                     <div className="min-w-0">
                                         <div className="flex flex-wrap items-center gap-2">
                                             <div className={`truncate text-base font-black ${isAnnulled ? 'text-red-900' : 'text-slate-950'}`}>Factura {invoice.invoiceNumber || '-'}</div>
+                                            <Badge tone="blue">{invoiceBranch.shortName} {invoiceSeries ? `· Serie ${invoiceSeries}` : ''}</Badge>
                                             <Badge tone={invoice.source === 'sicar_factura' ? 'blue' : 'slate'}>{invoice.source === 'sicar_factura' ? 'SICAR' : 'Manual'}</Badge>
                                             <Badge tone={invoice.cashierName ? 'green' : 'amber'}>{invoice.cashierName || 'Sin cajero'}</Badge>
                                             <Badge tone={closureInfo.status === 'vinculada' ? 'green' : closureInfo.status === 'sin_cierre' ? 'amber' : 'slate'}>{closureInfo.status === 'vinculada' ? 'Con cierre' : closureInfo.status === 'sin_cierre' ? 'Sin cierre' : 'Pendiente'}</Badge>
@@ -7919,7 +7962,7 @@ function StampedInvoiceHistory({ data, canEdit = true, branchContext }) {
                                     </div>
 
                                     <Field label="Metodo">
-                                        <PaymentMethodSelect value={invoice.paymentMethod || ''} onChange={(value) => updatePaymentMethod(invoice, value)} disabled={isAnnulled || !canEdit} />
+                                        <PaymentMethodSelect value={invoice.paymentMethod || ''} onChange={(value) => updatePaymentMethod(invoice, value)} disabled={isAnnulled || !canEditCurrentScope} />
                                         <PaymentBreakdownPreview invoice={invoice} />
                                     </Field>
 
@@ -7931,7 +7974,7 @@ function StampedInvoiceHistory({ data, canEdit = true, branchContext }) {
                                         >
                                             Ver detalle
                                         </button>
-                                        {canEdit && (
+                                        {canEditCurrentScope && (
                                             <>
                                                 <button
                                                     type="button"
@@ -7998,13 +8041,13 @@ function StampedInvoiceHistory({ data, canEdit = true, branchContext }) {
                 onPrint={setPrintTarget}
                 onEdit={openInvoiceEdit}
                 onPaymentMethodChange={updatePaymentMethod}
-                canEdit={canEdit}
+                canEdit={canEditCurrentScope}
                 supportUploadFiles={supportUploadFiles}
                 onSupportFileChange={updateSupportUploadFile}
                 onSupportUpload={uploadDetailSupports}
                 supportSaving={supportSaving}
             />
-            {canEdit && (
+            {canEditCurrentScope && (
                 <>
                     <StampedInvoiceEditModal
                         form={editForm}

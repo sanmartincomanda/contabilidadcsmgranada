@@ -1,6 +1,18 @@
 // src/components/Reports.jsx
-import React, { useMemo, useState, useCallback } from 'react';
-import { APP_BRAND_LOGO, APP_BRAND_NAME, fmt, peso, branchName, resolveBranchId } from '../constants';
+import React, { useEffect, useMemo, useState, useCallback } from 'react';
+import {
+    APP_BRAND_LOGO,
+    APP_BRAND_NAME,
+    BRANCHES,
+    CONSOLIDATED_BRANCH_ID,
+    DEFAULT_BRANCH_ID,
+    fmt,
+    peso,
+    branchName,
+    getBranchById,
+    getRecordBranchId,
+    resolveBranchId,
+} from '../constants';
 import BalanceSheet from './BalanceSheet';
 import DashboardGeneral from './DashboardGeneral';
 import ExecutiveFlowDiagram from './ExecutiveFlowDiagram';
@@ -44,6 +56,35 @@ const normalizeReportText = (value = '') => (
 );
 
 const PAYMENT_ROWS_SYMBOL = Symbol('paymentRows');
+
+const DATA_COLLECTION_KEYS = [
+    'ingresos',
+    'compras',
+    'gastos',
+    'facturas_membretadas_ventas',
+    'recibos_caja_membretados',
+    'inventario',
+    'presupuestos',
+    'cuentas_por_pagar',
+    'gastosDiarios',
+];
+
+const filterDataByBranchScope = (data = {}, branchScope = CONSOLIDATED_BRANCH_ID, allowedBranchIds = []) => {
+    const allowed = new Set(Array.isArray(allowedBranchIds) && allowedBranchIds.length ? allowedBranchIds : [DEFAULT_BRANCH_ID]);
+    if (branchScope === CONSOLIDATED_BRANCH_ID) {
+        return Object.fromEntries(Object.entries(data).map(([key, value]) => (
+            DATA_COLLECTION_KEYS.includes(key) && Array.isArray(value)
+                ? [key, value.filter((item) => allowed.has(getRecordBranchId(item)))]
+                : [key, value]
+        )));
+    }
+
+    return Object.fromEntries(Object.entries(data).map(([key, value]) => (
+        DATA_COLLECTION_KEYS.includes(key) && Array.isArray(value)
+            ? [key, value.filter((item) => getRecordBranchId(item) === branchScope)]
+            : [key, value]
+    )));
+};
 
 const normalizePaymentBreakdownRows = (rows = []) => (
     (Array.isArray(rows) ? rows : [])
@@ -660,10 +701,12 @@ const buildTaxReport = (data, selectedMonth) => {
     const dailySaleKey = (item) => item.dailySaleCode || item.reference || (getDocDate(item) ? `VENTA-${getDocDate(item).replaceAll('-', '')}` : '');
     const salesIncomeEntries = resolveSalesIncomeEntries(data.ingresos || []);
     const purchaseDiscountEntries = resolvePurchaseDiscountEntries(data.ingresos || []);
+    const reportBranchLabel = (item) => getBranchById(getRecordBranchId(item)).shortName;
 
     const incomeRows = salesIncomeEntries
         .filter(inMonth)
         .map((item) => ({
+            sucursal: reportBranchLabel(item),
             type: 'IVA vendido',
             date: getDocDate(item),
             source: item.source === 'sicar' ? 'SICAR venta diaria' : 'Ingreso manual',
@@ -689,6 +732,7 @@ const buildTaxReport = (data, selectedMonth) => {
     const purchaseDiscountRows = purchaseDiscountEntries
         .filter(inMonth)
         .map((item) => ({
+            sucursal: reportBranchLabel(item),
             type: 'Descuento sobre compras',
             date: getDocDate(item),
             source: item.sourceLabel || 'Ajuste manual',
@@ -705,6 +749,7 @@ const buildTaxReport = (data, selectedMonth) => {
     const purchaseRows = [...(data.compras || []), ...(data.gastos || [])]
         .filter(inMonth)
         .map((item) => ({
+            sucursal: reportBranchLabel(item),
             type: item.supplier || item.proveedor ? 'IVA comprado' : 'IVA gasto',
             date: getDocDate(item),
             source: item.supplier || item.proveedor || item.category || 'Registro',
@@ -721,6 +766,7 @@ const buildTaxReport = (data, selectedMonth) => {
             const date = getDocDate(item);
             const saleDate = item.saleDate || date;
             const linkedDailySale = dailySalesByCode.get(item.dailySaleCode) || dailySalesByDate.get(saleDate) || {};
+            const branch = getBranchById(getRecordBranchId(item));
             const subtotal = accountingAmount(item);
             const iva = fiscalIva(item);
             const total = fiscalTotal(item);
@@ -730,6 +776,8 @@ const buildTaxReport = (data, selectedMonth) => {
             const paymentRows = normalizePaymentBreakdownRows(item.paymentBreakdown);
 
             return {
+                sucursal: branch.shortName,
+                serie: item.invoiceSeries || item.documentSeries || branch.invoiceSeries || '',
                 date: saleDate || date,
                 dailySaleCode: item.dailySaleCode || linkedDailySale.dailySaleCode || (saleDate ? `VENTA-${saleDate.replaceAll('-', '')}` : ''),
                 document: item.numeroFactura || item.invoiceNumber || '',
@@ -749,11 +797,13 @@ const buildTaxReport = (data, selectedMonth) => {
         .sort((a, b) => `${a.date}-${a.document}`.localeCompare(`${b.date}-${b.document}`));
 
     const stampedInvoicesByDay = stampedInvoiceRows.reduce((acc, row) => {
-        const key = row.dailySaleCode || row.date || 'SIN VENTA';
+        const key = `${row.sucursal || 'Sucursal'}|${row.serie || ''}|${row.dailySaleCode || row.date || 'SIN VENTA'}`;
         if (!acc[key]) {
             acc[key] = {
+                sucursal: row.sucursal,
+                serie: row.serie,
                 date: row.date,
-                dailySaleCode: key,
+                dailySaleCode: row.dailySaleCode || row.date || 'SIN VENTA',
                 invoiceCount: 0,
                 subtotal: 0,
                 iva: 0,
@@ -833,6 +883,7 @@ const buildTaxReport = (data, selectedMonth) => {
     const salesRetentionRows = (data.facturas_membretadas_ventas || [])
         .filter(inMonth)
         .map((item) => ({
+            sucursal: reportBranchLabel(item),
             type: 'Retencion venta',
             date: getDocDate(item),
             source: item.dailySaleCode || 'Factura membretada',
@@ -848,6 +899,7 @@ const buildTaxReport = (data, selectedMonth) => {
     const cashReceiptRetentionRows = (data.recibos_caja_membretados || [])
         .filter(inMonth)
         .map((item) => ({
+            sucursal: reportBranchLabel(item),
             type: 'Retencion venta',
             date: getDocDate(item),
             source: 'Recibo de caja',
@@ -866,6 +918,7 @@ const buildTaxReport = (data, selectedMonth) => {
     const purchaseRetentionRows = [...(data.compras || []), ...(data.gastos || [])]
         .filter(inMonth)
         .map((item) => ({
+            sucursal: reportBranchLabel(item),
             type: 'Retencion compra/gasto',
             date: getDocDate(item),
             source: item.supplier || item.proveedor || item.category || '',
@@ -1299,7 +1352,7 @@ const TaxStatementPrintableReport = ({ taxReport, selectedMonth, onPrint }) => {
     );
 };
 
-const TaxReportsPanel = ({ taxReport, taxTab, setTaxTab, selectedMonth, setSelectedMonth, availableMonths }) => {
+const TaxReportsPanel = ({ taxReport, taxTab, setTaxTab, selectedMonth, setSelectedMonth, availableMonths, scopeLabel }) => {
     const subTabs = ['IVA', 'Retenciones', 'Facturas membretadas', 'Resultado despues de impuestos'];
     const [retentionSubTab, setRetentionSubTab] = useState('ventas');
     const tableClass = "w-full text-sm";
@@ -1375,6 +1428,7 @@ const TaxReportsPanel = ({ taxReport, taxTab, setTaxTab, selectedMonth, setSelec
                             <table className={tableClass}>
                                 <thead>
                                     <tr>
+                                        <th className={thClass}>Sucursal</th>
                                         <th className={thClass}>Tipo</th>
                                         <th className={thClass}>Fecha</th>
                                         <th className={thClass}>Documento</th>
@@ -1387,6 +1441,7 @@ const TaxReportsPanel = ({ taxReport, taxTab, setTaxTab, selectedMonth, setSelec
                                 <tbody>
                                     {taxReport.ivaRows.map((row, idx) => (
                                         <tr key={`${row.type}-${row.document}-${idx}`}>
+                                            <td className={tdClass}>{row.sucursal || '-'}</td>
                                             <td className={tdClass}>{row.type}</td>
                                             <td className={tdClass}>{row.date}</td>
                                             <td className={tdClass}>{row.document || '-'}</td>
@@ -1447,6 +1502,7 @@ const TaxReportsPanel = ({ taxReport, taxTab, setTaxTab, selectedMonth, setSelec
                             <table className={tableClass}>
                                 <thead>
                                     <tr>
+                                        <th className={thClass}>Sucursal</th>
                                         <th className={thClass}>Tipo</th>
                                         <th className={thClass}>Fecha</th>
                                         <th className={thClass}>Documento</th>
@@ -1459,6 +1515,7 @@ const TaxReportsPanel = ({ taxReport, taxTab, setTaxTab, selectedMonth, setSelec
                                 <tbody>
                                     {activeRetentionRows.map((row, idx) => (
                                         <tr key={`${row.type}-${row.document}-${idx}`}>
+                                            <td className={tdClass}>{row.sucursal || '-'}</td>
                                             <td className={tdClass}>{row.type}</td>
                                             <td className={tdClass}>{row.date}</td>
                                             <td className={tdClass}>{row.document || '-'}</td>
@@ -1470,7 +1527,7 @@ const TaxReportsPanel = ({ taxReport, taxTab, setTaxTab, selectedMonth, setSelec
                                     ))}
                                     {activeRetentionRows.length === 0 && (
                                         <tr>
-                                            <td colSpan="7" className="py-6 text-center text-sm font-semibold text-stone-400">
+                                            <td colSpan="8" className="py-6 text-center text-sm font-semibold text-stone-400">
                                                 No hay retenciones registradas en esta vista.
                                             </td>
                                         </tr>
@@ -1525,6 +1582,7 @@ const TaxReportsPanel = ({ taxReport, taxTab, setTaxTab, selectedMonth, setSelec
                                 <div className="rounded-xl border border-[#d8dee6] bg-white/80 px-4 py-3 text-left md:text-right">
                                     <div className="text-xs font-bold uppercase tracking-wider text-stone-500">Periodo fiscal</div>
                                     <div className="text-xl font-black text-[#9f111a]">{selectedMonth || 'Todos'}</div>
+                                    <div className="mt-1 text-xs font-black uppercase tracking-[0.18em] text-slate-600">{scopeLabel}</div>
                                     <div className="mt-1 text-xs font-semibold text-stone-500">Base: facturas membretadas emitidas</div>
                                 </div>
                             </div>
@@ -1561,6 +1619,7 @@ const TaxReportsPanel = ({ taxReport, taxTab, setTaxTab, selectedMonth, setSelec
                             <table className={tableClass}>
                                 <thead>
                                     <tr>
+                                        <th className={thClass}>Sucursal</th>
                                         <th className={thClass}>Fecha</th>
                                         <th className={thClass}>Referencia venta diaria</th>
                                         <th className={thClass}>Metodos</th>
@@ -1574,9 +1633,10 @@ const TaxReportsPanel = ({ taxReport, taxTab, setTaxTab, selectedMonth, setSelec
                                 </thead>
                                 <tbody>
                                     {taxReport.stampedInvoiceDailyRows.length === 0 ? (
-                                        <tr><td colSpan="9" className="py-6 text-center text-sm font-semibold text-stone-400">No hay facturas membretadas en este periodo.</td></tr>
+                                        <tr><td colSpan="10" className="py-6 text-center text-sm font-semibold text-stone-400">No hay facturas membretadas en este periodo.</td></tr>
                                     ) : taxReport.stampedInvoiceDailyRows.map((row) => (
-                                        <tr key={row.dailySaleCode}>
+                                        <tr key={`${row.sucursal}-${row.serie}-${row.dailySaleCode}`}>
+                                            <td className={tdClass}>{row.sucursal} {row.serie ? `· Serie ${row.serie}` : ''}</td>
                                             <td className={tdClass}>{row.date}</td>
                                             <td className={tdClass}>{row.dailySaleCode}</td>
                                             <td className={tdClass}>{row.paymentMethods || '-'}</td>
@@ -1597,6 +1657,7 @@ const TaxReportsPanel = ({ taxReport, taxTab, setTaxTab, selectedMonth, setSelec
                             <table className={tableClass}>
                                 <thead>
                                     <tr>
+                                        <th className={thClass}>Sucursal</th>
                                         <th className={thClass}>Fecha</th>
                                         <th className={thClass}>Referencia venta diaria</th>
                                         <th className={thClass}>Factura</th>
@@ -1611,9 +1672,10 @@ const TaxReportsPanel = ({ taxReport, taxTab, setTaxTab, selectedMonth, setSelec
                                 </thead>
                                 <tbody>
                                     {taxReport.stampedInvoiceRows.length === 0 ? (
-                                        <tr><td colSpan="10" className="py-6 text-center text-sm font-semibold text-stone-400">Sin detalle para mostrar.</td></tr>
+                                        <tr><td colSpan="11" className="py-6 text-center text-sm font-semibold text-stone-400">Sin detalle para mostrar.</td></tr>
                                     ) : taxReport.stampedInvoiceRows.map((row, idx) => (
                                         <tr key={`${row.dailySaleCode}-${row.document}-${idx}`}>
+                                            <td className={tdClass}>{row.sucursal} {row.serie ? `· Serie ${row.serie}` : ''}</td>
                                             <td className={tdClass}>{row.date}</td>
                                             <td className={tdClass}>{row.dailySaleCode}</td>
                                             <td className={tdClass}>{row.document || '-'}</td>
@@ -1721,25 +1783,52 @@ const TaxReportsPanel = ({ taxReport, taxTab, setTaxTab, selectedMonth, setSelec
     );
 };
 
-export default function Reports({ data }) {
+export default function Reports({ data, branchContext }) {
     const [activeTab, setActiveTab] = useState('Resultados');
     const [taxTab, setTaxTab] = useState('IVA');
     const [selectedMonth, setSelectedMonth] = useState(new Date().toISOString().substring(0, 7));
     const [modalCategory, setModalCategory] = useState(null);
+    const allowedBranchIds = useMemo(
+        () => (branchContext?.allowedBranchIds?.length ? branchContext.allowedBranchIds : [branchContext?.selectedBranchId || DEFAULT_BRANCH_ID]),
+        [branchContext?.allowedBranchIds, branchContext?.selectedBranchId]
+    );
+    const [branchScope, setBranchScope] = useState(branchContext?.selectedBranchId || DEFAULT_BRANCH_ID);
 
-    const aggregatedData = useMemo(() => aggregateData(data), [data]);
-    const taxReport = useMemo(() => buildTaxReport(data, selectedMonth), [data, selectedMonth]);
+    const branchScopeOptions = useMemo(() => {
+        const allowed = new Set(allowedBranchIds);
+        const branches = BRANCHES.filter((branch) => allowed.has(branch.id));
+        return branches.length > 1
+            ? [{ id: CONSOLIDATED_BRANCH_ID, shortName: 'Ambas sucursales', invoiceSeries: 'A+B' }, ...branches]
+            : branches;
+    }, [allowedBranchIds]);
+
+    const scopedData = useMemo(
+        () => filterDataByBranchScope(data, branchScope, allowedBranchIds),
+        [data, branchScope, allowedBranchIds]
+    );
+    const scopeLabel = branchScope === CONSOLIDATED_BRANCH_ID
+        ? 'Granada + Nindiri'
+        : `${getBranchById(branchScope).shortName} · Serie ${getBranchById(branchScope).invoiceSeries}`;
+
+    useEffect(() => {
+        if (branchScope !== CONSOLIDATED_BRANCH_ID && !allowedBranchIds.includes(branchScope)) {
+            setBranchScope(branchContext?.selectedBranchId || allowedBranchIds[0] || DEFAULT_BRANCH_ID);
+        }
+    }, [allowedBranchIds, branchContext?.selectedBranchId, branchScope]);
+
+    const aggregatedData = useMemo(() => aggregateData(scopedData), [scopedData]);
+    const taxReport = useMemo(() => buildTaxReport(scopedData, selectedMonth), [scopedData, selectedMonth]);
 
     const availableMonths = useMemo(() => {
         const fiscalMonths = [
-            ...(data.ingresos || []),
-            ...(data.compras || []),
-            ...(data.gastos || []),
-            ...(data.facturas_membretadas_ventas || []),
+            ...(scopedData.ingresos || []),
+            ...(scopedData.compras || []),
+            ...(scopedData.gastos || []),
+            ...(scopedData.facturas_membretadas_ventas || []),
         ].map(getDocMonth).filter(Boolean);
         const months = [...new Set([...aggregatedData.map(d => d.month), ...fiscalMonths])];
         return months.sort((a, b) => b.localeCompare(a));
-    }, [aggregatedData, data]);
+    }, [aggregatedData, scopedData]);
 
     const filteredReport = useMemo(() => {
         return aggregatedData.filter(d => selectedMonth ? d.month === selectedMonth : true);
@@ -1862,9 +1951,29 @@ export default function Reports({ data }) {
                     <div>
                         <div className="text-[10px] font-black uppercase tracking-[0.34em] text-[#e30613]">{APP_BRAND_NAME}</div>
                         <h1 className="mt-1 text-xl font-black text-slate-950">Reportes financieros</h1>
+                        <div className="mt-1 text-xs font-bold text-slate-500">Alcance: {scopeLabel}</div>
                     </div>
-                    <div className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-[10px] font-black uppercase tracking-[0.22em] text-slate-500">
-                        {activeTab}
+                    <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                        <label className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2">
+                            <span className="text-[9px] font-black uppercase tracking-[0.22em] text-slate-500">Sucursal</span>
+                            <select
+                                value={branchScope}
+                                onChange={(event) => {
+                                    setBranchScope(event.target.value);
+                                    setModalCategory(null);
+                                }}
+                                className="bg-transparent text-xs font-black text-slate-900 outline-none"
+                            >
+                                {branchScopeOptions.map((branch) => (
+                                    <option key={branch.id} value={branch.id}>
+                                        {branch.id === CONSOLIDATED_BRANCH_ID ? branch.shortName : `${branch.shortName} · Serie ${branch.invoiceSeries}`}
+                                    </option>
+                                ))}
+                            </select>
+                        </label>
+                        <div className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-[10px] font-black uppercase tracking-[0.22em] text-slate-500">
+                            {activeTab}
+                        </div>
                     </div>
                 </div>
             </div>
@@ -1910,6 +2019,7 @@ export default function Reports({ data }) {
                     selectedMonth={selectedMonth}
                     setSelectedMonth={setSelectedMonth}
                     availableMonths={availableMonths}
+                    scopeLabel={scopeLabel}
                 />
             )}
 
