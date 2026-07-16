@@ -12,6 +12,7 @@ import { db } from '../firebase';
 import { DEFAULT_PURCHASE_CATEGORY_ID, buildExpenseCategoryPayload, getExpenseCategoryFromRecord } from './expenseCategories';
 import { getCashPaidAmountAfterRetentions, isCashPayment, normalizePaymentMethod } from './fiscalUtils';
 import { buildPettyCashMovementPayload, pettyCashMovementRef } from './pettyCash';
+import { getBranchPayload, getRecordBranchId } from '../constants';
 
 const uniqueRefs = (refs) => {
     const refMap = new Map();
@@ -141,10 +142,12 @@ const buildExpensePayableMirrorPayload = (expenseData, updateData, payableData =
 const buildGastoMirrorPayload = (purchaseData, updateData) => {
     const merged = { ...purchaseData, ...updateData };
     const categoryPayload = buildExpenseCategoryPayload(getExpenseCategoryFromRecord(merged, DEFAULT_PURCHASE_CATEGORY_ID), DEFAULT_PURCHASE_CATEGORY_ID);
+    const branchPayload = getBranchPayload(getRecordBranchId(merged));
     const total = normalizeAmount(firstDefined(merged.total, merged.monto, merged.amount));
     const date = firstDefined(merged.date, merged.fecha);
 
     return cleanForFirestore({
+        ...branchPayload,
         fecha: date,
         month: merged.month || String(date || '').substring(0, 7),
         proveedor: firstDefined(merged.supplier, merged.proveedor),
@@ -171,10 +174,12 @@ const buildGastoMirrorPayload = (purchaseData, updateData) => {
 const buildExpenseGastoMirrorPayload = (expenseData, updateData) => {
     const merged = { ...expenseData, ...updateData };
     const categoryPayload = buildExpenseCategoryPayload(getExpenseCategoryFromRecord(merged));
+    const branchPayload = getBranchPayload(getRecordBranchId(merged));
     const total = normalizeAmount(firstDefined(merged.total, merged.monto, merged.amount));
     const date = firstDefined(merged.date, merged.fecha);
 
     return cleanForFirestore({
+        ...branchPayload,
         fecha: date,
         date,
         month: merged.month || String(date || '').substring(0, 7),

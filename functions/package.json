@@ -16,7 +16,8 @@
     "watch-stamped-invoices": "node scripts/watchSicarStampedInvoices.js",
     "sync-purchases": "node scripts/syncSicarPurchases.js",
     "watch-scanner-supports": "node scripts/watchScannedSupports.js",
-    "migrate-expense-categories": "node scripts/migrateExpenseCategories.js"
+    "migrate-expense-categories": "node scripts/migrateExpenseCategories.js",
+    "backfill-granada-branch": "node scripts/backfillGranadaBranchSeries.js"
   },
   "dependencies": {
     "firebase-admin": "^12.7.0",

@@ -17,7 +17,7 @@ import CategoryManager from './components/CategoryManager';
 import Settings from './components/Settings';
 import { AccountsPayable } from './components/AccountsPayable';
 import ExecutiveFlowDiagram from './components/ExecutiveFlowDiagram';
-import { APP_BRAND_LOGO, APP_BRAND_NAME, fmt } from './constants';
+import { APP_BRAND_LOGO, APP_BRAND_NAME, DEFAULT_BRANCH_ID, fmt, getBranchById } from './constants';
 import {
     resolvePurchaseDiscountEntries,
     resolveSalesIncomeEntries,
@@ -26,6 +26,8 @@ import {
     USER_PROFILES_COLLECTION,
     canEditModule,
     canUseModule,
+    getEffectiveBranchAccess,
+    getEffectiveDefaultBranchId,
     getDefaultAllowedPath,
     getEffectiveModuleAccess,
     getEffectiveModuleModes,
@@ -982,22 +984,36 @@ const useUserModuleAccess = (user) => {
         moduleAccess: {},
         moduleModes: {},
         featureAccess: {},
+        branchAccess: [DEFAULT_BRANCH_ID],
+        defaultBranchId: DEFAULT_BRANCH_ID,
         isMaster: false,
     });
 
     useEffect(() => {
         if (!user?.email) {
-            setState({ loading: false, profile: null, moduleAccess: {}, moduleModes: {}, featureAccess: {}, isMaster: false });
+            setState({
+                loading: false,
+                profile: null,
+                moduleAccess: {},
+                moduleModes: {},
+                featureAccess: {},
+                branchAccess: [DEFAULT_BRANCH_ID],
+                defaultBranchId: DEFAULT_BRANCH_ID,
+                isMaster: false,
+            });
             return undefined;
         }
 
         if (isMasterEmail(user.email)) {
+            const branchAccess = getEffectiveBranchAccess(user.email, null);
             setState({
                 loading: false,
                 profile: { email: user.email, role: 'master', active: true },
                 moduleAccess: getEffectiveModuleAccess(user.email, null),
                 moduleModes: getEffectiveModuleModes(user.email, null),
                 featureAccess: {},
+                branchAccess,
+                defaultBranchId: getEffectiveDefaultBranchId(user.email, null),
                 isMaster: true,
             });
             return undefined;
@@ -1020,6 +1036,8 @@ const useUserModuleAccess = (user) => {
                     moduleAccess: getEffectiveModuleAccess(user.email, profile),
                     moduleModes: getEffectiveModuleModes(user.email, profile),
                     featureAccess: profile?.featureAccess || {},
+                    branchAccess: getEffectiveBranchAccess(user.email, profile),
+                    defaultBranchId: getEffectiveDefaultBranchId(user.email, profile),
                     isMaster: false,
                 });
             },
@@ -1031,6 +1049,8 @@ const useUserModuleAccess = (user) => {
                     moduleAccess: getEffectiveModuleAccess(user.email, null),
                     moduleModes: getEffectiveModuleModes(user.email, null),
                     featureAccess: {},
+                    branchAccess: getEffectiveBranchAccess(user.email, null),
+                    defaultBranchId: getEffectiveDefaultBranchId(user.email, null),
                     isMaster: false,
                 });
             }
@@ -1079,9 +1099,39 @@ const useInactivityLogout = (user, logout) => {
 function AppContent() {
     const { user, logout } = useAuth();
     const location = useLocation();
-    const { loading: accessLoading, moduleAccess, moduleModes, featureAccess, isMaster } = useUserModuleAccess(user);
+    const { loading: accessLoading, moduleAccess, moduleModes, featureAccess, branchAccess, defaultBranchId, isMaster } = useUserModuleAccess(user);
     const effectiveIsMaster = isMaster || isMasterEmail(user?.email);
     useInactivityLogout(user, logout);
+    const allowedBranchIds = useMemo(() => (
+        Array.isArray(branchAccess) && branchAccess.length ? branchAccess : [DEFAULT_BRANCH_ID]
+    ), [branchAccess]);
+    const [selectedBranchId, setSelectedBranchId] = useState(() => {
+        if (typeof window === 'undefined') return DEFAULT_BRANCH_ID;
+        return window.localStorage.getItem('csm-selected-branch') || DEFAULT_BRANCH_ID;
+    });
+
+    useEffect(() => {
+        if (!user || accessLoading) return;
+        const fallbackBranchId = allowedBranchIds.includes(defaultBranchId) ? defaultBranchId : allowedBranchIds[0] || DEFAULT_BRANCH_ID;
+        if (!allowedBranchIds.includes(selectedBranchId)) {
+            setSelectedBranchId(fallbackBranchId);
+            window.localStorage.setItem('csm-selected-branch', fallbackBranchId);
+        }
+    }, [accessLoading, allowedBranchIds, defaultBranchId, selectedBranchId, user]);
+
+    const handleBranchChange = useCallback((branchId) => {
+        const nextBranchId = allowedBranchIds.includes(branchId) ? branchId : (allowedBranchIds[0] || DEFAULT_BRANCH_ID);
+        setSelectedBranchId(nextBranchId);
+        window.localStorage.setItem('csm-selected-branch', nextBranchId);
+    }, [allowedBranchIds]);
+
+    const selectedBranch = useMemo(() => getBranchById(selectedBranchId), [selectedBranchId]);
+    const branchContext = useMemo(() => ({
+        selectedBranchId: selectedBranch.id,
+        selectedBranch,
+        allowedBranchIds,
+        canSelectBranch: allowedBranchIds.length > 1,
+    }), [allowedBranchIds, selectedBranch]);
     const [themeMode, setThemeMode] = useState(() => {
         if (typeof window === 'undefined') return 'dark';
         return window.localStorage.getItem('csm-theme-mode') || 'dark';
@@ -1206,7 +1256,15 @@ function AppContent() {
 
     return (
         <>
-            <Header moduleAccess={moduleAccess} isMaster={effectiveIsMaster} defaultPath={defaultAllowedPath} allowedDataEntryTabs={featureAccess?.dataEntryTabs} />
+            <Header
+                moduleAccess={moduleAccess}
+                isMaster={effectiveIsMaster}
+                defaultPath={defaultAllowedPath}
+                allowedDataEntryTabs={featureAccess?.dataEntryTabs}
+                selectedBranchId={branchContext.selectedBranchId}
+                allowedBranchIds={allowedBranchIds}
+                onBranchChange={handleBranchChange}
+            />
             <AnimatePresence mode="wait" initial={false}>
                 <motion.main
                     key={location.pathname}
@@ -1218,13 +1276,13 @@ function AppContent() {
                 >
                     <Routes location={location}>
                         <Route path="/login" element={<Navigate to={defaultAllowedPath} replace />} />
-                        <Route path="/" element={<PrivateRoute element={canAccess('dashboard') ? (dashboardLoading ? <AppLoadingState /> : dashboardError ? <AppErrorState error={dashboardError} /> : <Dashboard data={dashboardData} themeMode={effectiveThemeMode} onThemeToggle={effectiveIsMaster ? toggleTheme : undefined} />) : <Navigate to={defaultAllowedPath} replace />} />} />
-                        <Route path="/ingresar" element={<PrivateRoute element={canAccess('ingresar') ? (dataEntryLoading ? <AppLoadingState /> : dataEntryError ? <AppErrorState error={dataEntryError} /> : <DataEntry data={dataEntryData} categories={categoriesList} allowedTabs={featureAccess?.dataEntryTabs} />) : <Navigate to={defaultAllowedPath} replace />} />} />
-                        <Route path="/gastos-diarios" element={<PrivateRoute element={canAccess('caja_chica') ? <GastosDiarios categories={categoriesList} providers={categoriesData.proveedores || []} /> : <Navigate to={defaultAllowedPath} replace />} />} />
+                        <Route path="/" element={<PrivateRoute element={canAccess('dashboard') ? (dashboardLoading ? <AppLoadingState /> : dashboardError ? <AppErrorState error={dashboardError} /> : <Dashboard data={dashboardData} themeMode={effectiveThemeMode} onThemeToggle={effectiveIsMaster ? toggleTheme : undefined} branchContext={branchContext} />) : <Navigate to={defaultAllowedPath} replace />} />} />
+                        <Route path="/ingresar" element={<PrivateRoute element={canAccess('ingresar') ? (dataEntryLoading ? <AppLoadingState /> : dataEntryError ? <AppErrorState error={dataEntryError} /> : <DataEntry data={dataEntryData} categories={categoriesList} allowedTabs={featureAccess?.dataEntryTabs} branchContext={branchContext} />) : <Navigate to={defaultAllowedPath} replace />} />} />
+                        <Route path="/gastos-diarios" element={<PrivateRoute element={canAccess('caja_chica') ? <GastosDiarios categories={categoriesList} providers={categoriesData.proveedores || []} branchContext={branchContext} /> : <Navigate to={defaultAllowedPath} replace />} />} />
                         <Route path="/conciliacion" element={<PrivateRoute element={<Navigate to={defaultAllowedPath} replace />} />} />
-                        <Route path="/facturacion" element={<PrivateRoute element={canAccess('facturacion') ? (billingLoading ? <AppLoadingState /> : billingError ? <AppErrorState error={billingError} /> : <Billing data={billingData} canEdit={canEdit('facturacion')} />) : <Navigate to={defaultAllowedPath} replace />} />} />
-                        <Route path="/cuentas-pagar" element={<PrivateRoute element={canAccess('cuentas_pagar') ? (accountsPayableLoading ? <AppLoadingState /> : accountsPayableError ? <AppErrorState error={accountsPayableError} /> : <AccountsPayable data={accountsPayableData} />) : <Navigate to={defaultAllowedPath} replace />} />} />
-                        <Route path="/reportes" element={<PrivateRoute element={canAccess('reportes') ? (reportsLoading ? <AppLoadingState /> : reportsError ? <AppErrorState error={reportsError} /> : <Reports data={reportsData} />) : <Navigate to={defaultAllowedPath} replace />} />} />
+                        <Route path="/facturacion" element={<PrivateRoute element={canAccess('facturacion') ? (billingLoading ? <AppLoadingState /> : billingError ? <AppErrorState error={billingError} /> : <Billing data={billingData} canEdit={canEdit('facturacion')} branchContext={branchContext} />) : <Navigate to={defaultAllowedPath} replace />} />} />
+                        <Route path="/cuentas-pagar" element={<PrivateRoute element={canAccess('cuentas_pagar') ? (accountsPayableLoading ? <AppLoadingState /> : accountsPayableError ? <AppErrorState error={accountsPayableError} /> : <AccountsPayable data={accountsPayableData} branchContext={branchContext} />) : <Navigate to={defaultAllowedPath} replace />} />} />
+                        <Route path="/reportes" element={<PrivateRoute element={canAccess('reportes') ? (reportsLoading ? <AppLoadingState /> : reportsError ? <AppErrorState error={reportsError} /> : <Reports data={reportsData} branchContext={branchContext} />) : <Navigate to={defaultAllowedPath} replace />} />} />
                         <Route path="/configuraciones" element={<PrivateRoute element={effectiveIsMaster ? <Settings /> : <Navigate to={defaultAllowedPath} replace />} />} />
                         <Route path="/maestros/categorias" element={<PrivateRoute element={canAccess('categorias') ? <CategoryManager categories={categoriesList} /> : <Navigate to={defaultAllowedPath} replace />} />} />
                         <Route path="/sin-permisos" element={<PrivateRoute element={effectiveIsMaster ? <Navigate to="/" replace /> : <AppErrorState error={{ message: 'Este usuario no tiene modulos asignados. Pide al usuario master que active sus permisos en Configuraciones > Usuarios.' }} />} />} />

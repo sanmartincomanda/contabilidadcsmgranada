@@ -3,7 +3,7 @@ import { useAuth } from '../context/AuthContext';
 import { httpsCallable } from 'firebase/functions';
 import { collection, getDocs } from 'firebase/firestore';
 import { db, functions as firebaseFunctions } from '../firebase';
-import { APP_BRAND_LOGO, APP_BRAND_NAME, DEFAULT_BRANCH_NAME, fmt } from '../constants';
+import { APP_BRAND_LOGO, APP_BRAND_NAME, BRANCHES, DEFAULT_BRANCH_ID, DEFAULT_BRANCH_NAME, branchName, fmt } from '../constants';
 import CategoryManager from './CategoryManager';
 import { getDeviceSettings, saveDeviceSettings } from '../services/deviceSettings';
 import {
@@ -17,6 +17,7 @@ import {
     emptyModuleModes,
     getModuleModeLabel,
     isMasterEmail,
+    normalizeBranchAccess,
     normalizeModuleAccess,
     normalizeModuleModes,
     normalizeUserEmail,
@@ -59,6 +60,8 @@ const createEmptyUserForm = () => ({
     active: true,
     modules: emptyModuleAccess(),
     moduleModes: emptyModuleModes(),
+    branchAccess: [DEFAULT_BRANCH_ID],
+    defaultBranchId: DEFAULT_BRANCH_ID,
 });
 
 const sortListedUsers = (users = []) => [...users].sort((a, b) => {
@@ -81,6 +84,8 @@ const normalizeListedUser = (raw = {}) => {
         disabled: isProtectedMaster ? false : raw.disabled === true || raw.active === false,
         modules: isProtectedMaster ? {} : normalizeModuleAccess(raw.modules || {}),
         moduleModes: isProtectedMaster ? {} : normalizeModuleModes(raw.modules || {}, raw.moduleModes || {}),
+        branchAccess: isProtectedMaster ? BRANCHES.map((branch) => branch.id) : normalizeBranchAccess(raw.branchAccess || raw.branches || raw.allowedBranches, [DEFAULT_BRANCH_ID]),
+        defaultBranchId: raw.defaultBranchId || raw.defaultBranch || DEFAULT_BRANCH_ID,
         role: isProtectedMaster ? 'master' : raw.role || 'limited',
         source: raw.source || 'auth',
     };
@@ -250,6 +255,21 @@ export default function Settings() {
         }));
     };
 
+    const toggleUserBranch = (branchId) => {
+        setUserForm((current) => {
+            const currentBranches = normalizeBranchAccess(current.branchAccess || [], [DEFAULT_BRANCH_ID]);
+            const nextBranches = currentBranches.includes(branchId)
+                ? currentBranches.filter((id) => id !== branchId)
+                : [...currentBranches, branchId];
+            const normalizedBranches = nextBranches.length ? nextBranches : [DEFAULT_BRANCH_ID];
+            return {
+                ...current,
+                branchAccess: normalizedBranches,
+                defaultBranchId: normalizedBranches.includes(current.defaultBranchId) ? current.defaultBranchId : normalizedBranches[0],
+            };
+        });
+    };
+
     const editUser = (systemUser) => {
         setUserForm({
             email: normalizeUserEmail(systemUser.email),
@@ -258,6 +278,8 @@ export default function Settings() {
             active: systemUser.active !== false && systemUser.disabled !== true,
             modules: normalizeModuleAccess(systemUser.modules || {}),
             moduleModes: normalizeModuleModes(systemUser.modules || {}, systemUser.moduleModes || {}),
+            branchAccess: normalizeBranchAccess(systemUser.branchAccess || systemUser.branches || systemUser.allowedBranches, [DEFAULT_BRANCH_ID]),
+            defaultBranchId: systemUser.defaultBranchId || DEFAULT_BRANCH_ID,
         });
         setUsersMessage('');
         setUsersError('');
@@ -300,6 +322,8 @@ export default function Settings() {
                 active: userForm.active,
                 modules: normalizeModuleAccess(userForm.modules || {}),
                 moduleModes: normalizeModuleModes(userForm.modules || {}, userForm.moduleModes || {}),
+                branchAccess: normalizeBranchAccess(userForm.branchAccess || [], [DEFAULT_BRANCH_ID]),
+                defaultBranchId: userForm.defaultBranchId || DEFAULT_BRANCH_ID,
             };
             const result = await saveUser(payload);
             const savedUser = normalizeListedUser(result.data?.user || {
@@ -308,6 +332,8 @@ export default function Settings() {
                 active: payload.active,
                 modules: payload.modules,
                 moduleModes: payload.moduleModes,
+                branchAccess: payload.branchAccess,
+                defaultBranchId: payload.defaultBranchId,
                 source: 'optimistic-save',
             });
             setSystemUsers((currentUsers) => mergeListedUsers(currentUsers, [savedUser]));
@@ -482,6 +508,48 @@ export default function Settings() {
                                 />
                             </label>
 
+                            <div className="space-y-2 rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                                <div>
+                                    <div className="text-xs font-black uppercase tracking-[0.18em] text-slate-500">Sucursales permitidas</div>
+                                    <p className="mt-1 text-xs font-semibold text-slate-400">Los usuarios con una sola sucursal trabajaran siempre en esa sucursal. Administracion puede elegir ambas.</p>
+                                </div>
+                                <div className="grid gap-2 sm:grid-cols-2">
+                                    {BRANCHES.map((branch) => {
+                                        const checked = normalizeBranchAccess(userForm.branchAccess || [], [DEFAULT_BRANCH_ID]).includes(branch.id);
+                                        return (
+                                            <label
+                                                key={branch.id}
+                                                className={`flex cursor-pointer items-center justify-between gap-3 rounded-xl border px-3 py-2 transition ${
+                                                    checked ? 'border-[#e30613]/30 bg-white text-slate-950' : 'border-slate-200 bg-slate-100 text-slate-500'
+                                                }`}
+                                            >
+                                                <span>
+                                                    <span className="block text-sm font-black">{branch.shortName}</span>
+                                                    <span className="block text-[10px] font-black uppercase tracking-[0.16em] text-slate-400">Serie {branch.invoiceSeries}</span>
+                                                </span>
+                                                <input
+                                                    type="checkbox"
+                                                    checked={checked}
+                                                    onChange={() => toggleUserBranch(branch.id)}
+                                                    className="h-4 w-4 accent-[#e30613]"
+                                                />
+                                            </label>
+                                        );
+                                    })}
+                                </div>
+                                <Field label="Sucursal por defecto">
+                                    <select
+                                        className={inputClass}
+                                        value={userForm.defaultBranchId || DEFAULT_BRANCH_ID}
+                                        onChange={(event) => setUserForm((current) => ({ ...current, defaultBranchId: event.target.value }))}
+                                    >
+                                        {normalizeBranchAccess(userForm.branchAccess || [], [DEFAULT_BRANCH_ID]).map((branchId) => (
+                                            <option key={branchId} value={branchId}>{branchName(branchId)}</option>
+                                        ))}
+                                    </select>
+                                </Field>
+                            </div>
+
                             <div className="space-y-2">
                                 <div className="text-xs font-black uppercase tracking-[0.18em] text-slate-500">Modulos permitidos y permisos</div>
                                 <div className="grid gap-2">
@@ -637,6 +705,11 @@ export default function Settings() {
                                                         )) : (
                                                             <span className="text-xs font-bold text-rose-500">Sin modulos</span>
                                                         )}
+                                                        {(systemUser.branchAccess || []).map((branchId) => (
+                                                            <span key={`${email}-${branchId}`} className="rounded-full bg-amber-50 px-2.5 py-1 text-[10px] font-black uppercase tracking-wider text-amber-700">
+                                                                {branchName(branchId)}
+                                                            </span>
+                                                        ))}
                                                     </div>
                                                     <div className="text-left md:text-right">
                                                         <button

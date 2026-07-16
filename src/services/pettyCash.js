@@ -1,6 +1,6 @@
 import { collection, doc, Timestamp } from 'firebase/firestore';
 import { db } from '../firebase';
-import { DEFAULT_BRANCH_ID, DEFAULT_BRANCH_NAME, DEFAULT_CASHBOX_NAME } from '../constants';
+import { DEFAULT_BRANCH_ID, DEFAULT_CASHBOX_NAME, getBranchCashboxName, getBranchPayload } from '../constants';
 
 export const PETTY_CASH_COLLECTION = 'caja_chica_movimientos';
 export const PETTY_CASH_PIN = '210397';
@@ -83,6 +83,17 @@ export const buildPettyCashMovementPayload = ({
     supportFiles = [],
     fotoFacturaUrl = '',
     fotoFacturaPath = '',
+    branch,
+    branchId,
+    branchCode,
+    branchName,
+    sucursal,
+    sucursalNombre,
+    invoiceSeries,
+    receiptSeries,
+    documentSeries,
+    cashboxName,
+    caja,
     timestamp,
 } = {}) => {
     const movementDate = fecha || date || new Date().toISOString().substring(0, 10);
@@ -90,10 +101,19 @@ export const buildPettyCashMovementPayload = ({
     const isDeposit = direction === 'entrada';
     const safeDescription = description || descripcion || (isDeposit ? 'DEPOSITO CAJA CHICA' : 'SALIDA CAJA CHICA');
     const now = timestamp || Timestamp.now();
+    const movementBranchPayload = {
+        ...getBranchPayload(branchId || branch || sucursal || branchName || sucursalNombre || DEFAULT_BRANCH_ID),
+        ...(branchCode ? { branchCode } : {}),
+        ...(invoiceSeries ? { invoiceSeries } : {}),
+        ...(receiptSeries ? { receiptSeries } : {}),
+        ...(documentSeries ? { documentSeries } : {}),
+    };
+    const movementCashboxName = cashboxName || caja || getBranchCashboxName(movementBranchPayload.branchId) || DEFAULT_CASHBOX_NAME;
 
     return cleanForFirestore({
-        cashboxName: DEFAULT_CASHBOX_NAME,
-        caja: DEFAULT_CASHBOX_NAME,
+        ...movementBranchPayload,
+        cashboxName: movementCashboxName,
+        caja: movementCashboxName,
         movementType: movementType || (isDeposit ? 'deposito' : 'salida'),
         direction,
         fecha: movementDate,
@@ -128,8 +148,6 @@ export const buildPettyCashMovementPayload = ({
         supportFiles,
         fotoFacturaUrl,
         fotoFacturaPath,
-        branch: DEFAULT_BRANCH_ID,
-        branchName: DEFAULT_BRANCH_NAME,
         timestamp: now,
         createdAt: now,
         updatedAt: now,

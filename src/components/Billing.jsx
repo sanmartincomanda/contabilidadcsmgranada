@@ -3,7 +3,14 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import { collection, deleteDoc, doc, getDoc, serverTimestamp, setDoc, writeBatch } from 'firebase/firestore';
 import { db } from '../firebase';
 import { useAuth } from '../context/AuthContext';
-import { APP_BRAND_NAME, fmt } from '../constants';
+import {
+    APP_BRAND_NAME,
+    DEFAULT_BRANCH_ID,
+    buildDocumentDisplayNumber,
+    fmt,
+    getBranchPayload,
+    getRecordBranchId,
+} from '../constants';
 import { PAYMENT_METHODS, buildFiscalPayload, getSupportFiles, uploadFiscalSupportFiles, uploadSupportFile } from '../services/fiscalUtils';
 import { isMasterEmail } from '../services/userAccess';
 
@@ -241,6 +248,54 @@ const getInvoiceNumberForMatch = (invoice = {}) => normalizeInvoiceMatchKey(
     invoice.numeroFactura || invoice.invoiceNumber || invoice.folio || invoice.factura || ''
 );
 
+const getInvoiceSeriesForMatch = (invoice = {}) => (
+    normalizeInvoiceMatchKey(invoice.invoiceSeries || invoice.documentSeries || 'A') || 'A'
+);
+
+const getReceiptSeriesForMatch = (receipt = {}) => (
+    normalizeInvoiceMatchKey(receipt.receiptSeries || receipt.documentSeries || 'A') || 'A'
+);
+
+const getFiscalDocumentMatchKey = (record = {}, documentType = 'invoice') => {
+    const number = documentType === 'receipt'
+        ? normalizeInvoiceMatchKey(record.receiptNumber || record.numeroRecibo || record.document || '')
+        : getInvoiceNumberForMatch(record);
+    if (!number) return '';
+    const branchId = normalizeInvoiceMatchKey(getRecordBranchId(record));
+    const series = documentType === 'receipt' ? getReceiptSeriesForMatch(record) : getInvoiceSeriesForMatch(record);
+    return [documentType, branchId, series, number].filter(Boolean).join(':');
+};
+
+const getActiveBillingBranchId = (branchContext = {}) => branchContext?.selectedBranchId || DEFAULT_BRANCH_ID;
+
+const isRecordInBillingBranch = (record = {}, branchId = DEFAULT_BRANCH_ID) => (
+    getRecordBranchId(record) === branchId
+);
+
+const buildBranchScopedFiscalDocId = (prefix = 'doc', branchPayload = {}, number = '', date = todayString()) => (
+    `${prefix}_${branchPayload.branchId || DEFAULT_BRANCH_ID}_${branchPayload.documentSeries || branchPayload.invoiceSeries || branchPayload.receiptSeries || 'A'}_${slugify(number)}_${String(date || todayString()).replace(/-/g, '')}`
+);
+
+const buildInvoiceDocumentFields = (invoice = {}, branchPayload = {}) => ({
+    ...branchPayload,
+    invoiceSeries: branchPayload.invoiceSeries || branchPayload.documentSeries || 'A',
+    documentSeries: branchPayload.invoiceSeries || branchPayload.documentSeries || 'A',
+    documentDisplayNumber: buildDocumentDisplayNumber({
+        series: branchPayload.invoiceSeries || branchPayload.documentSeries || 'A',
+        number: invoice.invoiceNumber || invoice.numeroFactura || '',
+    }),
+});
+
+const buildReceiptDocumentFields = (receipt = {}, branchPayload = {}) => ({
+    ...branchPayload,
+    receiptSeries: branchPayload.receiptSeries || branchPayload.documentSeries || 'A',
+    documentSeries: branchPayload.receiptSeries || branchPayload.documentSeries || 'A',
+    documentDisplayNumber: buildDocumentDisplayNumber({
+        series: branchPayload.receiptSeries || branchPayload.documentSeries || 'A',
+        number: receipt.receiptNumber || receipt.numeroRecibo || '',
+    }),
+});
+
 const INACTIVE_STAMPED_INVOICE_STATUSES = ['ANULADA', 'ANULADO', 'CANCELADA', 'CANCELADO', 'DELETED'];
 
 const isActiveStampedInvoice = (invoice = {}) => (
@@ -257,13 +312,13 @@ const getInvoiceRecordIdentityKeys = (invoice = {}) => ([
     .map((value) => normalizeInvoiceMatchKey(value))
     .filter(Boolean);
 
-const findStampedInvoiceNumberDuplicate = (invoices = [], invoiceNumber = '', ignoredIds = []) => {
-    const target = normalizeInvoiceMatchKey(invoiceNumber);
+const findStampedInvoiceNumberDuplicate = (invoices = [], invoiceNumber = '', ignoredIds = [], draft = {}) => {
+    const target = getFiscalDocumentMatchKey({ ...draft, invoiceNumber }, 'invoice');
     if (!target) return null;
     const ignored = new Set(ignoredIds.map((value) => normalizeInvoiceMatchKey(value)).filter(Boolean));
     return invoices.find((invoice) => (
         isActiveStampedInvoice(invoice)
-        && getInvoiceNumberForMatch(invoice) === target
+        && getFiscalDocumentMatchKey(invoice, 'invoice') === target
         && !getInvoiceRecordIdentityKeys(invoice).some((key) => ignored.has(key))
     )) || null;
 };
@@ -281,7 +336,7 @@ const assertUniqueStampedInvoiceNumbers = (drafts = [], existingInvoices = []) =
     const seen = new Map();
     drafts.forEach((draft) => {
         const invoiceNumber = String(draft.invoiceNumber || draft.numeroFactura || '').trim();
-        const key = normalizeInvoiceMatchKey(invoiceNumber);
+        const key = getFiscalDocumentMatchKey(draft, 'invoice');
         if (!key) return;
         const ownIds = getInvoiceRecordIdentityKeys(draft);
         const previous = seen.get(key);
@@ -290,11 +345,39 @@ const assertUniqueStampedInvoiceNumbers = (drafts = [], existingInvoices = []) =
         }
         seen.set(key, draft);
 
-        const duplicate = findStampedInvoiceNumberDuplicate(existingInvoices, invoiceNumber, ownIds);
+        const duplicate = findStampedInvoiceNumberDuplicate(existingInvoices, invoiceNumber, ownIds, draft);
         if (duplicate) {
             throw new Error(buildDuplicateInvoiceNumberMessage(invoiceNumber, duplicate));
         }
     });
+};
+
+const findCashReceiptNumberDuplicate = (receipts = [], receiptNumber = '', ignoredIds = [], draft = {}) => {
+    const target = getFiscalDocumentMatchKey({ ...draft, receiptNumber }, 'receipt');
+    if (!target) return null;
+    const ignored = new Set(ignoredIds.map((value) => normalizeInvoiceMatchKey(value)).filter(Boolean));
+    return receipts.find((receipt) => (
+        !['ANULADO', 'ANULADA', 'CANCELADO', 'CANCELADA', 'DELETED'].includes(normalizeText(receipt.status))
+        && getFiscalDocumentMatchKey(receipt, 'receipt') === target
+        && ![receipt.id, receipt.docId, receipt.receiptId]
+            .map((value) => normalizeInvoiceMatchKey(value))
+            .filter(Boolean)
+            .some((key) => ignored.has(key))
+    )) || null;
+};
+
+const assertUniqueCashReceiptNumber = (receipt = {}, existingReceipts = [], ignoredIds = []) => {
+    const receiptNumber = String(receipt.receiptNumber || receipt.numeroRecibo || '').trim();
+    if (!receiptNumber) return;
+    const duplicate = findCashReceiptNumberDuplicate(existingReceipts, receiptNumber, ignoredIds, receipt);
+    if (duplicate) {
+        const details = [
+            duplicate.receiptNumber || duplicate.numeroRecibo ? `recibo ${duplicate.receiptNumber || duplicate.numeroRecibo}` : '',
+            duplicate.customerName || duplicate.recibiDe || '',
+            safeNumber(duplicate.amount || duplicate.cantidad) ? fmt(safeNumber(duplicate.amount || duplicate.cantidad)) : '',
+        ].filter(Boolean).join(' - ');
+        throw new Error(`Este numero de recibo ya existe: ${receiptNumber}. ${details ? `${details}. ` : ''}No se puede guardar duplicado en la misma sucursal/serie.`);
+    }
 };
 
 const getSicarInvoiceKeys = (invoice = {}) => ([
@@ -1134,11 +1217,13 @@ const createInvoiceDraft = (invoice = {}, fallbackDate = todayString()) => {
     const subtotal = safeNumber(invoice.subtotal ?? invoice.amount);
     const iva = safeNumber(invoice.iva);
     const total = safeNumber(invoice.total || subtotal + iva);
+    const invoiceBranchPayload = getBranchPayload(getRecordBranchId(invoice), 'invoice');
     const wasExistingDoc = invoice.wasExistingDoc !== undefined
         ? Boolean(invoice.wasExistingDoc)
         : Boolean(invoice.id || invoice.docId);
 
     return {
+        ...invoiceBranchPayload,
         localId: invoice.localId || createLineId('invoice'),
         docId: invoice.id || invoice.docId || '',
         wasExistingDoc,
@@ -1416,6 +1501,7 @@ const buildCashReceiptPayload = ({
     customerName = '',
     invoiceApplications = [],
     isNew = false,
+    branchPayload = getBranchPayload(DEFAULT_BRANCH_ID, 'receipt'),
 }) => {
     const date = form.date || todayString();
     const retentionIr2 = safeNumber(form.retentionIr2);
@@ -1430,6 +1516,7 @@ const buildCashReceiptPayload = ({
         month: getMonth(date),
         receiptNumber: String(form.receiptNumber || '').trim(),
         numeroRecibo: String(form.receiptNumber || '').trim(),
+        ...buildReceiptDocumentFields(form, branchPayload),
         customerName: String(customerName || '').trim(),
         recibiDe: String(customerName || '').trim(),
         amount,
@@ -1466,6 +1553,7 @@ const persistCashReceiptRecord = async ({
     form = {},
     existingReceipt = {},
     invoiceIndex = new Map(),
+    branchPayload = getBranchPayload(DEFAULT_BRANCH_ID, 'receipt'),
 }) => {
     if (!receiptId) throw new Error('No se pudo generar el identificador del recibo.');
     if (!String(form.paymentMethod || '').trim()) throw new Error('Selecciona metodo de pago.');
@@ -1501,6 +1589,7 @@ const persistCashReceiptRecord = async ({
         customerName,
         invoiceApplications: validatedApplications.applications,
         isNew: !existingReceipt?.id && !existingReceipt?.docId,
+        branchPayload,
     });
 
     const batch = writeBatch(db);
@@ -2406,52 +2495,62 @@ const ClosureAccountingSummaryPanel = ({ summary = {} }) => {
     );
 };
 
-function CashClosure({ data }) {
+function CashClosure({ data, branchContext }) {
     const { user } = useAuth();
     const isMaster = isMasterEmail(user?.email);
+    const selectedBranchId = getActiveBillingBranchId(branchContext);
+    const branchPayload = useMemo(() => getBranchPayload(selectedBranchId), [selectedBranchId]);
+    const invoiceBranchPayload = useMemo(() => getBranchPayload(selectedBranchId, 'invoice'), [selectedBranchId]);
+    const receiptBranchPayload = useMemo(() => getBranchPayload(selectedBranchId, 'receipt'), [selectedBranchId]);
 
     const closedSicarClosureKeys = useMemo(() => {
         const keys = new Set();
         (data.cierres_caja || [])
+            .filter((closure) => isRecordInBillingBranch(closure, selectedBranchId))
             .filter((closure) => closure.status !== 'en_espera')
             .forEach((closure) => {
                 getSavedClosureSicarMatchKeys(closure).forEach((key) => keys.add(key));
             });
         return keys;
-    }, [data.cierres_caja]);
+    }, [data.cierres_caja, selectedBranchId]);
 
     const sicarClosures = useMemo(() => (
         [...(data.sicar_cierres_caja || [])]
             .map((item) => {
                 const datedClosure = { ...item, date: item.date || getRecordDate(item.closureDateTime || item.fecha) };
-                return { ...datedClosure, ...getNetSicarSalesTotals(datedClosure) };
+                return { ...datedClosure, ...getBranchPayload(getRecordBranchId(datedClosure)), ...getNetSicarSalesTotals(datedClosure) };
             })
+            .filter((closure) => isRecordInBillingBranch(closure, selectedBranchId))
             .filter((closure) => !isSicarClosureHiddenFromCashClosure(closure))
             .filter((closure) => String(closure.date || '').substring(0, 10) >= SICAR_CASH_CLOSURE_AVAILABLE_FROM_DATE)
             .filter((closure) => ![...getSicarClosureMatchKeys(closure)].some((key) => closedSicarClosureKeys.has(key)))
             .sort((a, b) => String(b.closureDateTime || b.fecha || b.date).localeCompare(String(a.closureDateTime || a.fecha || a.date)))
-    ), [closedSicarClosureKeys, data.sicar_cierres_caja]);
+    ), [closedSicarClosureKeys, data.sicar_cierres_caja, selectedBranchId]);
 
     const stampedInvoices = useMemo(() => (
         [...(data.facturas_membretadas_ventas || [])]
             .map((item) => ({
                 ...item,
+                ...getBranchPayload(getRecordBranchId(item), 'invoice'),
                 date: item.saleDate || item.date || '',
                 invoiceNumber: item.numeroFactura || item.invoiceNumber || '',
                 cashierName: getCashierName(item),
                 cashierCode: getRecordCashierCode(item),
                 retentionTotal: safeNumber(item.retentionTotal ?? (safeNumber(item.retentionIr2) + safeNumber(item.retentionMunicipal1))),
             }))
+            .filter((invoice) => isRecordInBillingBranch(invoice, selectedBranchId))
             .filter((invoice) => !isInvoiceExcludedFromCashClosureSelection(invoice))
             .sort((a, b) => String(b.date).localeCompare(String(a.date)))
-    ), [data.facturas_membretadas_ventas]);
+    ), [data.facturas_membretadas_ventas, selectedBranchId]);
 
     const cashReceipts = useMemo(() => (
         [...(data.recibos_caja_membretados || [])]
             .map(normalizeCashReceiptRecord)
+            .map((receipt) => ({ ...receipt, ...getBranchPayload(getRecordBranchId(receipt), 'receipt') }))
+            .filter((receipt) => isRecordInBillingBranch(receipt, selectedBranchId))
             .filter((receipt) => normalizeText(receipt.status) !== 'ANULADO')
             .sort((a, b) => String(b.date).localeCompare(String(a.date)))
-    ), [data.recibos_caja_membretados]);
+    ), [data.recibos_caja_membretados, selectedBranchId]);
 
     const clients = useMemo(() => (
         [...(data.clientes_facturacion || [])]
@@ -2462,9 +2561,10 @@ function CashClosure({ data }) {
 
     const waitingClosures = useMemo(() => (
         [...(data.cierres_caja || [])]
+            .filter((item) => isRecordInBillingBranch(item, selectedBranchId))
             .filter((item) => item.status === 'en_espera')
             .sort((a, b) => String(b.updatedAt?.seconds || b.date || '').localeCompare(String(a.updatedAt?.seconds || a.date || '')))
-    ), [data.cierres_caja]);
+    ), [data.cierres_caja, selectedBranchId]);
 
     const [activeClosureDocId, setActiveClosureDocId] = useState('');
     const [selectedClosureId, setSelectedClosureId] = useState('');
@@ -2712,7 +2812,7 @@ function CashClosure({ data }) {
 
     const loadClosure = (closure) => {
         setClosureSuccessOpen(false);
-        setActiveClosureDocId(closure.corId ? `cierre_${closure.date || getRecordDate(closure.closureDateTime || closure.fecha)}_${closure.corId}` : '');
+        setActiveClosureDocId(closure.corId ? `cierre_${selectedBranchId}_${closure.date || getRecordDate(closure.closureDateTime || closure.fecha)}_${closure.corId}` : '');
         setSelectedClosureId(closure.id);
         setClosureDate(closure.date || getRecordDate(closure.closureDateTime || closure.fecha) || todayString());
         setMessage(`Cargado ${closure.cashboxName || closure.cajaName || 'cierre SICAR'} ${closure.corId || closure.cor_id || ''}.`);
@@ -2826,7 +2926,8 @@ function CashClosure({ data }) {
             const duplicate = findStampedInvoiceNumberDuplicate(
                 stampedInvoices,
                 value,
-                getInvoiceRecordIdentityKeys(currentInvoice)
+                getInvoiceRecordIdentityKeys(currentInvoice),
+                { ...invoiceBranchPayload, ...currentInvoice }
             );
             if (duplicate) {
                 setMessage(buildDuplicateInvoiceNumberMessage(value, duplicate));
@@ -3044,15 +3145,18 @@ function CashClosure({ data }) {
             await ensurePeopleRecords();
             const cashierCode = getCashierCode(safeCashierName);
             const docId = activeClosureDocId || (selectedClosure?.corId
-                ? `cierre_${closureDate}_${selectedClosure.corId}`
-                : `cierre_${closureDate}_${Date.now()}`);
+                ? `cierre_${selectedBranchId}_${closureDate}_${selectedClosure.corId}`
+                : `cierre_${selectedBranchId}_${closureDate}_${Date.now()}`);
             const isWaiting = mode === 'waiting';
             const validInvoiceDrafts = closureInvoices.filter(hasInvoiceDraftContent);
             const validCashReceiptDrafts = closureCashReceipts.filter((receipt) => receipt.docId || receipt.id || safeNumber(receipt.amount));
             const savedInvoices = [];
             const savedCashReceipts = [];
 
-            assertUniqueStampedInvoiceNumbers(validInvoiceDrafts, stampedInvoices);
+            assertUniqueStampedInvoiceNumbers(
+                validInvoiceDrafts.map((invoice) => ({ ...invoiceBranchPayload, ...invoice })),
+                stampedInvoices
+            );
 
             const preparedInvoiceDrafts = validInvoiceDrafts.map((invoice) => {
                 if (!String(invoice.invoiceNumber || '').trim()) {
@@ -3062,7 +3166,7 @@ function CashClosure({ data }) {
                 const invoiceDate = invoice.date || closureDate;
                 const invoiceCashierName = String(invoice.cashierName || safeCashierName).trim();
                 const invoiceCashierCode = getCashierCode(invoiceCashierName);
-                const invoiceDocId = invoice.docId || `membretada_${slugify(invoice.invoiceNumber)}_${invoiceDate.replace(/-/g, '')}`;
+                const invoiceDocId = invoice.docId || buildBranchScopedFiscalDocId('membretada', invoiceBranchPayload, invoice.invoiceNumber, invoiceDate);
                 const fiscal = buildFiscalPayload({
                     subtotal: safeNumber(invoice.subtotal),
                     iva: safeNumber(invoice.iva),
@@ -3072,6 +3176,7 @@ function CashClosure({ data }) {
                 });
 
                 return {
+                    ...invoiceBranchPayload,
                     ...invoice,
                     wasExistingDoc: Boolean(invoice.docId),
                     id: invoiceDocId,
@@ -3107,6 +3212,7 @@ function CashClosure({ data }) {
                     existingInvoice
                 );
                 const invoicePayload = {
+                    ...buildInvoiceDocumentFields(invoice, invoiceBranchPayload),
                     date: invoice.date,
                     saleDate: invoice.saleDate || invoice.date,
                     month: getMonth(invoice.date),
@@ -3159,6 +3265,7 @@ function CashClosure({ data }) {
                 const receiptDocId = receipt.docId || receipt.id;
                 if (!receiptDocId) continue;
                 const receiptPayload = {
+                    ...buildReceiptDocumentFields(receipt, receiptBranchPayload),
                     status: 'conciliado',
                     closureStatus: 'conciliado',
                     linkedCashClosureId: docId,
@@ -3180,6 +3287,7 @@ function CashClosure({ data }) {
             }
 
             const payload = {
+                ...branchPayload,
                 date: closureDate,
                 month: getMonth(closureDate),
                 status: isWaiting ? 'en_espera' : (shouldTrackDifference ? 'con_diferencia' : 'cuadrado'),
@@ -3227,6 +3335,7 @@ function CashClosure({ data }) {
                 difference,
                 stampedInvoiceIds: isWaiting ? [] : savedInvoices.map((invoice) => invoice.id),
                 stampedInvoices: isWaiting ? [] : savedInvoices.map((invoice) => ({
+                    ...buildInvoiceDocumentFields(invoice, invoiceBranchPayload),
                     id: invoice.id,
                     invoiceNumber: invoice.invoiceNumber,
                     date: invoice.saleDate || invoice.date,
@@ -3248,6 +3357,7 @@ function CashClosure({ data }) {
                 })) : [],
                 cashReceiptIds: isWaiting ? [] : savedCashReceipts.map((receipt) => receipt.id),
                 cashReceipts: isWaiting ? [] : savedCashReceipts.map((receipt) => ({
+                    ...buildReceiptDocumentFields(receipt, receiptBranchPayload),
                     id: receipt.id,
                     docId: receipt.docId,
                     receiptNumber: receipt.receiptNumber,
@@ -3282,6 +3392,7 @@ function CashClosure({ data }) {
             if (!isWaiting && cashierCode && shouldTrackDifference) {
                 const pendingAmount = Math.abs(difference);
                 await setDoc(doc(db, 'diferencias_caja', `${docId}_${cashierCode}`), {
+                    ...branchPayload,
                     closureId: docId,
                     date: closureDate,
                     month: getMonth(closureDate),
@@ -5016,9 +5127,11 @@ function useCashReceiptPrintTemplates(setMessage = () => {}) {
     };
 }
 
-function CashReceipts({ data }) {
+function CashReceipts({ data, branchContext }) {
     const { user } = useAuth();
     const isMaster = isMasterEmail(user?.email);
+    const selectedBranchId = getActiveBillingBranchId(branchContext);
+    const receiptBranchPayload = useMemo(() => getBranchPayload(selectedBranchId, 'receipt'), [selectedBranchId]);
     const clients = useMemo(() => (
         [...(data.clientes_facturacion || [])]
             .map((item) => ({ ...item, name: item.name || item.nombre || '' }))
@@ -5028,8 +5141,9 @@ function CashReceipts({ data }) {
     const savedInvoices = useMemo(() => (
         [...(data.facturas_membretadas_ventas || [])]
             .map(normalizeStampedInvoiceRecord)
+            .filter((invoice) => isRecordInBillingBranch(invoice, selectedBranchId))
             .sort((a, b) => String(b.date).localeCompare(String(a.date)))
-    ), [data.facturas_membretadas_ventas]);
+    ), [data.facturas_membretadas_ventas, selectedBranchId]);
     const invoiceIndex = useMemo(() => new Map(
         savedInvoices
             .map((invoice) => [getInvoiceDocId(invoice), invoice])
@@ -5044,8 +5158,9 @@ function CashReceipts({ data }) {
     const receipts = useMemo(() => (
         [...(data.recibos_caja_membretados || [])]
             .map(normalizeCashReceiptRecord)
+            .filter((receipt) => isRecordInBillingBranch(receipt, selectedBranchId))
             .sort((a, b) => String(b.date).localeCompare(String(a.date)))
-    ), [data.recibos_caja_membretados]);
+    ), [data.recibos_caja_membretados, selectedBranchId]);
 
     const [form, setForm] = useState(createCashReceiptForm);
     const [search, setSearch] = useState('');
@@ -5285,14 +5400,16 @@ function CashReceipts({ data }) {
         setSaving(true);
         setMessage('');
         try {
+            assertUniqueCashReceiptNumber({ ...receiptBranchPayload, ...form }, receipts);
             const receiptId = form.receiptNumber
-                ? `recibo_${slugify(form.receiptNumber)}_${String(form.date || todayString()).replace(/-/g, '')}`
-                : `recibo_${String(form.date || todayString()).replace(/-/g, '')}_${Date.now()}`;
+                ? buildBranchScopedFiscalDocId('recibo', receiptBranchPayload, form.receiptNumber, form.date || todayString())
+                : `recibo_${selectedBranchId}_${String(form.date || todayString()).replace(/-/g, '')}_${Date.now()}`;
             const { receiptPayload } = await persistCashReceiptRecord({
                 receiptId,
                 form,
                 existingReceipt: {},
                 invoiceIndex,
+                branchPayload: receiptBranchPayload,
             });
             await upsertClientRecord(receiptPayload.customerName, receiptPayload.invoiceApplications?.length ? 'recibo_caja_credito' : 'recibo_caja');
             setForm(createCashReceiptForm());
@@ -5313,11 +5430,17 @@ function CashReceipts({ data }) {
         setMessage('');
         try {
             const existingReceipt = receipts.find((receipt) => receipt.id === editForm.id) || {};
+            assertUniqueCashReceiptNumber(
+                { ...receiptBranchPayload, ...editForm },
+                receipts,
+                [editForm.id, editForm.docId]
+            );
             const { receiptPayload } = await persistCashReceiptRecord({
                 receiptId: editForm.id,
                 form: editForm,
                 existingReceipt,
                 invoiceIndex,
+                branchPayload: receiptBranchPayload,
             });
             await upsertClientRecord(receiptPayload.customerName, receiptPayload.invoiceApplications?.length ? 'recibo_caja_credito' : 'recibo_caja');
             setMessage(`Recibo ${editForm.receiptNumber || editForm.id} actualizado.`);
@@ -5550,9 +5673,11 @@ function CashReceipts({ data }) {
     );
 }
 
-function CashReceiptHistory({ data, canEdit = true }) {
+function CashReceiptHistory({ data, canEdit = true, branchContext }) {
     const { user } = useAuth();
     const isMaster = isMasterEmail(user?.email);
+    const selectedBranchId = getActiveBillingBranchId(branchContext);
+    const receiptBranchPayload = useMemo(() => getBranchPayload(selectedBranchId, 'receipt'), [selectedBranchId]);
     const [search, setSearch] = useState('');
     const [selectedMonth, setSelectedMonth] = useState(getMonth(todayString()));
     const [selectedDate, setSelectedDate] = useState('');
@@ -5576,8 +5701,9 @@ function CashReceiptHistory({ data, canEdit = true }) {
     const savedInvoices = useMemo(() => (
         [...(data.facturas_membretadas_ventas || [])]
             .map(normalizeStampedInvoiceRecord)
+            .filter((invoice) => isRecordInBillingBranch(invoice, selectedBranchId))
             .sort((a, b) => String(b.date).localeCompare(String(a.date)))
-    ), [data.facturas_membretadas_ventas]);
+    ), [data.facturas_membretadas_ventas, selectedBranchId]);
     const invoiceIndex = useMemo(() => new Map(
         savedInvoices
             .map((invoice) => [getInvoiceDocId(invoice), invoice])
@@ -5626,8 +5752,9 @@ function CashReceiptHistory({ data, canEdit = true }) {
     const receipts = useMemo(() => (
         [...(data.recibos_caja_membretados || [])]
             .map(normalizeCashReceiptRecord)
+            .filter((receipt) => isRecordInBillingBranch(receipt, selectedBranchId))
             .sort((a, b) => String(b.date).localeCompare(String(a.date)))
-    ), [data.recibos_caja_membretados]);
+    ), [data.recibos_caja_membretados, selectedBranchId]);
 
     const searchedReceipts = useMemo(() => filterRecords(receipts, search, [
         'date',
@@ -5769,11 +5896,17 @@ function CashReceiptHistory({ data, canEdit = true }) {
         setMessage('');
         try {
             const existingReceipt = receipts.find((receipt) => receipt.id === editForm.id) || {};
+            assertUniqueCashReceiptNumber(
+                { ...receiptBranchPayload, ...editForm },
+                receipts,
+                [editForm.id, editForm.docId]
+            );
             const { receiptPayload } = await persistCashReceiptRecord({
                 receiptId: editForm.id,
                 form: editForm,
                 existingReceipt,
                 invoiceIndex,
+                branchPayload: receiptBranchPayload,
             });
             await setDoc(doc(db, 'clientes_facturacion', `CLI-${slugify(receiptPayload.customerName)}`), {
                 code: `CLI-${slugify(receiptPayload.customerName)}`,
@@ -5918,13 +6051,16 @@ function CashReceiptHistory({ data, canEdit = true }) {
     );
 }
 
-function StampedInvoices({ data }) {
+function StampedInvoices({ data, branchContext }) {
     const todaySicarInvoiceDate = todayString();
+    const selectedBranchId = getActiveBillingBranchId(branchContext);
+    const invoiceBranchPayload = useMemo(() => getBranchPayload(selectedBranchId, 'invoice'), [selectedBranchId]);
     const savedInvoices = useMemo(() => (
         [...(data.facturas_membretadas_ventas || [])]
             .map(normalizeStampedInvoiceRecord)
+            .filter((invoice) => isRecordInBillingBranch(invoice, selectedBranchId))
             .sort((a, b) => String(b.date).localeCompare(String(a.date)))
-    ), [data.facturas_membretadas_ventas]);
+    ), [data.facturas_membretadas_ventas, selectedBranchId]);
 
     const loadedInvoiceIndex = useMemo(() => buildLoadedInvoiceIndex(savedInvoices), [savedInvoices]);
 
@@ -5935,11 +6071,13 @@ function StampedInvoices({ data }) {
                 date: item.date || getRecordDate(item.fecha || item.invoiceDate),
                 invoiceNumber: item.numeroFactura || item.invoiceNumber || item.folio || '',
                 items: item.items || [],
+                ...getBranchPayload(getRecordBranchId(item)),
             }))
+            .filter((invoice) => isRecordInBillingBranch(invoice, selectedBranchId))
             .filter((invoice) => String(invoice.date || '').substring(0, 10) === todaySicarInvoiceDate)
             .filter((invoice) => isSicarInvoicePendingAccounting(invoice, loadedInvoiceIndex))
             .sort((a, b) => String(b.date).localeCompare(String(a.date)))
-    ), [data.sicar_facturas_membretadas, loadedInvoiceIndex, todaySicarInvoiceDate]);
+    ), [data.sicar_facturas_membretadas, loadedInvoiceIndex, selectedBranchId, todaySicarInvoiceDate]);
 
     const clients = useMemo(() => (
         [...(data.clientes_facturacion || [])]
@@ -6132,7 +6270,7 @@ function StampedInvoices({ data }) {
             setMessage('El numero de la segunda factura debe ser diferente al de la primera.');
             return;
         }
-        const duplicateAppInvoice = findStampedInvoiceNumberDuplicate(savedInvoices, secondInvoiceNumber);
+        const duplicateAppInvoice = findStampedInvoiceNumberDuplicate(savedInvoices, secondInvoiceNumber, [], invoiceBranchPayload);
         if (duplicateAppInvoice) {
             setMessage(buildDuplicateInvoiceNumberMessage(secondInvoiceNumber, duplicateAppInvoice));
             return;
@@ -6206,6 +6344,7 @@ function StampedInvoices({ data }) {
         setMessage('');
         try {
             const invoicesToSave = [form, splitInvoice].filter(Boolean).map((invoice, index, list) => ({
+                ...invoiceBranchPayload,
                 ...invoice,
                 splitPart: list.length > 1 ? index + 1 : null,
                 splitTotalParts: list.length > 1 ? list.length : null,
@@ -6219,14 +6358,14 @@ function StampedInvoices({ data }) {
                 validatePaymentBreakdownForInvoice(invoice);
             });
 
-            const invoiceNumberKeys = invoicesToSave.map((invoice) => normalizeInvoiceMatchKey(invoice.invoiceNumber)).filter(Boolean);
+            const invoiceNumberKeys = invoicesToSave.map((invoice) => getFiscalDocumentMatchKey(invoice, 'invoice')).filter(Boolean);
             if (new Set(invoiceNumberKeys).size !== invoiceNumberKeys.length) {
                 throw new Error('Este numero de factura ya existe en la division. Las facturas divididas deben tener numeros diferentes.');
             }
 
             const invoiceMeta = invoicesToSave.map((invoice) => ({
                 invoice,
-                docId: `membretada_${slugify(invoice.invoiceNumber)}_${invoice.date.replace(/-/g, '')}`,
+                docId: buildBranchScopedFiscalDocId('membretada', invoiceBranchPayload, invoice.invoiceNumber, invoice.date),
             }));
 
             assertUniqueStampedInvoiceNumbers(invoicesToSave, savedInvoices);
@@ -6269,6 +6408,7 @@ function StampedInvoices({ data }) {
                 );
 
                 await setDoc(doc(db, 'facturas_membretadas_ventas', docId), {
+                    ...buildInvoiceDocumentFields(invoice, invoiceBranchPayload),
                     date: invoice.date,
                     saleDate: invoice.date,
                     month: getMonth(invoice.date),
@@ -7042,7 +7182,9 @@ const StampedInvoiceEditModal = ({
     );
 };
 
-function StampedInvoiceHistory({ data, canEdit = true }) {
+function StampedInvoiceHistory({ data, canEdit = true, branchContext }) {
+    const selectedBranchId = getActiveBillingBranchId(branchContext);
+    const invoiceBranchPayload = useMemo(() => getBranchPayload(selectedBranchId, 'invoice'), [selectedBranchId]);
     const [search, setSearch] = useState('');
     const [selectedMonth, setSelectedMonth] = useState(getMonth(todayString()));
     const [selectedDate, setSelectedDate] = useState('');
@@ -7073,8 +7215,9 @@ function StampedInvoiceHistory({ data, canEdit = true }) {
     const savedInvoices = useMemo(() => (
         [...(data.facturas_membretadas_ventas || [])]
             .map(normalizeStampedInvoiceRecord)
+            .filter((invoice) => isRecordInBillingBranch(invoice, selectedBranchId))
             .sort((a, b) => String(b.date).localeCompare(String(a.date)))
-    ), [data.facturas_membretadas_ventas]);
+    ), [data.facturas_membretadas_ventas, selectedBranchId]);
 
     const closureIndex = useMemo(() => {
         const map = new Map();
@@ -7366,7 +7509,8 @@ function StampedInvoiceHistory({ data, canEdit = true }) {
         const duplicateAppInvoice = findStampedInvoiceNumberDuplicate(
             savedInvoices,
             secondInvoiceNumber,
-            getInvoiceRecordIdentityKeys(editForm)
+            getInvoiceRecordIdentityKeys(editForm),
+            { ...invoiceBranchPayload, ...editForm }
         );
         if (duplicateAppInvoice) {
             setMessage(buildDuplicateInvoiceNumberMessage(secondInvoiceNumber, duplicateAppInvoice));
@@ -7430,6 +7574,7 @@ function StampedInvoiceHistory({ data, canEdit = true }) {
         setEditSaving(true);
         try {
             const invoicesToSave = [editForm, splitEditInvoice].filter(Boolean).map((invoice, index, list) => ({
+                ...invoiceBranchPayload,
                 ...invoice,
                 splitPart: list.length > 1 ? index + 1 : invoice.splitPart || null,
                 splitTotalParts: list.length > 1 ? list.length : invoice.splitTotalParts || null,
@@ -7443,14 +7588,14 @@ function StampedInvoiceHistory({ data, canEdit = true }) {
                 validatePaymentBreakdownForInvoice(invoice);
             });
 
-            const invoiceNumberKeys = invoicesToSave.map((invoice) => normalizeInvoiceMatchKey(invoice.invoiceNumber)).filter(Boolean);
+            const invoiceNumberKeys = invoicesToSave.map((invoice) => getFiscalDocumentMatchKey(invoice, 'invoice')).filter(Boolean);
             if (new Set(invoiceNumberKeys).size !== invoiceNumberKeys.length) {
                 throw new Error('Este numero de factura ya existe en la division. Las facturas divididas deben tener numeros diferentes.');
             }
 
             const invoiceMeta = invoicesToSave.map((invoice, index) => ({
                 invoice,
-                docId: index === 0 ? originalDocId : `membretada_${slugify(invoice.invoiceNumber)}_${(invoice.date || todayString()).replace(/-/g, '')}`,
+                docId: index === 0 ? originalDocId : buildBranchScopedFiscalDocId('membretada', invoiceBranchPayload, invoice.invoiceNumber, invoice.date || todayString()),
             }));
             const docIdsBeingSaved = new Set(invoiceMeta.map(({ docId }) => normalizeInvoiceMatchKey(docId)));
 
@@ -7494,6 +7639,7 @@ function StampedInvoiceHistory({ data, canEdit = true }) {
                         : {}
                 );
                 batch.set(doc(db, 'facturas_membretadas_ventas', docId), {
+                    ...buildInvoiceDocumentFields(invoice, invoiceBranchPayload),
                     date: invoice.date || todayString(),
                     saleDate: invoice.date || todayString(),
                     month: getMonth(invoice.date || todayString()),
@@ -7902,29 +8048,34 @@ function StampedInvoiceHistory({ data, canEdit = true }) {
     );
 }
 
-function CashDifferences({ data }) {
+function CashDifferences({ data, branchContext }) {
     const { user } = useAuth();
     const isMaster = isMasterEmail(user?.email);
+    const selectedBranchId = getActiveBillingBranchId(branchContext);
+    const branchPayload = useMemo(() => getBranchPayload(selectedBranchId), [selectedBranchId]);
     const [message, setMessage] = useState('');
     const [selectedMonth, setSelectedMonth] = useState('');
     const [selectedDate, setSelectedDate] = useState('');
 
     const closureIndex = useMemo(() => {
         const map = new Map();
-        (data.cierres_caja || []).forEach((closure) => {
+        (data.cierres_caja || [])
+            .filter((closure) => isRecordInBillingBranch(closure, selectedBranchId))
+            .forEach((closure) => {
             if (closure.id) map.set(closure.id, closure);
         });
         return map;
-    }, [data.cierres_caja]);
+    }, [data.cierres_caja, selectedBranchId]);
 
     const differences = useMemo(() => (
         [...(data.diferencias_caja || [])]
+            .filter((item) => isRecordInBillingBranch(item, selectedBranchId))
             .map((item) => ({
                 ...item,
                 effectivePendingAmount: getReconciledCashDifferencePendingAmount(item, closureIndex),
             }))
             .sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')))
-    ), [closureIndex, data.diferencias_caja]);
+    ), [closureIndex, data.diferencias_caja, selectedBranchId]);
 
     const filteredDifferences = useMemo(() => (
         differences.filter((item) => matchesHistoryDateFilters(item.date, selectedMonth, selectedDate))
@@ -8005,6 +8156,7 @@ function CashDifferences({ data }) {
         }
 
         batch.set(doc(collection(db, 'abonos_diferencias_caja')), {
+            ...branchPayload,
             date: todayString(),
             month: getMonth(todayString()),
             cashierCode: cashier.cashierCode || '',
@@ -9519,11 +9671,13 @@ const CashClosureDetailModal = ({ closure, onClose, onEdit, onExport, onPrintTic
     );
 };
 
-function CashClosureHistory({ data, canEdit = true }) {
+function CashClosureHistory({ data, canEdit = true, branchContext }) {
     const { user } = useAuth();
     const isMaster = isMasterEmail(user?.email);
     const canManageClosures = isMaster && canEdit;
     const canPrintClosureTicket = canManageClosures || !canEdit;
+    const selectedBranchId = getActiveBillingBranchId(branchContext);
+    const branchPayload = useMemo(() => getBranchPayload(selectedBranchId), [selectedBranchId]);
     const [search, setSearch] = useState('');
     const [selectedMonth, setSelectedMonth] = useState(getMonth(todayString()));
     const [selectedDate, setSelectedDate] = useState('');
@@ -9538,9 +9692,11 @@ function CashClosureHistory({ data, canEdit = true }) {
 
     const closures = useMemo(() => (
         [...(data.cierres_caja || [])]
+            .filter((closure) => isRecordInBillingBranch(closure, selectedBranchId))
             .map((closure) => {
                 const totals = normalizeCashClosureStoredTotals(closure);
                 return {
+                    ...branchPayload,
                     ...closure,
                     date: closure.date || getRecordDate(closure.createdAt || closure.updatedAt),
                     invoiceCount: (closure.stampedInvoices || closure.stampedInvoiceDrafts || []).length,
@@ -9557,7 +9713,7 @@ function CashClosureHistory({ data, canEdit = true }) {
                 };
             })
             .sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')))
-    ), [data.cierres_caja]);
+    ), [branchPayload, data.cierres_caja, selectedBranchId]);
 
     const clients = useMemo(() => (
         [...(data.clientes_facturacion || [])]
@@ -9568,7 +9724,9 @@ function CashClosureHistory({ data, canEdit = true }) {
 
     const differencesByClosureId = useMemo(() => {
         const map = new Map();
-        (data.diferencias_caja || []).forEach((item) => {
+        (data.diferencias_caja || [])
+            .filter((item) => isRecordInBillingBranch(item, selectedBranchId))
+            .forEach((item) => {
             const closureId = item.closureId || '';
             if (!closureId) return;
             const rows = map.get(closureId) || [];
@@ -9576,7 +9734,7 @@ function CashClosureHistory({ data, canEdit = true }) {
             map.set(closureId, rows);
         });
         return map;
-    }, [data.diferencias_caja]);
+    }, [data.diferencias_caja, selectedBranchId]);
 
     const searchedClosures = useMemo(() => filterRecords(closures, search, [
         'date',
@@ -9816,6 +9974,7 @@ function CashClosureHistory({ data, canEdit = true }) {
             const editedClosureDate = editForm.date || todayString();
 
             batch.set(doc(db, 'cierres_caja', editForm.id), sanitizeFirestoreData({
+                ...branchPayload,
                 date: editedClosureDate,
                 month: getMonth(editedClosureDate),
                 status: nextStatus,
@@ -9872,6 +10031,7 @@ function CashClosureHistory({ data, canEdit = true }) {
             if (nextStatus !== 'en_espera' && cashierCode && totals.shouldTrackDifference) {
                 const pendingAmount = Math.abs(totals.difference);
                 batch.set(doc(db, 'diferencias_caja', nextDifferenceId), {
+                    ...branchPayload,
                     closureId: editForm.id,
                     date: editForm.date || todayString(),
                     month: getMonth(editForm.date || todayString()),
@@ -10177,7 +10337,8 @@ function CashClosureHistory({ data, canEdit = true }) {
     );
 }
 
-function RetentionHistory({ data, type }) {
+function RetentionHistory({ data, type, branchContext }) {
+    const selectedBranchId = getActiveBillingBranchId(branchContext);
     const [search, setSearch] = useState('');
     const [selectedMonth, setSelectedMonth] = useState(getMonth(todayString()));
     const [selectedDate, setSelectedDate] = useState('');
@@ -10189,15 +10350,18 @@ function RetentionHistory({ data, type }) {
 
     const closureIndex = useMemo(() => {
         const map = new Map();
-        (data.cierres_caja || []).forEach((closure) => {
+        (data.cierres_caja || [])
+            .filter((closure) => isRecordInBillingBranch(closure, selectedBranchId))
+            .forEach((closure) => {
             if (closure.id) map.set(closure.id, closure);
         });
         return map;
-    }, [data.cierres_caja]);
+    }, [data.cierres_caja, selectedBranchId]);
 
     const retentions = useMemo(() => (
         [...(data.facturas_membretadas_ventas || [])]
             .map(normalizeStampedInvoiceRecord)
+            .filter((invoice) => isRecordInBillingBranch(invoice, selectedBranchId))
             .map((invoice) => ({
                 ...invoice,
                 retentionAmount: safeNumber(invoice[amountField]),
@@ -10205,7 +10369,7 @@ function RetentionHistory({ data, type }) {
             }))
             .filter((invoice) => invoice.retentionAmount > 0)
             .sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')))
-    ), [amountField, closureIndex, data.facturas_membretadas_ventas]);
+    ), [amountField, closureIndex, data.facturas_membretadas_ventas, selectedBranchId]);
 
     const searchedRetentions = useMemo(() => filterRecords(retentions, search, [
         'date',
@@ -10321,7 +10485,7 @@ function RetentionHistory({ data, type }) {
     );
 }
 
-function BillingHistory({ data, canEdit = true }) {
+function BillingHistory({ data, canEdit = true, branchContext }) {
     const [activeHistoryTab, setActiveHistoryTab] = useState('membretadas');
     const historyTabs = useMemo(() => [
         { key: 'membretadas', label: 'Facturas Membretadas' },
@@ -10357,17 +10521,17 @@ function BillingHistory({ data, canEdit = true }) {
                 </div>
             </Section>
 
-            {activeHistoryTab === 'membretadas' && <StampedInvoiceHistory data={data} canEdit={canEdit} />}
-            {activeHistoryTab === 'recibos' && <CashReceiptHistory data={data} canEdit={canEdit} />}
-            {activeHistoryTab === 'cierres' && <CashClosureHistory data={data} canEdit={canEdit} />}
-            {activeHistoryTab === 'diferencias' && <CashDifferences data={data} />}
-            {activeHistoryTab === 'municipal' && <RetentionHistory data={data} type="municipal" />}
-            {activeHistoryTab === 'ir' && <RetentionHistory data={data} type="ir" />}
+            {activeHistoryTab === 'membretadas' && <StampedInvoiceHistory data={data} canEdit={canEdit} branchContext={branchContext} />}
+            {activeHistoryTab === 'recibos' && <CashReceiptHistory data={data} canEdit={canEdit} branchContext={branchContext} />}
+            {activeHistoryTab === 'cierres' && <CashClosureHistory data={data} canEdit={canEdit} branchContext={branchContext} />}
+            {activeHistoryTab === 'diferencias' && <CashDifferences data={data} branchContext={branchContext} />}
+            {activeHistoryTab === 'municipal' && <RetentionHistory data={data} type="municipal" branchContext={branchContext} />}
+            {activeHistoryTab === 'ir' && <RetentionHistory data={data} type="ir" branchContext={branchContext} />}
         </div>
     );
 }
 
-function AccountingRegister({ data }) {
+function AccountingRegister({ data, branchContext }) {
     const [activeRegisterTab, setActiveRegisterTab] = useState('membretadas');
     const registerTabs = [
         { key: 'membretadas', label: 'Facturas membretadas' },
@@ -10393,8 +10557,8 @@ function AccountingRegister({ data }) {
                 </div>
             </Section>
 
-            {activeRegisterTab === 'membretadas' && <StampedInvoices data={data} />}
-            {activeRegisterTab === 'recibos' && <CashReceipts data={data} />}
+            {activeRegisterTab === 'membretadas' && <StampedInvoices data={data} branchContext={branchContext} />}
+            {activeRegisterTab === 'recibos' && <CashReceipts data={data} branchContext={branchContext} />}
         </div>
     );
 }
@@ -10798,8 +10962,10 @@ const BankDepositHistoryModal = ({ deposit, onClose, onPrint }) => {
     );
 };
 
-function BankDeposits({ data }) {
+function BankDeposits({ data, branchContext }) {
     const { user } = useAuth();
+    const selectedBranchId = getActiveBillingBranchId(branchContext);
+    const branchPayload = useMemo(() => getBranchPayload(selectedBranchId), [selectedBranchId]);
     const [activeDepositTab, setActiveDepositTab] = useState('ingresar');
     const [activeConfirmationTab, setActiveConfirmationTab] = useState('pendientes');
     const [selectedClosureIds, setSelectedClosureIds] = useState([]);
@@ -10819,8 +10985,9 @@ function BankDeposits({ data }) {
 
     const deposits = useMemo(() => (
         [...(data.depositos_bancarios || [])]
+            .filter((deposit) => isRecordInBillingBranch(deposit, selectedBranchId))
             .sort((a, b) => String(b.createdAt?.seconds || b.date || '').localeCompare(String(a.createdAt?.seconds || a.date || '')))
-    ), [data.depositos_bancarios]);
+    ), [data.depositos_bancarios, selectedBranchId]);
 
     const depositedClosureIds = useMemo(() => {
         const ids = new Set();
@@ -10833,6 +11000,7 @@ function BankDeposits({ data }) {
     const pendingClosures = useMemo(() => (
         [...(data.cierres_caja || [])]
             .filter((closure) => closure.id)
+            .filter((closure) => isRecordInBillingBranch(closure, selectedBranchId))
             .filter((closure) => !['EN_ESPERA', 'ANULADO'].includes(normalizeText(closure.status)))
             .filter((closure) => String(closure.date || getRecordDate(closure.createdAt || closure.updatedAt) || '').substring(0, 10) >= BANK_DEPOSIT_AVAILABLE_FROM_DATE)
             .filter((closure) => !closure.bankDepositId && !depositedClosureIds.has(closure.id))
@@ -10842,7 +11010,7 @@ function BankDeposits({ data }) {
             }))
             .filter((closure) => safeNumber(closure.depositCash.cashCordobas + closure.depositCash.cashDollars * CASH_CLOSURE_EXCHANGE_RATE) > 0.01)
             .sort((a, b) => String(a.date || '').localeCompare(String(b.date || '')))
-    ), [data.cierres_caja, depositedClosureIds]);
+    ), [data.cierres_caja, depositedClosureIds, selectedBranchId]);
 
     const selectedClosures = useMemo(() => (
         pendingClosures.filter((closure) => selectedClosureIds.includes(closure.id))
@@ -10926,6 +11094,7 @@ function BankDeposits({ data }) {
         try {
             const depositId = `deposito_${todayString()}_${Date.now()}`;
             const depositPayload = sanitizeFirestoreData({
+                ...branchPayload,
                 id: depositId,
                 date: todayString(),
                 month: getMonth(todayString()),
@@ -10949,6 +11118,7 @@ function BankDeposits({ data }) {
             batch.set(doc(db, 'depositos_bancarios', depositId), depositPayload, { merge: true });
             selectedClosures.forEach((closure) => {
                 batch.set(doc(db, 'cierres_caja', closure.id), {
+                    ...branchPayload,
                     bankDepositId: depositId,
                     bankDepositStatus: 'pendiente_confirmacion',
                     bankDepositLinkedAt: serverTimestamp(),
@@ -11339,9 +11509,11 @@ function BankDeposits({ data }) {
     );
 }
 
-export default function Billing({ data = {}, canEdit = true }) {
+export default function Billing({ data = {}, canEdit = true, branchContext }) {
     const location = useLocation();
     const navigate = useNavigate();
+    const selectedBranchId = getActiveBillingBranchId(branchContext);
+    const branchPayload = useMemo(() => getBranchPayload(selectedBranchId), [selectedBranchId]);
     const availableTabs = canEdit ? BILLING_TABS : BILLING_READ_ONLY_TABS;
     const [activeTab, setActiveTab] = useState(() => (canEdit ? getBillingTabFromSearch(location.search) : 'historial'));
 
@@ -11375,6 +11547,8 @@ export default function Billing({ data = {}, canEdit = true }) {
                         </div>
                         <div className="flex flex-wrap gap-2">
                             {!canEdit && <Badge tone="amber">Solo lectura</Badge>}
+                            <Badge tone="slate">{branchPayload.branchName}</Badge>
+                            <Badge tone="amber">Serie {branchPayload.invoiceSeries}</Badge>
                             <Badge tone="green">SICAR</Badge>
                             <Badge tone="blue">Caja</Badge>
                             <Badge tone="amber">Retenciones</Badge>
@@ -11408,10 +11582,10 @@ export default function Billing({ data = {}, canEdit = true }) {
                 </div>
             )}
 
-            {canEdit && activeTab === 'cierre' && <CashClosure data={data} />}
-            {canEdit && activeTab === 'registro' && <AccountingRegister data={data} />}
-            {activeTab === 'historial' && <BillingHistory data={data} canEdit={canEdit} />}
-            {canEdit && activeTab === 'depositos' && <BankDeposits data={data} />}
+            {canEdit && activeTab === 'cierre' && <CashClosure data={data} branchContext={branchContext} />}
+            {canEdit && activeTab === 'registro' && <AccountingRegister data={data} branchContext={branchContext} />}
+            {activeTab === 'historial' && <BillingHistory data={data} canEdit={canEdit} branchContext={branchContext} />}
+            {canEdit && activeTab === 'depositos' && <BankDeposits data={data} branchContext={branchContext} />}
         </div>
     );
 }

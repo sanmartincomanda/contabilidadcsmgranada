@@ -1,10 +1,10 @@
 // src/components/GastosDiarios.jsx
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { db } from '../firebase';
 import {
     collection, Timestamp, getDocs, doc, writeBatch, query, where
 } from 'firebase/firestore';
-import { APP_BRAND_NAME, DEFAULT_BRANCH_ID, DEFAULT_BRANCH_NAME, DEFAULT_CASHBOX_NAME, fmt } from '../constants';
+import { APP_BRAND_NAME, DEFAULT_BRANCH_ID, DEFAULT_CASHBOX_NAME, fmt, getBranchCashboxName, getBranchPayload, getRecordBranchId } from '../constants';
 import { buildFiscalPayload, getCashPaidAmountAfterRetentions, isCashPayment, isCreditPayment, PURCHASE_PAYMENT_METHODS, uploadInvoicePhoto } from '../services/fiscalUtils';
 import {
     PETTY_CASH_ALERT_THRESHOLD,
@@ -222,7 +222,6 @@ const PettyCashVoucher = ({ voucher }) => {
 
 // --- COMPONENTE PRINCIPAL ---
 
-const CAJA = DEFAULT_CASHBOX_NAME;
 const getCurrentMonth = () => new Date().toISOString().substring(0, 7);
 const getToday = () => new Date().toISOString().substring(0, 10);
 const knownCashMethods = PURCHASE_PAYMENT_METHODS.filter((method) => !isCreditPayment(method));
@@ -232,10 +231,13 @@ const getRecordPaymentMethod = (record = {}) => (
     record.paymentType || record.paymentMethod || (record.tipo === 'ABONO' ? 'EFECTIVO' : 'SIN METODO')
 );
 
-export default function GastosDiarios({ categories = [], providers = [] }) {
+export default function GastosDiarios({ categories = [], providers = [], branchContext }) {
     const [activeTab, setActiveTab] = useState('registro');
     const [loading, setLoading] = useState(false);
     const [refreshKey, setRefreshKey] = useState(0);
+    const selectedBranchId = branchContext?.selectedBranchId || DEFAULT_BRANCH_ID;
+    const branchPayload = useMemo(() => getBranchPayload(selectedBranchId), [selectedBranchId]);
+    const CAJA = getBranchCashboxName(selectedBranchId) || DEFAULT_CASHBOX_NAME;
 
     // Formulario
     const [fecha, setFecha] = useState(new Date().toISOString().substring(0, 10));
@@ -289,7 +291,7 @@ export default function GastosDiarios({ categories = [], providers = [] }) {
                 id: d.id,
                 ...d.data(),
                 timestamp: d.data().timestamp || null
-            }));
+            })).filter((record) => getRecordBranchId(record) === selectedBranchId);
 
             docs.sort((a, b) => {
                 const timeA = a.timestamp?.toMillis?.() || 0;
@@ -309,7 +311,9 @@ export default function GastosDiarios({ categories = [], providers = [] }) {
     const cargarMovimientosCaja = useCallback(async () => {
         try {
             const snapshot = await getDocs(collection(db, PETTY_CASH_COLLECTION));
-            const docs = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+            const docs = snapshot.docs
+                .map(d => ({ id: d.id, ...d.data() }))
+                .filter((record) => getRecordBranchId(record) === selectedBranchId);
             docs.sort((a, b) => {
                 const dateA = a.timestamp?.toMillis?.() || new Date(a.fecha || 0).getTime() || 0;
                 const dateB = b.timestamp?.toMillis?.() || new Date(b.fecha || 0).getTime() || 0;
@@ -321,7 +325,7 @@ export default function GastosDiarios({ categories = [], providers = [] }) {
             console.error('Error cargando caja chica:', error);
             setCashboxError('No se pudo cargar el saldo de Caja Chica: ' + error.message);
         }
-    }, []);
+    }, [selectedBranchId]);
 
     useEffect(() => {
         if (activeTab === 'historial') {
@@ -420,6 +424,7 @@ export default function GastosDiarios({ categories = [], providers = [] }) {
                 paymentType: 'EFECTIVO',
                 sourceCollection: 'caja_chica_depositos',
                 sourceDocId: depositRef.id,
+                ...branchPayload,
             }));
             await batch.commit();
             setDepositAmount('10000');
@@ -477,6 +482,7 @@ export default function GastosDiarios({ categories = [], providers = [] }) {
                     paymentReference: 'AJUSTE MANUAL',
                     sourceCollection: 'caja_chica_ajustes',
                     sourceDocId: adjustmentRef.id,
+                    ...branchPayload,
                 }),
                 previousBalance: currentBalance,
                 adjustedBalance: Number(targetBalance.toFixed(2)),
@@ -523,9 +529,7 @@ export default function GastosDiarios({ categories = [], providers = [] }) {
                 monto: numMonto,
                 tipo,
                 ...categoryPayload,
-                sucursal: DEFAULT_BRANCH_ID,
-                branch: DEFAULT_BRANCH_ID,
-                branchName: DEFAULT_BRANCH_NAME,
+                ...branchPayload,
                 linkedExpenseId: gastoRef?.id || null,
                 linkedPurchaseId: compraRef?.id || null,
                 timestamp
@@ -537,8 +541,7 @@ export default function GastosDiarios({ categories = [], providers = [] }) {
                     description: descripcion,
                     amount: numMonto,
                     ...categoryPayload,
-                    branch: DEFAULT_BRANCH_ID,
-                    branchName: DEFAULT_BRANCH_NAME,
+                    ...branchPayload,
                     timestamp,
                     is_conciled: false,
                     origen: 'gastosDiarios',
@@ -554,8 +557,7 @@ export default function GastosDiarios({ categories = [], providers = [] }) {
                     invoiceNumber: `GD-${gastoDiarioRef.id.slice(0, 8).toUpperCase()}`,
                     amount: numMonto,
                     ...categoryPayload,
-                    branch: DEFAULT_BRANCH_ID,
-                    branchName: DEFAULT_BRANCH_NAME,
+                    ...branchPayload,
                     paymentType: 'contado',
                     isInventoryCost: true,
                     description: descripcion,
@@ -581,6 +583,7 @@ export default function GastosDiarios({ categories = [], providers = [] }) {
                     supplier: descripcion.trim().toUpperCase(),
                     timestamp,
                     ...categoryPayload,
+                    ...branchPayload,
                 })
             );
 
@@ -660,9 +663,7 @@ export default function GastosDiarios({ categories = [], providers = [] }) {
                 tipo,
                 ...categoryPayload,
                 ...commonFiscal,
-                sucursal: DEFAULT_BRANCH_ID,
-                branch: DEFAULT_BRANCH_ID,
-                branchName: DEFAULT_BRANCH_NAME,
+                ...branchPayload,
                 linkedExpenseId: gastoRef?.id || null,
                 linkedPurchaseId: compraRef?.id || null,
                 timestamp
@@ -676,8 +677,7 @@ export default function GastosDiarios({ categories = [], providers = [] }) {
                     amount: fiscal.subtotal,
                     ...categoryPayload,
                     ...commonFiscal,
-                    branch: DEFAULT_BRANCH_ID,
-                    branchName: DEFAULT_BRANCH_NAME,
+                    ...branchPayload,
                     timestamp,
                     is_conciled: false,
                     origen: 'gastosDiarios',
@@ -693,8 +693,7 @@ export default function GastosDiarios({ categories = [], providers = [] }) {
                     invoiceNumber: numeroFactura.trim(),
                     amount: fiscal.subtotal,
                     ...categoryPayload,
-                    branch: DEFAULT_BRANCH_ID,
-                    branchName: DEFAULT_BRANCH_NAME,
+                    ...branchPayload,
                     isInventoryCost: true,
                     description: descripcion,
                     sourceCollection: 'gastosDiarios',
@@ -730,6 +729,7 @@ export default function GastosDiarios({ categories = [], providers = [] }) {
                         cashPaidAmount,
                         ...categoryPayload,
                         ...photoPayload,
+                        ...branchPayload,
                     })
                 );
             }

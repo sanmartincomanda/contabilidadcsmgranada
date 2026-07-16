@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { AnimatePresence, motion } from 'framer-motion';
 import { useAuth } from '../context/AuthContext';
-import { APP_BRAND_LOGO, APP_BRAND_NAME, APP_BRAND_WORDMARK_BOTTOM, APP_BRAND_WORDMARK_TOP } from '../constants';
+import { APP_BRAND_LOGO, APP_BRAND_NAME, APP_BRAND_WORDMARK_BOTTOM, APP_BRAND_WORDMARK_TOP, BRANCHES, DEFAULT_BRANCH_ID, getBranchById } from '../constants';
 
 const Icons = {
     home: 'M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6',
@@ -56,7 +56,15 @@ const reportHints = [
     'Balance',
 ];
 
-export default function Header({ moduleAccess = {}, isMaster = false, defaultPath = '/', allowedDataEntryTabs = null }) {
+export default function Header({
+    moduleAccess = {},
+    isMaster = false,
+    defaultPath = '/',
+    allowedDataEntryTabs = null,
+    selectedBranchId = DEFAULT_BRANCH_ID,
+    allowedBranchIds = [DEFAULT_BRANCH_ID],
+    onBranchChange,
+}) {
     const { user, logout } = useAuth();
     const navigate = useNavigate();
     const location = useLocation();
@@ -66,6 +74,11 @@ export default function Header({ moduleAccess = {}, isMaster = false, defaultPat
     const navRef = useRef(null);
 
     const canAccess = (moduleId) => moduleAccess?.[moduleId] === true;
+    const visibleBranches = useMemo(() => {
+        const allowed = new Set(Array.isArray(allowedBranchIds) && allowedBranchIds.length ? allowedBranchIds : [DEFAULT_BRANCH_ID]);
+        return BRANCHES.filter((branch) => allowed.has(branch.id));
+    }, [allowedBranchIds]);
+    const selectedBranch = getBranchById(selectedBranchId);
     const visibleEntryTabs = useMemo(() => {
         const allowedSet = Array.isArray(allowedDataEntryTabs) && allowedDataEntryTabs.length
             ? new Set(allowedDataEntryTabs)
@@ -119,6 +132,28 @@ export default function Header({ moduleAccess = {}, isMaster = false, defaultPat
         } catch (error) {
             console.error('Error al cerrar sesion', error);
         }
+    };
+
+    const BranchSwitcher = ({ compact = false }) => {
+        if (!user) return null;
+
+        return (
+            <label className={`flex items-center gap-2 rounded-2xl border border-white/10 bg-white/[0.07] px-3 py-2 text-white ${compact ? 'w-full' : 'hidden xl:flex'}`}>
+                <span className="text-[9px] font-black uppercase tracking-[0.24em] text-[#f5b51b]">Sucursal</span>
+                <select
+                    value={selectedBranch.id}
+                    disabled={visibleBranches.length <= 1}
+                    onChange={(event) => onBranchChange?.(event.target.value)}
+                    className="min-w-[8.5rem] bg-transparent text-xs font-black text-white outline-none disabled:cursor-default disabled:opacity-80"
+                >
+                    {visibleBranches.map((branch) => (
+                        <option key={branch.id} value={branch.id} className="bg-slate-950 text-white">
+                            {branch.shortName} · Serie {branch.invoiceSeries}
+                        </option>
+                    ))}
+                </select>
+            </label>
+        );
     };
 
     const DesktopLink = ({ item }) => (
@@ -303,6 +338,7 @@ export default function Header({ moduleAccess = {}, isMaster = false, defaultPat
                     <div className="ml-auto flex items-center gap-2">
                         {user ? (
                             <>
+                                <BranchSwitcher />
                                 <div className="hidden min-w-0 items-center gap-2 rounded-2xl border border-white/10 bg-white/[0.06] px-3 py-2 xl:flex">
                                     <span className="grid h-8 w-8 place-items-center rounded-xl bg-white/10 text-white">
                                         <Icon path={Icons.user} />
@@ -349,6 +385,9 @@ export default function Header({ moduleAccess = {}, isMaster = false, defaultPat
                                 <div className="rounded-3xl border border-white/10 bg-white/[0.06] p-4">
                                     <div className="text-xs font-black text-white">{user.email}</div>
                                     <div className="mt-1 text-[10px] font-black uppercase tracking-[0.28em] text-[#f5b51b]">{APP_BRAND_NAME}</div>
+                                    <div className="mt-3">
+                                        <BranchSwitcher compact />
+                                    </div>
                                 </div>
 
                                 {canAccess('ingresar') && (

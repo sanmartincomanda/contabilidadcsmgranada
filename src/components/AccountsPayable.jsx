@@ -5,7 +5,7 @@ import {
     collection, doc, Timestamp, runTransaction, writeBatch,
     query, orderBy, limit, getDocs, deleteDoc
 } from 'firebase/firestore';
-import { APP_BRAND_NAME, DEFAULT_BRANCH_ID, DEFAULT_BRANCH_NAME, DEFAULT_CASHBOX_NAME, fmt } from '../constants';
+import { APP_BRAND_NAME, DEFAULT_BRANCH_ID, DEFAULT_CASHBOX_NAME, fmt, getBranchPayload, getRecordBranchId } from '../constants';
 import { deletePayableTransaction } from '../services/linkedTransactions';
 import {
     buildFiscalPayload,
@@ -421,23 +421,26 @@ const AttachSupportModal = ({ target, loading, onClose, onSave }) => {
 };
 
 // --- COMPONENTE PRINCIPAL ---
-export function AccountsPayable({ data }) {
+export function AccountsPayable({ data, branchContext }) {
     const [activeTab, setActiveTab] = useState('Estado de Cuenta');
     const [expandedProviders, setExpandedProviders] = useState({});
     const [loading, setLoading] = useState(false);
     const [nuevoProveedor, setNuevoProveedor] = useState('');
+    const selectedBranchId = branchContext?.selectedBranchId || DEFAULT_BRANCH_ID;
+    const branchPayload = useMemo(() => getBranchPayload(selectedBranchId), [selectedBranchId]);
 
     // Ref para bloquear doble-submit en cualquier operacion critica
     const isProcessingRef = useRef(false);
 
     const facturas = useMemo(() => {
-        return (data.cuentas_por_pagar || []).map((factura) => ({
-            ...factura,
-            branch: DEFAULT_BRANCH_ID,
-            branchName: DEFAULT_BRANCH_NAME,
-            paymentType: factura.paymentType || 'credito',
-        }));
-    }, [data.cuentas_por_pagar]);
+        return (data.cuentas_por_pagar || [])
+            .map((factura) => ({
+                ...factura,
+                ...getBranchPayload(getRecordBranchId(factura)),
+                paymentType: factura.paymentType || 'credito',
+            }))
+            .filter((factura) => factura.branchId === selectedBranchId);
+    }, [data.cuentas_por_pagar, selectedBranchId]);
 
     const abonos = data.abonos_pagar || [];
     const listaProveedores = useMemo(() => (
@@ -532,9 +535,7 @@ export function AccountsPayable({ data }) {
                 proveedorId: provider.id,
                 providerCode: provider.code,
                 codigoProveedor: provider.code,
-                sucursal: DEFAULT_BRANCH_NAME,
-                branch: DEFAULT_BRANCH_ID,
-                branchName: DEFAULT_BRANCH_NAME,
+                ...branchPayload,
                 numero: facturaForm.numero?.trim() || "",
                 factura: facturaForm.numero?.trim() || "",
                 vencimiento: facturaForm.vencimiento || "",
@@ -566,8 +567,7 @@ export function AccountsPayable({ data }) {
                 invoiceNumber: facturaForm.numero?.trim() || "",
                 description: facturaForm.descripcion?.trim().toUpperCase() || "",
                 amount: fiscal.subtotal,
-                branch: DEFAULT_BRANCH_ID,
-                branchName: DEFAULT_BRANCH_NAME,
+                ...branchPayload,
                 paymentType: 'credito',
                 paymentReference: facturaForm.paymentReference?.trim().toUpperCase() || "",
                 isInventoryCost: true,
@@ -708,9 +708,7 @@ export function AccountsPayable({ data }) {
                         monto: montoTotalAbono,
                         tipo: 'ABONO',
                         categoria: 'ABONO',
-                        sucursal: DEFAULT_BRANCH_ID,
-                        branch: DEFAULT_BRANCH_ID,
-                        branchName: DEFAULT_BRANCH_NAME,
+                        ...branchPayload,
                         origen: 'abonos_pagar',
                         linkedAbonoId: abonoRef.id,
                         paymentMethod,
@@ -733,6 +731,7 @@ export function AccountsPayable({ data }) {
                             category: 'ABONO',
                             subcategory: 'ABONO',
                             categoryLabel: 'ABONO',
+                            ...branchPayload,
                             ...supportPayload,
                         })
                     );
@@ -1002,7 +1001,7 @@ export function AccountsPayable({ data }) {
                             <Card title="Registrar Nueva Factura" icon="fileText">
                                 <form onSubmit={handleSaveFactura} className="space-y-5">
                                     <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-xs font-medium text-amber-800">
-                                        Las facturas registradas aqu? se contabilizan como costo a cr?dito en {DEFAULT_BRANCH_NAME}.
+                                        Las facturas registradas aqui se contabilizan como costo a credito en {branchPayload.branchName}.
                                     </div>
 
                                     <ProviderAutocomplete

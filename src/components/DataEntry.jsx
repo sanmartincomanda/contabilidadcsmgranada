@@ -7,7 +7,7 @@ import {
     collection, addDoc, Timestamp, query, where, getDocs, orderBy, doc, deleteDoc, updateDoc, setDoc, writeBatch
 } from 'firebase/firestore';
 import Papa from 'papaparse';
-import { APP_BRAND_NAME, DEFAULT_BRANCH_ID, DEFAULT_BRANCH_NAME, fmt, branchName } from '../constants';
+import { APP_BRAND_NAME, DEFAULT_BRANCH_ID, fmt, branchName, getBranchPayload, getRecordBranchId } from '../constants';
 import {
     PURCHASE_DISCOUNT_ADJUSTMENT_TYPE,
     isPurchaseDiscountAdjustment,
@@ -1623,7 +1623,8 @@ const UnregisteredTransactionsPanel = ({ transactions = [] }) => {
 
 // --- FORMULARIOS ---
 
-const IncomeForm = ({ loading, setLoading, onSuccess }) => {
+const IncomeForm = ({ loading, setLoading, onSuccess, branchContext }) => {
+    const branchPayload = useMemo(() => getBranchPayload(branchContext?.selectedBranchId), [branchContext?.selectedBranchId]);
     const [date, setDate] = useState(new Date().toISOString().substring(0, 10));
     const [entryType, setEntryType] = useState('income');
     const [description, setDescription] = useState('VENTA DEL DIA');
@@ -1657,8 +1658,7 @@ const IncomeForm = ({ loading, setLoading, onSuccess }) => {
                 costEffect: isPurchaseDiscount ? 'decrease' : '',
                 affectsRevenue: !isPurchaseDiscount,
                 affectsCost: isPurchaseDiscount,
-                branch: DEFAULT_BRANCH_ID,
-                branchName: DEFAULT_BRANCH_NAME,
+                ...branchPayload,
                 source: 'manual',
                 sourceLabel: isPurchaseDiscount ? 'DESCUENTO SOBRE COMPRAS' : 'MANUAL',
                 timestamp: Timestamp.now(),
@@ -1699,7 +1699,7 @@ const IncomeForm = ({ loading, setLoading, onSuccess }) => {
     return (
         <div className="space-y-4">
             <div className="rounded-lg border border-[#f2c5c5] bg-[#fff8f8] px-4 py-2.5 text-xs font-semibold text-[#9f111a]">
-                Todo se registra en {DEFAULT_BRANCH_NAME}.
+                Todo se registra en {branchPayload.branchName} · Serie {branchPayload.documentSeries}.
             </div>
 
             <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4">
@@ -1753,7 +1753,8 @@ const IncomeForm = ({ loading, setLoading, onSuccess }) => {
     );
 };
 
-const ExpenseForm = ({ categories, loading, setLoading, onSuccess }) => {
+const ExpenseForm = ({ categories, loading, setLoading, onSuccess, branchContext }) => {
+    const branchPayload = useMemo(() => getBranchPayload(branchContext?.selectedBranchId), [branchContext?.selectedBranchId]);
     const [date, setDate] = useState(new Date().toISOString().substring(0, 10));
     const [description, setDescription] = useState('');
     const [amount, setAmount] = useState('');
@@ -1772,8 +1773,7 @@ const ExpenseForm = ({ categories, loading, setLoading, onSuccess }) => {
                 description,
                 amount: numAmount,
                 ...categoryPayload,
-                branch: DEFAULT_BRANCH_ID,
-                branchName: DEFAULT_BRANCH_NAME,
+                ...branchPayload,
                 timestamp: Timestamp.now(),
                 is_conciled: false,
             });
@@ -1800,8 +1800,7 @@ const ExpenseForm = ({ categories, loading, setLoading, onSuccess }) => {
                     description: row['Descripcion'] || 'Sin Descripcion',
                     amount: parseFloat(row['Monto']),
                     ...resolveCategoryPayload(row['Categoria'] || 'Otros'),
-                    branch: DEFAULT_BRANCH_ID,
-                    branchName: DEFAULT_BRANCH_NAME,
+                    ...branchPayload,
                     timestamp: Timestamp.now(), is_conciled: false
                 }));
                 setLoading(true);
@@ -1822,7 +1821,7 @@ const ExpenseForm = ({ categories, loading, setLoading, onSuccess }) => {
         <div className="space-y-4">
             <form onSubmit={handleSubmit} className="space-y-3">
                 <div className="rounded-lg border border-[#f2c5c5] bg-[#fff8f8] px-4 py-2.5 text-xs font-semibold text-[#9f111a]">
-                    Todo se registra en {DEFAULT_BRANCH_NAME}.
+                    Todo se registra en {branchPayload.branchName} · Serie {branchPayload.documentSeries}.
                 </div>
                 <Input label="Fecha" type="date" icon="calendar" value={date} onChange={e => setDate(e.target.value)} required />
                 <Input label="Descripcion" icon="fileText" placeholder="Ej: Pago de servicios..." value={description} onChange={e => setDescription(e.target.value)} required />
@@ -1919,7 +1918,8 @@ const normalizeEditablePaymentType = (value = '', fallback = 'TRANSFERENCIA') =>
     return value;
 };
 
-const FiscalExpenseForm = ({ categories, providers = [], loading, setLoading, onSuccess }) => {
+const FiscalExpenseForm = ({ categories, providers = [], loading, setLoading, onSuccess, branchContext }) => {
+    const branchPayload = useMemo(() => getBranchPayload(branchContext?.selectedBranchId), [branchContext?.selectedBranchId]);
     const [date, setDate] = useState(new Date().toISOString().substring(0, 10));
     const [dueDate, setDueDate] = useState(new Date().toISOString().substring(0, 10));
     const [supplier, setSupplier] = useState('');
@@ -1987,8 +1987,7 @@ const FiscalExpenseForm = ({ categories, providers = [], loading, setLoading, on
                 paymentReference: paymentReference.trim().toUpperCase(),
                 ...fiscal,
                 ...photoPayload,
-                branch: DEFAULT_BRANCH_ID,
-                branchName: DEFAULT_BRANCH_NAME,
+                ...branchPayload,
                 timestamp: Timestamp.now(),
                 is_conciled: false,
             };
@@ -2030,8 +2029,7 @@ const FiscalExpenseForm = ({ categories, providers = [], loading, setLoading, on
                     sourceFacturaId: gastoRef.id,
                     ...fiscal,
                     ...photoPayload,
-                    branch: DEFAULT_BRANCH_ID,
-                    branchName: DEFAULT_BRANCH_NAME,
+                    ...branchPayload,
                     createdAt: Timestamp.now(),
                     updatedAt: Timestamp.now(),
                     timestamp: Timestamp.now(),
@@ -2060,8 +2058,7 @@ const FiscalExpenseForm = ({ categories, providers = [], loading, setLoading, on
                     paymentReference: paymentReference.trim().toUpperCase(),
                     ...fiscal,
                     ...photoPayload,
-                    branch: DEFAULT_BRANCH_ID,
-                    branchName: DEFAULT_BRANCH_NAME,
+                    ...branchPayload,
                     linkedExpenseId: gastoRef.id,
                     sourceCollection: 'gastos',
                     sourceExpenseId: gastoRef.id,
@@ -2088,6 +2085,7 @@ const FiscalExpenseForm = ({ categories, providers = [], loading, setLoading, on
                         retentionTotal: fiscal.retentionTotal,
                         accountingTotal: fiscal.total,
                         cashPaidAmount,
+                        ...branchPayload,
                         ...categoryPayload,
                         ...photoPayload,
                     })
@@ -2110,7 +2108,7 @@ const FiscalExpenseForm = ({ categories, providers = [], loading, setLoading, on
     return (
         <form onSubmit={handleSubmit} className="space-y-3">
             <div className="rounded-lg border border-[#f2c5c5] bg-[#fff8f8] px-4 py-2.5 text-xs font-semibold text-[#9f111a]">
-                Todo se registra en {DEFAULT_BRANCH_NAME}.
+                Todo se registra en {branchPayload.branchName} · Serie {branchPayload.documentSeries}.
             </div>
             <Input label="Fecha" type="date" icon="calendar" value={date} onChange={e => setDate(e.target.value)} required />
             {isCreditPayment(paymentType) && <Input label="Vencimiento" type="date" icon="calendar" value={dueDate} onChange={e => setDueDate(e.target.value)} required />}
@@ -2159,7 +2157,8 @@ const FiscalExpenseForm = ({ categories, providers = [], loading, setLoading, on
     );
 };
 
-const FiscalPurchasesForm = ({ categories, providers = [], loading, setLoading, onSuccess }) => {
+const FiscalPurchasesForm = ({ categories, providers = [], loading, setLoading, onSuccess, branchContext }) => {
+    const branchPayload = useMemo(() => getBranchPayload(branchContext?.selectedBranchId), [branchContext?.selectedBranchId]);
     const [date, setDate] = useState(new Date().toISOString().substring(0, 10));
     const [dueDate, setDueDate] = useState(new Date().toISOString().substring(0, 10));
     const [supplier, setSupplier] = useState('');
@@ -2226,8 +2225,7 @@ const FiscalPurchasesForm = ({ categories, providers = [], loading, setLoading, 
                 source: 'manual',
                 ...fiscal,
                 ...photoPayload,
-                branch: DEFAULT_BRANCH_ID,
-                branchName: DEFAULT_BRANCH_NAME,
+                ...branchPayload,
                 timestamp: Timestamp.now(),
             };
 
@@ -2254,8 +2252,7 @@ const FiscalPurchasesForm = ({ categories, providers = [], loading, setLoading, 
                     linkedPurchaseId: purchaseRef.id,
                     ...fiscal,
                     ...photoPayload,
-                    branch: DEFAULT_BRANCH_ID,
-                    branchName: DEFAULT_BRANCH_NAME,
+                    ...branchPayload,
                     createdAt: Timestamp.now(),
                     updatedAt: Timestamp.now(),
                 });
@@ -2283,8 +2280,7 @@ const FiscalPurchasesForm = ({ categories, providers = [], loading, setLoading, 
                     paymentReference: paymentReference.trim().toUpperCase(),
                     ...fiscal,
                     ...photoPayload,
-                    branch: DEFAULT_BRANCH_ID,
-                    branchName: DEFAULT_BRANCH_NAME,
+                    ...branchPayload,
                     linkedPurchaseId: purchaseRef.id,
                     sourceCollection: 'compras',
                     sourcePurchaseId: purchaseRef.id,
@@ -2312,6 +2308,7 @@ const FiscalPurchasesForm = ({ categories, providers = [], loading, setLoading, 
                         retentionTotal: fiscal.retentionTotal,
                         accountingTotal: fiscal.total,
                         cashPaidAmount,
+                        ...branchPayload,
                         ...categoryPayload,
                         ...photoPayload,
                     })
@@ -2337,7 +2334,7 @@ const FiscalPurchasesForm = ({ categories, providers = [], loading, setLoading, 
                 CREDITO crea cuenta por pagar + compra. EFECTIVO crea gasto diario + compra. Transferencia y tarjetas quedan como compra de contado.
             </div>
             <div className="rounded-lg border border-[#f2c5c5] bg-[#fff8f8] px-4 py-2.5 text-xs font-semibold text-[#9f111a]">
-                Todo se registra en {DEFAULT_BRANCH_NAME}.
+                Todo se registra en {branchPayload.branchName} · Serie {branchPayload.documentSeries}.
             </div>
             <Input label="Fecha" type="date" icon="calendar" value={date} onChange={e => setDate(e.target.value)} required />
             {isCreditPayment(paymentType) && <Input label="Vencimiento" type="date" icon="calendar" value={dueDate} onChange={e => setDueDate(e.target.value)} required />}
@@ -2382,7 +2379,8 @@ const FiscalPurchasesForm = ({ categories, providers = [], loading, setLoading, 
     );
 };
 
-const StampedSalesInvoiceForm = ({ data, loading, setLoading, onSuccess }) => {
+const StampedSalesInvoiceForm = ({ data, loading, setLoading, onSuccess, branchContext }) => {
+    const branchPayload = useMemo(() => getBranchPayload(branchContext?.selectedBranchId, 'invoice'), [branchContext?.selectedBranchId]);
     const [saleDate, setSaleDate] = useState(new Date().toISOString().substring(0, 10));
     const [invoiceNumber, setInvoiceNumber] = useState('');
     const [subtotal, setSubtotal] = useState('');
@@ -2438,8 +2436,8 @@ const StampedSalesInvoiceForm = ({ data, loading, setLoading, onSuccess }) => {
                 dailySaleTotal: selectedSale.total,
                 source: 'manual',
                 sourceType: 'stamped_sale_invoice',
-                branch: DEFAULT_BRANCH_ID,
-                branchName: DEFAULT_BRANCH_NAME,
+                ...branchPayload,
+                documentDisplayNumber: `${branchPayload.documentSeries}-${invoiceNumber.trim()}`,
                 timestamp: Timestamp.now(),
             });
             setInvoiceNumber('');
@@ -2496,7 +2494,8 @@ const StampedSalesInvoiceForm = ({ data, loading, setLoading, onSuccess }) => {
     );
 };
 
-const InventoryForm = ({ loading, setLoading, onSuccess }) => {
+const InventoryForm = ({ loading, setLoading, onSuccess, branchContext }) => {
+    const branchPayload = useMemo(() => getBranchPayload(branchContext?.selectedBranchId), [branchContext?.selectedBranchId]);
     const [month, setMonth] = useState(getCurrentMonth());
     const [type, setType] = useState('inicial');
     const [amount, setAmount] = useState('');
@@ -2509,8 +2508,7 @@ const InventoryForm = ({ loading, setLoading, onSuccess }) => {
                 month,
                 type,
                 amount: Number(amount) || 0,
-                branch: DEFAULT_BRANCH_ID,
-                branchName: DEFAULT_BRANCH_NAME,
+                ...branchPayload,
                 timestamp: Timestamp.now()
             });
             setAmount(''); onSuccess?.();
@@ -2521,7 +2519,7 @@ const InventoryForm = ({ loading, setLoading, onSuccess }) => {
     return (
         <form onSubmit={handleSubmit} className="space-y-3">
             <div className="rounded-lg border border-[#f2c5c5] bg-[#fff8f8] px-4 py-2.5 text-xs font-semibold text-[#9f111a]">
-                Todo se registra en {DEFAULT_BRANCH_NAME}.
+                Todo se registra en {branchPayload.branchName} · Serie {branchPayload.documentSeries}.
             </div>
             <Input label="Mes" type="month" icon="calendar" value={month} onChange={e => setMonth(e.target.value)} required />
             <Select label="Tipo" icon="box" value={type} onChange={e => setType(e.target.value)} options={<><option value="inicial">Inicial</option><option value="final">Final</option></>} />
@@ -2531,7 +2529,8 @@ const InventoryForm = ({ loading, setLoading, onSuccess }) => {
     );
 };
 
-const PurchasesForm = ({ providers = [], loading, setLoading, onSuccess }) => {
+const PurchasesForm = ({ providers = [], loading, setLoading, onSuccess, branchContext }) => {
+    const branchPayload = useMemo(() => getBranchPayload(branchContext?.selectedBranchId), [branchContext?.selectedBranchId]);
     const [date, setDate] = useState(new Date().toISOString().substring(0, 10));
     const [supplier, setSupplier] = useState('');
     const [invoiceNumber, setInvoiceNumber] = useState('');
@@ -2560,8 +2559,7 @@ const PurchasesForm = ({ providers = [], loading, setLoading, onSuccess }) => {
                 invoiceNumber: invoiceNumber.trim() || 'S/N',
                 amount: numAmount,
                 ...categoryPayload,
-                branch: DEFAULT_BRANCH_ID,
-                branchName: DEFAULT_BRANCH_NAME,
+                ...branchPayload,
                 paymentType: 'contado',
                 isInventoryCost: true,
                 timestamp: Timestamp.now(),
@@ -2584,7 +2582,7 @@ const PurchasesForm = ({ providers = [], loading, setLoading, onSuccess }) => {
                 Las compras registradas aqui se contabilizan como costo de contado.
             </div>
             <div className="rounded-lg border border-[#f2c5c5] bg-[#fff8f8] px-4 py-2.5 text-xs font-semibold text-[#9f111a]">
-                Todo se registra en {DEFAULT_BRANCH_NAME}.
+                Todo se registra en {branchPayload.branchName} · Serie {branchPayload.documentSeries}.
             </div>
             <Input label="Fecha" type="date" icon="calendar" value={date} onChange={e => setDate(e.target.value)} required />
             <ProviderAutocomplete
@@ -2604,7 +2602,8 @@ const PurchasesForm = ({ providers = [], loading, setLoading, onSuccess }) => {
     );
 };
 
-const BudgetForm = ({ categories, loading, setLoading, onSuccess }) => {
+const BudgetForm = ({ categories, loading, setLoading, onSuccess, branchContext }) => {
+    const branchPayload = useMemo(() => getBranchPayload(branchContext?.selectedBranchId), [branchContext?.selectedBranchId]);
     const [month, setMonth] = useState(getCurrentMonth());
     const [amount, setAmount] = useState('');
     const [categoryId, setCategoryId] = useState('');
@@ -2614,7 +2613,7 @@ const BudgetForm = ({ categories, loading, setLoading, onSuccess }) => {
         setLoading(true);
         try {
             const categoryPayload = resolveCategoryPayload(categoryId);
-            await addDoc(collection(db, 'presupuestos'), { month, ...categoryPayload, amount: Number(amount) || 0, timestamp: Timestamp.now() });
+            await addDoc(collection(db, 'presupuestos'), { month, ...categoryPayload, amount: Number(amount) || 0, ...branchPayload, timestamp: Timestamp.now() });
             setAmount(''); setCategoryId(''); onSuccess?.();
         } catch (error) { alert('Error'); }
         finally { setLoading(false); }
@@ -2630,7 +2629,8 @@ const BudgetForm = ({ categories, loading, setLoading, onSuccess }) => {
     );
 };
 
-const ReceivableForm = ({ loading, setLoading, onSuccess }) => {
+const ReceivableForm = ({ loading, setLoading, onSuccess, branchContext }) => {
+    const branchPayload = useMemo(() => getBranchPayload(branchContext?.selectedBranchId), [branchContext?.selectedBranchId]);
     const [date, setDate] = useState(new Date().toISOString().substring(0, 10));
     const [description, setDescription] = useState('');
     const [amount, setAmount] = useState('');
@@ -2639,7 +2639,7 @@ const ReceivableForm = ({ loading, setLoading, onSuccess }) => {
         e.preventDefault();
         setLoading(true);
         try {
-            await addDoc(collection(db, 'cuentasPorCobrar'), { date, description, amount: Number(amount) || 0, timestamp: Timestamp.now() });
+            await addDoc(collection(db, 'cuentasPorCobrar'), { date, description, amount: Number(amount) || 0, ...branchPayload, timestamp: Timestamp.now() });
             setDescription(''); setAmount(''); onSuccess?.();
         } catch (error) { alert('Error'); }
         finally { setLoading(false); }
@@ -2655,7 +2655,8 @@ const ReceivableForm = ({ loading, setLoading, onSuccess }) => {
     );
 };
 
-const EquityForm = ({ loading, setLoading, onSuccess }) => {
+const EquityForm = ({ loading, setLoading, onSuccess, branchContext }) => {
+    const branchPayload = useMemo(() => getBranchPayload(branchContext?.selectedBranchId), [branchContext?.selectedBranchId]);
     const [date, setDate] = useState(new Date().toISOString().substring(0, 10));
     const [description, setDescription] = useState('');
     const [amount, setAmount] = useState('');
@@ -2664,7 +2665,7 @@ const EquityForm = ({ loading, setLoading, onSuccess }) => {
         e.preventDefault();
         setLoading(true);
         try {
-            await addDoc(collection(db, 'patrimonio'), { date, description, amount: Number(amount) || 0, timestamp: Timestamp.now() });
+            await addDoc(collection(db, 'patrimonio'), { date, description, amount: Number(amount) || 0, ...branchPayload, timestamp: Timestamp.now() });
             setDescription(''); setAmount(''); onSuccess?.();
         } catch (error) { alert('Error'); }
         finally { setLoading(false); }
@@ -2684,7 +2685,7 @@ const EquityForm = ({ loading, setLoading, onSuccess }) => {
 
 const VALID_TABS = ['Ingresos', 'Gastos', 'Inventario', 'Compras', 'Presupuesto', 'Cuentas por Cobrar', 'Patrimonio'];
 
-export function DataEntry({ categories, data, allowedTabs = null }) {
+export function DataEntry({ categories, data, allowedTabs = null, branchContext }) {
     const [searchParams] = useSearchParams();
     const urlTab = searchParams.get('tab');
     const visibleTabs = useMemo(() => {
@@ -2702,6 +2703,7 @@ export function DataEntry({ categories, data, allowedTabs = null }) {
     const [entryView, setEntryView] = useState('ingresar');
     const [loading, setLoading] = useState(false);
     const [refreshKey, setRefreshKey] = useState(0);
+    const selectedBranchId = branchContext?.selectedBranchId || DEFAULT_BRANCH_ID;
     const providers = useMemo(() => (
         [...(data.proveedores || [])]
             .map((provider) => ({
@@ -2916,10 +2918,14 @@ export function DataEntry({ categories, data, allowedTabs = null }) {
             'Cuentas por Cobrar': 'cuentasPorCobrar',
             'Patrimonio': 'patrimonio'
         };
+        const filterBySelectedBranch = (records = []) => (
+            records.filter((item) => getRecordBranchId(item) === selectedBranchId)
+        );
 
         if (activeTab === 'Ingresos') {
-            return resolveIncomeEntries(data.ingresos || []).map((item) => ({
+            return filterBySelectedBranch(resolveIncomeEntries(data.ingresos || [])).map((item) => ({
                 ...item,
+                ...getBranchPayload(getRecordBranchId(item)),
                 date: item.date || item.fecha || '',
                 description: item.description || item.detalle || 'INGRESO DEL DIA',
                 reference: item.reference || item.referencia || '',
@@ -2934,8 +2940,9 @@ export function DataEntry({ categories, data, allowedTabs = null }) {
         }
 
         if (activeTab === 'Facturas Membretadas') {
-            return (data.facturas_membretadas_ventas || []).map((item) => ({
+            return filterBySelectedBranch(data.facturas_membretadas_ventas || []).map((item) => ({
                 ...item,
+                ...getBranchPayload(getRecordBranchId(item), 'invoice'),
                 date: item.saleDate || item.date || '',
                 saleDate: item.saleDate || item.date || '',
                 numeroFactura: item.numeroFactura || item.invoiceNumber || '',
@@ -2948,10 +2955,12 @@ export function DataEntry({ categories, data, allowedTabs = null }) {
         }
 
         if (activeTab === 'Compras') {
-            return (data.compras || []).map((item) => {
+            return filterBySelectedBranch(data.compras || []).map((item) => {
                 const categoryInfo = getExpenseCategoryFromRecord(item, DEFAULT_PURCHASE_CATEGORY_ID);
+                const itemBranchPayload = getBranchPayload(getRecordBranchId(item));
                 return {
                     ...item,
+                    ...itemBranchPayload,
                     category: categoryInfo.category,
                     categoria: categoryInfo.category,
                     subcategory: categoryInfo.subcategory,
@@ -2962,8 +2971,6 @@ export function DataEntry({ categories, data, allowedTabs = null }) {
                     supplier: item.supplier || item.proveedor || 'REGISTRO LEGACY',
                     providerCode: item.providerCode || item.codigoProveedor || getProviderCode(item.supplier || item.proveedor || ''),
                     invoiceNumber: item.invoiceNumber || item.numero || '',
-                    branch: item.branch || DEFAULT_BRANCH_ID,
-                    branchName: item.branchName || DEFAULT_BRANCH_NAME,
                     paymentType: normalizeEditablePaymentType(
                         item.paymentType || (item.sourceFacturaId || item.linkedPayableId ? 'CREDITO' : 'TRANSFERENCIA'),
                         'TRANSFERENCIA'
@@ -2978,10 +2985,12 @@ export function DataEntry({ categories, data, allowedTabs = null }) {
         }
 
         if (activeTab === 'Gastos') {
-            return (data.gastos || []).map((item) => {
+            return filterBySelectedBranch(data.gastos || []).map((item) => {
                 const categoryInfo = getExpenseCategoryFromRecord(item);
+                const itemBranchPayload = getBranchPayload(getRecordBranchId(item));
                 return {
                     ...item,
+                    ...itemBranchPayload,
                     category: categoryInfo.category,
                     categoria: categoryInfo.category,
                     subcategory: categoryInfo.subcategory,
@@ -3005,7 +3014,10 @@ export function DataEntry({ categories, data, allowedTabs = null }) {
             });
         }
 
-        return data[collectionMap[activeTab]] || [];
+        return filterBySelectedBranch(data[collectionMap[activeTab]] || []).map((item) => ({
+            ...getBranchPayload(getRecordBranchId(item)),
+            ...item,
+        }));
     };
 
     const getCollectionName = () => {
@@ -3108,13 +3120,13 @@ export function DataEntry({ categories, data, allowedTabs = null }) {
             {entryView === 'ingresar' ? (
                 <div className="no-print mx-auto max-w-4xl animate-fade-in">
                     <Card title={`Nuevo - ${tabsConfig[activeTab].label}`} icon={tabsConfig[activeTab].icon} gradient={true}>
-                        {activeTab === 'Ingresos' && <IncomeForm loading={loading} setLoading={setLoading} onSuccess={handleSuccess} />}
-                        {activeTab === 'Gastos' && <FiscalExpenseForm categories={categories} providers={providers} loading={loading} setLoading={setLoading} onSuccess={handleSuccess} />}
-                        {activeTab === 'Inventario' && <InventoryForm loading={loading} setLoading={setLoading} onSuccess={handleSuccess} />}
-                        {activeTab === 'Compras' && <FiscalPurchasesForm categories={categories} providers={providers} loading={loading} setLoading={setLoading} onSuccess={handleSuccess} />}
-                        {activeTab === 'Presupuesto' && <BudgetForm categories={categories} loading={loading} setLoading={setLoading} onSuccess={handleSuccess} />}
-                        {activeTab === 'Cuentas por Cobrar' && <ReceivableForm loading={loading} setLoading={setLoading} onSuccess={handleSuccess} />}
-                        {activeTab === 'Patrimonio' && <EquityForm loading={loading} setLoading={setLoading} onSuccess={handleSuccess} />}
+                        {activeTab === 'Ingresos' && <IncomeForm loading={loading} setLoading={setLoading} onSuccess={handleSuccess} branchContext={branchContext} />}
+                        {activeTab === 'Gastos' && <FiscalExpenseForm categories={categories} providers={providers} loading={loading} setLoading={setLoading} onSuccess={handleSuccess} branchContext={branchContext} />}
+                        {activeTab === 'Inventario' && <InventoryForm loading={loading} setLoading={setLoading} onSuccess={handleSuccess} branchContext={branchContext} />}
+                        {activeTab === 'Compras' && <FiscalPurchasesForm categories={categories} providers={providers} loading={loading} setLoading={setLoading} onSuccess={handleSuccess} branchContext={branchContext} />}
+                        {activeTab === 'Presupuesto' && <BudgetForm categories={categories} loading={loading} setLoading={setLoading} onSuccess={handleSuccess} branchContext={branchContext} />}
+                        {activeTab === 'Cuentas por Cobrar' && <ReceivableForm loading={loading} setLoading={setLoading} onSuccess={handleSuccess} branchContext={branchContext} />}
+                        {activeTab === 'Patrimonio' && <EquityForm loading={loading} setLoading={setLoading} onSuccess={handleSuccess} branchContext={branchContext} />}
                     </Card>
                 </div>
             ) : (

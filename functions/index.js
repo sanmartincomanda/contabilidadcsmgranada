@@ -126,6 +126,8 @@ const USER_ACCESS_MODULES = [
   'reportes',
   'categorias',
 ];
+const DEFAULT_BRANCH_ID = 'granada';
+const USER_ACCESS_BRANCHES = ['granada', 'nindiri'];
 const PURCHASE_CATEGORY_PAYLOAD = {
   category: 'Costos de venta / compras',
   categoria: 'Costos de venta / compras',
@@ -2256,8 +2258,45 @@ function normalizeUserModuleModes(modules = {}, moduleModes = {}) {
   }, {});
 }
 
+function normalizeUserBranchAccess(branchAccess, fallback = [DEFAULT_BRANCH_ID]) {
+  if (branchAccess === 'all') return [...USER_ACCESS_BRANCHES];
+  const rawBranches = Array.isArray(branchAccess)
+    ? branchAccess
+    : branchAccess && typeof branchAccess === 'object'
+      ? Object.entries(branchAccess).filter(([, enabled]) => enabled === true).map(([branchId]) => branchId)
+      : fallback;
+
+  const normalized = [...new Set((rawBranches || [])
+    .map((branchId) => normalizeText(branchId).toLowerCase())
+    .filter((branchId) => USER_ACCESS_BRANCHES.includes(branchId)))];
+
+  return normalized.length ? normalized : [DEFAULT_BRANCH_ID];
+}
+
+function isAllBranchUser(email = '', profile = {}) {
+  const normalized = normalizeText([
+    email,
+    profile.email,
+    profile.displayName,
+    profile.name,
+  ].filter(Boolean).join(' ')).toLowerCase();
+  return email === MASTER_USER_EMAIL || normalized.includes('nicol') || normalized.includes('barbosa');
+}
+
+function getUserBranchAccess(email = '', profile = {}) {
+  if (isAllBranchUser(email, profile)) return [...USER_ACCESS_BRANCHES];
+  return normalizeUserBranchAccess(profile.branchAccess || profile.branches || profile.allowedBranches, [DEFAULT_BRANCH_ID]);
+}
+
+function getUserDefaultBranchId(email = '', profile = {}) {
+  const access = getUserBranchAccess(email, profile);
+  const preferred = normalizeText(profile.defaultBranchId || profile.defaultBranch || access[0] || DEFAULT_BRANCH_ID).toLowerCase();
+  return access.includes(preferred) ? preferred : access[0] || DEFAULT_BRANCH_ID;
+}
+
 function publicAuthUserPayload(userRecord, profile = {}) {
   const email = normalizeUserEmail(userRecord.email || profile.email || '');
+  const branchAccess = getUserBranchAccess(email, profile);
 
   return {
     uid: userRecord.uid || profile.uid || '',
@@ -2267,6 +2306,9 @@ function publicAuthUserPayload(userRecord, profile = {}) {
     active: profile.active !== false && userRecord.disabled !== true,
     modules: normalizeUserModules(profile.modules || {}),
     moduleModes: normalizeUserModuleModes(profile.modules || {}, profile.moduleModes || {}),
+    branchAccess,
+    branches: branchAccess,
+    defaultBranchId: getUserDefaultBranchId(email, profile),
     role: email === MASTER_USER_EMAIL ? 'master' : (profile.role || 'limited'),
     createdAt: userRecord.metadata?.creationTime || profile.createdAt || null,
     lastSignInAt: userRecord.metadata?.lastSignInTime || profile.lastSignInAt || null,
@@ -2325,6 +2367,10 @@ exports.adminCreateAppUser = onCall(ADMIN_CALLABLE_FUNCTION_OPTIONS, async (requ
   const active = payload.active !== false;
   const modules = normalizeUserModules(payload.modules || {});
   const moduleModes = normalizeUserModuleModes(modules, payload.moduleModes || {});
+  const branchAccess = normalizeUserBranchAccess(payload.branchAccess || payload.branches || payload.allowedBranches, [DEFAULT_BRANCH_ID]);
+  const defaultBranchId = branchAccess.includes(normalizeText(payload.defaultBranchId).toLowerCase())
+    ? normalizeText(payload.defaultBranchId).toLowerCase()
+    : branchAccess[0] || DEFAULT_BRANCH_ID;
 
   if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
     throw new HttpsError('invalid-argument', 'Debes indicar un correo valido.');
@@ -2383,6 +2429,9 @@ exports.adminCreateAppUser = onCall(ADMIN_CALLABLE_FUNCTION_OPTIONS, async (requ
     role: 'limited',
     modules,
     moduleModes,
+    branchAccess,
+    branches: branchAccess,
+    defaultBranchId,
     updatedAt: FieldValue.serverTimestamp(),
     updatedBy: actorEmail,
   };
@@ -2395,7 +2444,7 @@ exports.adminCreateAppUser = onCall(ADMIN_CALLABLE_FUNCTION_OPTIONS, async (requ
 
   return {
     ok: true,
-    user: publicAuthUserPayload(userRecord, { email, displayName, active, role: 'limited', modules, moduleModes }),
+    user: publicAuthUserPayload(userRecord, { email, displayName, active, role: 'limited', modules, moduleModes, branchAccess, defaultBranchId }),
   };
 });
 
