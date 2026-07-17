@@ -9341,126 +9341,149 @@ const CashClosureTicketPreviewModal = ({ closure, onClose, onPrint }) => {
     );
 };
 
+const CashClosureDailyReportContent = ({ report, sections, className = '' }) => (
+    <div className={className}>
+        <div className="mb-4 border-b-2 border-slate-950 pb-3 text-center">
+            <div className="text-[11px] font-black uppercase tracking-[0.32em] text-[#e30613]">{APP_BRAND_NAME}</div>
+            <div className="mt-1 text-2xl font-black uppercase">Reporte diario de cierres de caja</div>
+            <div className="mt-1 text-sm font-bold">Fecha: {report.date} - Cierres: {report.closureCodes.join(', ') || '-'}</div>
+        </div>
+
+        <div className="grid gap-4 lg:grid-cols-2">
+            <div className="rounded-2xl border border-slate-200 p-4">
+                {sections.map((section) => (
+                    <div className="mb-3 border-b border-slate-100 pb-2 last:mb-0 last:border-b-0" key={section.title || 'flujo'}>
+                        {section.title && <div className="mb-2 text-[11px] font-black uppercase tracking-[0.18em] text-slate-500">{section.title}</div>}
+                        {section.rows.map((row) => (
+                            <div className={`flex justify-between gap-3 py-1 text-sm ${row.highlight ? 'border-b border-slate-200 font-black' : 'font-semibold'}`} key={row.label}>
+                                <span>{row.label}</span>
+                                <span className="whitespace-nowrap text-right">{fmt(row.value)}</span>
+                            </div>
+                        ))}
+                    </div>
+                ))}
+            </div>
+            <div className="rounded-2xl border border-slate-200 p-4">
+                <div className="mb-2 text-[11px] font-black uppercase tracking-[0.18em] text-slate-500">Desglose de metodo pago</div>
+                {report.paymentMethods.map((method) => (
+                    <div className="mb-2" key={method.label}>
+                        <div className="flex justify-between gap-3 border-b border-slate-200 py-1 text-sm font-black">
+                            <span>{method.label}</span>
+                            <span>{fmt(method.total)}</span>
+                        </div>
+                        {method.details.map((detail) => (
+                            <div className="ml-3 flex justify-between gap-3 py-0.5 text-xs font-semibold" key={detail.id}>
+                                <span>
+                                    {detail.label}
+                                    {detail.conversionLabel ? <small className="block text-[10px] text-slate-500">{detail.conversionLabel}</small> : null}
+                                </span>
+                                <span className="whitespace-nowrap">{fmt(detail.amount)}</span>
+                            </div>
+                        ))}
+                    </div>
+                ))}
+                <div className="mt-2 flex justify-between gap-3 border-b border-slate-300 py-1 text-sm font-black">
+                    <span>EFECTIVO:</span>
+                    <span>{fmt(report.rc)}</span>
+                </div>
+            </div>
+        </div>
+
+        <div className="mt-4 grid gap-4 lg:grid-cols-2">
+            <div className="rounded-2xl border border-slate-200 p-4">
+                <div className="mb-2 text-[11px] font-black uppercase tracking-[0.18em] text-slate-500">Desglose facturas membretadas</div>
+                <div className="grid grid-cols-1 gap-x-6 sm:grid-cols-2">
+                    {report.invoices.length ? report.invoices.map((invoice) => (
+                        <div className="flex justify-between gap-3 border-b border-slate-100 py-1 text-xs font-semibold" key={invoice.id}>
+                            <span>{invoice.number}</span>
+                            <span className="whitespace-nowrap">{fmt(invoice.total)}</span>
+                        </div>
+                    )) : <div className="text-sm font-semibold text-slate-400">Sin facturas vinculadas.</div>}
+                </div>
+            </div>
+            <div className="rounded-2xl border border-slate-200 p-4">
+                <div className="mb-2 text-[11px] font-black uppercase tracking-[0.18em] text-slate-500">Desglose recibos de caja</div>
+                <div className="grid grid-cols-1 gap-x-6 sm:grid-cols-2">
+                    {report.receipts.length ? report.receipts.map((receipt) => (
+                        <div className="flex justify-between gap-3 border-b border-slate-100 py-1 text-xs font-semibold" key={receipt.id}>
+                            <span>{receipt.number}</span>
+                            <span className="whitespace-nowrap">{fmt(receipt.total)}</span>
+                        </div>
+                    )) : <div className="text-sm font-semibold text-slate-400">Sin recibos vinculados.</div>}
+                </div>
+            </div>
+        </div>
+    </div>
+);
+
 const CashClosureDailyReportModal = ({ closures = [], date = '', onClose }) => {
     if (!date || !closures.length) return null;
     const report = buildDailyCashClosureTicketData(closures, date);
     const sections = buildCashClosureTicketSections(report);
 
     return (
-        <div className="fixed inset-0 z-[134] flex items-center justify-center p-3 sm:p-6">
-            <button type="button" aria-label="Cerrar reporte diario" className="absolute inset-0 bg-slate-950/65 backdrop-blur-sm" onClick={onClose} />
-            <div className="relative flex max-h-[92vh] w-full max-w-5xl flex-col overflow-hidden rounded-[2rem] bg-white shadow-2xl">
-                <div className="no-print flex flex-col gap-3 border-b border-slate-200 bg-slate-950 px-5 py-4 text-white sm:flex-row sm:items-center sm:justify-between">
-                    <div>
-                        <div className="text-[10px] font-black uppercase tracking-[0.28em] text-[#ffc400]">Vista previa por dia</div>
-                        <h3 className="text-xl font-black">Reporte diario de cierres - {date}</h3>
-                        <p className="text-sm font-semibold text-slate-300">Cierres incluidos: {report.closureCodes.join(', ') || '-'}</p>
+        <>
+            <div className="no-print fixed inset-0 z-[134] flex items-center justify-center p-3 sm:p-6">
+                <button type="button" aria-label="Cerrar reporte diario" className="absolute inset-0 bg-slate-950/65 backdrop-blur-sm" onClick={onClose} />
+                <div className="relative flex max-h-[92vh] w-full max-w-5xl flex-col overflow-hidden rounded-[2rem] bg-white shadow-2xl">
+                    <div className="no-print flex flex-col gap-3 border-b border-slate-200 bg-slate-950 px-5 py-4 text-white sm:flex-row sm:items-center sm:justify-between">
+                        <div>
+                            <div className="text-[10px] font-black uppercase tracking-[0.28em] text-[#ffc400]">Vista previa por dia</div>
+                            <h3 className="text-xl font-black">Reporte diario de cierres - {date}</h3>
+                            <p className="text-sm font-semibold text-slate-300">Cierres incluidos: {report.closureCodes.join(', ') || '-'}</p>
+                        </div>
+                        <div className="flex gap-2">
+                            <button type="button" onClick={printDailyCashClosureReport} className="rounded-2xl bg-[#e30613] px-4 py-2 text-xs font-black uppercase tracking-[0.16em] text-white transition hover:bg-red-700">
+                                Imprimir carta
+                            </button>
+                            <button type="button" onClick={onClose} className="rounded-2xl border border-white/20 px-4 py-2 text-xs font-black uppercase tracking-[0.16em] text-white transition hover:bg-white hover:text-slate-950">
+                                Cerrar
+                            </button>
+                        </div>
                     </div>
-                    <div className="flex gap-2">
-                        <button type="button" onClick={printDailyCashClosureReport} className="rounded-2xl bg-[#e30613] px-4 py-2 text-xs font-black uppercase tracking-[0.16em] text-white transition hover:bg-red-700">
-                            Imprimir carta
-                        </button>
-                        <button type="button" onClick={onClose} className="rounded-2xl border border-white/20 px-4 py-2 text-xs font-black uppercase tracking-[0.16em] text-white transition hover:bg-white hover:text-slate-950">
-                            Cerrar
-                        </button>
-                    </div>
-                </div>
-                <div className="overflow-y-auto bg-slate-100 p-4">
-                    <div className="cash-closure-day-report-print-area mx-auto max-w-[8.5in] rounded-2xl bg-white p-6 text-slate-950 shadow-sm">
-                        <div className="mb-4 border-b-2 border-slate-950 pb-3 text-center">
-                            <div className="text-[11px] font-black uppercase tracking-[0.32em] text-[#e30613]">{APP_BRAND_NAME}</div>
-                            <div className="mt-1 text-2xl font-black uppercase">Reporte diario de cierres de caja</div>
-                            <div className="mt-1 text-sm font-bold">Fecha: {date} · Cierres: {report.closureCodes.join(', ') || '-'}</div>
-                        </div>
-
-                        <div className="grid gap-4 lg:grid-cols-2">
-                            <div className="rounded-2xl border border-slate-200 p-4">
-                                {sections.map((section) => (
-                                    <div className="mb-3 border-b border-slate-100 pb-2 last:mb-0 last:border-b-0" key={section.title || 'flujo'}>
-                                        {section.title && <div className="mb-2 text-[11px] font-black uppercase tracking-[0.18em] text-slate-500">{section.title}</div>}
-                                        {section.rows.map((row) => (
-                                            <div className={`flex justify-between gap-3 py-1 text-sm ${row.highlight ? 'border-b border-slate-200 font-black' : 'font-semibold'}`} key={row.label}>
-                                                <span>{row.label}</span>
-                                                <span className="whitespace-nowrap text-right">{fmt(row.value)}</span>
-                                            </div>
-                                        ))}
-                                    </div>
-                                ))}
-                            </div>
-                            <div className="rounded-2xl border border-slate-200 p-4">
-                                <div className="mb-2 text-[11px] font-black uppercase tracking-[0.18em] text-slate-500">Desglose de metodo pago</div>
-                                {report.paymentMethods.map((method) => (
-                                    <div className="mb-2" key={method.label}>
-                                        <div className="flex justify-between gap-3 border-b border-slate-200 py-1 text-sm font-black">
-                                            <span>{method.label}</span>
-                                            <span>{fmt(method.total)}</span>
-                                        </div>
-                                        {method.details.map((detail) => (
-                                            <div className="ml-3 flex justify-between gap-3 py-0.5 text-xs font-semibold" key={detail.id}>
-                                                <span>
-                                                    {detail.label}
-                                                    {detail.conversionLabel ? <small className="block text-[10px] text-slate-500">{detail.conversionLabel}</small> : null}
-                                                </span>
-                                                <span className="whitespace-nowrap">{fmt(detail.amount)}</span>
-                                            </div>
-                                        ))}
-                                    </div>
-                                ))}
-                                <div className="mt-2 flex justify-between gap-3 border-b border-slate-300 py-1 text-sm font-black">
-                                    <span>EFECTIVO:</span>
-                                    <span>{fmt(report.rc)}</span>
-                                </div>
-                            </div>
-                        </div>
-
-                        <div className="mt-4 grid gap-4 lg:grid-cols-2">
-                            <div className="rounded-2xl border border-slate-200 p-4">
-                                <div className="mb-2 text-[11px] font-black uppercase tracking-[0.18em] text-slate-500">Desglose facturas membretadas</div>
-                                <div className="grid grid-cols-1 gap-x-6 sm:grid-cols-2">
-                                    {report.invoices.length ? report.invoices.map((invoice) => (
-                                        <div className="flex justify-between gap-3 border-b border-slate-100 py-1 text-xs font-semibold" key={invoice.id}>
-                                            <span>{invoice.number}</span>
-                                            <span className="whitespace-nowrap">{fmt(invoice.total)}</span>
-                                        </div>
-                                    )) : <div className="text-sm font-semibold text-slate-400">Sin facturas vinculadas.</div>}
-                                </div>
-                            </div>
-                            <div className="rounded-2xl border border-slate-200 p-4">
-                                <div className="mb-2 text-[11px] font-black uppercase tracking-[0.18em] text-slate-500">Desglose recibos de caja</div>
-                                <div className="grid grid-cols-1 gap-x-6 sm:grid-cols-2">
-                                    {report.receipts.length ? report.receipts.map((receipt) => (
-                                        <div className="flex justify-between gap-3 border-b border-slate-100 py-1 text-xs font-semibold" key={receipt.id}>
-                                            <span>{receipt.number}</span>
-                                            <span className="whitespace-nowrap">{fmt(receipt.total)}</span>
-                                        </div>
-                                    )) : <div className="text-sm font-semibold text-slate-400">Sin recibos vinculados.</div>}
-                                </div>
-                            </div>
-                        </div>
+                    <div className="overflow-y-auto bg-slate-100 p-4">
+                        <CashClosureDailyReportContent
+                            report={report}
+                            sections={sections}
+                            className="mx-auto max-w-[8.5in] rounded-2xl bg-white p-6 text-slate-950 shadow-sm"
+                        />
                     </div>
                 </div>
-                <style>{`
-                    @media print {
-                        @page { size: letter portrait; margin: 0.35in; }
-                        body.print-cash-closure-day-report * { visibility: hidden !important; }
-                        body.print-cash-closure-day-report .cash-closure-day-report-print-area,
-                        body.print-cash-closure-day-report .cash-closure-day-report-print-area * { visibility: visible !important; }
-                        body.print-cash-closure-day-report .cash-closure-day-report-print-area {
-                            position: absolute !important;
-                            inset: 0 auto auto 0 !important;
-                            width: 100% !important;
-                            max-width: none !important;
-                            box-shadow: none !important;
-                            border-radius: 0 !important;
-                            padding: 0 !important;
-                            font-family: Arial, sans-serif !important;
-                            color: #000 !important;
-                        }
-                        body.print-cash-closure-day-report .no-print { display: none !important; }
-                    }
-                `}</style>
             </div>
-        </div>
+            <CashClosureDailyReportContent
+                report={report}
+                sections={sections}
+                className="cash-closure-day-report-print-area"
+            />
+            <style>{`
+                .cash-closure-day-report-print-area { display: none; }
+                @media print {
+                    @page { size: letter portrait; margin: 0.35in; }
+                    body.print-cash-closure-day-report * { visibility: hidden !important; }
+                    body.print-cash-closure-day-report .cash-closure-day-report-print-area,
+                    body.print-cash-closure-day-report .cash-closure-day-report-print-area * { visibility: visible !important; }
+                    body.print-cash-closure-day-report .cash-closure-day-report-print-area {
+                        display: block !important;
+                        position: static !important;
+                        width: 100% !important;
+                        max-width: none !important;
+                        box-shadow: none !important;
+                        border-radius: 0 !important;
+                        padding: 0 !important;
+                        font-family: Arial, sans-serif !important;
+                        color: #000 !important;
+                        break-inside: auto !important;
+                        page-break-inside: auto !important;
+                    }
+                    body.print-cash-closure-day-report .cash-closure-day-report-print-area > div,
+                    body.print-cash-closure-day-report .cash-closure-day-report-print-area table,
+                    body.print-cash-closure-day-report .cash-closure-day-report-print-area tr {
+                        break-inside: avoid;
+                    }
+                    body.print-cash-closure-day-report .no-print { display: none !important; }
+                }
+            `}</style>
+        </>
     );
 };
 
