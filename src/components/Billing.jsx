@@ -15,7 +15,7 @@ import {
     getRecordBranchId,
 } from '../constants';
 import { PAYMENT_METHODS, buildFiscalPayload, getSupportFiles, uploadFiscalSupportFiles, uploadSupportFile } from '../services/fiscalUtils';
-import { isMasterEmail } from '../services/userAccess';
+import { isMasterEmail, isNicolUser, normalizeUserEmail } from '../services/userAccess';
 
 const TRANSFER_BANKS = [
     { key: 'bac', label: 'BAC' },
@@ -8916,6 +8916,142 @@ const buildCashClosureTicketData = (closure = {}) => {
     };
 };
 
+const buildCashClosureTicketSections = (ticket = {}) => ([
+    {
+        title: 'VENTAS DEL DIA',
+        rows: [
+            { label: 'Ventas contado:', value: ticket.salesCashTotal },
+            { label: 'Ventas Credito:', value: ticket.salesCreditTotal },
+            { label: 'Total Venta:', value: ticket.salesTotal, highlight: true },
+            { label: 'IVA Facturado:', value: ticket.invoiceVatTotal },
+            { label: 'Subtotal Total Venta Gravada:', value: ticket.taxableSubtotal },
+            { label: 'Subtotal Venta Exenta:', value: ticket.exemptSubtotal },
+        ],
+    },
+    {
+        title: 'RECIBOS DE CAJA',
+        rows: [
+            { label: 'Recibo caja membretados:', value: ticket.stampedCashReceiptTotal },
+        ],
+    },
+    {
+        title: 'DEDUCCIONES',
+        rows: [
+            { label: 'Retencion IR:', value: ticket.retentionIr },
+            { label: 'Retencion Municipal:', value: ticket.retentionMunicipal },
+            { label: 'Total Deducciones:', value: ticket.retentionTotal, highlight: true },
+        ],
+    },
+    {
+        title: '',
+        rows: [
+            { label: 'Flujo de Caja:', value: ticket.cashIncomeTotal, highlight: true },
+        ],
+    },
+]);
+
+const aggregateCashClosurePaymentMethods = (tickets = []) => {
+    const map = new Map();
+
+    tickets.forEach((ticket) => {
+        (ticket.paymentMethods || []).forEach((method) => {
+            const current = map.get(method.label) || {
+                ...method,
+                total: 0,
+                details: [],
+                alwaysShow: method.alwaysShow,
+            };
+            current.total = safeNumber(current.total + safeNumber(method.total));
+            current.alwaysShow = current.alwaysShow || method.alwaysShow;
+            current.details = [
+                ...current.details,
+                ...(method.details || []).map((detail) => ({
+                    ...detail,
+                    id: `${ticket.code}-${detail.id}`,
+                    label: `${ticket.code} · ${detail.label}`,
+                })),
+            ];
+            map.set(method.label, current);
+        });
+    });
+
+    return [...map.values()].filter((method) => method.alwaysShow || method.total > 0 || method.details.length);
+};
+
+const buildDailyCashClosureTicketData = (closures = [], date = '') => {
+    const tickets = closures.map(buildCashClosureTicketData);
+    const totals = tickets.reduce((acc, ticket) => ({
+        salesCashTotal: safeNumber(acc.salesCashTotal + ticket.salesCashTotal),
+        salesCreditTotal: safeNumber(acc.salesCreditTotal + ticket.salesCreditTotal),
+        salesTotal: safeNumber(acc.salesTotal + ticket.salesTotal),
+        invoiceVatTotal: safeNumber(acc.invoiceVatTotal + ticket.invoiceVatTotal),
+        taxableSubtotal: safeNumber(acc.taxableSubtotal + ticket.taxableSubtotal),
+        exemptSubtotal: safeNumber(acc.exemptSubtotal + ticket.exemptSubtotal),
+        stampedCreditInvoiceTotal: safeNumber(acc.stampedCreditInvoiceTotal + ticket.stampedCreditInvoiceTotal),
+        stampedCashInvoiceTotal: safeNumber(acc.stampedCashInvoiceTotal + ticket.stampedCashInvoiceTotal),
+        stampedInvoiceTotal: safeNumber(acc.stampedInvoiceTotal + ticket.stampedInvoiceTotal),
+        stampedCashReceiptTotal: safeNumber(acc.stampedCashReceiptTotal + ticket.stampedCashReceiptTotal),
+        stampedIncomeTotal: safeNumber(acc.stampedIncomeTotal + ticket.stampedIncomeTotal),
+        retentionTotal: safeNumber(acc.retentionTotal + ticket.retentionTotal),
+        retentionIr: safeNumber(acc.retentionIr + ticket.retentionIr),
+        retentionMunicipal: safeNumber(acc.retentionMunicipal + ticket.retentionMunicipal),
+        cashIncomeTotal: safeNumber(acc.cashIncomeTotal + ticket.cashIncomeTotal),
+        posBac: safeNumber(acc.posBac + ticket.posBac),
+        posBanpro: safeNumber(acc.posBanpro + ticket.posBanpro),
+        posLafise: safeNumber(acc.posLafise + ticket.posLafise),
+        transferBac: safeNumber(acc.transferBac + ticket.transferBac),
+        transferBacUsd: safeNumber(acc.transferBacUsd + ticket.transferBacUsd),
+        transferLafise: safeNumber(acc.transferLafise + ticket.transferLafise),
+        transferBanpro: safeNumber(acc.transferBanpro + ticket.transferBanpro),
+        houseDiscountTotal: safeNumber(acc.houseDiscountTotal + ticket.houseDiscountTotal),
+        rc: safeNumber(acc.rc + ticket.rc),
+    }), {
+        salesCashTotal: 0,
+        salesCreditTotal: 0,
+        salesTotal: 0,
+        invoiceVatTotal: 0,
+        taxableSubtotal: 0,
+        exemptSubtotal: 0,
+        stampedCreditInvoiceTotal: 0,
+        stampedCashInvoiceTotal: 0,
+        stampedInvoiceTotal: 0,
+        stampedCashReceiptTotal: 0,
+        stampedIncomeTotal: 0,
+        retentionTotal: 0,
+        retentionIr: 0,
+        retentionMunicipal: 0,
+        cashIncomeTotal: 0,
+        posBac: 0,
+        posBanpro: 0,
+        posLafise: 0,
+        transferBac: 0,
+        transferBacUsd: 0,
+        transferLafise: 0,
+        transferBanpro: 0,
+        houseDiscountTotal: 0,
+        rc: 0,
+    });
+
+    return {
+        ...totals,
+        code: 'DIA',
+        cashierName: `${closures.length} cierre(s)`,
+        date: date || closures[0]?.date || '-',
+        closureCodes: tickets.map((ticket) => ticket.code).filter(Boolean),
+        paymentMethods: aggregateCashClosurePaymentMethods(tickets),
+        invoices: tickets.flatMap((ticket) => (ticket.invoices || []).map((invoice) => ({
+            ...invoice,
+            id: `${ticket.code}-${invoice.id}`,
+            number: `${ticket.code} · ${invoice.number}`,
+        }))),
+        receipts: tickets.flatMap((ticket) => (ticket.receipts || []).map((receipt) => ({
+            ...receipt,
+            id: `${ticket.code}-${receipt.id}`,
+            number: `${ticket.code} · ${receipt.number}`,
+        }))),
+    };
+};
+
 const printCashClosureTicket = () => {
     document.body.classList.add('print-cash-closure-ticket');
     const cleanup = () => {
@@ -8932,39 +9068,7 @@ const printCashClosureTicket = () => {
 const CashClosureTicketPrint = ({ closure }) => {
     if (!closure) return null;
     const ticket = buildCashClosureTicketData(closure);
-    const sections = [
-        {
-            title: 'VENTAS DEL DIA',
-            rows: [
-                { label: 'Ventas contado:', value: ticket.salesCashTotal },
-                { label: 'Ventas Credito:', value: ticket.salesCreditTotal },
-                { label: 'Total Venta:', value: ticket.salesTotal, highlight: true },
-                { label: 'IVA Facturado:', value: ticket.invoiceVatTotal },
-                { label: 'Subtotal Total Venta Gravada:', value: ticket.taxableSubtotal },
-                { label: 'Subtotal Venta Exenta:', value: ticket.exemptSubtotal },
-            ],
-        },
-        {
-            title: 'RECIBOS DE CAJA',
-            rows: [
-                { label: 'Recibo caja membretados:', value: ticket.stampedCashReceiptTotal },
-            ],
-        },
-        {
-            title: 'DEDUCCIONES',
-            rows: [
-                { label: 'Retencion IR:', value: ticket.retentionIr },
-                { label: 'Retencion Municipal:', value: ticket.retentionMunicipal },
-                { label: 'Total Deducciones:', value: ticket.retentionTotal, highlight: true },
-            ],
-        },
-        {
-            title: '',
-            rows: [
-                { label: 'Flujo de Caja:', value: ticket.cashIncomeTotal, highlight: true },
-            ],
-        },
-    ];
+    const sections = buildCashClosureTicketSections(ticket);
 
     return (
         <>
@@ -9135,6 +9239,228 @@ const CashClosureTicketPrint = ({ closure }) => {
                 }
             `}</style>
         </>
+    );
+};
+
+const CashClosureTicketPreviewCard = ({ ticket, title = '' }) => {
+    const sections = buildCashClosureTicketSections(ticket);
+
+    return (
+        <div className="mx-auto w-full max-w-sm rounded-[1.5rem] border border-slate-200 bg-white p-4 font-[Arial] text-[12px] leading-snug text-slate-950 shadow-sm">
+            <div className="border-b border-dashed border-slate-400 pb-2 text-center text-sm uppercase">
+                {title || `Cierre de Caja ${ticket.code}`}
+            </div>
+            <div className="border-b border-dashed border-slate-400 py-2">
+                <div><span className="font-semibold">Cajero:</span> {ticket.cashierName}</div>
+                <div><span className="font-semibold">Fecha:</span> {ticket.date}</div>
+            </div>
+            {sections.map((section) => (
+                <div className="border-b border-dashed border-slate-300 py-2" key={section.title || 'flujo'}>
+                    {section.title && <div className="mb-1 text-center text-xs uppercase tracking-wide">{section.title}</div>}
+                    {section.rows.map((row) => (
+                        <div className={`flex justify-between gap-3 py-0.5 ${row.highlight ? 'border-b border-slate-200 font-bold' : ''}`} key={row.label}>
+                            <span>{row.label}</span>
+                            <span className="whitespace-nowrap text-right">{fmt(row.value)}</span>
+                        </div>
+                    ))}
+                </div>
+            ))}
+            <div className="py-2">
+                <div className="mb-1 text-center text-xs uppercase tracking-wide">Desglose de metodo pago</div>
+                {ticket.paymentMethods.length ? ticket.paymentMethods.map((method) => (
+                    <div className="py-1" key={method.label}>
+                        <div className="flex justify-between gap-3 border-b border-slate-200 font-bold">
+                            <span>{method.label}</span>
+                            <span className="whitespace-nowrap">{fmt(method.total)}</span>
+                        </div>
+                        {method.details.map((detail) => (
+                            <div className="ml-3 flex justify-between gap-3 py-0.5 text-[11px]" key={detail.id}>
+                                <span>
+                                    {detail.label}
+                                    {detail.conversionLabel ? <small className="block text-[10px] text-slate-500">{detail.conversionLabel}</small> : null}
+                                </span>
+                                <span className="whitespace-nowrap">{fmt(detail.amount)}</span>
+                            </div>
+                        ))}
+                    </div>
+                )) : <div className="py-2 text-center text-slate-400">Sin metodos de pago detallados.</div>}
+                <div className="mt-1 flex justify-between gap-3 border-b border-slate-200 font-bold">
+                    <span>EFECTIVO:</span>
+                    <span>{fmt(ticket.rc)}</span>
+                </div>
+            </div>
+            <div className="border-t border-dashed border-slate-300 py-2">
+                <div className="mb-1 text-center text-xs uppercase tracking-wide">Desglose facturas membretadas</div>
+                {ticket.invoices.length ? ticket.invoices.map((invoice) => (
+                    <div className="flex justify-between gap-3 py-0.5" key={invoice.id}>
+                        <span>{invoice.number}</span>
+                        <span className="whitespace-nowrap">{fmt(invoice.total)}</span>
+                    </div>
+                )) : <div className="py-2 text-center text-slate-400">Sin facturas vinculadas.</div>}
+            </div>
+            <div className="border-t border-dashed border-slate-300 pt-2">
+                <div className="mb-1 text-center text-xs uppercase tracking-wide">Desglose de recibo de caja</div>
+                {ticket.receipts.length ? ticket.receipts.map((receipt) => (
+                    <div className="flex justify-between gap-3 py-0.5" key={receipt.id}>
+                        <span>{receipt.number}</span>
+                        <span className="whitespace-nowrap">{fmt(receipt.total)}</span>
+                    </div>
+                )) : <div className="py-2 text-center text-slate-400">Sin recibos vinculados.</div>}
+            </div>
+        </div>
+    );
+};
+
+const CashClosureTicketPreviewModal = ({ closure, onClose, onPrint }) => {
+    if (!closure) return null;
+    const ticket = buildCashClosureTicketData(closure);
+
+    return (
+        <div className="fixed inset-0 z-[135] flex items-center justify-center p-4">
+            <button type="button" aria-label="Cerrar vista previa" className="absolute inset-0 bg-slate-950/65 backdrop-blur-sm" onClick={onClose} />
+            <div className="relative flex max-h-[92vh] w-full max-w-xl flex-col overflow-hidden rounded-[2rem] bg-slate-50 shadow-2xl">
+                <div className="flex items-center justify-between gap-3 border-b border-slate-200 bg-slate-950 px-5 py-4 text-white">
+                    <div>
+                        <div className="text-[10px] font-black uppercase tracking-[0.28em] text-[#ffc400]">Vista previa ticket</div>
+                        <h3 className="text-lg font-black">Cierre de Caja {ticket.code}</h3>
+                    </div>
+                    <div className="flex gap-2">
+                        <button type="button" onClick={() => onPrint?.(closure)} className="rounded-2xl bg-amber-400 px-4 py-2 text-xs font-black uppercase tracking-[0.16em] text-amber-950 transition hover:bg-amber-300">
+                            Imprimir 80mm
+                        </button>
+                        <button type="button" onClick={onClose} className="rounded-2xl border border-white/20 px-4 py-2 text-xs font-black uppercase tracking-[0.16em] text-white transition hover:bg-white hover:text-slate-950">
+                            Cerrar
+                        </button>
+                    </div>
+                </div>
+                <div className="overflow-y-auto p-5">
+                    <CashClosureTicketPreviewCard ticket={ticket} />
+                </div>
+            </div>
+        </div>
+    );
+};
+
+const CashClosureDailyReportModal = ({ closures = [], date = '', onClose }) => {
+    if (!date || !closures.length) return null;
+    const report = buildDailyCashClosureTicketData(closures, date);
+    const sections = buildCashClosureTicketSections(report);
+
+    return (
+        <div className="fixed inset-0 z-[134] flex items-center justify-center p-3 sm:p-6">
+            <button type="button" aria-label="Cerrar reporte diario" className="absolute inset-0 bg-slate-950/65 backdrop-blur-sm" onClick={onClose} />
+            <div className="relative flex max-h-[92vh] w-full max-w-5xl flex-col overflow-hidden rounded-[2rem] bg-white shadow-2xl">
+                <div className="no-print flex flex-col gap-3 border-b border-slate-200 bg-slate-950 px-5 py-4 text-white sm:flex-row sm:items-center sm:justify-between">
+                    <div>
+                        <div className="text-[10px] font-black uppercase tracking-[0.28em] text-[#ffc400]">Vista previa por dia</div>
+                        <h3 className="text-xl font-black">Reporte diario de cierres - {date}</h3>
+                        <p className="text-sm font-semibold text-slate-300">Cierres incluidos: {report.closureCodes.join(', ') || '-'}</p>
+                    </div>
+                    <div className="flex gap-2">
+                        <button type="button" onClick={printDailyCashClosureReport} className="rounded-2xl bg-[#e30613] px-4 py-2 text-xs font-black uppercase tracking-[0.16em] text-white transition hover:bg-red-700">
+                            Imprimir carta
+                        </button>
+                        <button type="button" onClick={onClose} className="rounded-2xl border border-white/20 px-4 py-2 text-xs font-black uppercase tracking-[0.16em] text-white transition hover:bg-white hover:text-slate-950">
+                            Cerrar
+                        </button>
+                    </div>
+                </div>
+                <div className="overflow-y-auto bg-slate-100 p-4">
+                    <div className="cash-closure-day-report-print-area mx-auto max-w-[8.5in] rounded-2xl bg-white p-6 text-slate-950 shadow-sm">
+                        <div className="mb-4 border-b-2 border-slate-950 pb-3 text-center">
+                            <div className="text-[11px] font-black uppercase tracking-[0.32em] text-[#e30613]">{APP_BRAND_NAME}</div>
+                            <div className="mt-1 text-2xl font-black uppercase">Reporte diario de cierres de caja</div>
+                            <div className="mt-1 text-sm font-bold">Fecha: {date} · Cierres: {report.closureCodes.join(', ') || '-'}</div>
+                        </div>
+
+                        <div className="grid gap-4 lg:grid-cols-2">
+                            <div className="rounded-2xl border border-slate-200 p-4">
+                                {sections.map((section) => (
+                                    <div className="mb-3 border-b border-slate-100 pb-2 last:mb-0 last:border-b-0" key={section.title || 'flujo'}>
+                                        {section.title && <div className="mb-2 text-[11px] font-black uppercase tracking-[0.18em] text-slate-500">{section.title}</div>}
+                                        {section.rows.map((row) => (
+                                            <div className={`flex justify-between gap-3 py-1 text-sm ${row.highlight ? 'border-b border-slate-200 font-black' : 'font-semibold'}`} key={row.label}>
+                                                <span>{row.label}</span>
+                                                <span className="whitespace-nowrap text-right">{fmt(row.value)}</span>
+                                            </div>
+                                        ))}
+                                    </div>
+                                ))}
+                            </div>
+                            <div className="rounded-2xl border border-slate-200 p-4">
+                                <div className="mb-2 text-[11px] font-black uppercase tracking-[0.18em] text-slate-500">Desglose de metodo pago</div>
+                                {report.paymentMethods.map((method) => (
+                                    <div className="mb-2" key={method.label}>
+                                        <div className="flex justify-between gap-3 border-b border-slate-200 py-1 text-sm font-black">
+                                            <span>{method.label}</span>
+                                            <span>{fmt(method.total)}</span>
+                                        </div>
+                                        {method.details.map((detail) => (
+                                            <div className="ml-3 flex justify-between gap-3 py-0.5 text-xs font-semibold" key={detail.id}>
+                                                <span>
+                                                    {detail.label}
+                                                    {detail.conversionLabel ? <small className="block text-[10px] text-slate-500">{detail.conversionLabel}</small> : null}
+                                                </span>
+                                                <span className="whitespace-nowrap">{fmt(detail.amount)}</span>
+                                            </div>
+                                        ))}
+                                    </div>
+                                ))}
+                                <div className="mt-2 flex justify-between gap-3 border-b border-slate-300 py-1 text-sm font-black">
+                                    <span>EFECTIVO:</span>
+                                    <span>{fmt(report.rc)}</span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div className="mt-4 grid gap-4 lg:grid-cols-2">
+                            <div className="rounded-2xl border border-slate-200 p-4">
+                                <div className="mb-2 text-[11px] font-black uppercase tracking-[0.18em] text-slate-500">Desglose facturas membretadas</div>
+                                <div className="grid grid-cols-1 gap-x-6 sm:grid-cols-2">
+                                    {report.invoices.length ? report.invoices.map((invoice) => (
+                                        <div className="flex justify-between gap-3 border-b border-slate-100 py-1 text-xs font-semibold" key={invoice.id}>
+                                            <span>{invoice.number}</span>
+                                            <span className="whitespace-nowrap">{fmt(invoice.total)}</span>
+                                        </div>
+                                    )) : <div className="text-sm font-semibold text-slate-400">Sin facturas vinculadas.</div>}
+                                </div>
+                            </div>
+                            <div className="rounded-2xl border border-slate-200 p-4">
+                                <div className="mb-2 text-[11px] font-black uppercase tracking-[0.18em] text-slate-500">Desglose recibos de caja</div>
+                                <div className="grid grid-cols-1 gap-x-6 sm:grid-cols-2">
+                                    {report.receipts.length ? report.receipts.map((receipt) => (
+                                        <div className="flex justify-between gap-3 border-b border-slate-100 py-1 text-xs font-semibold" key={receipt.id}>
+                                            <span>{receipt.number}</span>
+                                            <span className="whitespace-nowrap">{fmt(receipt.total)}</span>
+                                        </div>
+                                    )) : <div className="text-sm font-semibold text-slate-400">Sin recibos vinculados.</div>}
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <style>{`
+                    @media print {
+                        @page { size: letter portrait; margin: 0.35in; }
+                        body.print-cash-closure-day-report * { visibility: hidden !important; }
+                        body.print-cash-closure-day-report .cash-closure-day-report-print-area,
+                        body.print-cash-closure-day-report .cash-closure-day-report-print-area * { visibility: visible !important; }
+                        body.print-cash-closure-day-report .cash-closure-day-report-print-area {
+                            position: absolute !important;
+                            inset: 0 auto auto 0 !important;
+                            width: 100% !important;
+                            max-width: none !important;
+                            box-shadow: none !important;
+                            border-radius: 0 !important;
+                            padding: 0 !important;
+                            font-family: Arial, sans-serif !important;
+                            color: #000 !important;
+                        }
+                        body.print-cash-closure-day-report .no-print { display: none !important; }
+                    }
+                `}</style>
+            </div>
+        </div>
     );
 };
 
@@ -9718,7 +10044,11 @@ function CashClosureHistory({ data, canEdit = true, branchContext }) {
     const { user } = useAuth();
     const isMaster = isMasterEmail(user?.email);
     const canManageClosures = isMaster && canEdit;
-    const canPrintClosureTicket = canManageClosures || !canEdit;
+    const canViewClosureReports = canManageClosures
+        || !canEdit
+        || isNicolUser(user?.email)
+        || normalizeUserEmail(user?.email) === 'contabilidad@sanmartinsr.com';
+    const canPrintClosureTicket = canViewClosureReports;
     const selectedBranchId = getActiveBillingBranchId(branchContext);
     const branchPayload = useMemo(() => getBranchPayload(selectedBranchId), [selectedBranchId]);
     const [search, setSearch] = useState('');
@@ -9731,6 +10061,8 @@ function CashClosureHistory({ data, canEdit = true, branchContext }) {
     const [editForm, setEditForm] = useState(null);
     const [editSaving, setEditSaving] = useState(false);
     const [ticketClosure, setTicketClosure] = useState(null);
+    const [ticketPreviewClosure, setTicketPreviewClosure] = useState(null);
+    const [dailyReportOpen, setDailyReportOpen] = useState(false);
     const [message, setMessage] = useState('');
 
     const closures = useMemo(() => (
@@ -9798,6 +10130,12 @@ function CashClosureHistory({ data, canEdit = true, branchContext }) {
     ), [searchedClosures, selectedMonth, selectedDate, statusFilter]);
 
     const pagedClosures = useMemo(() => paginateRecords(filteredClosures, page), [filteredClosures, page]);
+
+    const dailyReportClosures = useMemo(() => (
+        selectedDate
+            ? closures.filter((closure) => closure.date === selectedDate && closure.status !== 'en_espera')
+            : []
+    ), [closures, selectedDate]);
 
     const stats = useMemo(() => (
         filteredClosures.reduce((acc, closure) => {
@@ -10200,7 +10538,25 @@ function CashClosureHistory({ data, canEdit = true, branchContext }) {
 
     return (
         <div className="space-y-5">
-            <Section title="Historial de cierres de caja" eyebrow="Auditoria de caja" action={<Badge tone="blue">{filteredClosures.length} cierres</Badge>}>
+            <Section
+                title="Historial de cierres de caja"
+                eyebrow="Auditoria de caja"
+                action={(
+                    <div className="flex flex-wrap items-center justify-end gap-2">
+                        <Badge tone="blue">{filteredClosures.length} cierres</Badge>
+                        {selectedDate && canViewClosureReports && (
+                            <button
+                                type="button"
+                                onClick={() => setDailyReportOpen(true)}
+                                disabled={dailyReportClosures.length === 0}
+                                className="rounded-full border border-[#e30613] bg-red-50 px-4 py-2 text-[10px] font-black uppercase tracking-[0.18em] text-[#e30613] transition hover:bg-[#e30613] hover:text-white disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-50 disabled:text-slate-400"
+                            >
+                                Vista previa por dia
+                            </button>
+                        )}
+                    </div>
+                )}
+            >
                 <div className="grid gap-3 lg:grid-cols-[1.4fr_0.5fr_0.5fr_0.7fr_auto]">
                     <SearchBox
                         value={search}
@@ -10303,13 +10659,22 @@ function CashClosureHistory({ data, canEdit = true, branchContext }) {
                                                 RC XLS
                                             </button>
                                             {canPrintClosureTicket && (
-                                                <button
-                                                    type="button"
-                                                    onClick={() => reprintClosureTicket(closure)}
-                                                    className="rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-[10px] font-black uppercase tracking-[0.16em] text-amber-800 transition hover:bg-amber-100"
-                                                >
-                                                    Ticket
-                                                </button>
+                                                <>
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => setTicketPreviewClosure(closure)}
+                                                        className="rounded-xl border border-sky-300 bg-sky-50 px-3 py-2 text-[10px] font-black uppercase tracking-[0.16em] text-sky-800 transition hover:bg-sky-100"
+                                                    >
+                                                        Vista previa ticket
+                                                    </button>
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => reprintClosureTicket(closure)}
+                                                        className="rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-[10px] font-black uppercase tracking-[0.16em] text-amber-800 transition hover:bg-amber-100"
+                                                    >
+                                                        Ticket
+                                                    </button>
+                                                </>
                                             )}
                                             {canManageClosures && (
                                                 <button
@@ -10352,6 +10717,16 @@ function CashClosureHistory({ data, canEdit = true, branchContext }) {
                 onExport={exportClosureRcReport}
                 onPrintTicket={reprintClosureTicket}
                 canEdit={canManageClosures}
+            />
+            <CashClosureTicketPreviewModal
+                closure={ticketPreviewClosure}
+                onClose={() => setTicketPreviewClosure(null)}
+                onPrint={reprintClosureTicket}
+            />
+            <CashClosureDailyReportModal
+                closures={dailyReportOpen ? dailyReportClosures : []}
+                date={dailyReportOpen ? selectedDate : ''}
+                onClose={() => setDailyReportOpen(false)}
             />
             <CashClosureTicketPrint closure={ticketClosure} />
             {canManageClosures && (
@@ -10806,6 +11181,19 @@ const printBankDepositDetails = () => {
     document.body.classList.add('print-bank-deposit-details');
     const cleanup = () => {
         document.body.classList.remove('print-bank-deposit-details');
+        window.removeEventListener('afterprint', cleanup);
+    };
+    window.addEventListener('afterprint', cleanup);
+    window.setTimeout(() => {
+        window.print();
+        window.setTimeout(cleanup, 1000);
+    }, 60);
+};
+
+const printDailyCashClosureReport = () => {
+    document.body.classList.add('print-cash-closure-day-report');
+    const cleanup = () => {
+        document.body.classList.remove('print-cash-closure-day-report');
         window.removeEventListener('afterprint', cleanup);
     };
     window.addEventListener('afterprint', cleanup);
