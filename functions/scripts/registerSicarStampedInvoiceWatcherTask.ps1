@@ -1,6 +1,6 @@
 param(
     [string]$TaskName = 'SICAR Stamped Invoice Watcher',
-    [int]$IntervalMs = 1000,
+    [int]$IntervalMs = 10000,
     [int]$StartupBackfillDays = 3,
     [string]$NodePath = ''
 )
@@ -16,7 +16,7 @@ if (-not (Test-Path -LiteralPath $hiddenRunnerPath)) {
     throw "No se encontro el lanzador oculto en $hiddenRunnerPath"
 }
 
-$safeInterval = [Math]::Max(1000, [Math]::Min($IntervalMs, 60000))
+$safeInterval = [Math]::Max(10000, [Math]::Min($IntervalMs, 60000))
 $safeBackfillDays = [Math]::Max(1, [Math]::Min($StartupBackfillDays, 31))
 $nodePathArgument = if ($NodePath) { " -NodePath `"$NodePath`"" } else { "" }
 

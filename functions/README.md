@@ -522,7 +522,7 @@ Tambien guarda bitacora en `sicar_sync_logs`.
 
 ## Facturas membretadas casi en tiempo real
 
-Para imprimir facturas membretadas desde la app, el servidor SICAR puede dejar corriendo un watcher local que revisa MySQL cada segundo y solo escribe en Firebase cuando aparece una nueva fila en `factura`.
+Para imprimir facturas membretadas desde la app, el servidor SICAR puede dejar corriendo un watcher local que revisa MySQL cada 10 segundos y solo escribe en Firebase cuando aparece una nueva fila en `factura`.
 
 Esto evita costos altos en Firebase:
 
@@ -550,7 +550,7 @@ Registrar tarea oculta al iniciar sesion:
 
 ```powershell
 cd functions
-.\scripts\registerSicarStampedInvoiceWatcherTask.ps1 -IntervalMs 1000
+.\scripts\registerSicarStampedInvoiceWatcherTask.ps1 -IntervalMs 10000
 Start-ScheduledTask -TaskName "SICAR Stamped Invoice Watcher"
 ```
 
@@ -558,7 +558,7 @@ Si quieres cambiar cuantos dias recupera al iniciar:
 
 ```powershell
 cd functions
-.\scripts\registerSicarStampedInvoiceWatcherTask.ps1 -IntervalMs 1000 -StartupBackfillDays 7
+.\scripts\registerSicarStampedInvoiceWatcherTask.ps1 -IntervalMs 10000 -StartupBackfillDays 7
 Start-ScheduledTask -TaskName "SICAR Stamped Invoice Watcher"
 ```
 
