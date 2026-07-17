@@ -1,5 +1,5 @@
 param(
-    [int]$IntervalMs = 10000,
+    [int]$IntervalMs = 15000,
     [string]$StatePath = 'C:\SICAR\state\sicar-stamped-invoice-watch.json',
     [int]$StartupBackfillDays = 3,
     [string]$NodePath = '',

@@ -15,7 +15,7 @@ const {
 } = require('./syncSicarBilling');
 
 const DEFAULT_STATE_PATH = 'C:\\SICAR\\state\\sicar-stamped-invoice-watch.json';
-const DEFAULT_INTERVAL_MS = 10000;
+const DEFAULT_INTERVAL_MS = 15000;
 const DEFAULT_BATCH_SIZE = 20;
 const DEFAULT_STARTUP_BACKFILL_DAYS = 3;
 
@@ -246,7 +246,7 @@ async function main() {
   loadEnvFile(path.join(functionsDir, '.env.local'));
 
   const options = parseArgs(process.argv.slice(2));
-  options.intervalMs = Math.max(10000, Math.min(Number(options.intervalMs || DEFAULT_INTERVAL_MS), 60000));
+  options.intervalMs = Math.max(15000, Math.min(Number(options.intervalMs || DEFAULT_INTERVAL_MS), 60000));
 
   const connection = await mysql.createConnection(getMysqlConfig());
   const db = options.preview ? null : initFirebase();
