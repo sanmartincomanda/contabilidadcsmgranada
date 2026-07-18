@@ -24,6 +24,7 @@ const Icons = {
     target: 'M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z',
     hand: 'M7 11V7a3 3 0 016 0v4m-6 0H5a2 2 0 00-2 2v4a4 4 0 004 4h7a4 4 0 004-4v-4a2 2 0 00-2-2h-2',
     scale: 'M3 6l3 1m0 0l-3 9a5.002 5.002 0 006.001 0M6 7l3 9M6 7l6-2m6 2l3-1m-3 1l-3 9a5.002 5.002 0 006.001 0M18 7l3 9m-3-9l-6-2m0-2v2m0 16V5m0 16H9m3 0h3',
+    swap: 'M7 16V4m0 0L3 8m4-4l4 4m6 0v12m0 0l4-4m-4 4l-4-4',
 };
 
 const Icon = ({ path, className = 'h-4 w-4' }) => (
@@ -89,6 +90,10 @@ export default function Header({
         const cleanPath = path.split('?')[0];
         return cleanPath === '/' ? location.pathname === '/' : location.pathname.startsWith(cleanPath);
     };
+    const isItemActive = (item) => {
+        const activePaths = item.activePaths || [item.to];
+        return activePaths.some((path) => isActive(path));
+    };
 
     useEffect(() => {
         const onScroll = () => setIsScrolled(window.scrollY > 8);
@@ -110,14 +115,26 @@ export default function Header({
         setMobileOpen(false);
     }, [location.pathname, location.search]);
 
+    const procurementHints = useMemo(() => ([
+        canAccess('caja_chica') && { label: 'Caja Chica', to: '/gastos-diarios' },
+        canAccess('cuentas_pagar') && { label: 'Cuentas por Pagar', to: '/cuentas-pagar' },
+        canAccess('traspasos_costos') && { label: 'Traspaso Costos Sucursal', to: '/traspasos-costos' },
+    ].filter(Boolean)), [moduleAccess]);
+
     const primaryItems = useMemo(() => ([
         canAccess('dashboard') && { key: 'inicio', label: 'Inicio', icon: 'home', to: '/' },
-        canAccess('caja_chica') && { key: 'caja', label: 'Caja Chica', icon: 'cash', to: '/gastos-diarios' },
-        canAccess('cuentas_pagar') && { key: 'cuentas', label: 'Cuentas por Pagar', icon: 'creditCard', to: '/cuentas-pagar' },
+        procurementHints.length && {
+            key: 'proveedores_compras',
+            label: 'Proveedores / Compras',
+            icon: 'cart',
+            to: procurementHints[0].to,
+            hintList: procurementHints,
+            activePaths: ['/gastos-diarios', '/cuentas-pagar', '/traspasos-costos'],
+        },
         canAccess('facturacion') && { key: 'facturacion', label: 'Facturacion', icon: 'receipt', to: '/facturacion?tab=cierre', hintList: billingHints },
         canAccess('reportes') && { key: 'reportes', label: 'Reportes', icon: 'chart', to: '/reportes', hintList: reportHints },
         isMaster && { key: 'config', label: 'Configuraciones', icon: 'gear', to: '/configuraciones' },
-    ].filter(Boolean)), [isMaster, moduleAccess]);
+    ].filter(Boolean)), [isMaster, moduleAccess, procurementHints]);
 
     const goToEntry = (tab) => {
         navigate(`/ingresar?tab=${encodeURIComponent(tab)}`);
@@ -156,20 +173,23 @@ export default function Header({
         );
     };
 
-    const DesktopLink = ({ item }) => (
-        <Link
-            to={item.to}
-            className={`group flex items-center gap-2 rounded-2xl px-3 py-2 text-[13px] font-black transition duration-200 focus:outline-none focus:ring-2 focus:ring-[#f5b51b]/70 ${
-                isActive(item.to)
-                    ? 'bg-white text-slate-950 shadow-lg shadow-black/10'
-                    : 'text-white/[0.82] hover:bg-white/10 hover:text-white'
-            }`}
-            title={item.label}
-        >
-            <Icon path={Icons[item.icon]} className={`h-4 w-4 ${isActive(item.to) ? 'text-[#e30613]' : 'text-white/60 group-hover:text-[#f5b51b]'}`} />
-            <span className="hidden xl:inline">{item.label}</span>
-        </Link>
-    );
+    const DesktopLink = ({ item }) => {
+        const active = isItemActive(item);
+        return (
+            <Link
+                to={item.to}
+                className={`group flex items-center gap-2 rounded-2xl px-3 py-2 text-[13px] font-black transition duration-200 focus:outline-none focus:ring-2 focus:ring-[#f5b51b]/70 ${
+                    active
+                        ? 'bg-white text-slate-950 shadow-lg shadow-black/10'
+                        : 'text-white/[0.82] hover:bg-white/10 hover:text-white'
+                }`}
+                title={item.label}
+            >
+                <Icon path={Icons[item.icon]} className={`h-4 w-4 ${active ? 'text-[#e30613]' : 'text-white/60 group-hover:text-[#f5b51b]'}`} />
+                <span className="hidden xl:inline">{item.label}</span>
+            </Link>
+        );
+    };
 
     const DropdownButton = () => (
         <div className="relative">
@@ -261,7 +281,7 @@ export default function Header({
     );
 
     const MobileItem = ({ item }) => {
-        const active = isActive(item.to.split('?')[0]);
+        const active = isItemActive(item);
         if (item.hintList) {
             return (
                 <div className={`rounded-2xl p-2 transition ${active ? 'bg-white/[0.08]' : 'bg-white/[0.03]'}`}>

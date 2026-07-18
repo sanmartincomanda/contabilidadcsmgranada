@@ -56,6 +56,7 @@ const normalizeReportText = (value = '') => (
 );
 
 const PAYMENT_ROWS_SYMBOL = Symbol('paymentRows');
+const BRANCH_COST_TRANSFER_COLLECTION = 'traspasos_costos_sucursal';
 
 const DATA_COLLECTION_KEYS = [
     'ingresos',
@@ -67,6 +68,7 @@ const DATA_COLLECTION_KEYS = [
     'presupuestos',
     'cuentas_por_pagar',
     'gastosDiarios',
+    BRANCH_COST_TRANSFER_COLLECTION,
 ];
 
 const filterDataByBranchScope = (data = {}, branchScope = CONSOLIDATED_BRANCH_ID, allowedBranchIds = []) => {
@@ -74,14 +76,18 @@ const filterDataByBranchScope = (data = {}, branchScope = CONSOLIDATED_BRANCH_ID
     if (branchScope === CONSOLIDATED_BRANCH_ID) {
         return Object.fromEntries(Object.entries(data).map(([key, value]) => (
             DATA_COLLECTION_KEYS.includes(key) && Array.isArray(value)
-                ? [key, value.filter((item) => allowed.has(getRecordBranchId(item)))]
+                ? [key, key === BRANCH_COST_TRANSFER_COLLECTION
+                    ? value.filter((item) => allowed.has(resolveBranchId(item.fromBranchId || item.branchFrom || DEFAULT_BRANCH_ID)) || allowed.has(resolveBranchId(item.toBranchId || item.branchTo || DEFAULT_BRANCH_ID)))
+                    : value.filter((item) => allowed.has(getRecordBranchId(item)))]
                 : [key, value]
         )));
     }
 
     return Object.fromEntries(Object.entries(data).map(([key, value]) => (
         DATA_COLLECTION_KEYS.includes(key) && Array.isArray(value)
-            ? [key, value.filter((item) => getRecordBranchId(item) === branchScope)]
+            ? [key, key === BRANCH_COST_TRANSFER_COLLECTION
+                ? value.filter((item) => resolveBranchId(item.fromBranchId || item.branchFrom || DEFAULT_BRANCH_ID) === branchScope || resolveBranchId(item.toBranchId || item.branchTo || DEFAULT_BRANCH_ID) === branchScope)
+                : value.filter((item) => getRecordBranchId(item) === branchScope)]
             : [key, value]
     )));
 };
@@ -429,9 +435,17 @@ const ExpenseDetailModal = ({ category, expenses, onClose }) => {
 };
 
 // --- LOGICA DE AGREGACION (preservada exactamente) ---
-const aggregateData = (data) => {
+const aggregateData = (data, branchScope = CONSOLIDATED_BRANCH_ID) => {
     const results = {};
-    const { ingresos = [], gastos = [], inventarios = [], compras = [], presupuestos = [], cuentas_por_pagar: facturasCredito = [] } = data;
+    const {
+        ingresos = [],
+        gastos = [],
+        inventarios = [],
+        compras = [],
+        presupuestos = [],
+        cuentas_por_pagar: facturasCredito = [],
+        traspasos_costos_sucursal: traspasosCostos = [],
+    } = data;
     const normalizedIngresos = resolveSalesIncomeEntries(ingresos);
     const purchaseDiscountEntries = resolvePurchaseDiscountEntries(ingresos);
     const accountingAmount = (item) => peso(item.subtotal ?? item.amount ?? item.monto);
@@ -614,6 +628,50 @@ const aggregateData = (data) => {
         }
     });
 
+    traspasosCostos.forEach((item) => {
+        if (String(item.status || 'activo').toLowerCase() === 'anulado') return;
+
+        const month = getMonthString(item, ['date', 'fecha']);
+        const amount = accountingAmount(item);
+        const fromBranchId = resolveBranchId(item.fromBranchId || item.branchFrom || item.originBranchId || DEFAULT_BRANCH_ID);
+        const toBranchId = resolveBranchId(item.toBranchId || item.branchTo || item.targetBranchId || DEFAULT_BRANCH_ID);
+
+        if (!month || !amount || fromBranchId === toBranchId) return;
+
+        const transferEntries = branchScope === CONSOLIDATED_BRANCH_ID
+            ? [
+                { branchId: fromBranchId, signedAmount: -amount, transferDirection: 'salida' },
+                { branchId: toBranchId, signedAmount: amount, transferDirection: 'entrada' },
+            ]
+            : [
+                fromBranchId === branchScope && { branchId: fromBranchId, signedAmount: -amount, transferDirection: 'salida' },
+                toBranchId === branchScope && { branchId: toBranchId, signedAmount: amount, transferDirection: 'entrada' },
+            ].filter(Boolean);
+
+        transferEntries.forEach(({ branchId, signedAmount, transferDirection }) => {
+            const branchData = ensureBranchData(month, branchId);
+            if (!branchData) return;
+
+            const transferRecord = {
+                ...item,
+                amount: signedAmount,
+                monto: signedAmount,
+                category: item.category || item.categoria || 'Costos de venta / compras',
+                categoria: item.category || item.categoria || 'Costos de venta / compras',
+                subcategory: item.subcategory || item.subcategoria || 'Otros costos de producto',
+                subcategoria: item.subcategory || item.subcategoria || 'Otros costos de producto',
+                expenseCategory: item.category || item.categoria || 'Costos de venta / compras',
+                expenseSubcategory: item.subcategory || item.subcategoria || 'Otros costos de producto',
+                categoryLabel: `${item.category || item.categoria || 'Costos de venta / compras'} / ${item.subcategory || item.subcategoria || 'Otros costos de producto'}`,
+                transferDirection,
+                description: item.description || `Traspaso de costo ${transferDirection}`,
+            };
+
+            branchData.totalPurchases += signedAmount;
+            addCategoryAmount(branchData.costTree, transferRecord, signedAmount, DEFAULT_PURCHASE_CATEGORY_ID);
+        });
+    });
+
     return Object.entries(results).map(([month, branchesData]) => {
         const branchEntriesArray = Object.values(branchesData);
         const totalIncomeMonth = branchEntriesArray.reduce((sum, data) => sum + data.totalIncome, 0);
@@ -692,7 +750,7 @@ const getDocMonth = (item) => {
     return String(date || item.month || item.mes || '').substring(0, 7);
 };
 
-const buildTaxReport = (data, selectedMonth) => {
+const buildTaxReport = (data, selectedMonth, branchScope = CONSOLIDATED_BRANCH_ID) => {
     const inMonth = (item) => !selectedMonth || getDocMonth(item) === selectedMonth;
     const accountingAmount = (item) => peso(item.subtotal ?? item.amount ?? item.monto);
     const fiscalTotal = (item) => peso(item.total ?? item.monto ?? item.amount);
@@ -972,6 +1030,38 @@ const buildTaxReport = (data, selectedMonth) => {
             ...PURCHASE_DISCOUNT_CATEGORY_RECORD,
         }, -amount, DEFAULT_PURCHASE_CATEGORY_ID);
     });
+    (data[BRANCH_COST_TRANSFER_COLLECTION] || [])
+        .filter(inMonth)
+        .filter((item) => String(item.status || 'activo').toLowerCase() !== 'anulado')
+        .forEach((item) => {
+            const amount = accountingAmount(item);
+            if (!amount) return;
+
+            const categoryRecord = {
+                ...item,
+                category: item.category || item.categoria || 'Costos de venta / compras',
+                categoria: item.category || item.categoria || 'Costos de venta / compras',
+                subcategory: item.subcategory || item.subcategoria || 'Otros costos de producto',
+                subcategoria: item.subcategory || item.subcategoria || 'Otros costos de producto',
+                expenseCategory: item.category || item.categoria || 'Costos de venta / compras',
+                expenseSubcategory: item.subcategory || item.subcategoria || 'Otros costos de producto',
+            };
+
+            if (branchScope === CONSOLIDATED_BRANCH_ID) return;
+
+            const fromBranchId = resolveBranchId(item.fromBranchId || item.branchFrom || item.originBranchId || DEFAULT_BRANCH_ID);
+            const toBranchId = resolveBranchId(item.toBranchId || item.branchTo || item.targetBranchId || DEFAULT_BRANCH_ID);
+            const signedAmount = fromBranchId === branchScope ? -amount : toBranchId === branchScope ? amount : 0;
+            if (!signedAmount) return;
+
+            purchaseSubtotal += signedAmount;
+            addCategoryAmount(purchaseCategoryTree, {
+                ...categoryRecord,
+                amount: signedAmount,
+                monto: signedAmount,
+                transferDirection: signedAmount > 0 ? 'entrada' : 'salida',
+            }, signedAmount, DEFAULT_PURCHASE_CATEGORY_ID);
+        });
     const stampedInvoiceTotal = sumBy(stampedInvoiceRows, 'total');
     const grossProfit = salesSubtotal - purchaseSubtotal;
     const operatingProfit = grossProfit - operatingExpenseSubtotal;
@@ -1816,8 +1906,8 @@ export default function Reports({ data, branchContext }) {
         }
     }, [allowedBranchIds, branchContext?.selectedBranchId, branchScope]);
 
-    const aggregatedData = useMemo(() => aggregateData(scopedData), [scopedData]);
-    const taxReport = useMemo(() => buildTaxReport(scopedData, selectedMonth), [scopedData, selectedMonth]);
+    const aggregatedData = useMemo(() => aggregateData(scopedData, branchScope), [scopedData, branchScope]);
+    const taxReport = useMemo(() => buildTaxReport(scopedData, selectedMonth, branchScope), [scopedData, selectedMonth, branchScope]);
 
     const availableMonths = useMemo(() => {
         const fiscalMonths = [
@@ -1825,6 +1915,7 @@ export default function Reports({ data, branchContext }) {
             ...(scopedData.compras || []),
             ...(scopedData.gastos || []),
             ...(scopedData.facturas_membretadas_ventas || []),
+            ...(scopedData[BRANCH_COST_TRANSFER_COLLECTION] || []),
         ].map(getDocMonth).filter(Boolean);
         const months = [...new Set([...aggregatedData.map(d => d.month), ...fiscalMonths])];
         return months.sort((a, b) => b.localeCompare(a));
