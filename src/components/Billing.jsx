@@ -1910,6 +1910,9 @@ const STAMPED_PRINT_LAYOUT_DOC = 'factura_membretada_preimpresa';
 const CASH_RECEIPT_PRINT_LAYOUT_DOC = 'recibo_caja_preimpreso';
 const DEFAULT_PRINT_TEMPLATE_ID = 'principal';
 const DEFAULT_PRINT_TEMPLATE_NAME = 'Plantilla principal';
+const STAMPED_FINAL_PRINT_TEMPLATE_NAME = 'factura membre final';
+const NEW_STAMPED_PRINT_TEMPLATE_ID = 'nueva_facturas';
+const NEW_STAMPED_PRINT_TEMPLATE_NAME = 'NUEVA FACTURAS';
 
 const DEFAULT_STAMPED_PRINT_LAYOUT = {
     pageWidthCm: 17.8,
@@ -1937,6 +1940,38 @@ const DEFAULT_STAMPED_PRINT_LAYOUT = {
     iva: { x: 15.35, y: 16.28, width: 1.7 },
     total: { x: 15.35, y: 17.28, width: 1.7 },
 };
+
+const NEW_STAMPED_PRINT_LAYOUT = {
+    pageWidthCm: 21.59,
+    pageHeightCm: 13.97,
+    fontSizePt: 8.5,
+    itemFontSizePt: 7.2,
+    date: { x: 16.15, y: 3.03, width: 3.35 },
+    customerName: { x: 4.18, y: 3.02, width: 9.95 },
+    customerAddress: { x: 4.52, y: 3.75, width: 9.4 },
+    customerRfc: { x: 15.15, y: 3.72, width: 4.1 },
+    items: {
+        quantityX: 0.55,
+        descriptionX: 3.65,
+        unitPriceX: 16.1,
+        totalX: 18.75,
+        y: 4.9,
+        rowHeight: 0.37,
+        quantityWidth: 2.35,
+        descriptionWidth: 11.55,
+        unitPriceWidth: 2.05,
+        totalWidth: 2.05,
+        maxRows: 13,
+    },
+    subtotal: { x: 18.35, y: 10.55, width: 2.35 },
+    iva: { x: 18.35, y: 11.35, width: 2.35 },
+    total: { x: 18.35, y: 12.18, width: 2.35 },
+};
+
+const DEFAULT_STAMPED_PRINT_TEMPLATES = [
+    { id: DEFAULT_PRINT_TEMPLATE_ID, name: STAMPED_FINAL_PRINT_TEMPLATE_NAME, layout: DEFAULT_STAMPED_PRINT_LAYOUT },
+    { id: NEW_STAMPED_PRINT_TEMPLATE_ID, name: NEW_STAMPED_PRINT_TEMPLATE_NAME, layout: NEW_STAMPED_PRINT_LAYOUT },
+];
 
 const PRINT_LAYOUT_FIELDS = [
     { key: 'date', label: 'Fecha' },
@@ -2010,7 +2045,7 @@ const createPrintTemplateId = (name = '') => (
 
 const normalizePrintTemplate = (template = {}, fallbackIndex = 0) => ({
     id: template.id || (fallbackIndex === 0 ? DEFAULT_PRINT_TEMPLATE_ID : createPrintTemplateId(template.name || template.nombre || `Plantilla ${fallbackIndex + 1}`)),
-    name: template.name || template.nombre || (fallbackIndex === 0 ? DEFAULT_PRINT_TEMPLATE_NAME : `Plantilla ${fallbackIndex + 1}`),
+    name: template.name || template.nombre || (fallbackIndex === 0 ? STAMPED_FINAL_PRINT_TEMPLATE_NAME : `Plantilla ${fallbackIndex + 1}`),
     layout: mergePrintLayout(template.layout || template),
 });
 
@@ -2020,25 +2055,50 @@ const normalizeCashReceiptPrintTemplate = (template = {}, fallbackIndex = 0) => 
     layout: mergeCashReceiptPrintLayout(template.layout || template),
 });
 
+const ensureStampedPrintTemplates = (templates = []) => {
+    const normalizedTemplates = (templates.length > 0 ? templates : DEFAULT_STAMPED_PRINT_TEMPLATES)
+        .map((template, index) => normalizePrintTemplate(template, index))
+        .map((template) => {
+            const isLegacyMainTemplate = template.id === DEFAULT_PRINT_TEMPLATE_ID
+                && normalizeText(template.name) === normalizeText(DEFAULT_PRINT_TEMPLATE_NAME);
+            return isLegacyMainTemplate
+                ? { ...template, name: STAMPED_FINAL_PRINT_TEMPLATE_NAME }
+                : template;
+        });
+
+    const hasFinalTemplate = normalizedTemplates.some((template) => template.id === DEFAULT_PRINT_TEMPLATE_ID);
+    const hasNewTemplate = normalizedTemplates.some((template) => (
+        template.id === NEW_STAMPED_PRINT_TEMPLATE_ID
+        || normalizeText(template.name) === normalizeText(NEW_STAMPED_PRINT_TEMPLATE_NAME)
+    ));
+
+    const nextTemplates = [...normalizedTemplates];
+    if (!hasFinalTemplate) {
+        nextTemplates.unshift(normalizePrintTemplate(DEFAULT_STAMPED_PRINT_TEMPLATES[0], 0));
+    }
+    if (!hasNewTemplate) {
+        nextTemplates.push(normalizePrintTemplate(DEFAULT_STAMPED_PRINT_TEMPLATES[1], nextTemplates.length));
+    }
+    return nextTemplates;
+};
+
 const readPrintTemplates = (config = {}) => {
     if (Array.isArray(config.templates) && config.templates.length > 0) {
-        return config.templates.map(normalizePrintTemplate);
+        return ensureStampedPrintTemplates(config.templates);
     }
 
     if (config.templates && typeof config.templates === 'object') {
         const templates = Object.entries(config.templates).map(([id, template], index) => (
             normalizePrintTemplate({ ...(template || {}), id }, index)
         ));
-        if (templates.length > 0) return templates;
+        if (templates.length > 0) return ensureStampedPrintTemplates(templates);
     }
 
-    return [
-        normalizePrintTemplate({
-            id: DEFAULT_PRINT_TEMPLATE_ID,
-            name: DEFAULT_PRINT_TEMPLATE_NAME,
-            layout: config.layout || config,
-        }, 0),
-    ];
+    return ensureStampedPrintTemplates([{
+        id: DEFAULT_PRINT_TEMPLATE_ID,
+        name: STAMPED_FINAL_PRINT_TEMPLATE_NAME,
+        layout: config.layout || config,
+    }]);
 };
 
 const readCashReceiptPrintTemplates = (config = {}) => {
@@ -4253,6 +4313,11 @@ const PrintText = ({ field, layout, children, align = 'left', mono = false, clas
 const StampedInvoicePrintSheet = ({ invoice, layout }) => {
     const itemsLayout = layout.items || DEFAULT_STAMPED_PRINT_LAYOUT.items;
     const items = (invoice?.items || []).slice(0, Number(itemsLayout.maxRows || 15));
+    const guideLeft = safeNumber(itemsLayout.quantityX);
+    const guideTop = Math.max(safeNumber(itemsLayout.y) - 0.25, 0);
+    const guideRight = safeNumber(itemsLayout.totalX) + safeNumber(itemsLayout.totalWidth);
+    const guideWidth = Math.max(guideRight - guideLeft, 1);
+    const guideHeight = Math.max((safeNumber(itemsLayout.rowHeight || 0.47) * safeNumber(itemsLayout.maxRows || 15)) + 0.5, 1);
 
     return (
         <div
@@ -4260,7 +4325,10 @@ const StampedInvoicePrintSheet = ({ invoice, layout }) => {
             style={{ width: cm(layout.pageWidthCm), height: cm(layout.pageHeightCm) }}
         >
             <div className="stamped-invoice-screen-guide absolute inset-0 bg-[linear-gradient(rgba(15,23,42,0.05)_1px,transparent_1px),linear-gradient(90deg,rgba(15,23,42,0.05)_1px,transparent_1px)] bg-[size:0.5cm_0.5cm]" />
-            <div className="stamped-invoice-screen-guide absolute left-[0.45cm] top-[6.1cm] h-[7.9cm] w-[16.9cm] rounded-sm border border-dashed border-red-300" />
+            <div
+                className="stamped-invoice-screen-guide absolute rounded-sm border border-dashed border-red-300"
+                style={{ left: cm(guideLeft), top: cm(guideTop), width: cm(guideWidth), height: cm(guideHeight) }}
+            />
 
             <PrintText field={layout.customerName} layout={layout}>{invoice.customerName || invoice.cliente || ''}</PrintText>
             <PrintText field={layout.customerAddress} layout={layout}>{invoice.customerAddress || invoice.address || ''}</PrintText>
@@ -4308,6 +4376,9 @@ const StampedInvoicePrintModal = ({
     onClose,
 }) => {
     if (!invoice) return null;
+    const layoutWidth = safeNumber(layout.pageWidthCm) || DEFAULT_STAMPED_PRINT_LAYOUT.pageWidthCm;
+    const layoutHeight = safeNumber(layout.pageHeightCm) || DEFAULT_STAMPED_PRINT_LAYOUT.pageHeightCm;
+    const paperLabel = `${formatInvoiceMoney(layoutWidth).replace(',00', '')} x ${formatInvoiceMoney(layoutHeight).replace(',00', '')} cm`;
 
     const updateField = (fieldKey, prop, value) => {
         onLayoutChange(mergePrintLayout({
@@ -4367,7 +4438,7 @@ const StampedInvoicePrintModal = ({
             <div className="w-full max-w-7xl rounded-[2rem] border border-white/10 bg-slate-50 shadow-2xl">
                 <div className="no-print flex flex-col gap-3 border-b border-slate-200 bg-slate-950 px-5 py-4 text-white sm:flex-row sm:items-center sm:justify-between">
                     <div>
-                        <div className="text-[10px] font-black uppercase tracking-[0.28em] text-red-300">Formato preimpreso 17.8 x 22.3 cm</div>
+                        <div className="text-[10px] font-black uppercase tracking-[0.28em] text-red-300">Formato preimpreso {paperLabel}</div>
                         <h3 className="text-xl font-black">Imprimir factura {invoice.invoiceNumber || invoice.numeroFactura || '-'}</h3>
                     </div>
                     <div className="flex flex-wrap gap-2">
@@ -4410,6 +4481,12 @@ const StampedInvoicePrintModal = ({
                         <div className="rounded-3xl border border-slate-200 bg-white p-4">
                             <div className="text-sm font-black text-slate-950">Ajuste general</div>
                             <div className="mt-3 grid grid-cols-2 gap-3">
+                                <Field label="Ancho cm">
+                                    <input className={inputClass} type="number" step="0.01" value={layout.pageWidthCm} onChange={(event) => onLayoutChange(mergePrintLayout({ ...layout, pageWidthCm: Number(event.target.value) }))} />
+                                </Field>
+                                <Field label="Alto cm">
+                                    <input className={inputClass} type="number" step="0.01" value={layout.pageHeightCm} onChange={(event) => onLayoutChange(mergePrintLayout({ ...layout, pageHeightCm: Number(event.target.value) }))} />
+                                </Field>
                                 <Field label="Fuente datos">
                                     <input className={inputClass} type="number" step="0.5" value={layout.fontSizePt} onChange={(event) => onLayoutChange({ ...layout, fontSizePt: Number(event.target.value) })} />
                                 </Field>
@@ -4465,15 +4542,15 @@ const StampedInvoicePrintModal = ({
 
                 <style>{`
                     @media print {
-                        @page { size: 17.8cm 22.3cm; margin: 0; }
+                        @page { size: ${cm(layoutWidth)} ${cm(layoutHeight)}; margin: 0; }
                         body.print-stamped-invoice-overlay * { visibility: hidden !important; }
                         body.print-stamped-invoice-overlay .stamped-invoice-print-area,
                         body.print-stamped-invoice-overlay .stamped-invoice-print-area * { visibility: visible !important; }
                         body.print-stamped-invoice-overlay .stamped-invoice-print-area {
                             position: absolute !important;
                             inset: 0 auto auto 0 !important;
-                            width: 17.8cm !important;
-                            height: 22.3cm !important;
+                            width: ${cm(layoutWidth)} !important;
+                            height: ${cm(layoutHeight)} !important;
                             overflow: hidden !important;
                             border: 0 !important;
                             border-radius: 0 !important;
@@ -4481,8 +4558,8 @@ const StampedInvoicePrintModal = ({
                             padding: 0 !important;
                         }
                         body.print-stamped-invoice-overlay .stamped-invoice-print-sheet {
-                            width: 17.8cm !important;
-                            height: 22.3cm !important;
+                            width: ${cm(layoutWidth)} !important;
+                            height: ${cm(layoutHeight)} !important;
                             margin: 0 !important;
                             box-shadow: none !important;
                             border: 0 !important;
@@ -4950,11 +5027,9 @@ const CashReceiptEditModal = ({
 
 function useStampedPrintTemplates(setMessage = () => {}) {
     const [printLayout, setPrintLayout] = useState(DEFAULT_STAMPED_PRINT_LAYOUT);
-    const [printTemplates, setPrintTemplates] = useState([
-        { id: DEFAULT_PRINT_TEMPLATE_ID, name: DEFAULT_PRINT_TEMPLATE_NAME, layout: DEFAULT_STAMPED_PRINT_LAYOUT },
-    ]);
+    const [printTemplates, setPrintTemplates] = useState(() => ensureStampedPrintTemplates(DEFAULT_STAMPED_PRINT_TEMPLATES));
     const [activePrintTemplateId, setActivePrintTemplateId] = useState(DEFAULT_PRINT_TEMPLATE_ID);
-    const [printTemplateName, setPrintTemplateName] = useState(DEFAULT_PRINT_TEMPLATE_NAME);
+    const [printTemplateName, setPrintTemplateName] = useState(STAMPED_FINAL_PRINT_TEMPLATE_NAME);
 
     useEffect(() => {
         let mounted = true;
@@ -4987,7 +5062,7 @@ function useStampedPrintTemplates(setMessage = () => {}) {
         setPrintTemplates(normalizedTemplates);
         setActivePrintTemplateId(selectedTemplateId);
         const selected = normalizedTemplates.find((template) => template.id === selectedTemplateId) || normalizedTemplates[0];
-        setPrintTemplateName(selected?.name || DEFAULT_PRINT_TEMPLATE_NAME);
+        setPrintTemplateName(selected?.name || STAMPED_FINAL_PRINT_TEMPLATE_NAME);
         setPrintLayout(mergePrintLayout(selected?.layout || printLayout));
         setMessage(successMessage);
     };
@@ -5001,7 +5076,7 @@ function useStampedPrintTemplates(setMessage = () => {}) {
     };
 
     const savePrintLayout = async () => {
-        const name = String(printTemplateName || '').trim() || DEFAULT_PRINT_TEMPLATE_NAME;
+        const name = String(printTemplateName || '').trim() || STAMPED_FINAL_PRINT_TEMPLATE_NAME;
         const templateId = activePrintTemplateId || DEFAULT_PRINT_TEMPLATE_ID;
         const nextTemplates = printTemplates.map((template) => (
             template.id === templateId
