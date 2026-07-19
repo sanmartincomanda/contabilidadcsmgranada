@@ -106,6 +106,12 @@ body::before {
   min-height: calc(100vh - 5rem);
 }
 
+@media (max-width: 1023px) {
+  .app-route-shell {
+    padding-bottom: calc(6.75rem + env(safe-area-inset-bottom)) !important;
+  }
+}
+
 .app-route-shell::before {
   content: "";
   position: absolute;

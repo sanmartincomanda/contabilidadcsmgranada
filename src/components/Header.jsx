@@ -115,6 +115,15 @@ export default function Header({
         setMobileOpen(false);
     }, [location.pathname, location.search]);
 
+    useEffect(() => {
+        if (!mobileOpen) return undefined;
+        const previousOverflow = document.body.style.overflow;
+        document.body.style.overflow = 'hidden';
+        return () => {
+            document.body.style.overflow = previousOverflow;
+        };
+    }, [mobileOpen]);
+
     const procurementHints = useMemo(() => ([
         canAccess('caja_chica') && { label: 'Caja Chica', to: '/gastos-diarios' },
         canAccess('cuentas_pagar') && { label: 'Cuentas por Pagar', to: '/cuentas-pagar' },
@@ -287,6 +296,7 @@ export default function Header({
                 <div className={`rounded-2xl p-2 transition ${active ? 'bg-white/[0.08]' : 'bg-white/[0.03]'}`}>
                     <Link
                         to={item.to}
+                        onClick={() => setMobileOpen(false)}
                         className={`flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-black transition ${
                             active ? 'bg-white text-slate-950' : 'text-white/[0.84] hover:bg-white/10 hover:text-white'
                         }`}
@@ -301,6 +311,7 @@ export default function Header({
                                 <Link
                                     key={option.label}
                                     to={option.to || item.to}
+                                    onClick={() => setMobileOpen(false)}
                                     className="rounded-xl px-10 py-2 text-xs font-bold text-white/[0.72] transition hover:bg-white/[0.08] hover:text-white"
                                 >
                                     {option.label}
@@ -315,6 +326,7 @@ export default function Header({
         return (
             <Link
                 to={item.to}
+                onClick={() => setMobileOpen(false)}
                 className={`flex items-center gap-3 rounded-2xl px-4 py-3 text-sm font-black transition ${
                     active ? 'bg-white text-slate-950' : 'text-white/[0.84] hover:bg-white/10 hover:text-white'
                 }`}
@@ -324,6 +336,46 @@ export default function Header({
             </Link>
         );
     };
+
+    const MobileBottomButton = ({ item }) => {
+        const active = item.action === 'menu' ? mobileOpen : isItemActive(item);
+        const content = (
+            <>
+                <span className={`grid h-8 w-8 place-items-center rounded-2xl transition ${
+                    active ? 'bg-[#f5b51b] text-slate-950' : 'bg-white/[0.08] text-white/80'
+                }`}>
+                    <Icon path={Icons[item.icon]} className="h-4 w-4" />
+                </span>
+                <span className={`text-[10px] font-black leading-none ${active ? 'text-[#f5b51b]' : 'text-white/70'}`}>
+                    {item.shortLabel || item.label}
+                </span>
+            </>
+        );
+
+        const baseClass = 'flex min-w-0 flex-1 flex-col items-center justify-center gap-1 rounded-2xl px-1 py-1.5 transition hover:bg-white/[0.06] focus:outline-none focus:ring-2 focus:ring-[#f5b51b]/60 active:scale-95';
+
+        if (item.action === 'menu') {
+            return (
+                <button type="button" onClick={() => setMobileOpen((value) => !value)} className={baseClass} aria-label="Abrir menu">
+                    {content}
+                </button>
+            );
+        }
+
+        return (
+            <Link to={item.to} onClick={() => setMobileOpen(false)} className={baseClass} aria-label={item.label}>
+                {content}
+            </Link>
+        );
+    };
+
+    const mobileBottomItems = [
+        canAccess('dashboard') && { key: 'inicio', label: 'Inicio', shortLabel: 'Inicio', icon: 'home', to: '/' },
+        canAccess('ingresar') && { key: 'ingresar', label: 'Ingresar', shortLabel: 'Ingresar', icon: 'plus', to: '/ingresar' },
+        procurementHints.length && { key: 'compras', label: 'Compras', shortLabel: 'Compras', icon: 'cart', to: procurementHints[0].to, activePaths: ['/gastos-diarios', '/cuentas-pagar', '/traspasos-costos'] },
+        canAccess('facturacion') && { key: 'facturacion', label: 'Facturacion', shortLabel: 'Fact.', icon: 'receipt', to: '/facturacion?tab=cierre' },
+        { key: 'mas', label: 'Menu', shortLabel: 'Menu', icon: mobileOpen ? 'x' : 'menu', action: 'menu', to: location.pathname },
+    ].filter(Boolean).slice(0, 5);
 
     return (
         <>
@@ -392,60 +444,111 @@ export default function Header({
                     </div>
                 </nav>
 
-                <AnimatePresence>
-                    {mobileOpen && user && (
-                        <motion.div
-                            initial={{ opacity: 0, height: 0 }}
-                            animate={{ opacity: 1, height: 'auto' }}
-                            exit={{ opacity: 0, height: 0 }}
-                            transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
-                            className="overflow-hidden border-t border-white/10 bg-slate-950/[0.98] backdrop-blur-xl lg:hidden"
+            </motion.header>
+            <AnimatePresence>
+                {mobileOpen && user && (
+                    <motion.div
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        exit={{ opacity: 0 }}
+                        transition={{ duration: 0.18 }}
+                        className="fixed inset-0 z-[60] bg-slate-950/60 backdrop-blur-sm lg:hidden"
+                        onClick={() => setMobileOpen(false)}
+                    >
+                        <motion.aside
+                            initial={{ y: '100%' }}
+                            animate={{ y: 0 }}
+                            exit={{ y: '100%' }}
+                            transition={{ duration: 0.24, ease: [0.22, 1, 0.36, 1] }}
+                            className="absolute inset-x-0 bottom-0 max-h-[88vh] overflow-hidden rounded-t-[2rem] border border-white/10 bg-slate-950 text-white shadow-2xl shadow-black/40"
+                            onClick={(event) => event.stopPropagation()}
+                            role="dialog"
+                            aria-modal="true"
+                            aria-label="Menu movil"
                         >
-                            <div className="space-y-3 px-3 pb-4 pt-3">
+                            <div className="sticky top-0 z-10 border-b border-white/10 bg-slate-950/95 px-4 pb-3 pt-4 backdrop-blur-xl">
+                                <div className="mx-auto mb-3 h-1.5 w-12 rounded-full bg-white/20" />
+                                <div className="flex items-center justify-between gap-3">
+                                    <div className="min-w-0">
+                                        <div className="text-[10px] font-black uppercase tracking-[0.28em] text-[#f5b51b]">Menu operativo</div>
+                                        <div className="mt-1 truncate text-lg font-black">{APP_BRAND_WORDMARK_BOTTOM}</div>
+                                    </div>
+                                    <button
+                                        type="button"
+                                        onClick={() => setMobileOpen(false)}
+                                        className="grid h-11 w-11 shrink-0 place-items-center rounded-2xl border border-white/10 bg-white/[0.08] text-white transition hover:bg-white/[0.14] focus:outline-none focus:ring-2 focus:ring-[#f5b51b]/60"
+                                        aria-label="Cerrar menu"
+                                    >
+                                        <Icon path={Icons.x} className="h-5 w-5" />
+                                    </button>
+                                </div>
+                            </div>
+
+                            <div className="max-h-[calc(88vh-6rem)] overflow-y-auto px-4 pb-[calc(6rem+env(safe-area-inset-bottom))] pt-4">
                                 <div className="rounded-3xl border border-white/10 bg-white/[0.06] p-4">
-                                    <div className="text-xs font-black text-white">{user.email}</div>
-                                    <div className="mt-1 text-[10px] font-black uppercase tracking-[0.28em] text-[#f5b51b]">{APP_BRAND_NAME}</div>
+                                    <div className="flex items-center gap-3">
+                                        <span className="grid h-11 w-11 shrink-0 place-items-center rounded-2xl bg-white/10 text-white">
+                                            <Icon path={Icons.user} />
+                                        </span>
+                                        <span className="min-w-0">
+                                            <span className="block truncate text-sm font-black text-white">{user.email?.split('@')[0]}</span>
+                                            <span className="block truncate text-[11px] font-semibold text-white/60">{user.email}</span>
+                                        </span>
+                                    </div>
                                     <div className="mt-3">
                                         <BranchSwitcher compact />
                                     </div>
                                 </div>
 
                                 {canAccess('ingresar') && (
-                                    <div className="rounded-3xl border border-white/10 bg-white/[0.04] p-2">
-                                        <div className="px-2 pb-2 text-[10px] font-black uppercase tracking-[0.28em] text-[#f5b51b]">Ingresar Datos</div>
-                                        <div className="grid gap-1 sm:grid-cols-2">
+                                    <section className="mt-4 rounded-3xl border border-white/10 bg-white/[0.04] p-3">
+                                        <div className="mb-2 px-1 text-[10px] font-black uppercase tracking-[0.28em] text-[#f5b51b]">Ingresar Datos</div>
+                                        <div className="grid grid-cols-2 gap-2">
                                             {visibleEntryTabs.map((item) => (
-                                                <button key={item.tab} type="button" onClick={() => goToEntry(item.tab)} className="flex items-center gap-3 rounded-2xl px-3 py-3 text-left text-sm font-black text-white/[0.84] transition hover:bg-white/10 hover:text-white">
-                                                    <span className={`grid h-9 w-9 place-items-center rounded-xl ${item.tone}`}>
+                                                <button
+                                                    key={item.tab}
+                                                    type="button"
+                                                    onClick={() => goToEntry(item.tab)}
+                                                    className="min-h-[5.7rem] rounded-2xl border border-white/10 bg-white/[0.05] p-3 text-left transition hover:bg-white/[0.10] focus:outline-none focus:ring-2 focus:ring-[#f5b51b]/60 active:scale-[0.98]"
+                                                >
+                                                    <span className={`mb-2 grid h-9 w-9 place-items-center rounded-xl ${item.tone}`}>
                                                         <Icon path={Icons[item.icon]} />
                                                     </span>
-                                                    <span>
-                                                        <span className="block">{item.label}</span>
-                                                        <span className="block text-[10px] font-semibold text-white/[0.58]">{item.hint}</span>
-                                                    </span>
+                                                    <span className="block text-sm font-black text-white">{item.label}</span>
+                                                    <span className="mt-0.5 block text-[10px] font-semibold leading-4 text-white/55">{item.hint}</span>
                                                 </button>
                                             ))}
                                         </div>
-                                    </div>
+                                    </section>
                                 )}
 
-                                <div className="grid gap-1 sm:grid-cols-2">
-                                    {primaryItems.map((item) => <MobileItem key={item.key} item={item} />)}
-                                </div>
+                                <section className="mt-4 rounded-3xl border border-white/10 bg-white/[0.04] p-3">
+                                    <div className="mb-2 px-1 text-[10px] font-black uppercase tracking-[0.28em] text-[#f5b51b]">Modulos</div>
+                                    <div className="grid gap-2">
+                                        {primaryItems.map((item) => <MobileItem key={item.key} item={item} />)}
+                                    </div>
+                                </section>
 
                                 <button
                                     type="button"
                                     onClick={handleLogout}
-                                    className="flex w-full items-center justify-center gap-2 rounded-2xl border border-red-300/20 bg-red-500/[0.12] px-4 py-3 text-sm font-black uppercase tracking-[0.18em] text-red-100 transition hover:bg-red-500/[0.22]"
+                                    className="mt-4 flex w-full items-center justify-center gap-2 rounded-2xl border border-red-300/20 bg-red-500/[0.12] px-4 py-3 text-sm font-black uppercase tracking-[0.18em] text-red-100 transition hover:bg-red-500/[0.22] focus:outline-none focus:ring-2 focus:ring-red-300/60"
                                 >
                                     <Icon path={Icons.logout} />
                                     Cerrar sesion
                                 </button>
                             </div>
-                        </motion.div>
-                    )}
-                </AnimatePresence>
-            </motion.header>
+                        </motion.aside>
+                    </motion.div>
+                )}
+            </AnimatePresence>
+            {user && mobileBottomItems.length > 0 && (
+                <nav className="fixed inset-x-0 bottom-0 z-50 px-2 pb-[calc(0.45rem+env(safe-area-inset-bottom))] pt-2 lg:hidden" aria-label="Navegacion movil principal">
+                    <div className="mx-auto flex max-w-md gap-1 rounded-[1.65rem] border border-white/10 bg-slate-950/95 p-1.5 shadow-2xl shadow-slate-950/35 backdrop-blur-xl">
+                        {mobileBottomItems.map((item) => <MobileBottomButton key={item.key} item={item} />)}
+                    </div>
+                </nav>
+            )}
             <div className="h-16" />
         </>
     );
