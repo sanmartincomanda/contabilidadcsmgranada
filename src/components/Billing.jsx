@@ -53,6 +53,7 @@ const CASH_CLOSURE_EXCHANGE_RATE = 36.50;
 const TRANSFER_USD_EXCHANGE_RATE = 36.62;
 const CASH_CLOSURE_EDIT_PIN = '210397';
 const SICAR_CASH_CLOSURE_AVAILABLE_FROM_DATE = '2026-06-14';
+const SICAR_PENDING_INVOICE_LOOKBACK_DAYS = 3;
 const CASH_CLOSURE_POSITIVE_RC_THRESHOLD = 0.009;
 const CASH_CLOSURE_POSITIVE_RC_MESSAGE = 'NO SE PUEDE REALIZAR CONCILIACION Y CIERRE DE CAJA PORQUE RC ES POSITIVO.';
 
@@ -176,6 +177,15 @@ const todayString = () => {
     const month = String(date.getMonth() + 1).padStart(2, '0');
     const day = String(date.getDate()).padStart(2, '0');
     return `${date.getFullYear()}-${month}-${day}`;
+};
+
+const shiftDateString = (dateString, offsetDays = 0) => {
+    const [year, month, day] = String(dateString || todayString()).split('-').map(Number);
+    const date = new Date(year, (month || 1) - 1, day || 1);
+    date.setDate(date.getDate() + offsetDays);
+    const safeMonth = String(date.getMonth() + 1).padStart(2, '0');
+    const safeDay = String(date.getDate()).padStart(2, '0');
+    return `${date.getFullYear()}-${safeMonth}-${safeDay}`;
 };
 
 const normalizeText = (value = '') => (
@@ -6131,6 +6141,11 @@ function CashReceiptHistory({ data, canEdit = true, branchContext }) {
 
 function StampedInvoices({ data, branchContext }) {
     const todaySicarInvoiceDate = todayString();
+    const sicarInvoiceStartDate = useMemo(
+        () => shiftDateString(todaySicarInvoiceDate, -SICAR_PENDING_INVOICE_LOOKBACK_DAYS),
+        [todaySicarInvoiceDate]
+    );
+    const sicarInvoiceDateRangeLabel = `${sicarInvoiceStartDate} al ${todaySicarInvoiceDate}`;
     const selectedBranchId = getActiveBillingBranchId(branchContext);
     const invoiceBranchPayload = useMemo(() => getBranchPayload(selectedBranchId, 'invoice'), [selectedBranchId]);
     const savedInvoices = useMemo(() => (
@@ -6152,10 +6167,13 @@ function StampedInvoices({ data, branchContext }) {
                 ...getBranchPayload(getRecordBranchId(item)),
             }))
             .filter((invoice) => isRecordInBillingBranch(invoice, selectedBranchId))
-            .filter((invoice) => String(invoice.date || '').substring(0, 10) === todaySicarInvoiceDate)
+            .filter((invoice) => {
+                const invoiceDate = String(invoice.date || '').substring(0, 10);
+                return invoiceDate >= sicarInvoiceStartDate && invoiceDate <= todaySicarInvoiceDate;
+            })
             .filter((invoice) => isSicarInvoicePendingAccounting(invoice, loadedInvoiceIndex))
             .sort((a, b) => String(b.date).localeCompare(String(a.date)))
-    ), [data.sicar_facturas_membretadas, loadedInvoiceIndex, selectedBranchId, todaySicarInvoiceDate]);
+    ), [data.sicar_facturas_membretadas, loadedInvoiceIndex, selectedBranchId, sicarInvoiceStartDate, todaySicarInvoiceDate]);
 
     const clients = useMemo(() => (
         [...(data.clientes_facturacion || [])]
@@ -6772,7 +6790,7 @@ function StampedInvoices({ data, branchContext }) {
 
             {entryMode === 'sicar' ? (
             <div className="space-y-5">
-                <Section title="Facturas SICAR para cargar" eyebrow={`Pendientes de hoy ${todaySicarInvoiceDate}`} action={<Badge tone="blue">{sicarInvoices.length} pendientes</Badge>}>
+                <Section title="Facturas SICAR para cargar" eyebrow={`Pendientes ${sicarInvoiceDateRangeLabel}`} action={<Badge tone="blue">{sicarInvoices.length} pendientes</Badge>}>
                     <div className="space-y-3">
                         <SearchBox
                             value={sicarInvoiceSearch}
@@ -6784,7 +6802,7 @@ function StampedInvoices({ data, branchContext }) {
                     <div className="mt-3 space-y-2">
                         {sicarInvoices.length === 0 ? (
                             <div className="rounded-3xl border border-dashed border-slate-300 p-8 text-center text-sm font-bold text-slate-400">
-                                No hay facturas SICAR pendientes por cargar para hoy.
+                                No hay facturas SICAR pendientes por cargar del {sicarInvoiceDateRangeLabel}.
                             </div>
                         ) : filteredSicarInvoices.length === 0 ? (
                             <div className="rounded-3xl border border-dashed border-slate-300 p-8 text-center text-sm font-bold text-slate-400">
