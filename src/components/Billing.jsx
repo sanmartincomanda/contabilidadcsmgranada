@@ -712,6 +712,17 @@ const isSicarInvoicePendingAccounting = (invoice = {}, loadedIndex = buildLoaded
     return true;
 };
 
+const compareSicarPendingInvoices = (a = {}, b = {}) => {
+    const dateCompare = String(b.date || '').localeCompare(String(a.date || ''));
+    if (dateCompare !== 0) return dateCompare;
+
+    const numberA = Number(String(a.invoiceNumber || a.numeroFactura || a.folio || '').replace(/\D/g, ''));
+    const numberB = Number(String(b.invoiceNumber || b.numeroFactura || b.folio || '').replace(/\D/g, ''));
+    if (Number.isFinite(numberA) && Number.isFinite(numberB) && numberA !== numberB) return numberB - numberA;
+
+    return safeNumber(b.facId || b.sourceRecordId) - safeNumber(a.facId || a.sourceRecordId);
+};
+
 const normalizeStampedInvoiceRecord = (item = {}) => ({
     ...item,
     date: item.saleDate || item.date || '',
@@ -6147,6 +6158,7 @@ function StampedInvoices({ data, branchContext }) {
     );
     const sicarInvoiceDateRangeLabel = `${sicarInvoiceStartDate} al ${todaySicarInvoiceDate}`;
     const selectedBranchId = getActiveBillingBranchId(branchContext);
+    const selectedBranch = getBranchById(selectedBranchId);
     const invoiceBranchPayload = useMemo(() => getBranchPayload(selectedBranchId, 'invoice'), [selectedBranchId]);
     const savedInvoices = useMemo(() => (
         [...(data.facturas_membretadas_ventas || [])]
@@ -6172,7 +6184,7 @@ function StampedInvoices({ data, branchContext }) {
                 return invoiceDate >= sicarInvoiceStartDate && invoiceDate <= todaySicarInvoiceDate;
             })
             .filter((invoice) => isSicarInvoicePendingAccounting(invoice, loadedInvoiceIndex))
-            .sort((a, b) => String(b.date).localeCompare(String(a.date)))
+            .sort(compareSicarPendingInvoices)
     ), [data.sicar_facturas_membretadas, loadedInvoiceIndex, selectedBranchId, sicarInvoiceStartDate, todaySicarInvoiceDate]);
 
     const clients = useMemo(() => (
@@ -6790,7 +6802,7 @@ function StampedInvoices({ data, branchContext }) {
 
             {entryMode === 'sicar' ? (
             <div className="space-y-5">
-                <Section title="Facturas SICAR para cargar" eyebrow={`Pendientes ${sicarInvoiceDateRangeLabel}`} action={<Badge tone="blue">{sicarInvoices.length} pendientes</Badge>}>
+                <Section title="Facturas SICAR para cargar" eyebrow={`Pendientes ${sicarInvoiceDateRangeLabel} · ${selectedBranch.shortName} Serie ${selectedBranch.invoiceSeries}`} action={<Badge tone="blue">{sicarInvoices.length} pendientes</Badge>}>
                     <div className="space-y-3">
                         <SearchBox
                             value={sicarInvoiceSearch}
@@ -6802,7 +6814,7 @@ function StampedInvoices({ data, branchContext }) {
                     <div className="mt-3 space-y-2">
                         {sicarInvoices.length === 0 ? (
                             <div className="rounded-3xl border border-dashed border-slate-300 p-8 text-center text-sm font-bold text-slate-400">
-                                No hay facturas SICAR pendientes por cargar del {sicarInvoiceDateRangeLabel}.
+                                No hay facturas SICAR pendientes por cargar del {sicarInvoiceDateRangeLabel} para {selectedBranch.shortName}.
                             </div>
                         ) : filteredSicarInvoices.length === 0 ? (
                             <div className="rounded-3xl border border-dashed border-slate-300 p-8 text-center text-sm font-bold text-slate-400">
