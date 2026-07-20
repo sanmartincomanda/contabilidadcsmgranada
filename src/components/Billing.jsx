@@ -4,6 +4,7 @@ import { collection, deleteDoc, doc, getDoc, serverTimestamp, setDoc, writeBatch
 import { db } from '../firebase';
 import { useAuth } from '../context/AuthContext';
 import {
+    ALL_BRANCH_IDS,
     APP_BRAND_NAME,
     BRANCHES,
     CONSOLIDATED_BRANCH_ID,
@@ -284,6 +285,67 @@ const getActiveBillingBranchId = (branchContext = {}) => branchContext?.selected
 const isRecordInBillingBranch = (record = {}, branchId = DEFAULT_BRANCH_ID) => (
     getRecordBranchId(record) === branchId
 );
+
+const getRecordBillingBranchIds = (record = {}) => {
+    const explicitIds = [
+        ...(Array.isArray(record.branchIds) ? record.branchIds : []),
+        ...(Array.isArray(record.branches) ? record.branches : []),
+        ...(Array.isArray(record.sucursales) ? record.sucursales : []),
+    ];
+    const rawIds = explicitIds.length ? explicitIds : [getRecordBranchId(record)];
+
+    return [...new Set(
+        rawIds
+            .map((branchId) => getBranchById(branchId).id)
+            .filter((branchId) => ALL_BRANCH_IDS.includes(branchId))
+    )];
+};
+
+const isRecordInBillingBranches = (record = {}, branchIds = []) => {
+    const allowed = new Set((branchIds || []).map((branchId) => getBranchById(branchId).id));
+    if (!allowed.size) return false;
+    return getRecordBillingBranchIds(record).some((branchId) => allowed.has(branchId));
+};
+
+const getBillingBranchLegend = (record = {}) => {
+    const branch = getBranchById(getRecordBranchId(record));
+    return `Sucursal ${branch.shortName}`;
+};
+
+const buildBankDepositBranchPayload = (branchIds = []) => {
+    const normalizedBranchIds = [...new Set(
+        (branchIds || [])
+            .map((branchId) => getBranchById(branchId).id)
+            .filter((branchId) => ALL_BRANCH_IDS.includes(branchId))
+    )];
+
+    if (normalizedBranchIds.length === 1) {
+        return {
+            ...getBranchPayload(normalizedBranchIds[0]),
+            branchIds: normalizedBranchIds,
+            branchNames: [getBranchById(normalizedBranchIds[0]).name],
+            branchShortNames: [getBranchById(normalizedBranchIds[0]).shortName],
+            isConsolidatedBankDeposit: false,
+        };
+    }
+
+    const safeBranchIds = normalizedBranchIds.length ? normalizedBranchIds : [DEFAULT_BRANCH_ID];
+    return {
+        branch: CONSOLIDATED_BRANCH_ID,
+        branchId: CONSOLIDATED_BRANCH_ID,
+        branchCode: 'CONSOLIDADO',
+        branchName: 'CONSOLIDADO SUCURSALES',
+        sucursal: CONSOLIDATED_BRANCH_ID,
+        sucursalNombre: 'CONSOLIDADO SUCURSALES',
+        invoiceSeries: '',
+        receiptSeries: '',
+        documentSeries: '',
+        branchIds: safeBranchIds,
+        branchNames: safeBranchIds.map((branchId) => getBranchById(branchId).name),
+        branchShortNames: safeBranchIds.map((branchId) => getBranchById(branchId).shortName),
+        isConsolidatedBankDeposit: true,
+    };
+};
 
 const buildBranchScopedFiscalDocId = (prefix = 'doc', branchPayload = {}, number = '', date = todayString()) => (
     `${prefix}_${branchPayload.branchId || DEFAULT_BRANCH_ID}_${branchPayload.documentSeries || branchPayload.invoiceSeries || branchPayload.receiptSeries || 'A'}_${slugify(number)}_${String(date || todayString()).replace(/-/g, '')}`
@@ -11132,7 +11194,7 @@ const getBankDepositClosureCode = (closure = {}) => (
 const getBankDepositClosureLabel = (closure = {}) => {
     const code = getBankDepositClosureCode(closure);
     const date = closure.date || getRecordDate(closure.createdAt || closure.updatedAt);
-    return [code ? `Cierre ${code}` : 'Cierre sin codigo', date].filter(Boolean).join(' - ');
+    return [code ? `Cierre ${code}` : 'Cierre sin codigo', date, getBillingBranchLegend(closure)].filter(Boolean).join(' - ');
 };
 
 const getClosureCashForBankDeposit = (closure = {}) => {
@@ -11149,12 +11211,19 @@ const getClosureCashForBankDeposit = (closure = {}) => {
         : safeNumber(closure.dollarCashTotalCordobas) / exchangeRate;
     const preCloseDollars = safeNumber(preClose.dollars);
     const rcValue = getCashClosureRcDisplayValue(context.detailAccountingSummary || closure.accountingSummary || {});
+    const branchId = getRecordBranchId(closure);
+    const branch = getBranchById(branchId);
 
     return {
         closureId: closure.id || '',
         code: getBankDepositClosureCode(closure),
         label: getBankDepositClosureLabel(closure),
         date: closure.date || getRecordDate(closure.createdAt || closure.updatedAt),
+        branchId,
+        branchCode: branch.code,
+        branchName: branch.name,
+        branchShortName: branch.shortName,
+        branchLegend: `Sucursal ${branch.shortName}`,
         cashierName: closure.cashierName || '',
         cashCordobas: safeNumber(cashCordobasBase + preCloseCordobas),
         cashDollars: safeNumber(cashDollarsBase + preCloseDollars),
@@ -11180,12 +11249,16 @@ const calculateBankDepositAllocation = (closures = []) => {
     const efectivoRcUsdCordobas = safeNumber(Math.min(remainingUsdCordobas, rcTarget));
     const efectivoRcUsd = safeNumber(efectivoRcUsdCordobas / exchangeRate);
     const efectivoRcCordobas = safeNumber(Math.max(rcTarget - efectivoRcUsdCordobas, 0));
+    const branchIds = [...new Set(closureSummaries.map((item) => item.branchId).filter(Boolean))];
 
     return {
         closureSummaries,
         closureIds: closureSummaries.map((item) => item.closureId),
         closureCodes: closureSummaries.map((item) => item.code).filter(Boolean),
         concept: closureSummaries.map((item) => item.label).join(', '),
+        branchIds,
+        branchNames: branchIds.map((branchId) => getBranchById(branchId).name),
+        branchShortNames: branchIds.map((branchId) => getBranchById(branchId).shortName),
         cashCordobas,
         cashDollars,
         cashDollarsCordobas,
@@ -11523,8 +11596,20 @@ const BankDepositHistoryModal = ({ deposit, onClose, onPrint }) => {
 
 function BankDeposits({ data, branchContext }) {
     const { user } = useAuth();
-    const selectedBranchId = getActiveBillingBranchId(branchContext);
-    const branchPayload = useMemo(() => getBranchPayload(selectedBranchId), [selectedBranchId]);
+    const allowedBranchKey = Array.isArray(branchContext?.allowedBranchIds) ? branchContext.allowedBranchIds.join('|') : '';
+    const depositBranchIds = useMemo(() => {
+        const allowedBranchIds = Array.isArray(branchContext?.allowedBranchIds) && branchContext.allowedBranchIds.length
+            ? branchContext.allowedBranchIds
+            : ALL_BRANCH_IDS;
+        return [...new Set(
+            allowedBranchIds
+                .map((branchId) => getBranchById(branchId).id)
+                .filter((branchId) => ALL_BRANCH_IDS.includes(branchId))
+        )];
+    }, [allowedBranchKey, branchContext?.allowedBranchIds]);
+    const depositBranchLabel = useMemo(() => (
+        depositBranchIds.map((branchId) => getBranchById(branchId).shortName).join(' + ') || 'Sucursales'
+    ), [depositBranchIds]);
     const [activeDepositTab, setActiveDepositTab] = useState('ingresar');
     const [activeConfirmationTab, setActiveConfirmationTab] = useState('pendientes');
     const [selectedClosureIds, setSelectedClosureIds] = useState([]);
@@ -11544,9 +11629,9 @@ function BankDeposits({ data, branchContext }) {
 
     const deposits = useMemo(() => (
         [...(data.depositos_bancarios || [])]
-            .filter((deposit) => isRecordInBillingBranch(deposit, selectedBranchId))
+            .filter((deposit) => isRecordInBillingBranches(deposit, depositBranchIds))
             .sort((a, b) => String(b.createdAt?.seconds || b.date || '').localeCompare(String(a.createdAt?.seconds || a.date || '')))
-    ), [data.depositos_bancarios, selectedBranchId]);
+    ), [data.depositos_bancarios, depositBranchIds]);
 
     const depositedClosureIds = useMemo(() => {
         const ids = new Set();
@@ -11559,7 +11644,7 @@ function BankDeposits({ data, branchContext }) {
     const pendingClosures = useMemo(() => (
         [...(data.cierres_caja || [])]
             .filter((closure) => closure.id)
-            .filter((closure) => isRecordInBillingBranch(closure, selectedBranchId))
+            .filter((closure) => isRecordInBillingBranches(closure, depositBranchIds))
             .filter((closure) => !['EN_ESPERA', 'ANULADO'].includes(normalizeText(closure.status)))
             .filter((closure) => String(closure.date || getRecordDate(closure.createdAt || closure.updatedAt) || '').substring(0, 10) >= BANK_DEPOSIT_AVAILABLE_FROM_DATE)
             .filter((closure) => !closure.bankDepositId && !depositedClosureIds.has(closure.id))
@@ -11569,7 +11654,7 @@ function BankDeposits({ data, branchContext }) {
             }))
             .filter((closure) => safeNumber(closure.depositCash.cashCordobas + closure.depositCash.cashDollars * CASH_CLOSURE_EXCHANGE_RATE) > 0.01)
             .sort((a, b) => String(a.date || '').localeCompare(String(b.date || '')))
-    ), [data.cierres_caja, depositedClosureIds, selectedBranchId]);
+    ), [data.cierres_caja, depositedClosureIds, depositBranchIds]);
 
     const selectedClosures = useMemo(() => (
         pendingClosures.filter((closure) => selectedClosureIds.includes(closure.id))
@@ -11652,8 +11737,9 @@ function BankDeposits({ data, branchContext }) {
         setSaving(true);
         try {
             const depositId = `deposito_${todayString()}_${Date.now()}`;
+            const depositBranchPayload = buildBankDepositBranchPayload(allocation.branchIds?.length ? allocation.branchIds : selectedClosures.map((closure) => getRecordBranchId(closure)));
             const depositPayload = sanitizeFirestoreData({
-                ...branchPayload,
+                ...depositBranchPayload,
                 id: depositId,
                 date: todayString(),
                 month: getMonth(todayString()),
@@ -11676,8 +11762,9 @@ function BankDeposits({ data, branchContext }) {
             const batch = writeBatch(db);
             batch.set(doc(db, 'depositos_bancarios', depositId), depositPayload, { merge: true });
             selectedClosures.forEach((closure) => {
+                const closureBranchPayload = getBranchPayload(getRecordBranchId(closure));
                 batch.set(doc(db, 'cierres_caja', closure.id), {
-                    ...branchPayload,
+                    ...closureBranchPayload,
                     bankDepositId: depositId,
                     bankDepositStatus: 'pendiente_confirmacion',
                     bankDepositLinkedAt: serverTimestamp(),
@@ -11774,7 +11861,7 @@ function BankDeposits({ data, branchContext }) {
     return (
         <div className="space-y-5">
             <BankDepositPrintArea deposit={printDeposit} />
-            <Section title="Depositos bancarios" eyebrow="Control de efectivo" action={<Badge tone="green">Cierres a banco</Badge>}>
+            <Section title="Depositos bancarios" eyebrow="Control de efectivo" action={<Badge tone="green">Consolidado {depositBranchLabel}</Badge>}>
                 <div className="flex flex-wrap gap-2">
                     {[
                         { key: 'ingresar', label: 'Ingresar depositos' },
@@ -11801,7 +11888,7 @@ function BankDeposits({ data, branchContext }) {
 
             {activeDepositTab === 'ingresar' && (
                 <div className="grid gap-5 xl:grid-cols-[1fr_1.1fr]">
-                    <Section title="Efectivo pendiente" eyebrow="Cierres cerrados" action={<Badge tone="blue">{pendingClosures.length} pendientes</Badge>}>
+                    <Section title="Efectivo pendiente" eyebrow="Cierres cerrados por sucursal" action={<Badge tone="blue">{pendingClosures.length} pendientes</Badge>}>
                         <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
                             <button
                                 type="button"
@@ -11945,6 +12032,9 @@ function BankDeposits({ data, branchContext }) {
                                                 <div className="text-[10px] font-black uppercase tracking-[0.22em] text-slate-400">{deposit.date || '-'}</div>
                                                 <div className="text-lg font-black text-slate-950">{deposit.closureCodes?.length ? `Cierres ${deposit.closureCodes.join(', ')}` : deposit.concept}</div>
                                                 <div className="mt-1 text-xs font-bold text-slate-500">{fmt(deposit.totalCordobas)} / {pendingDetails.length} pendiente(s) por confirmar</div>
+                                                <div className="mt-1 text-xs font-black uppercase tracking-[0.16em] text-slate-400">
+                                                    {(deposit.branchShortNames || deposit.branchNames || []).length ? `Sucursales: ${(deposit.branchShortNames || deposit.branchNames || []).join(' + ')}` : 'Sucursal no especificada'}
+                                                </div>
                                             </div>
                                             <button
                                                 type="button"
@@ -12012,6 +12102,7 @@ function BankDeposits({ data, branchContext }) {
                                         <tr className="border-b border-slate-200 bg-slate-50 text-[10px] font-black uppercase tracking-[0.22em] text-slate-400">
                                             <th className="px-4 py-3">Fecha</th>
                                             <th className="px-4 py-3">Cierres</th>
+                                            <th className="px-4 py-3">Sucursal</th>
                                             <th className="px-4 py-3">Referencias</th>
                                             <th className="px-4 py-3 text-right">Total</th>
                                             <th className="px-4 py-3 text-right">Detalles</th>
@@ -12027,6 +12118,7 @@ function BankDeposits({ data, branchContext }) {
                                             >
                                                 <td className="px-4 py-3 font-bold text-slate-700">{deposit.date || '-'}</td>
                                                 <td className="px-4 py-3 font-black text-slate-950">{deposit.closureCodes?.length ? deposit.closureCodes.join(', ') : '-'}</td>
+                                                <td className="px-4 py-3 font-bold text-slate-500">{(deposit.branchShortNames || deposit.branchNames || []).length ? (deposit.branchShortNames || deposit.branchNames || []).join(' + ') : '-'}</td>
                                                 <td className="px-4 py-3 font-bold text-slate-500">
                                                     {(deposit.depositDetails || []).map((detail) => detail.reference).filter(Boolean).join(' / ') || '-'}
                                                 </td>
@@ -12044,7 +12136,7 @@ function BankDeposits({ data, branchContext }) {
                                         ))}
                                         {confirmedDeposits.length === 0 && (
                                             <tr>
-                                                <td colSpan={5} className="px-4 py-10 text-center text-sm font-bold text-slate-400">
+                                                <td colSpan={6} className="px-4 py-10 text-center text-sm font-bold text-slate-400">
                                                     No hay depositos confirmados en historial.
                                                 </td>
                                             </tr>
@@ -12069,28 +12161,37 @@ function BankDeposits({ data, branchContext }) {
 }
 
 export default function Billing({ data = {}, canEdit = true, branchContext }) {
+    const { user } = useAuth();
     const location = useLocation();
     const navigate = useNavigate();
     const selectedBranchId = getActiveBillingBranchId(branchContext);
     const branchPayload = useMemo(() => getBranchPayload(selectedBranchId), [selectedBranchId]);
-    const availableTabs = canEdit ? BILLING_TABS : BILLING_READ_ONLY_TABS;
+    const canUseBankDeposits = canEdit && (isMasterEmail(user?.email) || isNicolUser(user?.email));
+    const availableTabs = useMemo(() => (
+        canEdit
+            ? BILLING_TABS.filter((tab) => tab.key !== 'depositos' || canUseBankDeposits)
+            : BILLING_READ_ONLY_TABS
+    ), [canEdit, canUseBankDeposits]);
     const [activeTab, setActiveTab] = useState(() => (canEdit ? getBillingTabFromSearch(location.search) : 'historial'));
 
     useEffect(() => {
         const requestedTab = getBillingTabFromSearch(location.search);
-        const nextTab = canEdit ? requestedTab : 'historial';
+        const nextTab = availableTabs.some((tab) => tab.key === requestedTab)
+            ? requestedTab
+            : availableTabs[0]?.key || 'historial';
         if (nextTab !== activeTab) {
             setActiveTab(nextTab);
         }
-        if (!canEdit && requestedTab !== 'historial') {
-            navigate('/facturacion?tab=historial', { replace: true });
+        if (requestedTab !== nextTab) {
+            navigate(`/facturacion?tab=${nextTab}`, { replace: true });
         }
-    }, [activeTab, canEdit, location.search, navigate]);
+    }, [activeTab, availableTabs, location.search, navigate]);
 
     const handleTabChange = useCallback((tabKey) => {
+        if (!availableTabs.some((tab) => tab.key === tabKey)) return;
         setActiveTab(tabKey);
         navigate(`/facturacion?tab=${tabKey}`, { replace: false });
-    }, [navigate]);
+    }, [availableTabs, navigate]);
 
     return (
         <div className="space-y-5">
@@ -12144,7 +12245,7 @@ export default function Billing({ data = {}, canEdit = true, branchContext }) {
             {canEdit && activeTab === 'cierre' && <CashClosure data={data} branchContext={branchContext} />}
             {canEdit && activeTab === 'registro' && <AccountingRegister data={data} branchContext={branchContext} />}
             {activeTab === 'historial' && <BillingHistory data={data} canEdit={canEdit} branchContext={branchContext} />}
-            {canEdit && activeTab === 'depositos' && <BankDeposits data={data} branchContext={branchContext} />}
+            {canUseBankDeposits && activeTab === 'depositos' && <BankDeposits data={data} branchContext={branchContext} />}
         </div>
     );
 }
