@@ -9,6 +9,7 @@ import {
     BRANCHES,
     CONSOLIDATED_BRANCH_ID,
     DEFAULT_BRANCH_ID,
+    NINDIRI_BRANCH_ID,
     buildDocumentDisplayNumber,
     fmt,
     getBranchById,
@@ -63,6 +64,7 @@ const CASHIER_OPTIONS = [
     'Katherine Obando',
     'Jose Flores',
     'Nicol Barbosa',
+    'David Lacayo',
 ];
 
 const BANK_DEPOSIT_OWNER = 'LUIS MANUEL SAENZ ROBLERO';
@@ -204,6 +206,17 @@ const slugify = (value = '') => (
         .slice(0, 20) || 'SIN-NOMBRE'
 );
 
+const isSharedCashierName = (name = '') => normalizeText(name) === 'NICOL BARBOSA';
+
+const getDefaultCashierBranchIds = (name = '') => {
+    const normalized = normalizeText(name);
+    if (!normalized) return [];
+    if (normalized === 'NICOL BARBOSA') return [...ALL_BRANCH_IDS];
+    if (normalized === 'DAVID LACAYO') return [NINDIRI_BRANCH_ID];
+    if (['DANIA ESPINOZA', 'KATHERINE OBANDO', 'JOSE FLORES'].includes(normalized)) return [DEFAULT_BRANCH_ID];
+    return [];
+};
+
 const getCashierName = (record = {}) => (
     record.cashierName || record.cajero || record.cashier || ''
 );
@@ -222,6 +235,52 @@ const isSameCashier = (record = {}, cashierName = '') => {
     const targetCode = normalizeText(getCashierCode(cashierName));
     return normalizeText(getCashierName(record)) === targetName
         || normalizeText(getRecordCashierCode(record)) === targetCode;
+};
+
+const getCashierRecordName = (record = {}) => (
+    record.name || record.nombre || getCashierName(record)
+);
+
+const getCashierBranchIds = (record = {}) => {
+    const explicitBranchIds = [
+        ...(Array.isArray(record.branchIds) ? record.branchIds : []),
+        ...(Array.isArray(record.branches) ? record.branches : []),
+        ...(Array.isArray(record.sucursales) ? record.sucursales : []),
+        ...(record.branchId || record.branch || record.sucursal || record.branchName || record.sucursalNombre
+            ? [record.branchId || record.branch || record.sucursal || record.branchName || record.sucursalNombre]
+            : []),
+    ];
+    const normalizedExplicit = [...new Set(
+        explicitBranchIds
+            .map((branchId) => getBranchById(branchId).id)
+            .filter((branchId) => ALL_BRANCH_IDS.includes(branchId))
+    )];
+    if (normalizedExplicit.length) return normalizedExplicit;
+
+    return getDefaultCashierBranchIds(getCashierRecordName(record));
+};
+
+const buildCashierOptionsForBranch = (cashiers = [], branchId = DEFAULT_BRANCH_ID) => {
+    const selectedBranchId = getBranchById(branchId).id;
+    const baseRecords = CASHIER_OPTIONS.map((name) => ({ name, source: 'default' }));
+    const sortOrder = new Map(CASHIER_OPTIONS.map((name, index) => [normalizeText(name), index]));
+    const byName = new Map();
+
+    [...baseRecords, ...(cashiers || [])].forEach((record) => {
+        const name = String(getCashierRecordName(record) || '').trim();
+        if (!name) return;
+        const normalized = normalizeText(name);
+        const branchIds = isSharedCashierName(name) ? [...ALL_BRANCH_IDS] : getCashierBranchIds(record);
+        if (!branchIds.includes(selectedBranchId)) return;
+        if (!byName.has(normalized)) byName.set(normalized, name);
+    });
+
+    return [...byName.values()].sort((a, b) => {
+        const orderA = sortOrder.has(normalizeText(a)) ? sortOrder.get(normalizeText(a)) : 999;
+        const orderB = sortOrder.has(normalizeText(b)) ? sortOrder.get(normalizeText(b)) : 999;
+        if (orderA !== orderB) return orderA - orderB;
+        return a.localeCompare(b, 'es');
+    });
 };
 
 const getStampedInvoiceDisplayNumber = (invoice = {}) => (
@@ -2705,6 +2764,10 @@ function CashClosure({ data, branchContext }) {
             .sort((a, b) => a.name.localeCompare(b.name, 'es'))
     ), [data.clientes_facturacion]);
 
+    const cashierOptions = useMemo(() => (
+        buildCashierOptionsForBranch(data.cajeros || [], selectedBranchId)
+    ), [data.cajeros, selectedBranchId]);
+
     const waitingClosures = useMemo(() => (
         [...(data.cierres_caja || [])]
             .filter((item) => isRecordInBillingBranch(item, selectedBranchId))
@@ -2835,6 +2898,13 @@ function CashClosure({ data, branchContext }) {
     useEffect(() => {
         if (closureReceiptPage !== pagedCashReceipts.page) setClosureReceiptPage(pagedCashReceipts.page);
     }, [closureReceiptPage, pagedCashReceipts.page]);
+
+    useEffect(() => {
+        if (!cashierName) return;
+        if (!cashierOptions.some((name) => normalizeText(name) === normalizeText(cashierName))) {
+            setCashierName('');
+        }
+    }, [cashierName, cashierOptions]);
 
     useEffect(() => {
         if (!cashierName) return;
@@ -3118,14 +3188,21 @@ function CashClosure({ data, branchContext }) {
         return code;
     };
 
-    const upsertCashierRecord = async (name, source = 'manual') => {
+    const upsertCashierRecord = async (name, source = 'manual', branchId = selectedBranchId) => {
         const safeName = String(name || '').trim();
         if (!safeName) return '';
         const code = `CAJ-${slugify(safeName)}`;
+        const selectedBranch = getBranchById(branchId);
+        const branchIds = isSharedCashierName(safeName) ? [...ALL_BRANCH_IDS] : [selectedBranch.id];
         await setDoc(doc(db, 'cajeros', code), {
             code,
             name: safeName,
             normalizedName: normalizeText(safeName),
+            branchId: selectedBranch.id,
+            branchIds,
+            branchName: selectedBranch.name,
+            branchShortName: selectedBranch.shortName,
+            sharedCashier: isSharedCashierName(safeName),
             source,
             updatedAt: serverTimestamp(),
             createdAt: serverTimestamp(),
@@ -3259,7 +3336,7 @@ function CashClosure({ data, branchContext }) {
 
         const safeCashierName = String(cashierName || '').trim();
         if (safeCashierName) {
-            await upsertCashierRecord(safeCashierName, 'cierre_caja');
+            await upsertCashierRecord(safeCashierName, 'cierre_caja', selectedBranchId);
         }
     };
 
@@ -3777,7 +3854,7 @@ function CashClosure({ data, branchContext }) {
                         <Field label="Cajero">
                             <select className={inputClass} value={cashierName} onChange={(event) => setCashierName(event.target.value)}>
                                 <option value="">Seleccionar cajero...</option>
-                                {CASHIER_OPTIONS.map((cashier) => (
+                                {cashierOptions.map((cashier) => (
                                     <option key={cashier} value={cashier}>{cashier}</option>
                                 ))}
                             </select>
@@ -6256,6 +6333,10 @@ function StampedInvoices({ data, branchContext }) {
             .sort((a, b) => a.name.localeCompare(b.name, 'es'))
     ), [data.clientes_facturacion]);
 
+    const cashierOptions = useMemo(() => (
+        buildCashierOptionsForBranch(data.cajeros || [], selectedBranchId)
+    ), [data.cajeros, selectedBranchId]);
+
     const [entryMode, setEntryMode] = useState('sicar');
     const [form, setForm] = useState(createStampedInvoiceForm);
     const [splitInvoice, setSplitInvoice] = useState(null);
@@ -6694,7 +6775,7 @@ function StampedInvoices({ data, branchContext }) {
                         <Field label="Cajero">
                             <select className={inputClass} value={form.cashierName || ''} onChange={(event) => update('cashierName', event.target.value)} required>
                                 <option value="">Seleccionar cajero...</option>
-                                {CASHIER_OPTIONS.map((cashier) => (
+                                {cashierOptions.map((cashier) => (
                                     <option key={cashier} value={cashier}>{cashier}</option>
                                 ))}
                             </select>
@@ -7198,6 +7279,7 @@ const StampedInvoiceEditModal = ({
     onSplit,
     onSplitInvoiceNumberChange,
     onOpenPaymentSplit,
+    cashierOptions = CASHIER_OPTIONS,
 }) => {
     if (!form) return null;
     const fiscal = buildFiscalPayload({
@@ -7241,7 +7323,7 @@ const StampedInvoiceEditModal = ({
                         <Field label="Cajero">
                             <select className={inputClass} value={form.cashierName || ''} onChange={(event) => onUpdate('cashierName', event.target.value)} required>
                                 <option value="">Seleccionar cajero...</option>
-                                {CASHIER_OPTIONS.map((cashier) => (
+                                {cashierOptions.map((cashier) => (
                                     <option key={cashier} value={cashier}>{cashier}</option>
                                 ))}
                             </select>
@@ -7397,6 +7479,10 @@ function StampedInvoiceHistory({ data, canEdit = true, branchContext }) {
             ? [{ id: CONSOLIDATED_BRANCH_ID, shortName: 'Ambas sucursales', invoiceSeries: 'A+B' }, ...branches]
             : branches;
     }, [allowedBranchIds]);
+
+    const cashierOptions = useMemo(() => (
+        buildCashierOptionsForBranch(data.cajeros || [], effectiveEditBranchId)
+    ), [data.cajeros, effectiveEditBranchId]);
 
     useEffect(() => {
         if (branchFilter !== CONSOLIDATED_BRANCH_ID && !allowedBranchIds.includes(branchFilter)) {
@@ -8229,6 +8315,7 @@ function StampedInvoiceHistory({ data, canEdit = true, branchContext }) {
                         onSplit={splitEditedInvoice}
                         onSplitInvoiceNumberChange={updateSplitEditInvoiceNumber}
                         onOpenPaymentSplit={() => setEditPaymentSplitOpen(true)}
+                        cashierOptions={cashierOptions}
                     />
                     <PaymentSplitModal
                         open={editPaymentSplitOpen}
@@ -9729,6 +9816,7 @@ const DenominationCountEditor = ({ title, denominations, count = {}, currencyLab
 const CashClosureEditModal = ({
     form,
     clients = [],
+    cashierOptions = CASHIER_OPTIONS,
     saving = false,
     rcValue = 0,
     rcBlocked = false,
@@ -9787,7 +9875,7 @@ const CashClosureEditModal = ({
                         <Field label="Cajero">
                             <select className={inputClass} value={form.cashierName || ''} onChange={(event) => onFieldChange('cashierName', event.target.value)}>
                                 <option value="">Seleccionar cajero...</option>
-                                {CASHIER_OPTIONS.map((name) => <option key={name} value={name}>{name}</option>)}
+                                {cashierOptions.map((name) => <option key={name} value={name}>{name}</option>)}
                             </select>
                         </Field>
                         <Field label="SICAR esperado">
@@ -10286,6 +10374,10 @@ function CashClosureHistory({ data, canEdit = true, branchContext }) {
             .filter((item) => item.name)
             .sort((a, b) => a.name.localeCompare(b.name, 'es'))
     ), [data.clientes_facturacion]);
+
+    const cashierOptions = useMemo(() => (
+        buildCashierOptionsForBranch(data.cajeros || [], selectedBranchId)
+    ), [data.cajeros, selectedBranchId]);
 
     const differencesByClosureId = useMemo(() => {
         const map = new Map();
@@ -10923,6 +11015,7 @@ function CashClosureHistory({ data, canEdit = true, branchContext }) {
                 <CashClosureEditModal
                     form={editForm}
                     clients={clients}
+                    cashierOptions={cashierOptions}
                     saving={editSaving}
                     rcValue={editClosureRc}
                     rcBlocked={isEditClosureRcPositive}
