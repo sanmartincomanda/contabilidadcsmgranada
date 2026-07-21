@@ -129,6 +129,8 @@ const getInvoiceNumber = (invoice = {}) => (
     invoice.invoiceNumber || invoice.numeroFactura || invoice.document || invoice.folio || invoice.id || ''
 );
 
+const getInvoiceRecordId = (invoice = {}) => invoice.id || invoice.docId || '';
+
 const normalizeReceivableInvoice = (invoice = {}) => {
     const branch = getBranchById(getRecordBranchId(invoice));
     const originalAmount = getCreditOriginalAmount(invoice);
@@ -328,16 +330,50 @@ const buildStatementHtml = (customer = {}, branchLabel = '') => {
 </html>`;
 };
 
-const createReceiptForm = (invoice = {}) => ({
-    date: todayString(),
-    receiptNumber: '',
-    amount: String(safeNumber(invoice.balance) || ''),
-    retentionIr2: '',
-    retentionMunicipal1: '',
-    paymentMethod: '',
-    reference: '',
-    concept: invoice.invoiceNumber ? `Pago factura ${invoice.invoiceNumber}` : 'Pago a factura de credito',
-});
+const getReceiptModalInvoices = (invoiceOrInvoices = []) => (
+    Array.isArray(invoiceOrInvoices)
+        ? invoiceOrInvoices.filter(Boolean)
+        : invoiceOrInvoices && Object.keys(invoiceOrInvoices).length
+            ? [invoiceOrInvoices]
+            : []
+);
+
+const createReceiptApplications = (invoices = []) => (
+    (Array.isArray(invoices) ? invoices : [])
+        .filter((invoice) => getInvoiceRecordId(invoice))
+        .map((invoice) => ({
+            invoiceId: getInvoiceRecordId(invoice),
+            invoiceNumber: invoice.invoiceNumber || invoice.numeroFactura || '',
+            customerName: invoice.customerName || '',
+            balance: safeNumber(invoice.balance),
+            appliedAmount: String(safeNumber(invoice.balance) || ''),
+        }))
+);
+
+const getReceiptApplicationsTotal = (applications = []) => safeNumber(
+    (Array.isArray(applications) ? applications : [])
+        .reduce((sum, application) => sum + safeNumber(application.appliedAmount), 0)
+);
+
+const createReceiptForm = (invoiceOrInvoices = []) => {
+    const invoices = getReceiptModalInvoices(invoiceOrInvoices);
+    const applications = createReceiptApplications(invoices);
+    const invoiceNumbers = applications.map((application) => application.invoiceNumber).filter(Boolean);
+
+    return {
+        date: todayString(),
+        receiptNumber: '',
+        amount: String(getReceiptApplicationsTotal(applications) || ''),
+        retentionIr2: '',
+        retentionMunicipal1: '',
+        paymentMethod: '',
+        reference: '',
+        applications,
+        concept: invoiceNumbers.length
+            ? `Pago factura${invoiceNumbers.length > 1 ? 's' : ''} ${invoiceNumbers.join(', ')}`
+            : 'Pago a factura de credito',
+    };
+};
 
 const buildReceiptDocumentFields = (receipt = {}, branchPayload = {}) => ({
     receiptSeries: branchPayload.receiptSeries || branchPayload.documentSeries || 'A',
@@ -406,7 +442,8 @@ export default function AccountsReceivable({ data = {}, branchContext }) {
     const [branchFilter, setBranchFilter] = useState(selectedBranchId);
     const [search, setSearch] = useState('');
     const [selectedCustomerKey, setSelectedCustomerKey] = useState('');
-    const [receiptInvoice, setReceiptInvoice] = useState(null);
+    const [selectedInvoiceIds, setSelectedInvoiceIds] = useState([]);
+    const [receiptInvoices, setReceiptInvoices] = useState([]);
     const [receiptForm, setReceiptForm] = useState(createReceiptForm());
     const [savingReceipt, setSavingReceipt] = useState(false);
     const [message, setMessage] = useState('');
@@ -463,6 +500,22 @@ export default function AccountsReceivable({ data = {}, branchContext }) {
         customerGroups.find((group) => group.key === selectedCustomerKey) || customerGroups[0] || null
     ), [customerGroups, selectedCustomerKey]);
 
+    useEffect(() => {
+        setSelectedInvoiceIds([]);
+    }, [selectedCustomerKey, branchFilter]);
+
+    const selectedInvoiceIdSet = useMemo(() => new Set(selectedInvoiceIds), [selectedInvoiceIds]);
+    const selectedInvoices = useMemo(() => (
+        (selectedCustomer?.invoices || []).filter((invoice) => selectedInvoiceIdSet.has(getInvoiceRecordId(invoice)))
+    ), [selectedCustomer, selectedInvoiceIdSet]);
+    const selectedInvoicesTotal = useMemo(() => (
+        selectedInvoices.reduce((sum, invoice) => safeNumber(sum + safeNumber(invoice.balance)), 0)
+    ), [selectedInvoices]);
+    const allSelectedCustomerInvoices = Boolean(
+        selectedCustomer?.invoices?.length
+        && selectedCustomer.invoices.every((invoice) => selectedInvoiceIdSet.has(getInvoiceRecordId(invoice)))
+    );
+
     const stats = useMemo(() => (
         customerGroups.reduce((acc, group) => {
             acc.customers += 1;
@@ -490,15 +543,47 @@ export default function AccountsReceivable({ data = {}, branchContext }) {
         popup.document.close();
     };
 
-    const openReceiptModal = (invoice = {}) => {
-        setReceiptInvoice(invoice);
-        setReceiptForm(createReceiptForm(invoice));
+    const toggleInvoiceSelection = (invoice = {}, checked = false) => {
+        const invoiceId = getInvoiceRecordId(invoice);
+        if (!invoiceId) return;
+        setSelectedInvoiceIds((prev) => (
+            checked
+                ? [...new Set([...prev, invoiceId])]
+                : prev.filter((id) => id !== invoiceId)
+        ));
+    };
+
+    const toggleAllSelectedCustomerInvoices = (checked = false) => {
+        setSelectedInvoiceIds(checked ? (selectedCustomer?.invoices || []).map(getInvoiceRecordId).filter(Boolean) : []);
+    };
+
+    const openReceiptModal = (invoiceOrInvoices = []) => {
+        const invoices = getReceiptModalInvoices(invoiceOrInvoices);
+        if (!invoices.length) {
+            setMessage('Selecciona al menos una factura para crear el recibo.');
+            return;
+        }
+
+        const branchIds = [...new Set(invoices.map((invoice) => invoice.branchId || getRecordBranchId(invoice)).filter(Boolean))];
+        if (branchIds.length > 1) {
+            setMessage('Un recibo de caja solo puede vincular facturas de una misma sucursal/serie. Filtra o selecciona facturas de una sola sucursal.');
+            return;
+        }
+
+        const customerKeys = [...new Set(invoices.map(buildCustomerKey).filter(Boolean))];
+        if (customerKeys.length > 1) {
+            setMessage('Un recibo de caja solo puede aplicarse a facturas de un mismo cliente.');
+            return;
+        }
+
+        setReceiptInvoices(invoices);
+        setReceiptForm(createReceiptForm(invoices));
         setMessage('');
     };
 
     const closeReceiptModal = () => {
         if (savingReceipt) return;
-        setReceiptInvoice(null);
+        setReceiptInvoices([]);
         setReceiptForm(createReceiptForm());
     };
 
@@ -506,30 +591,63 @@ export default function AccountsReceivable({ data = {}, branchContext }) {
         setReceiptForm((prev) => ({ ...prev, [key]: value }));
     };
 
+    const updateReceiptApplicationAmount = (invoiceId = '', value = '') => {
+        setReceiptForm((prev) => {
+            const applications = (prev.applications || []).map((application) => (
+                application.invoiceId === invoiceId
+                    ? { ...application, appliedAmount: value }
+                    : application
+            ));
+            return {
+                ...prev,
+                applications,
+                amount: String(getReceiptApplicationsTotal(applications) || ''),
+            };
+        });
+    };
+
     const saveReceipt = async (event) => {
         event.preventDefault();
-        if (!receiptInvoice) return;
+        if (!receiptInvoices.length) return;
         setSavingReceipt(true);
         setMessage('');
 
         try {
             const receiptNumber = String(receiptForm.receiptNumber || '').trim();
-            const amount = safeNumber(receiptForm.amount);
+            const invoiceIndex = new Map(receiptInvoices.map((invoice) => [getInvoiceRecordId(invoice), invoice]));
+            const applications = (receiptForm.applications || [])
+                .map((application) => ({
+                    ...application,
+                    appliedAmount: safeNumber(application.appliedAmount),
+                }))
+                .filter((application) => application.invoiceId && application.appliedAmount > 0);
+            const amount = getReceiptApplicationsTotal(applications);
             const retentionIr2 = safeNumber(receiptForm.retentionIr2);
             const retentionMunicipal1 = safeNumber(receiptForm.retentionMunicipal1);
             const retentionTotal = safeNumber(retentionIr2 + retentionMunicipal1);
             const paymentMethod = String(receiptForm.paymentMethod || '').trim();
-            const branchPayload = getBranchPayload(receiptInvoice.branchId || getRecordBranchId(receiptInvoice), 'receipt');
+            const branchIds = [...new Set(receiptInvoices.map((invoice) => invoice.branchId || getRecordBranchId(invoice)).filter(Boolean))];
+            const customerKeys = [...new Set(receiptInvoices.map(buildCustomerKey).filter(Boolean))];
+            const firstInvoice = receiptInvoices[0] || {};
+            const branchPayload = getBranchPayload(firstInvoice.branchId || getRecordBranchId(firstInvoice), 'receipt');
 
             if (!receiptNumber) throw new Error('Ingresa el numero de recibo / folio.');
             if (!paymentMethod) throw new Error('Selecciona metodo de pago.');
+            if (branchIds.length > 1) throw new Error('Un recibo no puede mezclar facturas de distintas sucursales/series.');
+            if (customerKeys.length > 1) throw new Error('Un recibo solo puede aplicarse a facturas del mismo cliente.');
+            if (!applications.length) throw new Error('Selecciona al menos una factura con monto aplicado.');
             if (amount <= 0) throw new Error('Ingresa el monto del abono.');
-            if (amount > safeNumber(receiptInvoice.balance) + 0.01) {
-                throw new Error(`El abono no puede superar el saldo pendiente ${fmt(receiptInvoice.balance)}.`);
-            }
             if (retentionTotal > amount + 0.01) {
                 throw new Error('Las retenciones no pueden ser mayores que el monto del recibo.');
             }
+
+            applications.forEach((application) => {
+                const invoice = invoiceIndex.get(application.invoiceId);
+                if (!invoice) throw new Error(`No encontre la factura ${application.invoiceNumber || application.invoiceId}.`);
+                if (application.appliedAmount > safeNumber(invoice.balance) + 0.01) {
+                    throw new Error(`El abono de factura ${invoice.invoiceNumber || invoice.id} no puede superar su saldo ${fmt(invoice.balance)}.`);
+                }
+            });
 
             const duplicate = await findReceiptNumberDuplicate({ receiptNumber, branchPayload });
             if (duplicate) {
@@ -537,21 +655,18 @@ export default function AccountsReceivable({ data = {}, branchContext }) {
             }
 
             const receiptId = buildReceiptId(receiptForm, branchPayload);
-            const invoiceId = receiptInvoice.id || receiptInvoice.docId;
-            if (!invoiceId) throw new Error('No pude identificar la factura vinculada.');
-
-            const currentPaid = getCreditPaidAmount(receiptInvoice);
-            const nextPaid = safeNumber(currentPaid + amount);
-            const receiptIds = [...new Set([...getCreditReceiptIds(receiptInvoice), receiptId])];
-            const invoiceApplication = {
-                invoiceId,
-                invoiceNumber: receiptInvoice.invoiceNumber || receiptInvoice.numeroFactura || '',
-                customerName: receiptInvoice.customerName || '',
-                appliedAmount: amount,
-                balanceBeforeApplication: receiptInvoice.balance,
-                remainingBalance: safeNumber(Math.max(receiptInvoice.balance - amount, 0)),
-            };
-            const concept = String(receiptForm.concept || '').trim() || `Pago factura ${receiptInvoice.invoiceNumber || ''}`.trim();
+            const invoiceApplications = applications.map((application) => {
+                const invoice = invoiceIndex.get(application.invoiceId);
+                return {
+                    invoiceId: application.invoiceId,
+                    invoiceNumber: invoice.invoiceNumber || invoice.numeroFactura || application.invoiceNumber || '',
+                    customerName: invoice.customerName || '',
+                    appliedAmount: application.appliedAmount,
+                    balanceBeforeApplication: safeNumber(invoice.balance),
+                    remainingBalance: safeNumber(Math.max(safeNumber(invoice.balance) - application.appliedAmount, 0)),
+                };
+            });
+            const concept = String(receiptForm.concept || '').trim() || `Pago facturas ${invoiceApplications.map((application) => application.invoiceNumber).filter(Boolean).join(', ')}`.trim();
             const date = receiptForm.date || todayString();
             const receiptPayload = {
                 date,
@@ -561,10 +676,10 @@ export default function AccountsReceivable({ data = {}, branchContext }) {
                 numeroRecibo: receiptNumber,
                 ...branchPayload,
                 ...buildReceiptDocumentFields({ receiptNumber }, branchPayload),
-                customerName: receiptInvoice.customerName || '',
-                recibiDe: receiptInvoice.customerName || '',
-                customerRfc: receiptInvoice.customerRfc || '',
-                customerAddress: receiptInvoice.customerAddress || '',
+                customerName: firstInvoice.customerName || '',
+                recibiDe: firstInvoice.customerName || '',
+                customerRfc: firstInvoice.customerRfc || '',
+                customerAddress: firstInvoice.customerAddress || '',
                 amount,
                 cantidad: amount,
                 retentionIr2,
@@ -580,9 +695,9 @@ export default function AccountsReceivable({ data = {}, branchContext }) {
                 paymentMethod,
                 metodoPago: paymentMethod,
                 reference: String(receiptForm.reference || '').trim(),
-                invoiceApplications: [invoiceApplication],
-                linkedInvoices: [invoiceApplication],
-                linkedInvoiceIds: [invoiceId],
+                invoiceApplications,
+                linkedInvoices: invoiceApplications,
+                linkedInvoiceIds: invoiceApplications.map((application) => application.invoiceId),
                 receiptMode: 'linked_invoices',
                 isOtherReceipt: false,
                 source: 'cuentas_por_cobrar',
@@ -594,10 +709,15 @@ export default function AccountsReceivable({ data = {}, branchContext }) {
 
             const batch = writeBatch(db);
             batch.set(doc(db, 'recibos_caja_membretados', receiptId), receiptPayload, { merge: true });
-            batch.set(doc(db, 'facturas_membretadas_ventas', invoiceId), {
-                ...buildCreditSnapshot(receiptInvoice, nextPaid, receiptIds),
-                updatedAt: serverTimestamp(),
-            }, { merge: true });
+            invoiceApplications.forEach((application) => {
+                const invoice = invoiceIndex.get(application.invoiceId);
+                const nextPaid = safeNumber(getCreditPaidAmount(invoice) + application.appliedAmount);
+                const receiptIds = [...new Set([...getCreditReceiptIds(invoice), receiptId])];
+                batch.set(doc(db, 'facturas_membretadas_ventas', application.invoiceId), {
+                    ...buildCreditSnapshot(invoice, nextPaid, receiptIds),
+                    updatedAt: serverTimestamp(),
+                }, { merge: true });
+            });
             await batch.commit();
 
             const customerCode = `CLI-${slugify(receiptPayload.customerName)}`;
@@ -611,8 +731,9 @@ export default function AccountsReceivable({ data = {}, branchContext }) {
                 updatedAt: serverTimestamp(),
             }, { merge: true });
 
-            setMessage(`Recibo ${receiptNumber} registrado y vinculado a factura ${receiptInvoice.invoiceNumber || invoiceId}.`);
-            setReceiptInvoice(null);
+            setMessage(`Recibo ${receiptNumber} registrado y vinculado a ${invoiceApplications.length} factura(s).`);
+            setReceiptInvoices([]);
+            setSelectedInvoiceIds([]);
             setReceiptForm(createReceiptForm());
         } catch (error) {
             console.error('Error al registrar recibo desde cuentas por cobrar', error);
@@ -730,13 +851,23 @@ export default function AccountsReceivable({ data = {}, branchContext }) {
                                     <h2 className="mt-1 text-2xl font-black text-slate-950">{selectedCustomer.customerName}</h2>
                                     <div className="mt-1 text-sm font-bold text-slate-500">RUC/RFC: {selectedCustomer.customerRfc || '-'} - Sucursal: {selectedCustomer.branchShortNames.join(' + ') || '-'}</div>
                                 </div>
-                                <button
-                                    type="button"
-                                    onClick={printStatement}
-                                    className="rounded-2xl bg-[#e30613] px-5 py-3 text-xs font-black uppercase tracking-[0.18em] text-white shadow-lg shadow-red-950/20 transition hover:bg-[#9f111a]"
-                                >
-                                    Imprimir estado de cuenta
-                                </button>
+                                <div className="flex flex-col gap-2 sm:flex-row">
+                                    <button
+                                        type="button"
+                                        onClick={() => openReceiptModal(selectedInvoices)}
+                                        disabled={!selectedInvoices.length}
+                                        className="rounded-2xl bg-emerald-600 px-5 py-3 text-xs font-black uppercase tracking-[0.18em] text-white shadow-lg shadow-emerald-950/20 transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-45"
+                                    >
+                                        Recibo seleccionado ({selectedInvoices.length})
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={printStatement}
+                                        className="rounded-2xl bg-[#e30613] px-5 py-3 text-xs font-black uppercase tracking-[0.18em] text-white shadow-lg shadow-red-950/20 transition hover:bg-[#9f111a]"
+                                    >
+                                        Imprimir estado de cuenta
+                                    </button>
+                                </div>
                             </div>
 
                             <div className="mt-4 grid gap-3 md:grid-cols-3">
@@ -744,11 +875,25 @@ export default function AccountsReceivable({ data = {}, branchContext }) {
                                 <SummaryCard label="Abonado" value={fmt(selectedCustomer.paidAmount)} tone="blue" />
                                 <SummaryCard label="Saldo" value={fmt(selectedCustomer.balance)} tone="green" />
                             </div>
+                            {selectedInvoices.length > 0 && (
+                                <div className="mt-4 rounded-3xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-black text-emerald-800">
+                                    {selectedInvoices.length} factura(s) seleccionada(s) - Total seleccionado {fmt(selectedInvoicesTotal)}
+                                </div>
+                            )}
 
                             <div className="mt-5 overflow-x-auto rounded-3xl border border-slate-200">
                                 <table className="min-w-full text-left text-sm">
                                     <thead>
                                         <tr className="border-b border-slate-200 bg-slate-50 text-[10px] font-black uppercase tracking-[0.22em] text-slate-400">
+                                            <th className="px-4 py-3">
+                                                <input
+                                                    type="checkbox"
+                                                    checked={allSelectedCustomerInvoices}
+                                                    onChange={(event) => toggleAllSelectedCustomerInvoices(event.target.checked)}
+                                                    className="h-4 w-4 rounded border-slate-300 text-[#e30613] focus:ring-[#e30613]"
+                                                    aria-label="Seleccionar todas las facturas"
+                                                />
+                                            </th>
                                             <th className="px-4 py-3">Fecha</th>
                                             <th className="px-4 py-3">Vence</th>
                                             <th className="px-4 py-3">Factura</th>
@@ -761,8 +906,19 @@ export default function AccountsReceivable({ data = {}, branchContext }) {
                                         </tr>
                                     </thead>
                                     <tbody>
-                                        {selectedCustomer.invoices.map((invoice) => (
+                                        {selectedCustomer.invoices.map((invoice) => {
+                                            const invoiceId = getInvoiceRecordId(invoice);
+                                            return (
                                             <tr key={invoice.id || `${invoice.invoiceNumber}-${invoice.date}`} className="border-b border-slate-100 last:border-b-0">
+                                                <td className="px-4 py-3">
+                                                    <input
+                                                        type="checkbox"
+                                                        checked={selectedInvoiceIdSet.has(invoiceId)}
+                                                        onChange={(event) => toggleInvoiceSelection(invoice, event.target.checked)}
+                                                        className="h-4 w-4 rounded border-slate-300 text-[#e30613] focus:ring-[#e30613]"
+                                                        aria-label={`Seleccionar factura ${invoice.invoiceNumber || ''}`}
+                                                    />
+                                                </td>
                                                 <td className="px-4 py-3 font-bold text-slate-700">{invoice.date || '-'}</td>
                                                 <td className="px-4 py-3 font-bold text-slate-500">{invoice.dueDate || '-'}</td>
                                                 <td className="px-4 py-3 font-black text-slate-950">{invoice.invoiceNumber || '-'}</td>
@@ -774,14 +930,15 @@ export default function AccountsReceivable({ data = {}, branchContext }) {
                                                 <td className="px-4 py-3 text-right">
                                                     <button
                                                         type="button"
-                                                        onClick={() => openReceiptModal(invoice)}
+                                                        onClick={() => openReceiptModal([invoice])}
                                                         className="rounded-xl bg-[#e30613] px-3 py-2 text-[10px] font-black uppercase tracking-[0.14em] text-white shadow-sm transition hover:bg-[#9f111a]"
                                                     >
                                                         Recibo caja
                                                     </button>
                                                 </td>
                                             </tr>
-                                        ))}
+                                            );
+                                        })}
                                     </tbody>
                                 </table>
                             </div>
@@ -794,14 +951,16 @@ export default function AccountsReceivable({ data = {}, branchContext }) {
                 </section>
             </div>
 
-            {receiptInvoice && (
+            {receiptInvoices.length > 0 && (
                 <div className="fixed inset-0 z-[80] flex items-center justify-center bg-slate-950/60 p-4 backdrop-blur-sm">
                     <form onSubmit={saveReceipt} className="max-h-[92vh] w-full max-w-3xl overflow-y-auto rounded-[2rem] border border-slate-200 bg-white shadow-2xl">
                         <div className="border-b border-slate-200 bg-slate-950 px-5 py-4 text-white">
                             <div className="text-[10px] font-black uppercase tracking-[0.28em] text-[#f5b51b]">Recibo de caja vinculado</div>
-                            <div className="mt-1 text-2xl font-black">Factura {receiptInvoice.invoiceNumber || '-'}</div>
+                            <div className="mt-1 text-2xl font-black">
+                                {receiptInvoices.length === 1 ? `Factura ${receiptInvoices[0].invoiceNumber || '-'}` : `${receiptInvoices.length} facturas seleccionadas`}
+                            </div>
                             <div className="mt-1 text-sm font-semibold text-white/70">
-                                {receiptInvoice.customerName || '-'} - Saldo {fmt(receiptInvoice.balance)}
+                                {receiptInvoices[0]?.customerName || '-'} - Total aplicado {fmt(getReceiptApplicationsTotal(receiptForm.applications))}
                             </div>
                         </div>
 
@@ -816,7 +975,7 @@ export default function AccountsReceivable({ data = {}, branchContext }) {
                             </label>
                             <label className="space-y-2">
                                 <span className={labelClass}>Cliente</span>
-                                <input className={inputClass} value={receiptInvoice.customerName || ''} readOnly />
+                                <input className={inputClass} value={receiptInvoices[0]?.customerName || ''} readOnly />
                             </label>
                             <label className="space-y-2">
                                 <span className={labelClass}>Metodo de pago</span>
@@ -826,8 +985,8 @@ export default function AccountsReceivable({ data = {}, branchContext }) {
                                 </select>
                             </label>
                             <label className="space-y-2">
-                                <span className={labelClass}>Cantidad aplicada</span>
-                                <input type="number" step="0.01" min="0" max={receiptInvoice.balance} className={inputClass} value={receiptForm.amount} onChange={(event) => updateReceiptForm('amount', event.target.value)} required />
+                                <span className={labelClass}>Total aplicado</span>
+                                <input className={inputClass} value={fmt(getReceiptApplicationsTotal(receiptForm.applications))} readOnly />
                             </label>
                             <label className="space-y-2">
                                 <span className={labelClass}>Referencia</span>
@@ -845,13 +1004,52 @@ export default function AccountsReceivable({ data = {}, branchContext }) {
                                 <span className={labelClass}>En concepto de</span>
                                 <textarea className={`${inputClass} min-h-24 resize-y`} value={receiptForm.concept} onChange={(event) => updateReceiptForm('concept', event.target.value)} />
                             </label>
+                            <div className="space-y-3 md:col-span-2">
+                                <div className={labelClass}>Facturas aplicadas</div>
+                                <div className="overflow-x-auto rounded-3xl border border-slate-200">
+                                    <table className="min-w-full text-left text-sm">
+                                        <thead>
+                                            <tr className="border-b border-slate-200 bg-slate-50 text-[10px] font-black uppercase tracking-[0.18em] text-slate-400">
+                                                <th className="px-4 py-3">Factura</th>
+                                                <th className="px-4 py-3">Sucursal</th>
+                                                <th className="px-4 py-3 text-right">Saldo</th>
+                                                <th className="px-4 py-3 text-right">Aplicar</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {(receiptForm.applications || []).map((application) => {
+                                                const invoice = receiptInvoices.find((item) => getInvoiceRecordId(item) === application.invoiceId) || {};
+                                                return (
+                                                    <tr key={application.invoiceId} className="border-b border-slate-100 last:border-b-0">
+                                                        <td className="px-4 py-3 font-black text-slate-950">{application.invoiceNumber || invoice.invoiceNumber || '-'}</td>
+                                                        <td className="px-4 py-3 font-bold text-slate-500">{invoice.branchShortName || '-'}</td>
+                                                        <td className="px-4 py-3 text-right font-mono font-black text-amber-700">{fmt(invoice.balance || application.balance)}</td>
+                                                        <td className="px-4 py-3">
+                                                            <input
+                                                                type="number"
+                                                                step="0.01"
+                                                                min="0"
+                                                                max={safeNumber(invoice.balance || application.balance)}
+                                                                className={`${inputClass} text-right font-mono`}
+                                                                value={application.appliedAmount}
+                                                                onChange={(event) => updateReceiptApplicationAmount(application.invoiceId, event.target.value)}
+                                                                required
+                                                            />
+                                                        </td>
+                                                    </tr>
+                                                );
+                                            })}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
                         </div>
 
                         <div className="mx-5 mb-5 grid gap-3 rounded-3xl border border-slate-200 bg-slate-50 p-4 md:grid-cols-4">
-                            <SummaryCard label="Factura" value={receiptInvoice.invoiceNumber || '-'} />
-                            <SummaryCard label="Saldo actual" value={fmt(receiptInvoice.balance)} tone="amber" />
+                            <SummaryCard label="Facturas" value={receiptInvoices.length} />
+                            <SummaryCard label="Total aplicado" value={fmt(getReceiptApplicationsTotal(receiptForm.applications))} tone="amber" />
                             <SummaryCard label="Retenciones" value={fmt(safeNumber(receiptForm.retentionIr2) + safeNumber(receiptForm.retentionMunicipal1))} tone="blue" />
-                            <SummaryCard label="Neto caja" value={fmt(Math.max(safeNumber(receiptForm.amount) - safeNumber(receiptForm.retentionIr2) - safeNumber(receiptForm.retentionMunicipal1), 0))} tone="green" />
+                            <SummaryCard label="Neto caja" value={fmt(Math.max(getReceiptApplicationsTotal(receiptForm.applications) - safeNumber(receiptForm.retentionIr2) - safeNumber(receiptForm.retentionMunicipal1), 0))} tone="green" />
                         </div>
 
                         <div className="flex flex-col-reverse gap-3 border-t border-slate-200 bg-white px-5 py-4 sm:flex-row sm:justify-end">
