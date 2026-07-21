@@ -61,14 +61,35 @@ const getCreditPaidAmount = (invoice = {}) => safeNumber(
     ?? invoice.creditCollectedAmount
 );
 
+const getStoredCreditStatus = (invoice = {}) => normalizeText(
+    invoice.creditStatus || invoice.creditStatusLabel || invoice.estadoCredito || ''
+);
+
+const isSettledCreditStatus = (invoice = {}) => {
+    const status = getStoredCreditStatus(invoice);
+    return status.includes('CANCEL')
+        || status.includes('PAGAD')
+        || status.includes('PAID')
+        || status.includes('CERRAD');
+};
+
+const isCreditPaymentMethod = (invoice = {}) => normalizeText(
+    invoice.paymentMethod || invoice.metodoPago || ''
+).includes('CREDITO');
+
 const getCreditBalance = (invoice = {}) => {
     const stored = invoice.creditBalance ?? invoice.saldoCredito;
-    if (stored !== undefined && stored !== null && stored !== '') return safeNumber(Math.max(safeNumber(stored), 0));
+    if (isSettledCreditStatus(invoice)) return 0;
+    if (stored !== undefined && stored !== null && stored !== '') {
+        const storedBalance = safeNumber(Math.max(safeNumber(stored), 0));
+        if (storedBalance > 0.01) return storedBalance;
+    }
     return safeNumber(Math.max(getCreditOriginalAmount(invoice) - getCreditPaidAmount(invoice), 0));
 };
 
 const getCreditStatus = (invoice = {}) => {
-    const normalized = normalizeText(invoice.creditStatus || invoice.creditStatusLabel || invoice.estadoCredito);
+    const normalized = getStoredCreditStatus(invoice);
+    if (isSettledCreditStatus(invoice) || getCreditBalance(invoice) <= 0.01) return 'Pagado';
     if (normalized.includes('PARCIAL')) return 'Parcial';
     if (normalized.includes('PENDIENT')) return 'Pendiente';
     if (getCreditPaidAmount(invoice) > 0.01) return 'Parcial';
@@ -117,6 +138,8 @@ const normalizeReceivableInvoice = (invoice = {}) => {
 
 const isActiveReceivableInvoice = (invoice = {}) => (
     !['ANULADA', 'ANULADO', 'CANCELADA', 'CANCELADO', 'DELETED'].includes(normalizeText(invoice.status))
+    && isCreditPaymentMethod(invoice)
+    && !isSettledCreditStatus(invoice)
     && getCreditBalance(invoice) > 0.01
 );
 

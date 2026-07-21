@@ -1215,7 +1215,7 @@ function AppContent() {
     ], [accountStartMonth]);
 
     const accountsReceivableCollections = useMemo(() => [
-        collectionConfig('facturas_membretadas_ventas', [where('creditBalance', '>', 0)]),
+        collectionConfig('facturas_membretadas_ventas', [where('paymentMethod', '==', 'CREDITO')]),
     ], []);
 
     const branchTransfersCollections = useMemo(() => [
