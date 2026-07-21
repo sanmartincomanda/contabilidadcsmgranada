@@ -130,6 +130,11 @@ export default function Header({
         canAccess('traspasos_costos') && { label: 'Traspaso Costos Sucursal', to: '/traspasos-costos' },
     ].filter(Boolean)), [moduleAccess]);
 
+    const billingMenuHints = useMemo(() => ([
+        ...(canAccess('facturacion') ? billingHints : []),
+        canAccess('cuentas_cobrar') && { label: 'Cuentas por Cobrar', to: '/cuentas-cobrar' },
+    ].filter(Boolean)), [moduleAccess]);
+
     const primaryItems = useMemo(() => ([
         canAccess('dashboard') && { key: 'inicio', label: 'Inicio', icon: 'home', to: '/' },
         procurementHints.length && {
@@ -140,10 +145,17 @@ export default function Header({
             hintList: procurementHints,
             activePaths: ['/gastos-diarios', '/cuentas-pagar', '/traspasos-costos'],
         },
-        canAccess('facturacion') && { key: 'facturacion', label: 'Facturacion', icon: 'receipt', to: '/facturacion?tab=cierre', hintList: billingHints },
+        billingMenuHints.length && {
+            key: 'facturacion',
+            label: 'Facturacion',
+            icon: 'receipt',
+            to: canAccess('facturacion') ? '/facturacion?tab=cierre' : '/cuentas-cobrar',
+            hintList: billingMenuHints,
+            activePaths: ['/facturacion', '/cuentas-cobrar'],
+        },
         canAccess('reportes') && { key: 'reportes', label: 'Reportes', icon: 'chart', to: '/reportes', hintList: reportHints },
         isMaster && { key: 'config', label: 'Configuraciones', icon: 'gear', to: '/configuraciones' },
-    ].filter(Boolean)), [isMaster, moduleAccess, procurementHints]);
+    ].filter(Boolean)), [billingMenuHints, isMaster, moduleAccess, procurementHints]);
 
     const goToEntry = (tab) => {
         navigate(`/ingresar?tab=${encodeURIComponent(tab)}`);
@@ -373,7 +385,7 @@ export default function Header({
         canAccess('dashboard') && { key: 'inicio', label: 'Inicio', shortLabel: 'Inicio', icon: 'home', to: '/' },
         canAccess('ingresar') && { key: 'ingresar', label: 'Ingresar', shortLabel: 'Ingresar', icon: 'plus', to: '/ingresar' },
         procurementHints.length && { key: 'compras', label: 'Compras', shortLabel: 'Compras', icon: 'cart', to: procurementHints[0].to, activePaths: ['/gastos-diarios', '/cuentas-pagar', '/traspasos-costos'] },
-        canAccess('facturacion') && { key: 'facturacion', label: 'Facturacion', shortLabel: 'Fact.', icon: 'receipt', to: '/facturacion?tab=cierre' },
+        billingMenuHints.length && { key: 'facturacion', label: 'Facturacion', shortLabel: 'Fact.', icon: 'receipt', to: canAccess('facturacion') ? '/facturacion?tab=cierre' : '/cuentas-cobrar', activePaths: ['/facturacion', '/cuentas-cobrar'] },
         { key: 'mas', label: 'Menu', shortLabel: 'Menu', icon: mobileOpen ? 'x' : 'menu', action: 'menu', to: location.pathname },
     ].filter(Boolean).slice(0, 5);
 

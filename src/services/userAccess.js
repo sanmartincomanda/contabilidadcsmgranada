@@ -8,6 +8,7 @@ export const ACCESS_MODULES = [
     { id: 'ingresar', label: 'Registro operativo', description: 'Ingresos, gastos, compras y registros manuales.', path: '/ingresar' },
     { id: 'caja_chica', label: 'Caja Chica', description: 'Gastos diarios, efectivo, tarjetas y vouchers.', path: '/gastos-diarios' },
     { id: 'cuentas_pagar', label: 'Cuentas por Pagar', description: 'Proveedores, facturas a credito y abonos.', path: '/cuentas-pagar' },
+    { id: 'cuentas_cobrar', label: 'Cuentas por Cobrar', description: 'Clientes, saldos de credito y estados de cuenta.', path: '/cuentas-cobrar' },
     { id: 'traspasos_costos', label: 'Traspaso Costos Sucursal', description: 'Movimientos de costo entre sucursales para estado de resultados.', path: '/traspasos-costos' },
     { id: 'facturacion', label: 'Facturacion', description: 'Cierre de caja, membretadas y depositos.', path: '/facturacion' },
     { id: 'reportes', label: 'Reportes', description: 'Estados financieros, impuestos y exportaciones.', path: '/reportes' },

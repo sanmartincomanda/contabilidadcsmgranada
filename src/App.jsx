@@ -16,6 +16,7 @@ import Reports from './components/Reports';
 import CategoryManager from './components/CategoryManager';
 import Settings from './components/Settings';
 import { AccountsPayable } from './components/AccountsPayable';
+import AccountsReceivable from './components/AccountsReceivable';
 import BranchCostTransfers from './components/BranchCostTransfers';
 import ExecutiveFlowDiagram from './components/ExecutiveFlowDiagram';
 import { APP_BRAND_LOGO, APP_BRAND_NAME, DEFAULT_BRANCH_ID, fmt, getBranchById } from './constants';
@@ -1213,6 +1214,10 @@ function AppContent() {
         'proveedores',
     ], [accountStartMonth]);
 
+    const accountsReceivableCollections = useMemo(() => [
+        collectionConfig('facturas_membretadas_ventas', [where('creditBalance', '>', 0)]),
+    ], []);
+
     const branchTransfersCollections = useMemo(() => [
         collectionConfig('traspasos_costos_sucursal', [where('month', '>=', accountStartMonth)]),
     ], [accountStartMonth]);
@@ -1232,6 +1237,7 @@ function AppContent() {
     const { data: categoriesData } = useFirestoreCollections(CATEGORY_COLLECTIONS, !!user && !accessLoading && needsCategories, false);
     const { data: dataEntryData, loading: dataEntryLoading, error: dataEntryError } = useFirestoreCollections(dataEntryCollections, !!user && !accessLoading && canAccess('ingresar') && currentPath === '/ingresar', true);
     const { data: accountsPayableData, loading: accountsPayableLoading, error: accountsPayableError } = useFirestoreCollections(accountsPayableCollections, !!user && !accessLoading && canAccess('cuentas_pagar') && currentPath === '/cuentas-pagar', true);
+    const { data: accountsReceivableData, loading: accountsReceivableLoading, error: accountsReceivableError } = useFirestoreCollections(accountsReceivableCollections, !!user && !accessLoading && canAccess('cuentas_cobrar') && currentPath === '/cuentas-cobrar', true);
     const { data: branchTransfersData, loading: branchTransfersLoading, error: branchTransfersError } = useFirestoreCollections(branchTransfersCollections, !!user && !accessLoading && canAccess('traspasos_costos') && currentPath === '/traspasos-costos', true);
     const { data: reportsData, loading: reportsLoading, error: reportsError } = useFirestoreCollections(reportCollections, !!user && !accessLoading && canAccess('reportes') && currentPath === '/reportes', false);
     const { data: dashboardData, loading: dashboardLoading, error: dashboardError } = useFirestoreCollections(dashboardCollections, !!user && !accessLoading && canAccess('dashboard') && currentPath === '/', false);
@@ -1289,6 +1295,7 @@ function AppContent() {
                         <Route path="/conciliacion" element={<PrivateRoute element={<Navigate to={defaultAllowedPath} replace />} />} />
                         <Route path="/facturacion" element={<PrivateRoute element={canAccess('facturacion') ? (billingLoading ? <AppLoadingState /> : billingError ? <AppErrorState error={billingError} /> : <Billing data={billingData} canEdit={canEdit('facturacion')} branchContext={branchContext} />) : <Navigate to={defaultAllowedPath} replace />} />} />
                         <Route path="/cuentas-pagar" element={<PrivateRoute element={canAccess('cuentas_pagar') ? (accountsPayableLoading ? <AppLoadingState /> : accountsPayableError ? <AppErrorState error={accountsPayableError} /> : <AccountsPayable data={accountsPayableData} branchContext={branchContext} />) : <Navigate to={defaultAllowedPath} replace />} />} />
+                        <Route path="/cuentas-cobrar" element={<PrivateRoute element={canAccess('cuentas_cobrar') ? (accountsReceivableLoading ? <AppLoadingState /> : accountsReceivableError ? <AppErrorState error={accountsReceivableError} /> : <AccountsReceivable data={accountsReceivableData} branchContext={branchContext} />) : <Navigate to={defaultAllowedPath} replace />} />} />
                         <Route path="/traspasos-costos" element={<PrivateRoute element={canAccess('traspasos_costos') ? (branchTransfersLoading ? <AppLoadingState /> : branchTransfersError ? <AppErrorState error={branchTransfersError} /> : <BranchCostTransfers data={branchTransfersData} branchContext={branchContext} canEdit={canEdit('traspasos_costos')} />) : <Navigate to={defaultAllowedPath} replace />} />} />
                         <Route path="/reportes" element={<PrivateRoute element={canAccess('reportes') ? (reportsLoading ? <AppLoadingState /> : reportsError ? <AppErrorState error={reportsError} /> : <Reports data={reportsData} branchContext={branchContext} />) : <Navigate to={defaultAllowedPath} replace />} />} />
                         <Route path="/configuraciones" element={<PrivateRoute element={effectiveIsMaster ? <Settings /> : <Navigate to={defaultAllowedPath} replace />} />} />
