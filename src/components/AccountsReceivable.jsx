@@ -334,9 +334,6 @@ const buildStatementHtml = (customer = {}, branchLabel = '') => {
         </thead>
         <tbody>${invoiceRows}</tbody>
     </table>
-    <footer>
-        Este estado de cuenta muestra facturas membretadas con metodo de pago credito y saldo pendiente al momento de emision.
-    </footer>
     <script>window.onload = () => { window.focus(); window.print(); };</script>
 </body>
 </html>`;
