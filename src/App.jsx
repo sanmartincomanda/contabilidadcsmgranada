@@ -1096,6 +1096,34 @@ const useInactivityLogout = (user, logout) => {
     }, [user, logout]);
 };
 
+const useDisableNumberInputStepping = () => {
+    useEffect(() => {
+        if (typeof window === 'undefined') return undefined;
+
+        const isNumberInput = (target) => (
+            target instanceof window.HTMLInputElement && target.type === 'number'
+        );
+
+        const handleWheel = (event) => {
+            if (!isNumberInput(event.target)) return;
+            event.preventDefault();
+        };
+
+        const handleKeyDown = (event) => {
+            if (!['ArrowUp', 'ArrowDown'].includes(event.key) || !isNumberInput(event.target)) return;
+            event.preventDefault();
+        };
+
+        document.addEventListener('wheel', handleWheel, { capture: true, passive: false });
+        document.addEventListener('keydown', handleKeyDown, true);
+
+        return () => {
+            document.removeEventListener('wheel', handleWheel, { capture: true });
+            document.removeEventListener('keydown', handleKeyDown, true);
+        };
+    }, []);
+};
+
 // --- APP CONTENT ---
 
 function AppContent() {
@@ -1104,6 +1132,7 @@ function AppContent() {
     const { loading: accessLoading, moduleAccess, moduleModes, featureAccess, branchAccess, defaultBranchId, isMaster } = useUserModuleAccess(user);
     const effectiveIsMaster = isMaster || isMasterEmail(user?.email);
     useInactivityLogout(user, logout);
+    useDisableNumberInputStepping();
     const allowedBranchIds = useMemo(() => (
         Array.isArray(branchAccess) && branchAccess.length ? branchAccess : [DEFAULT_BRANCH_ID]
     ), [branchAccess]);

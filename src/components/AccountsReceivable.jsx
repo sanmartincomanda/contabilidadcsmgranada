@@ -48,6 +48,8 @@ const safeNumber = (value = 0) => {
     return Number.isFinite(parsed) ? parsed : 0;
 };
 
+const roundMoney = (value = 0) => Math.round((safeNumber(value) + Number.EPSILON) * 100) / 100;
+
 const todayString = () => new Date().toISOString().substring(0, 10);
 
 const getMonth = (date = '') => String(date || todayString()).substring(0, 7);
@@ -130,6 +132,16 @@ const getInvoiceNumber = (invoice = {}) => (
 );
 
 const getInvoiceRecordId = (invoice = {}) => invoice.id || invoice.docId || '';
+
+const getInvoiceSubtotalBase = (invoice = {}) => {
+    const subtotal = safeNumber(invoice.subtotal ?? invoice.subtotalGravado ?? invoice.subtotalTaxable);
+    if (subtotal > 0) return subtotal;
+
+    const total = safeNumber(invoice.total || safeNumber(invoice.subtotal) + safeNumber(invoice.iva));
+    const iva = safeNumber(invoice.iva || invoice.taxAmount);
+    const subtotalFromTotal = safeNumber(total - iva);
+    return subtotalFromTotal > 0 ? subtotalFromTotal : total;
+};
 
 const normalizeReceivableInvoice = (invoice = {}) => {
     const branch = getBranchById(getRecordBranchId(invoice));
@@ -354,6 +366,30 @@ const getReceiptApplicationsTotal = (applications = []) => safeNumber(
     (Array.isArray(applications) ? applications : [])
         .reduce((sum, application) => sum + safeNumber(application.appliedAmount), 0)
 );
+
+const calculateReceiptRetentionSuggestion = (invoices = [], applications = []) => {
+    const invoiceIndex = new Map((Array.isArray(invoices) ? invoices : [])
+        .map((invoice) => [getInvoiceRecordId(invoice), invoice]));
+
+    const taxableBase = (Array.isArray(applications) ? applications : []).reduce((sum, application) => {
+        const invoice = invoiceIndex.get(application.invoiceId);
+        if (!invoice) return sum;
+
+        const appliedAmount = safeNumber(application.appliedAmount);
+        if (appliedAmount <= 0) return sum;
+
+        const invoiceSubtotal = getInvoiceSubtotalBase(invoice);
+        const paymentTarget = getInvoicePaymentTargetAmount(invoice) || safeNumber(invoice.originalAmount) || safeNumber(invoice.total);
+        const ratio = paymentTarget > 0 ? Math.min(appliedAmount / paymentTarget, 1) : 1;
+        return safeNumber(sum + invoiceSubtotal * ratio);
+    }, 0);
+
+    return {
+        taxableBase: roundMoney(taxableBase),
+        retentionIr2: roundMoney(taxableBase * 0.02),
+        retentionMunicipal1: roundMoney(taxableBase * 0.01),
+    };
+};
 
 const createReceiptForm = (invoiceOrInvoices = []) => {
     const invoices = getReceiptModalInvoices(invoiceOrInvoices);
@@ -602,6 +638,21 @@ export default function AccountsReceivable({ data = {}, branchContext }) {
                 ...prev,
                 applications,
                 amount: String(getReceiptApplicationsTotal(applications) || ''),
+            };
+        });
+    };
+
+    const receiptRetentionSuggestion = useMemo(() => (
+        calculateReceiptRetentionSuggestion(receiptInvoices, receiptForm.applications)
+    ), [receiptForm.applications, receiptInvoices]);
+
+    const applyReceiptRetentionSuggestion = () => {
+        setReceiptForm((prev) => {
+            const suggestion = calculateReceiptRetentionSuggestion(receiptInvoices, prev.applications);
+            return {
+                ...prev,
+                retentionIr2: suggestion.retentionIr2 ? suggestion.retentionIr2.toFixed(2) : '',
+                retentionMunicipal1: suggestion.retentionMunicipal1 ? suggestion.retentionMunicipal1.toFixed(2) : '',
             };
         });
     };
@@ -992,6 +1043,27 @@ export default function AccountsReceivable({ data = {}, branchContext }) {
                                 <span className={labelClass}>Referencia</span>
                                 <input className={inputClass} value={receiptForm.reference} onChange={(event) => updateReceiptForm('reference', event.target.value)} placeholder="Transferencia, POS, cheque..." />
                             </label>
+                            <div className="rounded-3xl border border-sky-100 bg-sky-50/70 p-4 md:col-span-2">
+                                <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                                    <div>
+                                        <div className="text-[10px] font-black uppercase tracking-[0.22em] text-sky-700">Calculo automatico fiscal</div>
+                                        <div className="mt-1 text-sm font-bold text-slate-600">
+                                            Base subtotal sin IVA: <span className="font-mono text-slate-950">{fmt(receiptRetentionSuggestion.taxableBase)}</span>
+                                        </div>
+                                        <div className="mt-1 text-xs font-bold text-slate-500">
+                                            IR 2% {fmt(receiptRetentionSuggestion.retentionIr2)} / Municipal 1% {fmt(receiptRetentionSuggestion.retentionMunicipal1)}
+                                        </div>
+                                    </div>
+                                    <button
+                                        type="button"
+                                        onClick={applyReceiptRetentionSuggestion}
+                                        disabled={receiptRetentionSuggestion.taxableBase <= 0}
+                                        className="rounded-2xl bg-slate-950 px-4 py-3 text-xs font-black uppercase tracking-[0.16em] text-white shadow-lg shadow-slate-950/10 transition hover:bg-[#e30613] disabled:cursor-not-allowed disabled:opacity-50"
+                                    >
+                                        Calcular 2% y 1%
+                                    </button>
+                                </div>
+                            </div>
                             <label className="space-y-2">
                                 <span className={labelClass}>Retencion anticipo IR 2%</span>
                                 <input type="number" step="0.01" min="0" className={inputClass} value={receiptForm.retentionIr2} onChange={(event) => updateReceiptForm('retentionIr2', event.target.value)} placeholder="0.00" />

@@ -11284,6 +11284,27 @@ const getBankDepositClosureCode = (closure = {}) => (
     getCashClosureCodeValue(closure) || closure.code || closure.id || ''
 );
 
+const normalizeBankDepositClosureCode = (value = '') => {
+    const raw = String(value || '').trim();
+    if (!raw) return '';
+    const codeMatch = raw.match(/\d+/g);
+    return codeMatch?.length ? codeMatch[codeMatch.length - 1].replace(/^0+(?=\d)/, '') : raw;
+};
+
+const buildBankDepositConcept = (closuresOrCodes = []) => {
+    const codes = [...new Set((closuresOrCodes || [])
+        .map((item) => normalizeBankDepositClosureCode(typeof item === 'string' ? item : item?.code || getBankDepositClosureCode(item)))
+        .filter(Boolean))];
+    return codes.length ? `C-${codes.join('/')}` : '';
+};
+
+const getBankDepositDisplayConcept = (deposit = {}, detail = {}) => (
+    buildBankDepositConcept(deposit.closureCodes?.length ? deposit.closureCodes : deposit.closures)
+    || detail.concept
+    || deposit.concept
+    || '-'
+);
+
 const getBankDepositClosureLabel = (closure = {}) => {
     const code = getBankDepositClosureCode(closure);
     const date = closure.date || getRecordDate(closure.createdAt || closure.updatedAt);
@@ -11348,7 +11369,8 @@ const calculateBankDepositAllocation = (closures = []) => {
         closureSummaries,
         closureIds: closureSummaries.map((item) => item.closureId),
         closureCodes: closureSummaries.map((item) => item.code).filter(Boolean),
-        concept: closureSummaries.map((item) => item.label).join(', '),
+        concept: buildBankDepositConcept(closureSummaries),
+        closureLabels: closureSummaries.map((item) => item.label).filter(Boolean),
         branchIds,
         branchNames: branchIds.map((branchId) => getBranchById(branchId).name),
         branchShortNames: branchIds.map((branchId) => getBranchById(branchId).shortName),
@@ -11518,7 +11540,7 @@ const BankDepositPrintArea = ({ deposit }) => {
                         </div>
                         <div className="ticket-line ticket-concept">
                             <span>Concepto:</span>
-                            <strong>{detail.concept || deposit.concept || '-'}</strong>
+                            <strong>{getBankDepositDisplayConcept(deposit, detail)}</strong>
                         </div>
                     </div>
                 ))}
@@ -11598,7 +11620,7 @@ const BankDepositHistoryModal = ({ deposit, onClose, onPrint }) => {
                 <div className="flex flex-col gap-4 border-b border-slate-200 bg-slate-950 px-5 py-5 text-white sm:flex-row sm:items-center sm:justify-between">
                     <div>
                         <div className="text-[10px] font-black uppercase tracking-[0.28em] text-[#ffc400]">Historial de deposito</div>
-                        <h3 className="text-2xl font-black">{deposit.closureCodes?.length ? `Cierres ${deposit.closureCodes.join(', ')}` : 'Deposito bancario'}</h3>
+                        <h3 className="text-2xl font-black">{getBankDepositDisplayConcept(deposit)}</h3>
                         <div className="mt-1 text-sm font-bold text-slate-300">
                             {deposit.date || '-'} / {fmt(deposit.totalCordobas)} / {details.length} detalle(s)
                         </div>
@@ -11630,7 +11652,7 @@ const BankDepositHistoryModal = ({ deposit, onClose, onPrint }) => {
 
                     <div className="mt-5 rounded-3xl border border-slate-200 bg-slate-50/80 p-4">
                         <div className="text-[10px] font-black uppercase tracking-[0.24em] text-slate-400">Concepto</div>
-                        <div className="mt-1 text-sm font-bold text-slate-700">{deposit.concept || '-'}</div>
+                        <div className="mt-1 text-sm font-bold text-slate-700">{getBankDepositDisplayConcept(deposit)}</div>
                     </div>
 
                     <div className="mt-5 space-y-4">
@@ -12123,7 +12145,7 @@ function BankDeposits({ data, branchContext }) {
                                         <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                                             <div>
                                                 <div className="text-[10px] font-black uppercase tracking-[0.22em] text-slate-400">{deposit.date || '-'}</div>
-                                                <div className="text-lg font-black text-slate-950">{deposit.closureCodes?.length ? `Cierres ${deposit.closureCodes.join(', ')}` : deposit.concept}</div>
+                                                <div className="text-lg font-black text-slate-950">{getBankDepositDisplayConcept(deposit)}</div>
                                                 <div className="mt-1 text-xs font-bold text-slate-500">{fmt(deposit.totalCordobas)} / {pendingDetails.length} pendiente(s) por confirmar</div>
                                                 <div className="mt-1 text-xs font-black uppercase tracking-[0.16em] text-slate-400">
                                                     {(deposit.branchShortNames || deposit.branchNames || []).length ? `Sucursales: ${(deposit.branchShortNames || deposit.branchNames || []).join(' + ')}` : 'Sucursal no especificada'}
@@ -12210,7 +12232,7 @@ function BankDeposits({ data, branchContext }) {
                                                 title="Doble clic para ver detalle"
                                             >
                                                 <td className="px-4 py-3 font-bold text-slate-700">{deposit.date || '-'}</td>
-                                                <td className="px-4 py-3 font-black text-slate-950">{deposit.closureCodes?.length ? deposit.closureCodes.join(', ') : '-'}</td>
+                                                <td className="px-4 py-3 font-black text-slate-950">{getBankDepositDisplayConcept(deposit)}</td>
                                                 <td className="px-4 py-3 font-bold text-slate-500">{(deposit.branchShortNames || deposit.branchNames || []).length ? (deposit.branchShortNames || deposit.branchNames || []).join(' + ') : '-'}</td>
                                                 <td className="px-4 py-3 font-bold text-slate-500">
                                                     {(deposit.depositDetails || []).map((detail) => detail.reference).filter(Boolean).join(' / ') || '-'}
