@@ -1,6 +1,6 @@
 const fs = require('node:fs');
 const path = require('node:path');
-const { createHash } = require('node:crypto');
+const { createHash, randomUUID } = require('node:crypto');
 const admin = require('firebase-admin');
 const mysql = require('mysql2/promise');
 
@@ -10,6 +10,8 @@ const BRANCH_NAME = 'CARNES SAN MARTIN GRANADA';
 const TIMEZONE = 'America/Managua';
 const DEFAULT_KEY_PATH = 'C:\\SICAR\\keys\\firebase-adminsdk.json';
 const DEFAULT_STATE_PATH = 'C:\\SICAR\\state\\sicar-purchases-sync-state.json';
+const DEFAULT_ACCOUNTING_METADATA_DIRECTORY = 'C:\\SICAR\\state\\sicar-purchase-accounting';
+const DEFAULT_STORAGE_BUCKET = 'sistema-contable-csm-granada.firebasestorage.app';
 const DEFAULT_EXCLUDED_SUPPLIER_ID = 136;
 const DEFAULT_EXCLUDED_SUPPLIER_NAME = 'CARNES AMPARITO';
 const PURCHASE_CATEGORY_PAYLOAD = {
@@ -218,6 +220,108 @@ function money(value) {
   return Math.round(parsed * 100) / 100;
 }
 
+function getAccountingMetadataDirectory() {
+  return process.env.SICAR_PURCHASE_ACCOUNTING_METADATA_DIRECTORY || DEFAULT_ACCOUNTING_METADATA_DIRECTORY;
+}
+
+function getAccountingMetadataPath(sourceRecordId) {
+  const safeId = String(sourceRecordId || '').replace(/[^a-zA-Z0-9_-]+/g, '_');
+  return path.join(getAccountingMetadataDirectory(), `compra_${safeId}.json`);
+}
+
+function readAccountingMetadata(sourceRecordId) {
+  const metadataPath = getAccountingMetadataPath(sourceRecordId);
+  if (!fs.existsSync(metadataPath)) return null;
+  try {
+    return { metadataPath, data: JSON.parse(fs.readFileSync(metadataPath, 'utf8')) };
+  } catch (error) {
+    throw new Error(`No se pudo leer complemento contable ${metadataPath}: ${error.message}`);
+  }
+}
+
+function writeAccountingMetadata(metadataPath, data) {
+  ensureDir(metadataPath);
+  const temporaryPath = `${metadataPath}.${process.pid}.${Date.now()}.tmp`;
+  fs.writeFileSync(temporaryPath, `${JSON.stringify(data, null, 2)}\n`, 'utf8');
+  fs.renameSync(temporaryPath, metadataPath);
+}
+
+function buildStorageDownloadUrl(bucketName, objectPath, token) {
+  return `https://firebasestorage.googleapis.com/v0/b/${bucketName}/o/${encodeURIComponent(objectPath)}?alt=media&token=${token}`;
+}
+
+async function ensureInvoiceSupportUploaded(entry, metadataRecord) {
+  const metadata = metadataRecord?.data;
+  if (!metadata?.invoiceSupport) return null;
+  if (metadata.uploadedSupport?.url && metadata.uploadedSupport?.path) return metadata.uploadedSupport;
+
+  const queueRoot = `${path.resolve(getAccountingMetadataDirectory())}${path.sep}`.toLowerCase();
+  const localPath = path.resolve(metadata.invoiceSupport.localPath || '');
+  if (!`${localPath}`.toLowerCase().startsWith(queueRoot) || !fs.existsSync(localPath)) {
+    throw new Error(`No se encontro la foto local de la factura para compra ${entry.sourceRecordId}.`);
+  }
+
+  const contentType = metadata.invoiceSupport.contentType || 'image/jpeg';
+  const extension = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp' }[contentType] || 'jpg';
+  const objectPath = `facturas/compras_sicar/${entry.date}/${entry.rawId}/factura.${extension}`;
+  const token = randomUUID();
+  const bucket = admin.storage().bucket(process.env.FIREBASE_STORAGE_BUCKET || DEFAULT_STORAGE_BUCKET);
+  await bucket.upload(localPath, {
+    destination: objectPath,
+    metadata: {
+      contentType,
+      metadata: { firebaseStorageDownloadTokens: token },
+    },
+  });
+
+  const support = {
+    type: 'invoice',
+    label: 'Factura / soporte principal',
+    url: buildStorageDownloadUrl(bucket.name, objectPath, token),
+    path: objectPath,
+    source: 'proveedores-app',
+    sourceCollection: 'compras',
+    sourceDocId: entry.compraId,
+    fileName: metadata.invoiceSupport.fileName || `factura.${extension}`,
+    contentType,
+    uploadedAt: new Date().toISOString(),
+  };
+  metadata.uploadedSupport = support;
+  writeAccountingMetadata(metadataRecord.metadataPath, metadata);
+  return support;
+}
+
+async function buildAccountingPayload(entry) {
+  const metadataRecord = readAccountingMetadata(entry.sourceRecordId);
+  if (!metadataRecord) return {};
+
+  const metadata = metadataRecord.data || {};
+  const retentionIr2 = money(metadata.retentionIr2);
+  const retentionMunicipal1 = money(metadata.retentionMunicipal1);
+  const retentionTotal = money(retentionIr2 + retentionMunicipal1);
+  const netTotal = money(Math.max(entry.total - retentionTotal, 0));
+  const support = await ensureInvoiceSupportUploaded(entry, metadataRecord);
+
+  return {
+    retentionIr2,
+    retentionMunicipal1,
+    retentionTotal,
+    retencionIr2: retentionIr2,
+    retencionMunicipal1: retentionMunicipal1,
+    retencionTotal: retentionTotal,
+    netTotal,
+    cashPaidAmount: netTotal,
+    accountingCaptureSource: metadata.source || 'proveedores-app',
+    accountingCapturedAt: metadata.capturedAt || '',
+    ...(support ? {
+      fotoFacturaUrl: support.url,
+      fotoFacturaPath: support.path,
+      support,
+      supportFiles: [support],
+    } : {}),
+  };
+}
+
 function cleanText(value) {
   return String(value || '').trim();
 }
@@ -311,6 +415,7 @@ function getPurchaseTargetIds(rawId) {
 
 function buildSyncFingerprint(entry) {
   const categoryPayload = resolvePurchaseCategoryPayload(entry);
+  const accounting = entry.accountingPayload || {};
   return createHash('sha1')
     .update(JSON.stringify({
       date: entry.date,
@@ -328,6 +433,11 @@ function buildSyncFingerprint(entry) {
       paymentTypeIds: entry.paymentTypeIds,
       paymentTypeNames: entry.paymentTypeNames,
       dueDate: entry.dueDate || '',
+      accounting: {
+        retentionIr2: money(accounting.retentionIr2),
+        retentionMunicipal1: money(accounting.retentionMunicipal1),
+        supportPath: accounting.fotoFacturaPath || '',
+      },
       status: 'active',
     }))
     .digest('hex');
@@ -403,6 +513,7 @@ function initFirebase() {
   admin.initializeApp({
     credential: admin.credential.applicationDefault(),
     projectId: process.env.FIREBASE_PROJECT_ID || PROJECT_ID,
+    storageBucket: process.env.FIREBASE_STORAGE_BUCKET || DEFAULT_STORAGE_BUCKET,
   });
 
   return admin.firestore();
@@ -710,6 +821,7 @@ async function writePurchase(db, entry, options) {
   const description = buildPurchaseDescription(entry).toUpperCase();
   const route = entry.paymentRoute;
   const categoryPayload = resolvePurchaseCategoryPayload(entry);
+  const accountingPayload = entry.accountingPayload || {};
   const syncFingerprint = buildSyncFingerprint(entry);
   const targetDocIds = {
     compraId: entry.compraId,
@@ -761,6 +873,7 @@ async function writePurchase(db, entry, options) {
       paymentTypeNames: entry.paymentTypeNames,
       paymentTypeTotal: entry.paymentTypeTotal,
       dueDate: entry.dueDate || '',
+      ...accountingPayload,
       ...categoryPayload,
       sourceRecordId: entry.sourceRecordId,
       isCancelled: false,
@@ -804,6 +917,7 @@ async function writePurchase(db, entry, options) {
       subtotalGravado: entry.subtotalGravado,
       iva: entry.iva,
       total: entry.total,
+      ...accountingPayload,
       ...categoryPayload,
       branch: BRANCH_ID,
       branchName: BRANCH_NAME,
@@ -843,6 +957,7 @@ async function writePurchase(db, entry, options) {
         subtotalGravado: entry.subtotalGravado,
         iva: entry.iva,
         total: entry.total,
+        ...accountingPayload,
         ...categoryPayload,
         estado: payableSaldo <= 0 ? 'pagado' : payableSaldo < entry.total ? 'parcial' : 'pendiente',
         paymentType: 'credito',
@@ -879,6 +994,7 @@ async function writePurchase(db, entry, options) {
         subtotalGravado: entry.subtotalGravado,
         iva: entry.iva,
         total: entry.total,
+        ...accountingPayload,
         tipo: 'Compra',
         ...categoryPayload,
         sucursal: BRANCH_ID,
@@ -1000,19 +1116,22 @@ async function main() {
     const writeResults = [];
     let skippedByLocalState = 0;
     for (const entry of entries) {
-      const fingerprint = buildSyncFingerprint(entry);
-      if (useLocalState && purchaseMatchesLocalState(state, entry, fingerprint)) {
+      // eslint-disable-next-line no-await-in-loop
+      const accountingPayload = await buildAccountingPayload(entry);
+      const enrichedEntry = { ...entry, accountingPayload };
+      const fingerprint = buildSyncFingerprint(enrichedEntry);
+      if (useLocalState && purchaseMatchesLocalState(state, enrichedEntry, fingerprint)) {
         skippedByLocalState += 1;
         continue;
       }
 
       // eslint-disable-next-line no-await-in-loop
-      const result = await writePurchase(db, entry, {
+      const result = await writePurchase(db, enrichedEntry, {
         skipRemoteUnchangedCheck: useLocalState,
         stageOnly: args.stageOnly,
       });
       writeResults.push(result);
-      if (!result?.skipped && useLocalState) rememberPurchase(state, entry, fingerprint);
+      if (!result?.skipped && useLocalState) rememberPurchase(state, enrichedEntry, fingerprint);
     }
     const skippedUnchanged = writeResults.filter((result) => result?.skipped).length;
     const writtenCount = writeResults.length - skippedUnchanged;
@@ -1031,7 +1150,7 @@ async function main() {
           startDate,
           writtenCount,
         },
-        version: 2,
+        version: 3,
       });
     }
 
