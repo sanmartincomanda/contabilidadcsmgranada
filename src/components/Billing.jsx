@@ -5532,7 +5532,6 @@ function CashReceipts({ data, branchContext }) {
             .filter((invoice) => {
                 const invoiceId = getInvoiceDocId(invoice);
                 const selected = selectedAmounts.has(invoiceId);
-                const matchesCustomer = !customerKey || normalizeText(invoice.customerName || invoice.cliente || '') === customerKey || selected;
                 const matchesSearch = !searchKey || recordSearchText(invoice, [
                     'date',
                     'invoiceNumber',
@@ -5540,6 +5539,10 @@ function CashReceipts({ data, branchContext }) {
                     'total',
                     'creditStatusLabel',
                 ]).includes(searchKey);
+                const matchesCustomer = !customerKey
+                    || normalizeText(invoice.customerName || invoice.cliente || '') === customerKey
+                    || selected
+                    || (searchKey && matchesSearch);
                 return matchesCustomer && matchesSearch && (invoice.availableCreditBalance > 0.01 || selected);
             });
     }, [creditInvoices]);
@@ -5588,7 +5591,8 @@ function CashReceipts({ data, branchContext }) {
         const invoiceCustomerName = String(invoice.customerName || invoice.cliente || '').trim();
         const formCustomerKey = normalizeText(form.customerName);
         const invoiceCustomerKey = normalizeText(invoiceCustomerName);
-        if (checked && formCustomerKey && invoiceCustomerKey && formCustomerKey !== invoiceCustomerKey) {
+        const hasSelectedInvoices = (form.invoiceApplications || []).length > 0;
+        if (checked && hasSelectedInvoices && formCustomerKey && invoiceCustomerKey && formCustomerKey !== invoiceCustomerKey) {
             setMessage('Un mismo recibo solo puede mezclar facturas del mismo cliente.');
             return;
         }
@@ -5612,7 +5616,7 @@ function CashReceipts({ data, branchContext }) {
             return {
                 ...prev,
                 isOtherReceipt: false,
-                customerName: prev.customerName || invoiceCustomerName,
+                customerName: checked && invoiceCustomerName ? invoiceCustomerName : prev.customerName,
                 invoiceApplications: nextApplications,
                 amount: nextApplications.length ? String(getCashReceiptApplicationsTotal(nextApplications)) : '',
             };
@@ -5660,7 +5664,8 @@ function CashReceipts({ data, branchContext }) {
         const invoiceCustomerName = String(invoice.customerName || invoice.cliente || '').trim();
         const editCustomerKey = normalizeText(editForm.customerName);
         const invoiceCustomerKey = normalizeText(invoiceCustomerName);
-        if (checked && editCustomerKey && invoiceCustomerKey && editCustomerKey !== invoiceCustomerKey) {
+        const hasSelectedInvoices = (editForm.invoiceApplications || []).length > 0;
+        if (checked && hasSelectedInvoices && editCustomerKey && invoiceCustomerKey && editCustomerKey !== invoiceCustomerKey) {
             setMessage('Un mismo recibo solo puede mezclar facturas del mismo cliente.');
             return;
         }
@@ -5685,7 +5690,7 @@ function CashReceipts({ data, branchContext }) {
             return {
                 ...prev,
                 isOtherReceipt: false,
-                customerName: prev.customerName || invoiceCustomerName,
+                customerName: checked && invoiceCustomerName ? invoiceCustomerName : prev.customerName,
                 invoiceApplications: nextApplications,
                 amount: nextApplications.length ? String(getCashReceiptApplicationsTotal(nextApplications)) : '',
             };
@@ -6092,13 +6097,16 @@ function CashReceiptHistory({ data, canEdit = true, branchContext }) {
             .filter((invoice) => {
                 const invoiceId = getInvoiceDocId(invoice);
                 const selected = selectedAmounts.has(invoiceId);
-                const matchesCustomer = !customerKey || normalizeText(invoice.customerName || invoice.cliente || '') === customerKey || selected;
                 const matchesSearch = !searchKey || recordSearchText(invoice, [
                     'date',
                     'invoiceNumber',
                     'customerName',
                     'creditStatusLabel',
                 ]).includes(searchKey);
+                const matchesCustomer = !customerKey
+                    || normalizeText(invoice.customerName || invoice.cliente || '') === customerKey
+                    || selected
+                    || (searchKey && matchesSearch);
                 return matchesCustomer && matchesSearch && (invoice.availableCreditBalance > 0.01 || selected);
             });
     }, [creditInvoices]);
@@ -6198,7 +6206,8 @@ function CashReceiptHistory({ data, canEdit = true, branchContext }) {
         const invoiceCustomerName = String(invoice.customerName || invoice.cliente || '').trim();
         const editCustomerKey = normalizeText(editForm.customerName);
         const invoiceCustomerKey = normalizeText(invoiceCustomerName);
-        if (checked && editCustomerKey && invoiceCustomerKey && editCustomerKey !== invoiceCustomerKey) {
+        const hasSelectedInvoices = (editForm.invoiceApplications || []).length > 0;
+        if (checked && hasSelectedInvoices && editCustomerKey && invoiceCustomerKey && editCustomerKey !== invoiceCustomerKey) {
             setMessage('Un mismo recibo solo puede mezclar facturas del mismo cliente.');
             return;
         }
@@ -6223,7 +6232,7 @@ function CashReceiptHistory({ data, canEdit = true, branchContext }) {
             return {
                 ...prev,
                 isOtherReceipt: false,
-                customerName: prev.customerName || invoiceCustomerName,
+                customerName: checked && invoiceCustomerName ? invoiceCustomerName : prev.customerName,
                 invoiceApplications: nextApplications,
                 amount: nextApplications.length ? String(getCashReceiptApplicationsTotal(nextApplications)) : '',
             };
