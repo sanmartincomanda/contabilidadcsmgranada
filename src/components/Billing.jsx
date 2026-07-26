@@ -239,8 +239,12 @@ const isSameCashier = (record = {}, cashierName = '') => {
     const targetName = normalizeText(cashierName);
     if (!targetName) return false;
     const targetCode = normalizeText(getCashierCode(cashierName));
-    return normalizeText(getCashierName(record)) === targetName
-        || normalizeText(getRecordCashierCode(record)) === targetCode;
+    const recordName = normalizeText(getCashierName(record));
+    const recordCode = normalizeText(getRecordCashierCode(record));
+    return recordName === targetName
+        || recordCode === targetCode
+        || (targetName.length >= 5 && recordName.includes(targetName))
+        || (recordName.length >= 5 && targetName.includes(recordName));
 };
 
 const getCashierRecordName = (record = {}) => (
@@ -2928,6 +2932,11 @@ function CashClosure({ data, branchContext }) {
             : []
     ), [cashierName, dayStampedInvoices]);
 
+    const dayStampedCashierNames = useMemo(() => (
+        [...new Set(dayStampedInvoices.map((invoice) => invoice.cashierName || 'Sin cajero').filter(Boolean))]
+            .sort((a, b) => a.localeCompare(b, 'es'))
+    ), [dayStampedInvoices]);
+
     const filteredStampedInvoices = useMemo(() => filterRecords(cashierStampedInvoices, closureInvoiceSearch, [
         'date',
         'invoiceNumber',
@@ -4097,7 +4106,9 @@ function CashClosure({ data, branchContext }) {
                             </div>
                         ) : filteredStampedInvoices.length === 0 ? (
                             <div className="rounded-3xl border border-dashed border-slate-300 p-8 text-center text-sm font-bold text-slate-400 md:col-span-2">
-                                No hay facturas membretadas del dia {closureDate} que coincidan con la busqueda.
+                                {dayStampedInvoices.length
+                                    ? `Hay ${dayStampedInvoices.length} factura(s) membretada(s) del dia ${closureDate}, pero ninguna coincide con el cajero seleccionado (${cashierName}). Cajeros encontrados: ${dayStampedCashierNames.join(', ') || 'sin cajero'}.`
+                                    : `No hay facturas membretadas del dia ${closureDate} que coincidan con la busqueda.`}
                             </div>
                         ) : pagedStampedInvoices.records.map((invoice) => (
                             <label key={invoice.id} className="flex cursor-default items-center gap-3 rounded-2xl border border-emerald-200 bg-emerald-50/50 p-3">
