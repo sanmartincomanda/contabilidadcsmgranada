@@ -1055,6 +1055,12 @@ const getPaymentMethodFromBreakdown = (rows = [], fallback = '') => {
     return fallback || '';
 };
 
+const getReceivableCompatiblePaymentMethod = (rows = [], fallback = '') => {
+    const normalizedRows = normalizePaymentBreakdownRows(rows);
+    if (normalizedRows.some((row) => isCreditPaymentMethod(row.method))) return 'CREDITO';
+    return getPaymentMethodFromBreakdown(normalizedRows, fallback);
+};
+
 const validatePaymentBreakdownForInvoice = (invoice = {}) => {
     const rows = normalizePaymentBreakdownRows(invoice.paymentBreakdown);
     if (!rows.length) return [];
@@ -3504,6 +3510,7 @@ function CashClosure({ data, branchContext }) {
             for (const invoice of preparedInvoiceDrafts) {
                 const paymentBreakdown = validatePaymentBreakdownForInvoice(invoice);
                 const paymentMethod = getPaymentMethodFromBreakdown(paymentBreakdown, invoice.paymentMethod);
+                const storedPaymentMethod = getReceivableCompatiblePaymentMethod(paymentBreakdown, paymentMethod);
                 const invoiceDocId = invoice.docId;
                 const existingInvoice = stampedInvoices.find((item) => item.id === invoiceDocId) || {};
                 const supportPayload = await uploadFiscalSupportFiles(
@@ -3522,7 +3529,9 @@ function CashClosure({ data, branchContext }) {
                     customerName: String(invoice.customerName || '').trim(),
                     cashierName: invoice.cashierName || safeCashierName,
                     cashierCode: invoice.cashierCode || getCashierCode(invoice.cashierName || safeCashierName),
-                    paymentMethod: String(paymentMethod || '').trim(),
+                    paymentMethod: String(storedPaymentMethod || '').trim(),
+                    metodoPago: String(storedPaymentMethod || '').trim(),
+                    paymentDisplayMethod: String(paymentMethod || '').trim(),
                     paymentBreakdown,
                     paymentNetTotal: paymentBreakdown.length ? getPaymentBreakdownTotal(paymentBreakdown) : getInvoicePaymentTargetAmount(invoice),
                     subtotal: safeNumber(invoice.subtotal),
@@ -6764,6 +6773,7 @@ function StampedInvoices({ data, branchContext }) {
                 const cashierCode = getCashierCode(cashierName);
                 const paymentBreakdown = validatePaymentBreakdownForInvoice(invoice);
                 const paymentMethod = getPaymentMethodFromBreakdown(paymentBreakdown, invoice.paymentMethod);
+                const storedPaymentMethod = getReceivableCompatiblePaymentMethod(paymentBreakdown, paymentMethod);
                 const itemFiscal = calculateInvoiceItemsFiscal(invoice.items || []);
                 const invoiceFiscal = buildFiscalPayload({
                     subtotal: itemFiscal.subtotal || safeNumber(invoice.subtotal),
@@ -6795,7 +6805,9 @@ function StampedInvoices({ data, branchContext }) {
                     customerRfc: String(invoice.customerRfc || '').trim(),
                     cashierName,
                     cashierCode,
-                    paymentMethod: String(paymentMethod || '').trim(),
+                    paymentMethod: String(storedPaymentMethod || '').trim(),
+                    metodoPago: String(storedPaymentMethod || '').trim(),
+                    paymentDisplayMethod: String(paymentMethod || '').trim(),
                     paymentBreakdown,
                     paymentNetTotal: paymentBreakdown.length ? getPaymentBreakdownTotal(paymentBreakdown) : getInvoicePaymentTargetAmount({ ...invoice, ...invoiceFiscal }),
                     items: invoice.items || [],
@@ -8037,6 +8049,7 @@ function StampedInvoiceHistory({ data, canEdit = true, branchContext }) {
                 const cashierCode = getCashierCode(cashierName);
                 const paymentBreakdown = validatePaymentBreakdownForInvoice(invoice);
                 const paymentMethod = getPaymentMethodFromBreakdown(paymentBreakdown, invoice.paymentMethod);
+                const storedPaymentMethod = getReceivableCompatiblePaymentMethod(paymentBreakdown, paymentMethod);
                 assertInvoiceCreditMethodChangeAllowed(existingSavedInvoice, paymentMethod);
                 const itemFiscal = calculateInvoiceItemsFiscal(invoice.items || []);
                 const invoiceFiscal = buildFiscalPayload({
@@ -8068,7 +8081,9 @@ function StampedInvoiceHistory({ data, canEdit = true, branchContext }) {
                     customerRfc: String(invoice.customerRfc || '').trim(),
                     cashierName,
                     cashierCode,
-                    paymentMethod: String(paymentMethod || '').trim(),
+                    paymentMethod: String(storedPaymentMethod || '').trim(),
+                    metodoPago: String(storedPaymentMethod || '').trim(),
+                    paymentDisplayMethod: String(paymentMethod || '').trim(),
                     paymentBreakdown,
                     paymentNetTotal: paymentBreakdown.length ? getPaymentBreakdownTotal(paymentBreakdown) : getInvoicePaymentTargetAmount({ ...invoice, ...invoiceFiscal }),
                     items: invoice.items || [],
