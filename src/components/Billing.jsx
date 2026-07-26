@@ -18,6 +18,12 @@ import {
 } from '../constants';
 import { PAYMENT_METHODS, buildFiscalPayload, getSupportFiles, uploadFiscalSupportFiles, uploadSupportFile } from '../services/fiscalUtils';
 import { isMasterEmail, isNicolUser, normalizeUserEmail } from '../services/userAccess';
+import {
+    buildClientPayload,
+    CLIENTS_COLLECTION,
+    createEmptyClientForm,
+    normalizeClientRecord,
+} from '../services/clientCatalog';
 
 const TRANSFER_BANKS = [
     { key: 'bac', label: 'BAC' },
@@ -566,7 +572,12 @@ const normalizeCreditStatusKey = (value = '') => {
 
 const getInvoiceCreditOriginalAmount = (invoice = {}) => {
     const stored = invoice.creditOriginalAmount ?? invoice.originalCreditAmount ?? invoice.montoCredito ?? invoice.creditAmount;
-    if (stored !== undefined && stored !== null && stored !== '') return safeNumber(stored);
+    const breakdownCredit = getInvoiceCreditBreakdownAmount(invoice);
+    if (stored !== undefined && stored !== null && stored !== '') {
+        const storedAmount = safeNumber(stored);
+        return storedAmount > 0 ? storedAmount : breakdownCredit;
+    }
+    if (breakdownCredit > 0) return breakdownCredit;
     return isCreditPaymentMethod(invoice.paymentMethod) ? getInvoicePaymentTargetAmount(invoice) : 0;
 };
 
@@ -578,8 +589,13 @@ const getInvoiceCreditPaidAmount = (invoice = {}) => safeNumber(
 
 const getInvoiceCreditBalance = (invoice = {}) => {
     const stored = invoice.creditBalance ?? invoice.saldoCredito;
-    if (stored !== undefined && stored !== null && stored !== '') return safeNumber(Math.max(stored, 0));
-    return safeNumber(Math.max(getInvoiceCreditOriginalAmount(invoice) - getInvoiceCreditPaidAmount(invoice), 0));
+    const original = getInvoiceCreditOriginalAmount(invoice);
+    const paid = getInvoiceCreditPaidAmount(invoice);
+    if (stored !== undefined && stored !== null && stored !== '') {
+        const storedAmount = safeNumber(Math.max(stored, 0));
+        if (storedAmount > 0.01 || paid >= original - 0.01) return storedAmount;
+    }
+    return safeNumber(Math.max(original - paid, 0));
 };
 
 const getInvoiceCreditReceiptIds = (invoice = {}) => uniqueStrings(
@@ -596,7 +612,7 @@ const getInvoiceCreditStatusKey = (invoice = {}) => {
     const balance = getInvoiceCreditBalance(invoice);
     if (balance <= 0.01 && (original > 0 || paid > 0)) return 'cancelled';
     if (paid > 0 && balance > 0.01) return 'partial';
-    if (original > 0 || isCreditPaymentMethod(invoice.paymentMethod)) return 'pending';
+    if (original > 0 || invoiceHasCreditPayment(invoice)) return 'pending';
     return '';
 };
 
@@ -607,7 +623,7 @@ const getInvoiceCreditStatusLabel = (invoice = {}) => {
 
 const buildCreditInvoiceSnapshot = (invoice = {}, overrides = {}) => {
     const merged = { ...invoice, ...overrides };
-    if (!isCreditPaymentMethod(merged.paymentMethod)) {
+    if (!invoiceHasCreditPayment(merged)) {
         return {
             isCreditSale: false,
             creditOriginalAmount: 0,
@@ -653,7 +669,7 @@ const buildCreditInvoiceSnapshot = (invoice = {}, overrides = {}) => {
 
 const assertInvoiceCreditMethodChangeAllowed = (invoice = {}, nextPaymentMethod = '') => {
     if (isCreditPaymentMethod(nextPaymentMethod)) return;
-    if (!isCreditPaymentMethod(invoice.paymentMethod)) return;
+    if (!invoiceHasCreditPayment(invoice)) return;
     const paid = getInvoiceCreditPaidAmount(invoice);
     const receiptIds = getInvoiceCreditReceiptIds(invoice);
     if (paid > 0.01 || receiptIds.length) {
@@ -1013,6 +1029,20 @@ const normalizePaymentBreakdownRows = (rows = []) => (
         }))
         .filter((row) => row.method && row.amount > 0)
 );
+
+function getInvoiceCreditBreakdownAmount(invoice = {}) {
+    return safeNumber(
+        normalizePaymentBreakdownRows(invoice.paymentBreakdown)
+            .filter((row) => isCreditPaymentMethod(row.method))
+            .reduce((sum, row) => sum + safeNumber(row.amount), 0)
+    );
+}
+
+function invoiceHasCreditPayment(invoice = {}) {
+    return isCreditPaymentMethod(invoice.paymentMethod)
+        || isCreditPaymentMethod(invoice.metodoPago)
+        || getInvoiceCreditBreakdownAmount(invoice) > 0.01;
+}
 
 const getPaymentBreakdownTotal = (rows = []) => safeNumber(
     normalizePaymentBreakdownRows(rows).reduce((sum, row) => sum + safeNumber(row.amount), 0)
@@ -1591,7 +1621,7 @@ const buildValidatedReceiptInvoiceApplications = ({
         if (!invoice) {
             throw new Error(`No encontre la factura ${application.invoiceId} dentro de las membretadas cargadas.`);
         }
-        if (!isCreditPaymentMethod(invoice.paymentMethod)) {
+        if (!invoiceHasCreditPayment(invoice)) {
             throw new Error(`La factura ${invoice.invoiceNumber || invoice.numeroFactura || application.invoiceId} no esta registrada como CREDITO.`);
         }
 
@@ -2635,6 +2665,63 @@ const DetailRows = ({ title, rows, onChange, onAdd, onRemove, type, clients = []
     </div>
 );
 
+const ClientCatalogModal = ({ initialName = '', source = 'facturacion', onClose, onSave, saving = false }) => {
+    const [form, setForm] = useState(() => createEmptyClientForm({ name: initialName }));
+    const update = (key, value) => setForm((current) => ({ ...current, [key]: value }));
+
+    const handleSubmit = (event) => {
+        event.preventDefault();
+        onSave?.({ ...form, name: String(form.name || '').trim() }, source);
+    };
+
+    return (
+        <div className="fixed inset-0 z-[150] flex items-center justify-center p-4">
+            <button type="button" aria-label="Cerrar cliente" className="absolute inset-0 bg-slate-950/65 backdrop-blur-sm" onClick={onClose} />
+            <form onSubmit={handleSubmit} className="relative w-full max-w-2xl overflow-hidden rounded-[2rem] border border-white/25 bg-white shadow-2xl shadow-slate-950/30">
+                <div className="border-b border-slate-200 bg-slate-950 px-5 py-5 text-white">
+                    <div className="text-[10px] font-black uppercase tracking-[0.28em] text-[#ffc400]">Base de clientes</div>
+                    <h3 className="mt-1 text-2xl font-black">Registrar cliente formal</h3>
+                    <p className="mt-1 text-sm font-semibold text-white/65">Completa la ficha antes de agregarlo al catalogo.</p>
+                </div>
+                <div className="grid gap-4 p-5 md:grid-cols-2">
+                    <label className="space-y-2">
+                        <span className="text-[10px] font-black uppercase tracking-[0.22em] text-slate-500">RUC / RFC</span>
+                        <input className={inputClass} value={form.ruc} onChange={(event) => update('ruc', event.target.value)} placeholder="RUC fiscal" required />
+                    </label>
+                    <label className="space-y-2">
+                        <span className="text-[10px] font-black uppercase tracking-[0.22em] text-slate-500">Nombre / razon social</span>
+                        <input className={inputClass} value={form.name} onChange={(event) => update('name', event.target.value)} placeholder="Cliente / razon social" required />
+                    </label>
+                    <label className="space-y-2 md:col-span-2">
+                        <span className="text-[10px] font-black uppercase tracking-[0.22em] text-slate-500">Direccion fiscal</span>
+                        <textarea className={`${inputClass} min-h-24 resize-y`} value={form.address} onChange={(event) => update('address', event.target.value)} placeholder="Direccion completa" required />
+                    </label>
+                    <label className="space-y-2">
+                        <span className="text-[10px] font-black uppercase tracking-[0.22em] text-slate-500">Telefono</span>
+                        <input className={inputClass} value={form.phone} onChange={(event) => update('phone', event.target.value)} />
+                    </label>
+                    <label className="space-y-2">
+                        <span className="text-[10px] font-black uppercase tracking-[0.22em] text-slate-500">Correo</span>
+                        <input className={inputClass} type="email" value={form.email} onChange={(event) => update('email', event.target.value)} />
+                    </label>
+                    <label className="space-y-2 md:col-span-2">
+                        <span className="text-[10px] font-black uppercase tracking-[0.22em] text-slate-500">Notas internas</span>
+                        <textarea className={`${inputClass} min-h-20 resize-y`} value={form.notes} onChange={(event) => update('notes', event.target.value)} />
+                    </label>
+                </div>
+                <div className="flex flex-col-reverse gap-3 border-t border-slate-200 bg-slate-50 px-5 py-4 sm:flex-row sm:justify-end">
+                    <button type="button" onClick={onClose} disabled={saving} className="rounded-2xl border border-slate-200 bg-white px-5 py-3 text-xs font-black uppercase tracking-[0.16em] text-slate-600 transition hover:bg-slate-100 disabled:opacity-60">
+                        Cancelar
+                    </button>
+                    <button type="submit" disabled={saving} className="rounded-2xl bg-[#e30613] px-5 py-3 text-xs font-black uppercase tracking-[0.16em] text-white shadow-lg shadow-red-950/20 transition hover:bg-[#9f111a] disabled:opacity-60">
+                        {saving ? 'Guardando...' : 'Guardar cliente'}
+                    </button>
+                </div>
+            </form>
+        </div>
+    );
+};
+
 const ClosureAccountingSummaryPanel = ({ summary = {} }) => {
     const general = summary.general || {};
     const stamped = summary.stampedDocuments || {};
@@ -2759,8 +2846,9 @@ function CashClosure({ data, branchContext }) {
 
     const clients = useMemo(() => (
         [...(data.clientes_facturacion || [])]
-            .map((item) => ({ ...item, name: item.name || item.nombre || '' }))
+            .map(normalizeClientRecord)
             .filter((item) => item.name)
+            .filter((item) => item.active !== false)
             .sort((a, b) => a.name.localeCompare(b.name, 'es'))
     ), [data.clientes_facturacion]);
 
@@ -2800,6 +2888,8 @@ function CashClosure({ data, branchContext }) {
     const [activeClosureInvoiceLocalId, setActiveClosureInvoiceLocalId] = useState('');
     const [closureSuccessOpen, setClosureSuccessOpen] = useState(false);
     const [lastSavedClosure, setLastSavedClosure] = useState(null);
+    const [clientModal, setClientModal] = useState(null);
+    const [savingClient, setSavingClient] = useState(false);
 
     const selectedClosure = useMemo(() => (
         sicarClosures.find((closure) => closure.id === selectedClosureId) || null
@@ -3173,19 +3263,13 @@ function CashClosure({ data, branchContext }) {
         )));
     };
 
-    const upsertClientRecord = async (name, source = 'manual') => {
-        const safeName = String(name || '').trim();
-        if (!safeName) return '';
-        const code = `CLI-${slugify(safeName)}`;
-        await setDoc(doc(db, 'clientes_facturacion', code), {
-            code,
-            name: safeName,
-            normalizedName: normalizeText(safeName),
-            source,
-            updatedAt: serverTimestamp(),
-            createdAt: serverTimestamp(),
-        }, { merge: true });
-        return code;
+    const upsertClientRecord = async (clientForm, source = 'manual') => {
+        const payload = buildClientPayload(clientForm, source);
+        if (!payload.name) throw new Error('Ingresa el nombre o razon social del cliente.');
+        if (!payload.ruc) throw new Error('Ingresa el RUC/RFC del cliente.');
+        if (!payload.address) throw new Error('Ingresa la direccion fiscal del cliente.');
+        await setDoc(doc(db, CLIENTS_COLLECTION, payload.code), payload, { merge: true });
+        return payload.code;
     };
 
     const upsertCashierRecord = async (name, source = 'manual', branchId = selectedBranchId) => {
@@ -3210,16 +3294,28 @@ function CashClosure({ data, branchContext }) {
         return code;
     };
 
-    const requestCreateClient = async (name) => {
+    const requestCreateClient = (name) => {
         const safeName = String(name || '').trim();
         if (!safeName) return;
         if (recordExistsByName(clients, safeName)) {
             setMessage(`Cliente ya existe: ${safeName}.`);
             return;
         }
-        if (!window.confirm(`El cliente "${safeName}" no existe. Deseas agregarlo a la base de clientes?`)) return;
-        await upsertClientRecord(safeName, 'manual_facturacion');
-        setMessage(`Cliente agregado a la base: ${safeName}.`);
+        setClientModal({ initialName: safeName, source: 'manual_facturacion' });
+    };
+
+    const saveClientFromModal = async (clientForm, source = 'manual_facturacion') => {
+        setSavingClient(true);
+        setMessage('');
+        try {
+            await upsertClientRecord(clientForm, source);
+            setMessage(`Cliente agregado a la base: ${clientForm.name}.`);
+            setClientModal(null);
+        } catch (error) {
+            setMessage(error?.message || 'No se pudo guardar el cliente.');
+        } finally {
+            setSavingClient(false);
+        }
     };
 
     const updateTransfer = (bank, index, field, value) => {
@@ -3316,24 +3412,6 @@ function CashClosure({ data, branchContext }) {
     };
 
     const ensurePeopleRecords = async () => {
-        const touchedClients = new Set();
-        Object.values(transfers).flat().forEach((row) => {
-            const name = String(row.clientName || '').trim();
-            if (name) touchedClients.add(name);
-        });
-
-        closureInvoices.forEach((invoice) => {
-            const name = String(invoice.customerName || '').trim();
-            if (name) touchedClients.add(name);
-        });
-
-        closureCashReceipts.forEach((receipt) => {
-            const name = String(receipt.customerName || '').trim();
-            if (name) touchedClients.add(name);
-        });
-
-        await Promise.all([...touchedClients].map((name) => upsertClientRecord(name, 'cierre_caja')));
-
         const safeCashierName = String(cashierName || '').trim();
         if (safeCashierName) {
             await upsertCashierRecord(safeCashierName, 'cierre_caja', selectedBranchId);
@@ -4247,6 +4325,15 @@ function CashClosure({ data, branchContext }) {
                 </Section>
             </div>
         </div>
+        {clientModal && (
+            <ClientCatalogModal
+                initialName={clientModal.initialName}
+                source={clientModal.source}
+                saving={savingClient}
+                onClose={() => setClientModal(null)}
+                onSave={saveClientFromModal}
+            />
+        )}
         </>
     );
 }
@@ -5372,8 +5459,9 @@ function CashReceipts({ data, branchContext }) {
     const receiptBranchPayload = useMemo(() => getBranchPayload(selectedBranchId, 'receipt'), [selectedBranchId]);
     const clients = useMemo(() => (
         [...(data.clientes_facturacion || [])]
-            .map((item) => ({ ...item, name: item.name || item.nombre || '' }))
+            .map(normalizeClientRecord)
             .filter((item) => item.name)
+            .filter((item) => item.active !== false)
             .sort((a, b) => a.name.localeCompare(b.name, 'es'))
     ), [data.clientes_facturacion]);
     const savedInvoices = useMemo(() => (
@@ -5389,7 +5477,7 @@ function CashReceipts({ data, branchContext }) {
     ), [savedInvoices]);
     const creditInvoices = useMemo(() => (
         savedInvoices
-            .filter((invoice) => isActiveStampedInvoice(invoice) && isCreditPaymentMethod(invoice.paymentMethod))
+            .filter((invoice) => isActiveStampedInvoice(invoice) && invoiceHasCreditPayment(invoice))
             .filter((invoice) => getInvoiceCreditBalance(invoice) > 0.01 || getInvoiceCreditReceiptIds(invoice).length > 0 || getInvoiceCreditPaidAmount(invoice) > 0.01)
     ), [savedInvoices]);
 
@@ -5410,6 +5498,8 @@ function CashReceipts({ data, branchContext }) {
     const [editForm, setEditForm] = useState(null);
     const [editSaving, setEditSaving] = useState(false);
     const [editInvoiceSearch, setEditInvoiceSearch] = useState('');
+    const [clientModal, setClientModal] = useState(null);
+    const [savingClient, setSavingClient] = useState(false);
     const {
         cashReceiptLayout,
         cashReceiptTemplates,
@@ -5618,19 +5708,32 @@ function CashReceipts({ data, branchContext }) {
         });
     };
 
-    const upsertClientRecord = async (name, source = 'recibo_caja') => {
+    const requestCreateClient = (name, source = 'recibo_caja') => {
         const safeName = String(name || '').trim();
-        if (!safeName) return '';
-        const code = `CLI-${slugify(safeName)}`;
-        await setDoc(doc(db, 'clientes_facturacion', code), {
-            code,
-            name: safeName,
-            normalizedName: normalizeText(safeName),
-            source,
-            updatedAt: serverTimestamp(),
-            createdAt: serverTimestamp(),
-        }, { merge: true });
-        return code;
+        if (!safeName) return;
+        if (recordExistsByName(clients, safeName)) {
+            setMessage(`Cliente ya existe: ${safeName}.`);
+            return;
+        }
+        setClientModal({ initialName: safeName, source });
+    };
+
+    const saveClientFromModal = async (clientForm, source = 'recibo_caja') => {
+        setSavingClient(true);
+        setMessage('');
+        try {
+            const payload = buildClientPayload(clientForm, source);
+            if (!payload.name) throw new Error('Ingresa el nombre o razon social del cliente.');
+            if (!payload.ruc) throw new Error('Ingresa el RUC/RFC del cliente.');
+            if (!payload.address) throw new Error('Ingresa la direccion fiscal del cliente.');
+            await setDoc(doc(db, CLIENTS_COLLECTION, payload.code), payload, { merge: true });
+            setMessage(`Cliente agregado a la base: ${payload.name}.`);
+            setClientModal(null);
+        } catch (error) {
+            setMessage(error?.message || 'No se pudo guardar el cliente.');
+        } finally {
+            setSavingClient(false);
+        }
     };
 
     const saveReceipt = async (event) => {
@@ -5649,7 +5752,6 @@ function CashReceipts({ data, branchContext }) {
                 invoiceIndex,
                 branchPayload: receiptBranchPayload,
             });
-            await upsertClientRecord(receiptPayload.customerName, receiptPayload.invoiceApplications?.length ? 'recibo_caja_credito' : 'recibo_caja');
             setForm(createCashReceiptForm());
             setInvoiceSearch('');
             setMessage('Recibo de caja guardado correctamente.');
@@ -5680,7 +5782,6 @@ function CashReceipts({ data, branchContext }) {
                 invoiceIndex,
                 branchPayload: receiptBranchPayload,
             });
-            await upsertClientRecord(receiptPayload.customerName, receiptPayload.invoiceApplications?.length ? 'recibo_caja_credito' : 'recibo_caja');
             setMessage(`Recibo ${editForm.receiptNumber || editForm.id} actualizado.`);
             setEditForm(null);
             setEditInvoiceSearch('');
@@ -5767,6 +5868,15 @@ function CashReceipts({ data, branchContext }) {
                                     <option key={client.id || client.code || client.name} value={client.name || client.nombre || ''} />
                                 ))}
                             </datalist>
+                            {String(form.customerName || '').trim() && !recordExistsByName(clients, form.customerName) && (
+                                <button
+                                    type="button"
+                                    onClick={() => requestCreateClient(form.customerName, 'recibo_caja')}
+                                    className="mt-2 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-[10px] font-black uppercase tracking-[0.16em] text-emerald-700 transition hover:bg-emerald-100"
+                                >
+                                    Agregar cliente
+                                </button>
+                            )}
                         </Field>
                         <Field label="Metodo de pago">
                             <PaymentMethodSelect value={form.paymentMethod} onChange={(value) => update('paymentMethod', value)} required />
@@ -5907,6 +6017,15 @@ function CashReceipts({ data, branchContext }) {
             onToggleInvoice={toggleEditReceiptInvoice}
             onUpdateInvoiceAmount={updateEditReceiptInvoiceAmount}
         />
+        {clientModal && (
+            <ClientCatalogModal
+                initialName={clientModal.initialName}
+                source={clientModal.source}
+                saving={savingClient}
+                onClose={() => setClientModal(null)}
+                onSave={saveClientFromModal}
+            />
+        )}
         </>
     );
 }
@@ -5949,7 +6068,7 @@ function CashReceiptHistory({ data, canEdit = true, branchContext }) {
     ), [savedInvoices]);
     const creditInvoices = useMemo(() => (
         savedInvoices
-            .filter((invoice) => isActiveStampedInvoice(invoice) && isCreditPaymentMethod(invoice.paymentMethod))
+            .filter((invoice) => isActiveStampedInvoice(invoice) && invoiceHasCreditPayment(invoice))
             .filter((invoice) => getInvoiceCreditBalance(invoice) > 0.01 || getInvoiceCreditReceiptIds(invoice).length > 0 || getInvoiceCreditPaidAmount(invoice) > 0.01)
     ), [savedInvoices]);
     const buildAvailableCreditInvoices = useCallback((customerName, searchValue, selectedApplications = []) => {
@@ -6146,14 +6265,6 @@ function CashReceiptHistory({ data, canEdit = true, branchContext }) {
                 invoiceIndex,
                 branchPayload: receiptBranchPayload,
             });
-            await setDoc(doc(db, 'clientes_facturacion', `CLI-${slugify(receiptPayload.customerName)}`), {
-                code: `CLI-${slugify(receiptPayload.customerName)}`,
-                name: receiptPayload.customerName,
-                normalizedName: normalizeText(receiptPayload.customerName),
-                source: receiptPayload.invoiceApplications?.length ? 'recibo_caja_credito' : 'recibo_caja',
-                updatedAt: serverTimestamp(),
-                createdAt: serverTimestamp(),
-            }, { merge: true });
             setMessage(`Recibo ${editForm.receiptNumber || editForm.id} actualizado.`);
             setEditForm(null);
             setEditInvoiceSearch('');
@@ -6328,8 +6439,8 @@ function StampedInvoices({ data, branchContext }) {
 
     const clients = useMemo(() => (
         [...(data.clientes_facturacion || [])]
-            .map((item) => ({ ...item, name: item.name || item.nombre || '' }))
-            .filter((item) => item.name)
+            .map(normalizeClientRecord)
+            .filter((item) => item.name && item.active !== false)
             .sort((a, b) => a.name.localeCompare(b.name, 'es'))
     ), [data.clientes_facturacion]);
 
@@ -6344,6 +6455,8 @@ function StampedInvoices({ data, branchContext }) {
     const [saving, setSaving] = useState(false);
     const [message, setMessage] = useState('');
     const [paymentSplitOpen, setPaymentSplitOpen] = useState(false);
+    const [clientModal, setClientModal] = useState(null);
+    const [savingClient, setSavingClient] = useState(false);
     const [sicarInvoiceSearch, setSicarInvoiceSearch] = useState('');
     const [sicarInvoicePage, setSicarInvoicePage] = useState(1);
 
@@ -6562,31 +6675,38 @@ function StampedInvoices({ data, branchContext }) {
         setSplitInvoice((prev) => prev ? { ...prev, invoiceNumber: value } : prev);
     };
 
-    const upsertClientRecord = async (name, source = 'factura_membretada') => {
-        const safeName = String(name || '').trim();
-        if (!safeName) return '';
-        const code = `CLI-${slugify(safeName)}`;
-        await setDoc(doc(db, 'clientes_facturacion', code), {
-            code,
-            name: safeName,
-            normalizedName: normalizeText(safeName),
-            source,
-            updatedAt: serverTimestamp(),
-            createdAt: serverTimestamp(),
-        }, { merge: true });
-        return code;
-    };
-
-    const requestCreateClient = async (name) => {
+    const requestCreateClient = (name) => {
         const safeName = String(name || '').trim();
         if (!safeName) return;
         if (recordExistsByName(clients, safeName)) {
             setMessage(`Cliente ya existe: ${safeName}.`);
             return;
         }
-        if (!window.confirm(`El cliente "${safeName}" no existe. Deseas agregarlo a la base de clientes?`)) return;
-        await upsertClientRecord(safeName, 'manual_factura_membretada');
-        setMessage(`Cliente agregado a la base: ${safeName}.`);
+        setClientModal({ initialName: safeName, source: 'manual_factura_membretada' });
+    };
+
+    const saveClientFromModal = async (clientForm, source = 'manual_factura_membretada') => {
+        setSavingClient(true);
+        try {
+            const payload = buildClientPayload(clientForm, source);
+            if (!payload.name || !payload.ruc || !payload.address) {
+                throw new Error('Completa nombre, RUC y direccion para guardar el cliente.');
+            }
+            await setDoc(doc(db, CLIENTS_COLLECTION, payload.code), payload, { merge: true });
+            setForm((prev) => ({
+                ...prev,
+                customerName: payload.name,
+                customerRfc: prev.customerRfc || payload.ruc,
+                customerAddress: prev.customerAddress || payload.address,
+            }));
+            setClientModal(null);
+            setMessage(`Cliente agregado a la base formal: ${payload.name}.`);
+        } catch (error) {
+            console.error(error);
+            setMessage(error?.message || 'No se pudo guardar el cliente.');
+        } finally {
+            setSavingClient(false);
+        }
     };
 
     const saveInvoice = async (event) => {
@@ -6629,10 +6749,6 @@ function StampedInvoices({ data, branchContext }) {
                 primaryDocId,
                 existingInvoice
             );
-
-            if (form.customerName.trim()) {
-                await upsertClientRecord(form.customerName.trim(), 'factura_membretada');
-            }
 
             for (const { invoice, docId } of invoiceMeta) {
                 const cashierName = String(invoice.cashierName || '').trim();
@@ -7009,6 +7125,16 @@ function StampedInvoices({ data, branchContext }) {
                     onClose={() => setPaymentSplitOpen(false)}
                     onSave={applyPaymentSplit}
                 />
+
+                {clientModal && (
+                    <ClientCatalogModal
+                        initialName={clientModal.initialName}
+                        source={clientModal.source}
+                        saving={savingClient}
+                        onClose={() => setClientModal(null)}
+                        onSave={saveClientFromModal}
+                    />
+                )}
 
                 {false && (
                 <Section title="Guardadas" eyebrow="Facturas membretadas" action={<Badge tone="green">{savedInvoices.length} registros</Badge>}>

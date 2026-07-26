@@ -61,11 +61,34 @@ const getInvoicePaymentTargetAmount = (invoice = {}) => {
     return net > 0 ? net : total;
 };
 
+const isCreditText = (value = '') => normalizeText(value).includes('CREDITO');
+
+function normalizePaymentBreakdownRows(rows = []) {
+    return (Array.isArray(rows) ? rows : [])
+        .map((row) => ({
+            method: String(row.method || row.paymentMethod || '').trim(),
+            amount: safeNumber(row.amount),
+        }))
+        .filter((row) => row.method && row.amount > 0);
+}
+
+function getCreditBreakdownAmount(invoice = {}) {
+    return safeNumber(
+        normalizePaymentBreakdownRows(invoice.paymentBreakdown)
+            .filter((row) => isCreditText(row.method))
+            .reduce((sum, row) => sum + safeNumber(row.amount), 0)
+    );
+}
+
 const getCreditOriginalAmount = (invoice = {}) => {
     const stored = invoice.creditOriginalAmount ?? invoice.originalCreditAmount ?? invoice.montoCredito ?? invoice.creditAmount;
-    return stored !== undefined && stored !== null && stored !== ''
-        ? safeNumber(stored)
-        : getInvoicePaymentTargetAmount(invoice);
+    const breakdownCredit = getCreditBreakdownAmount(invoice);
+    if (stored !== undefined && stored !== null && stored !== '') {
+        const storedAmount = safeNumber(stored);
+        return storedAmount > 0 ? storedAmount : breakdownCredit;
+    }
+    if (breakdownCredit > 0) return breakdownCredit;
+    return isCreditPaymentMethod(invoice) ? getInvoicePaymentTargetAmount(invoice) : 0;
 };
 
 const getCreditPaidAmount = (invoice = {}) => safeNumber(
@@ -92,18 +115,21 @@ const isSettledCreditStatus = (invoice = {}) => {
         || status.includes('CERRAD');
 };
 
-const isCreditPaymentMethod = (invoice = {}) => normalizeText(
-    invoice.paymentMethod || invoice.metodoPago || ''
-).includes('CREDITO');
+const isCreditPaymentMethod = (invoice = {}) => (
+    isCreditText(invoice.paymentMethod || invoice.metodoPago || '')
+    || getCreditBreakdownAmount(invoice) > 0.01
+);
 
 const getCreditBalance = (invoice = {}) => {
     const stored = invoice.creditBalance ?? invoice.saldoCredito;
     if (isSettledCreditStatus(invoice)) return 0;
+    const original = getCreditOriginalAmount(invoice);
+    const paid = getCreditPaidAmount(invoice);
     if (stored !== undefined && stored !== null && stored !== '') {
         const storedBalance = safeNumber(Math.max(safeNumber(stored), 0));
-        if (storedBalance > 0.01) return storedBalance;
+        if (storedBalance > 0.01 || paid >= original - 0.01) return storedBalance;
     }
-    return safeNumber(Math.max(getCreditOriginalAmount(invoice) - getCreditPaidAmount(invoice), 0));
+    return safeNumber(Math.max(original - paid, 0));
 };
 
 const getCreditStatus = (invoice = {}) => {
@@ -767,17 +793,6 @@ export default function AccountsReceivable({ data = {}, branchContext }) {
                 }, { merge: true });
             });
             await batch.commit();
-
-            const customerCode = `CLI-${slugify(receiptPayload.customerName)}`;
-            await setDoc(doc(db, 'clientes_facturacion', customerCode), {
-                code: customerCode,
-                name: receiptPayload.customerName,
-                normalizedName: normalizeText(receiptPayload.customerName),
-                rfc: receiptPayload.customerRfc || '',
-                address: receiptPayload.customerAddress || '',
-                source: 'cuentas_por_cobrar',
-                updatedAt: serverTimestamp(),
-            }, { merge: true });
 
             setMessage(`Recibo ${receiptNumber} registrado y vinculado a ${invoiceApplications.length} factura(s).`);
             setReceiptInvoices([]);
