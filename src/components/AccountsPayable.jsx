@@ -27,8 +27,10 @@ import {
     EXPENSE_CATEGORY_TREE,
     buildExpenseCategoryPayload,
 } from '../services/expenseCategories';
+import { buildAccountingAccountPayload, getDefaultAccountingAccountId } from '../services/chartOfAccounts';
 import { buildPettyCashMovementPayload, pettyCashMovementRef } from '../services/pettyCash';
 import ProviderAutocomplete from './ProviderAutocomplete';
+import AccountingAccountSelect from './AccountingAccountSelect';
 
 // --- ICONOS SVG INLINE ---
 const Icon = ({ path, className = "w-5 h-5" }) => (
@@ -466,6 +468,7 @@ export function AccountsPayable({ data, branchContext }) {
         retentionIr2: '',
         retentionMunicipal1: '',
         categoryId: DEFAULT_PURCHASE_CATEGORY_ID,
+        accountingAccountId: getDefaultAccountingAccountId('purchase'),
         paymentReference: ''
     });
     const [facturaSupportFiles, setFacturaSupportFiles] = useState(createEmptySupportFilesState());
@@ -522,6 +525,7 @@ export function AccountsPayable({ data, branchContext }) {
         setLoading(true);
         try {
             const categoryPayload = buildExpenseCategoryPayload(facturaForm.categoryId || DEFAULT_PURCHASE_CATEGORY_ID, DEFAULT_PURCHASE_CATEGORY_ID);
+            const accountingPayload = buildAccountingAccountPayload(facturaForm.accountingAccountId, { transactionType: 'purchase' });
             const provider = await upsertProviderByName(facturaForm.proveedor, { source: 'cuentas_por_pagar' });
             const facturaRef = doc(collection(db, 'cuentas_por_pagar'));
             const compraRef = doc(collection(db, 'compras'), `credito_${facturaRef.id}`);
@@ -548,6 +552,7 @@ export function AccountsPayable({ data, branchContext }) {
                 paymentReference: facturaForm.paymentReference?.trim().toUpperCase() || "",
                 isInventoryCost: true,
                 ...categoryPayload,
+                ...accountingPayload,
                 mirroredToCompras: true,
                 mirroredPurchaseId: compraRef.id,
                 ...fiscal,
@@ -572,6 +577,7 @@ export function AccountsPayable({ data, branchContext }) {
                 paymentReference: facturaForm.paymentReference?.trim().toUpperCase() || "",
                 isInventoryCost: true,
                 ...categoryPayload,
+                ...accountingPayload,
                 sourceCollection: 'cuentas_por_pagar',
                 sourceFacturaId: facturaRef.id,
                 linkedPayableId: facturaRef.id,
@@ -592,6 +598,7 @@ export function AccountsPayable({ data, branchContext }) {
                 retentionIr2: '',
                 retentionMunicipal1: '',
                 categoryId: DEFAULT_PURCHASE_CATEGORY_ID,
+                accountingAccountId: getDefaultAccountingAccountId('purchase'),
                 paymentReference: ''
             }));
             setFacturaSupportFiles(createEmptySupportFilesState());
@@ -1064,6 +1071,13 @@ export function AccountsPayable({ data, branchContext }) {
                                         value={facturaForm.categoryId}
                                         onChange={e => setFacturaForm({ ...facturaForm, categoryId: e.target.value })}
                                         options={expenseCategoryOptions()}
+                                    />
+
+                                    <AccountingAccountSelect
+                                        value={facturaForm.accountingAccountId}
+                                        onChange={(accountingAccountId) => setFacturaForm({ ...facturaForm, accountingAccountId })}
+                                        transactionType="purchase"
+                                        required
                                     />
 
                                     <div className="grid grid-cols-2 gap-4">

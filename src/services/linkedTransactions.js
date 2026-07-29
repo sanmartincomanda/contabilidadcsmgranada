@@ -49,6 +49,19 @@ const normalizeAmount = (value) => {
     return Math.round(parsed * 100) / 100;
 };
 
+const pickAccountingAccountPayload = (source = {}) => ([
+    'accountingAccountId',
+    'accountingAccountCode',
+    'accountingAccountName',
+    'accountingAccountFullName',
+    'accountingAccountType',
+    'accountingAccountDetailType',
+    'accountingAccountSource',
+].reduce((payload, key) => {
+    if (source[key] !== undefined && source[key] !== null) payload[key] = source[key];
+    return payload;
+}, {}));
+
 const firstDefined = (...values) => values.find((value) => value !== undefined && value !== null);
 
 const hasOwn = (object, key) => Object.prototype.hasOwnProperty.call(object || {}, key);
@@ -84,6 +97,7 @@ const buildPayableMirrorPayload = (purchaseData, updateData, payableData = {}) =
         purchaseSeries: merged.purchaseSeries || '',
         descripcion: firstDefined(merged.description, merged.descripcion),
         ...categoryPayload,
+        ...pickAccountingAccountPayload(merged),
         monto: newTotal,
         saldo,
         amount: normalizeAmount(firstDefined(merged.amount, merged.subtotal, newTotal)),
@@ -122,6 +136,7 @@ const buildExpensePayableMirrorPayload = (expenseData, updateData, payableData =
         factura: firstDefined(merged.invoiceNumber, merged.numero, merged.factura),
         descripcion: firstDefined(merged.description, merged.descripcion),
         ...categoryPayload,
+        ...pickAccountingAccountPayload(merged),
         monto: newTotal,
         saldo,
         amount: normalizeAmount(firstDefined(merged.amount, merged.subtotal, newTotal)),
@@ -167,6 +182,7 @@ const buildGastoMirrorPayload = (purchaseData, updateData) => {
         paymentType: merged.paymentType,
         paymentReference: merged.paymentReference,
         ...categoryPayload,
+        ...pickAccountingAccountPayload(merged),
         tipo: 'Compra',
     });
 };
@@ -200,6 +216,7 @@ const buildExpenseGastoMirrorPayload = (expenseData, updateData) => {
         paymentType: merged.paymentType,
         paymentReference: merged.paymentReference,
         ...categoryPayload,
+        ...pickAccountingAccountPayload(merged),
         tipo: 'Gasto',
     });
 };

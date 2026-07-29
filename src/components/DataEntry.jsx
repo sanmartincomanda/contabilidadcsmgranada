@@ -47,8 +47,10 @@ import {
     buildExpenseCategoryPayload,
     getExpenseCategoryFromRecord,
 } from '../services/expenseCategories';
+import { buildAccountingAccountPayload, getDefaultAccountingAccountId } from '../services/chartOfAccounts';
 import { buildPettyCashMovementPayload, pettyCashMovementRef } from '../services/pettyCash';
 import ProviderAutocomplete from './ProviderAutocomplete';
+import AccountingAccountSelect from './AccountingAccountSelect';
 
 // --- ICONOS SVG INLINE ---
 const Icons = {
@@ -387,6 +389,16 @@ const buildEditablePayload = (collectionName, editData, fields) => {
         );
     }
 
+    const accountingField = Object.values(fields).find((field) => field?.type === 'accountingAccount');
+    if (accountingField) {
+        Object.assign(
+            dataToSave,
+            buildAccountingAccountPayload(editData.accountingAccountId || dataToSave.accountingAccountId, {
+                transactionType: accountingField.transactionType,
+            })
+        );
+    }
+
     const providerField = Object.values(fields).find((field) => field?.type === 'provider');
     if (providerField) {
         const supplier = normalizeProviderName(editData.supplier || editData.proveedor || dataToSave.supplier || dataToSave.proveedor);
@@ -455,7 +467,9 @@ const RecordDetailModal = ({ item, collectionName, fields, onClose, onEdit }) =>
     const detailRows = Object.entries(fields).map(([key, field]) => ({
         key,
         label: field.label,
-        value: renderDisplayValue(fields, key, item[key]),
+        value: field?.type === 'accountingAccount'
+            ? [item.accountingAccountCode, item.accountingAccountName].filter(Boolean).join(' - ')
+            : renderDisplayValue(fields, key, item[key]),
     }));
     const extraRows = [
         ['ID', item.id],
@@ -667,6 +681,18 @@ const EditRecordModal = ({ item, collectionName, fields, onClose, onSaved, provi
                 >
                     {expenseCategoryOptions(field.placeholder || 'Seleccionar categoria / subcategoria...')}
                 </select>
+            );
+        }
+
+        if (field?.type === 'accountingAccount') {
+            return (
+                <AccountingAccountSelect
+                    label=""
+                    value={editData.accountingAccountId || editData.accountingAccountCode || ''}
+                    onChange={(accountingAccountId) => setEditData((prev) => ({ ...prev, accountingAccountId }))}
+                    transactionType={field.transactionType}
+                    help="Cuenta real para el libro contable QuickBooks."
+                />
             );
         }
 
@@ -951,6 +977,9 @@ const EditableRow = ({ item, collectionName, fields, providers = [], onUpdate, o
         }
         if (field?.type === 'branch') return branchName(value);
         if (field?.type === 'currency') return fmt(Number(value));
+        if (field?.type === 'accountingAccount') {
+            return [item.accountingAccountCode, item.accountingAccountName].filter(Boolean).join(' - ') || String(value);
+        }
         return String(value);
     };
 
@@ -985,6 +1014,18 @@ const EditableRow = ({ item, collectionName, fields, providers = [], onUpdate, o
                         <option key={option.id} value={option.id}>{option.name}</option>
                     ))}
                 </select>
+            );
+        }
+
+        if (field?.type === 'accountingAccount') {
+            return (
+                <AccountingAccountSelect
+                    label=""
+                    value={editData.accountingAccountId || editData.accountingAccountCode || ''}
+                    onChange={(accountingAccountId) => setEditData({ ...editData, accountingAccountId })}
+                    transactionType={field.transactionType}
+                    help=""
+                />
             );
         }
 
@@ -1927,6 +1968,7 @@ const FiscalExpenseForm = ({ categories, providers = [], loading, setLoading, on
     const [invoiceNumber, setInvoiceNumber] = useState('');
     const [description, setDescription] = useState('');
     const [categoryId, setCategoryId] = useState('');
+    const [accountingAccountId, setAccountingAccountId] = useState(() => getDefaultAccountingAccountId('expense'));
     const [paymentType, setPaymentType] = useState('EFECTIVO');
     const [paymentReference, setPaymentReference] = useState('');
     const [subtotal, setSubtotal] = useState('');
@@ -1947,6 +1989,7 @@ const FiscalExpenseForm = ({ categories, providers = [], loading, setLoading, on
         setInvoiceNumber('');
         setDescription('');
         setCategoryId('');
+        setAccountingAccountId(getDefaultAccountingAccountId('expense'));
         setPaymentType('EFECTIVO');
         setPaymentReference('');
         setSubtotal('');
@@ -1959,6 +2002,7 @@ const FiscalExpenseForm = ({ categories, providers = [], loading, setLoading, on
     const handleSubmit = async (e) => {
         e.preventDefault();
         const categoryPayload = resolveCategoryPayload(categoryId);
+        const accountingPayload = buildAccountingAccountPayload(accountingAccountId, { transactionType: 'expense' });
         const fiscal = buildFiscalPayload({ subtotal, iva, total: calculatedTotal, retentionIr2, retentionMunicipal1 });
         const cleanSupplier = normalizeProviderName(supplier);
         if (!description.trim() || !cleanSupplier || !categoryId || fiscal.total <= 0) {
@@ -1983,6 +2027,7 @@ const FiscalExpenseForm = ({ categories, providers = [], loading, setLoading, on
                 invoiceNumber: invoiceNumber.trim(),
                 description: description.trim().toUpperCase(),
                 ...categoryPayload,
+                ...accountingPayload,
                 paymentType,
                 paymentReference: paymentReference.trim().toUpperCase(),
                 ...fiscal,
@@ -2014,6 +2059,7 @@ const FiscalExpenseForm = ({ categories, providers = [], loading, setLoading, on
                     vencimiento: dueDate || date,
                     descripcion: description.trim().toUpperCase(),
                     ...categoryPayload,
+                    ...accountingPayload,
                     monto: fiscal.total,
                     saldo: fiscal.total,
                     amount: fiscal.subtotal,
@@ -2054,6 +2100,7 @@ const FiscalExpenseForm = ({ categories, providers = [], loading, setLoading, on
                     monto: fiscal.total,
                     amount: fiscal.subtotal,
                     ...categoryPayload,
+                    ...accountingPayload,
                     paymentType,
                     paymentReference: paymentReference.trim().toUpperCase(),
                     ...fiscal,
@@ -2087,6 +2134,7 @@ const FiscalExpenseForm = ({ categories, providers = [], loading, setLoading, on
                         cashPaidAmount,
                         ...branchPayload,
                         ...categoryPayload,
+                        ...accountingPayload,
                         ...photoPayload,
                     })
                 );
@@ -2126,6 +2174,12 @@ const FiscalExpenseForm = ({ categories, providers = [], loading, setLoading, on
                 <Select label="Categoria / subcategoria" icon="tag" value={categoryId} onChange={e => setCategoryId(e.target.value)} required options={expenseCategoryOptions()} />
                 <Select label="Tipo de pago" icon="cash" value={paymentType} onChange={e => setPaymentType(e.target.value)} required options={paymentOptions(PURCHASE_PAYMENT_METHODS)} />
             </div>
+            <AccountingAccountSelect
+                value={accountingAccountId}
+                onChange={setAccountingAccountId}
+                transactionType="expense"
+                required
+            />
             <Input label="Referencia de pago" icon="fileText" placeholder="Referencia bancaria o tarjeta..." value={paymentReference} onChange={e => setPaymentReference(e.target.value)} />
             <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                 <Input label="Subtotal" type="number" step="0.01" icon="dollar" placeholder="0.00" value={subtotal} onChange={e => setSubtotal(e.target.value)} required />
@@ -2166,6 +2220,7 @@ const FiscalPurchasesForm = ({ categories, providers = [], loading, setLoading, 
     const [invoiceNumber, setInvoiceNumber] = useState('');
     const [description, setDescription] = useState('');
     const [categoryId, setCategoryId] = useState(DEFAULT_PURCHASE_CATEGORY_ID);
+    const [accountingAccountId, setAccountingAccountId] = useState(() => getDefaultAccountingAccountId('purchase'));
     const [paymentType, setPaymentType] = useState('TRANSFERENCIA');
     const [paymentReference, setPaymentReference] = useState('');
     const [subtotal, setSubtotal] = useState('');
@@ -2182,6 +2237,7 @@ const FiscalPurchasesForm = ({ categories, providers = [], loading, setLoading, 
         setInvoiceNumber('');
         setDescription('');
         setCategoryId(DEFAULT_PURCHASE_CATEGORY_ID);
+        setAccountingAccountId(getDefaultAccountingAccountId('purchase'));
         setPaymentType('TRANSFERENCIA');
         setPaymentReference('');
         setSubtotal('');
@@ -2196,6 +2252,7 @@ const FiscalPurchasesForm = ({ categories, providers = [], loading, setLoading, 
         e.preventDefault();
         const fiscal = buildFiscalPayload({ subtotal, iva, total, retentionIr2, retentionMunicipal1 });
         const categoryPayload = resolveCategoryPayload(categoryId || DEFAULT_PURCHASE_CATEGORY_ID, DEFAULT_PURCHASE_CATEGORY_ID);
+        const accountingPayload = buildAccountingAccountPayload(accountingAccountId, { transactionType: 'purchase' });
         const cleanSupplier = normalizeProviderName(supplier);
         if (!cleanSupplier || fiscal.total <= 0 || !paymentType) {
             return alert('Complete proveedor, tipo de pago y montos fiscales.');
@@ -2219,6 +2276,7 @@ const FiscalPurchasesForm = ({ categories, providers = [], loading, setLoading, 
                 invoiceNumber: invoiceNumber.trim(),
                 description: description.trim().toUpperCase(),
                 ...categoryPayload,
+                ...accountingPayload,
                 paymentType,
                 paymentReference: paymentReference.trim().toUpperCase(),
                 isInventoryCost: true,
@@ -2247,6 +2305,7 @@ const FiscalPurchasesForm = ({ categories, providers = [], loading, setLoading, 
                     estado: 'pendiente',
                     descripcion: description.trim().toUpperCase(),
                     ...categoryPayload,
+                    ...accountingPayload,
                     paymentType,
                     paymentReference: paymentReference.trim().toUpperCase(),
                     linkedPurchaseId: purchaseRef.id,
@@ -2276,6 +2335,7 @@ const FiscalPurchasesForm = ({ categories, providers = [], loading, setLoading, 
                     monto: fiscal.total,
                     amount: fiscal.subtotal,
                     ...categoryPayload,
+                    ...accountingPayload,
                     paymentType,
                     paymentReference: paymentReference.trim().toUpperCase(),
                     ...fiscal,
@@ -2310,6 +2370,7 @@ const FiscalPurchasesForm = ({ categories, providers = [], loading, setLoading, 
                         cashPaidAmount,
                         ...branchPayload,
                         ...categoryPayload,
+                        ...accountingPayload,
                         ...photoPayload,
                     })
                 );
@@ -2352,6 +2413,12 @@ const FiscalPurchasesForm = ({ categories, providers = [], loading, setLoading, 
                 <Select label="Categoria / subcategoria" icon="tag" value={categoryId} onChange={e => setCategoryId(e.target.value)} options={expenseCategoryOptions('Compra de mercancia / costo de venta')} />
                 <Select label="Tipo de pago" icon="cash" value={paymentType} onChange={e => setPaymentType(e.target.value)} required options={paymentOptions(PURCHASE_PAYMENT_METHODS)} />
             </div>
+            <AccountingAccountSelect
+                value={accountingAccountId}
+                onChange={setAccountingAccountId}
+                transactionType="purchase"
+                required
+            />
             <Input label="Referencia de pago" icon="fileText" placeholder="Referencia bancaria o tarjeta..." value={paymentReference} onChange={e => setPaymentReference(e.target.value)} />
             <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                 <Input label="Subtotal" type="number" step="0.01" icon="shoppingCart" placeholder="0.00" value={subtotal} onChange={e => setSubtotal(e.target.value)} required />
@@ -2840,6 +2907,7 @@ export function DataEntry({ categories, data, allowedTabs = null, branchContext 
             description: { label: 'Descripcion', type: 'text' },
             category: { label: 'Categoria / Subcategoria', type: 'expenseCategory', fallbackId: DEFAULT_EXPENSE_CATEGORY_ID },
             subcategory: { label: 'Subcategoria', type: 'text', readonly: true },
+            accountingAccountId: { label: 'Cuenta contable', type: 'accountingAccount', transactionType: 'expense' },
             amount: { label: 'Monto', type: 'currency' }
         },
         Inventario: {
@@ -2862,6 +2930,7 @@ export function DataEntry({ categories, data, allowedTabs = null, branchContext 
             retentionMunicipal1: { label: 'Ret. Municipal 1%', type: 'currency' },
             description: { label: 'Descripcion', type: 'text' },
             category: { label: 'Categoria / Subcategoria', type: 'expenseCategory', fallbackId: DEFAULT_PURCHASE_CATEGORY_ID, placeholder: 'Compra de mercancia / costo de venta' },
+            accountingAccountId: { label: 'Cuenta contable', type: 'accountingAccount', transactionType: 'purchase' },
             subcategory: { label: 'Subcategoria', type: 'text', readonly: true }
         },
         Presupuesto: {
@@ -2897,13 +2966,13 @@ export function DataEntry({ categories, data, allowedTabs = null, branchContext 
         Gastos: [
             { key: 'dateFrom', label: 'Desde', type: 'date' },
             { key: 'dateTo', label: 'Hasta', type: 'date' },
-            { key: 'search', label: 'Proveedor / Factura / Categoria', type: 'text', placeholder: 'Buscar gasto...', keys: ['description', 'category', 'subcategory', 'categoryLabel', 'supplier', 'invoiceNumber'] },
+            { key: 'search', label: 'Proveedor / Factura / Categoria', type: 'text', placeholder: 'Buscar gasto...', keys: ['description', 'category', 'subcategory', 'categoryLabel', 'supplier', 'invoiceNumber', 'accountingAccountCode', 'accountingAccountName'] },
         ],
         Compras: [
             { key: 'dateFrom', label: 'Desde', type: 'date' },
             { key: 'dateTo', label: 'Hasta', type: 'date' },
             { key: 'supplier', label: 'Proveedor', type: 'text', placeholder: 'Buscar proveedor...', keys: ['supplier'] },
-            { key: 'invoiceNumber', label: 'No. Factura / categoria', type: 'text', placeholder: 'Buscar factura...', keys: ['invoiceNumber', 'category', 'subcategory', 'categoryLabel'] },
+            { key: 'invoiceNumber', label: 'No. Factura / categoria', type: 'text', placeholder: 'Buscar factura...', keys: ['invoiceNumber', 'category', 'subcategory', 'categoryLabel', 'accountingAccountCode', 'accountingAccountName'] },
         ],
     };
 

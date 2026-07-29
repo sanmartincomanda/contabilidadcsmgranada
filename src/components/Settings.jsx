@@ -6,6 +6,7 @@ import { db, functions as firebaseFunctions } from '../firebase';
 import { APP_BRAND_LOGO, APP_BRAND_NAME, BRANCHES, DEFAULT_BRANCH_ID, DEFAULT_BRANCH_NAME, branchName, fmt } from '../constants';
 import CategoryManager from './CategoryManager';
 import { getDeviceSettings, saveDeviceSettings } from '../services/deviceSettings';
+import { loadChartOfAccounts } from '../services/chartOfAccounts';
 import {
     ACCESS_MODULES,
     MASTER_USER_EMAIL,
@@ -31,6 +32,7 @@ const Icons = {
     scanner: 'M3 7a2 2 0 012-2h14a2 2 0 012 2v10H3V7zm2 10h14m-9 4h4',
     save: 'M5 13l4 4L19 7',
     receipt: 'M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01',
+    ledger: 'M4 5a2 2 0 012-2h12a2 2 0 012 2v14a1 1 0 01-1.447.894L16 17.618l-2.553 1.276a1 1 0 01-.894 0L10 17.618l-2.553 1.276A1 1 0 016 18V5H4zm5 3h6m-6 4h6m-6 4h3',
 };
 
 const Icon = ({ path, className = 'h-5 w-5' }) => (
@@ -52,6 +54,12 @@ const Field = ({ label, children, help }) => (
 );
 
 const inputClass = 'w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-2.5 text-sm font-bold text-slate-800 outline-none transition focus:border-[#e30613] focus:ring-2 focus:ring-[#e30613]/15';
+
+const normalizeSettingsSearchText = (value = '') => String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .trim();
 
 const createEmptyUserForm = () => ({
     email: '',
@@ -158,11 +166,17 @@ export default function Settings() {
     const [userForm, setUserForm] = useState(() => createEmptyUserForm());
     const [savingUser, setSavingUser] = useState(false);
     const [usersReloadKey, setUsersReloadKey] = useState(0);
+    const [chartAccounts, setChartAccounts] = useState([]);
+    const [chartLoading, setChartLoading] = useState(false);
+    const [chartError, setChartError] = useState('');
+    const [chartSearch, setChartSearch] = useState('');
+    const [chartTypeFilter, setChartTypeFilter] = useState('');
     const userRole = isMaster ? 'Usuario master' : 'Usuario operativo';
 
     const tabs = useMemo(() => [
         ...(isMaster ? [{ id: 'Usuarios', icon: 'users' }] : []),
         { id: 'Usuario', icon: 'user' },
+        ...(isMaster ? [{ id: 'Plan de cuentas', icon: 'ledger' }] : []),
         { id: 'Categorias', icon: 'tag' },
         { id: 'Dispositivos', icon: 'printer' },
     ], [isMaster]);
@@ -217,6 +231,58 @@ export default function Settings() {
             mounted = false;
         };
     }, [activeTab, isMaster, usersReloadKey]);
+
+    useEffect(() => {
+        if (!isMaster || activeTab !== 'Plan de cuentas') return undefined;
+
+        let mounted = true;
+        const loadAccounts = async () => {
+            setChartLoading(true);
+            setChartError('');
+            try {
+                const accounts = await loadChartOfAccounts({ force: true });
+                if (!mounted) return;
+                setChartAccounts(accounts);
+            } catch (error) {
+                if (!mounted) return;
+                setChartError(error.message || 'No se pudo cargar el plan de cuentas.');
+            } finally {
+                if (mounted) setChartLoading(false);
+            }
+        };
+
+        loadAccounts();
+        return () => {
+            mounted = false;
+        };
+    }, [activeTab, isMaster]);
+
+    const chartTypes = useMemo(() => {
+        const types = new Set(chartAccounts.map((account) => account.type).filter(Boolean));
+        return [...types].sort((a, b) => a.localeCompare(b, 'es'));
+    }, [chartAccounts]);
+
+    const filteredChartAccounts = useMemo(() => {
+        const searchKey = normalizeSettingsSearchText(chartSearch);
+        return chartAccounts
+            .filter((account) => {
+                if (chartTypeFilter && account.type !== chartTypeFilter) return false;
+                if (!searchKey) return true;
+                return normalizeSettingsSearchText([
+                    account.number,
+                    account.name,
+                    account.type,
+                    account.detailType,
+                ].join(' ')).includes(searchKey);
+            })
+            .sort((a, b) => String(a.number || '').localeCompare(String(b.number || ''), 'es', { numeric: true }));
+    }, [chartAccounts, chartSearch, chartTypeFilter]);
+
+    const chartStats = useMemo(() => ({
+        posting: chartAccounts.filter((account) => account.isPosting).length,
+        bankAndCards: chartAccounts.filter((account) => /banco|efectivo|tarjeta/i.test(`${account.type} ${account.detailType} ${account.name}`)).length,
+        inventory: chartAccounts.filter((account) => /inventario|alimento/i.test(`${account.type} ${account.detailType} ${account.name}`)).length,
+    }), [chartAccounts]);
 
     const resetUserForm = () => {
         setUserForm(createEmptyUserForm());
@@ -725,6 +791,122 @@ export default function Settings() {
                                             );
                                         })}
                                     </div>
+                                </div>
+                            )}
+                        </div>
+                    </Card>
+                </div>
+            )}
+
+            {activeTab === 'Plan de cuentas' && isMaster && (
+                <div className="space-y-5">
+                    <Card className="overflow-hidden">
+                        <div className="flex flex-col gap-4 border-b border-slate-200 bg-slate-50 px-5 py-4 lg:flex-row lg:items-center lg:justify-between">
+                            <div>
+                                <div className="text-[10px] font-black uppercase tracking-[0.28em] text-[#e30613]">Contabilidad formal</div>
+                                <h2 className="mt-1 text-lg font-black text-slate-950">Plan de cuentas</h2>
+                                <p className="mt-1 text-xs font-semibold text-slate-500">
+                                    Catalogo importado desde QuickBooks para clasificar compras, gastos y futuras polizas.
+                                </p>
+                            </div>
+                            <button
+                                type="button"
+                                onClick={async () => {
+                                    setChartLoading(true);
+                                    setChartError('');
+                                    try {
+                                        const accounts = await loadChartOfAccounts({ force: true });
+                                        setChartAccounts(accounts);
+                                    } catch (error) {
+                                        setChartError(error.message || 'No se pudo actualizar el plan de cuentas.');
+                                    } finally {
+                                        setChartLoading(false);
+                                    }
+                                }}
+                                className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-xs font-black uppercase tracking-wider text-slate-700 transition hover:bg-slate-100"
+                            >
+                                Actualizar plan
+                            </button>
+                        </div>
+
+                        <div className="grid gap-3 border-b border-slate-100 p-5 md:grid-cols-3">
+                            <div className="rounded-2xl border border-slate-200 bg-white p-4">
+                                <div className="text-[10px] font-black uppercase tracking-[0.22em] text-slate-400">Cuentas activas</div>
+                                <div className="mt-2 text-2xl font-black text-slate-950">{chartStats.posting}</div>
+                            </div>
+                            <div className="rounded-2xl border border-slate-200 bg-white p-4">
+                                <div className="text-[10px] font-black uppercase tracking-[0.22em] text-slate-400">Bancos / tarjetas</div>
+                                <div className="mt-2 text-2xl font-black text-slate-950">{chartStats.bankAndCards}</div>
+                            </div>
+                            <div className="rounded-2xl border border-slate-200 bg-white p-4">
+                                <div className="text-[10px] font-black uppercase tracking-[0.22em] text-slate-400">Inventario / alimentos</div>
+                                <div className="mt-2 text-2xl font-black text-slate-950">{chartStats.inventory}</div>
+                            </div>
+                        </div>
+
+                        <div className="grid gap-3 border-b border-slate-100 p-5 md:grid-cols-[1fr_260px]">
+                            <Field label="Buscar cuenta">
+                                <input
+                                    className={inputClass}
+                                    value={chartSearch}
+                                    onChange={(event) => setChartSearch(event.target.value)}
+                                    placeholder="Codigo, nombre, tipo..."
+                                />
+                            </Field>
+                            <Field label="Tipo">
+                                <select
+                                    className={inputClass}
+                                    value={chartTypeFilter}
+                                    onChange={(event) => setChartTypeFilter(event.target.value)}
+                                >
+                                    <option value="">Todos los tipos</option>
+                                    {chartTypes.map((type) => (
+                                        <option key={type} value={type}>{type}</option>
+                                    ))}
+                                </select>
+                            </Field>
+                        </div>
+
+                        <div className="p-5">
+                            {chartError && (
+                                <div className="mb-4 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-bold text-rose-700">
+                                    {chartError}
+                                </div>
+                            )}
+
+                            {chartLoading ? (
+                                <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-8 text-center text-sm font-bold text-slate-500">
+                                    Cargando plan de cuentas...
+                                </div>
+                            ) : (
+                                <div className="overflow-hidden rounded-2xl border border-slate-200">
+                                    <div className="hidden grid-cols-[120px_1.4fr_0.8fr_1fr] gap-3 border-b border-slate-200 bg-slate-50 px-4 py-3 text-[10px] font-black uppercase tracking-[0.2em] text-slate-400 md:grid">
+                                        <span>Codigo</span>
+                                        <span>Cuenta</span>
+                                        <span>Tipo</span>
+                                        <span>Detalle</span>
+                                    </div>
+                                    <div className="divide-y divide-slate-100">
+                                        {filteredChartAccounts.slice(0, 240).map((account) => (
+                                            <div key={account.id} className="grid gap-2 px-4 py-4 text-sm md:grid-cols-[120px_1.4fr_0.8fr_1fr] md:items-center">
+                                                <div className="font-black text-slate-950">{account.number || '-'}</div>
+                                                <div className="font-bold text-slate-800">{account.name}</div>
+                                                <div className="text-xs font-black uppercase tracking-[0.12em] text-slate-500">{account.type || '-'}</div>
+                                                <div className="text-xs font-semibold text-slate-500">{account.detailType || '-'}</div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                    {filteredChartAccounts.length === 0 && (
+                                        <div className="px-4 py-8 text-center text-sm font-bold text-slate-500">
+                                            No hay cuentas que coincidan con el filtro.
+                                        </div>
+                                    )}
+                                </div>
+                            )}
+
+                            {filteredChartAccounts.length > 240 && (
+                                <div className="mt-3 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs font-bold text-amber-800">
+                                    Mostrando las primeras 240 cuentas. Usa busqueda o tipo para reducir el listado.
                                 </div>
                             )}
                         </div>

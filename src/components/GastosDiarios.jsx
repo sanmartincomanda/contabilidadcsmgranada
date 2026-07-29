@@ -23,8 +23,10 @@ import {
     buildExpenseCategoryPayload,
     getExpenseCategoryFromRecord,
 } from '../services/expenseCategories';
+import { buildAccountingAccountPayload, getDefaultAccountingAccountId } from '../services/chartOfAccounts';
 import { normalizeProviderName, upsertProviderByName } from '../services/providers';
 import ProviderAutocomplete from './ProviderAutocomplete';
+import AccountingAccountSelect from './AccountingAccountSelect';
 
 // --- ICONOS SVG INLINE ---
 const Icons = {
@@ -245,6 +247,7 @@ export default function GastosDiarios({ categories = [], providers = [], branchC
     const [monto, setMonto] = useState('');
     const [tipo, setTipo] = useState('Gasto');
     const [categoriaId, setCategoriaId] = useState('');
+    const [accountingAccountId, setAccountingAccountId] = useState(() => getDefaultAccountingAccountId('expense'));
     const [proveedor, setProveedor] = useState('');
     const [numeroFactura, setNumeroFactura] = useState('');
     const [paymentType, setPaymentType] = useState('EFECTIVO');
@@ -517,6 +520,8 @@ export default function GastosDiarios({ categories = [], providers = [], branchC
             const categoryPayload = tipo === 'Gasto'
                 ? resolveCategoryPayload(categoriaId)
                 : resolveCategoryPayload(DEFAULT_PURCHASE_CATEGORY_ID, DEFAULT_PURCHASE_CATEGORY_ID);
+            const accountingType = tipo === 'Compra' ? 'purchase' : 'expense';
+            const accountingPayload = buildAccountingAccountPayload(accountingAccountId, { transactionType: accountingType });
             const gastoDiarioRef = doc(collection(db, 'gastosDiarios'));
             const gastoRef = tipo === 'Gasto' ? doc(collection(db, 'gastos')) : null;
             const compraRef = tipo === 'Compra' ? doc(collection(db, 'compras')) : null;
@@ -529,6 +534,7 @@ export default function GastosDiarios({ categories = [], providers = [], branchC
                 monto: numMonto,
                 tipo,
                 ...categoryPayload,
+                ...accountingPayload,
                 ...branchPayload,
                 linkedExpenseId: gastoRef?.id || null,
                 linkedPurchaseId: compraRef?.id || null,
@@ -541,6 +547,7 @@ export default function GastosDiarios({ categories = [], providers = [], branchC
                     description: descripcion,
                     amount: numMonto,
                     ...categoryPayload,
+                    ...accountingPayload,
                     ...branchPayload,
                     timestamp,
                     is_conciled: false,
@@ -557,6 +564,7 @@ export default function GastosDiarios({ categories = [], providers = [], branchC
                     invoiceNumber: `GD-${gastoDiarioRef.id.slice(0, 8).toUpperCase()}`,
                     amount: numMonto,
                     ...categoryPayload,
+                    ...accountingPayload,
                     ...branchPayload,
                     paymentType: 'contado',
                     isInventoryCost: true,
@@ -583,6 +591,7 @@ export default function GastosDiarios({ categories = [], providers = [], branchC
                     supplier: descripcion.trim().toUpperCase(),
                     timestamp,
                     ...categoryPayload,
+                    ...accountingPayload,
                     ...branchPayload,
                 })
             );
@@ -602,6 +611,7 @@ export default function GastosDiarios({ categories = [], providers = [], branchC
             setDescripcion('');
             setMonto('');
             setCategoriaId('');
+            setAccountingAccountId(getDefaultAccountingAccountId(tipo === 'Compra' ? 'purchase' : 'expense'));
             alert(`${tipo} registrado correctamente`);
             setRefreshKey(prev => prev + 1);
 
@@ -627,6 +637,8 @@ export default function GastosDiarios({ categories = [], providers = [], branchC
             const categoryPayload = tipo === 'Gasto'
                 ? resolveCategoryPayload(categoriaId)
                 : resolveCategoryPayload(categoriaId, DEFAULT_PURCHASE_CATEGORY_ID);
+            const accountingType = tipo === 'Compra' ? 'purchase' : 'expense';
+            const accountingPayload = buildAccountingAccountPayload(accountingAccountId, { transactionType: accountingType });
             const gastoDiarioRef = doc(collection(db, 'gastosDiarios'));
             const gastoRef = tipo === 'Gasto' ? doc(collection(db, 'gastos')) : null;
             const compraRef = tipo === 'Compra' ? doc(collection(db, 'compras')) : null;
@@ -662,6 +674,7 @@ export default function GastosDiarios({ categories = [], providers = [], branchC
                 amount: fiscal.subtotal,
                 tipo,
                 ...categoryPayload,
+                ...accountingPayload,
                 ...commonFiscal,
                 ...branchPayload,
                 linkedExpenseId: gastoRef?.id || null,
@@ -676,6 +689,7 @@ export default function GastosDiarios({ categories = [], providers = [], branchC
                     description: descripcion,
                     amount: fiscal.subtotal,
                     ...categoryPayload,
+                    ...accountingPayload,
                     ...commonFiscal,
                     ...branchPayload,
                     timestamp,
@@ -693,6 +707,7 @@ export default function GastosDiarios({ categories = [], providers = [], branchC
                     invoiceNumber: numeroFactura.trim(),
                     amount: fiscal.subtotal,
                     ...categoryPayload,
+                    ...accountingPayload,
                     ...branchPayload,
                     isInventoryCost: true,
                     description: descripcion,
@@ -728,6 +743,7 @@ export default function GastosDiarios({ categories = [], providers = [], branchC
                         accountingTotal: fiscal.total,
                         cashPaidAmount,
                         ...categoryPayload,
+                        ...accountingPayload,
                         ...photoPayload,
                         ...branchPayload,
                     })
@@ -751,11 +767,13 @@ export default function GastosDiarios({ categories = [], providers = [], branchC
                 retentionTotal: fiscal.retentionTotal,
                 cashPaidAmount: fiscal.cashPaidAmount,
                 ...categoryPayload,
+                ...accountingPayload,
             }));
 
             setDescripcion('');
             setMonto('');
             setCategoriaId('');
+            setAccountingAccountId(getDefaultAccountingAccountId(tipo === 'Compra' ? 'purchase' : 'expense'));
             setProveedor('');
             setNumeroFactura('');
             setPaymentType('EFECTIVO');
@@ -1048,6 +1066,7 @@ export default function GastosDiarios({ categories = [], providers = [], branchC
                                     onChange={e => {
                                         setTipo(e.target.value);
                                         if (e.target.value !== 'Gasto') setCategoriaId('');
+                                        setAccountingAccountId(getDefaultAccountingAccountId(e.target.value === 'Compra' ? 'purchase' : 'expense'));
                                     }}
                                     options={
                                         <>
@@ -1144,6 +1163,13 @@ export default function GastosDiarios({ categories = [], providers = [], branchC
                                 onChange={e => setCategoriaId(e.target.value)}
                                 required
                                 options={tipo === 'Compra' ? purchaseCategoryOptions() : expenseCategoryOptions()}
+                            />
+
+                            <AccountingAccountSelect
+                                value={accountingAccountId}
+                                onChange={setAccountingAccountId}
+                                transactionType={tipo === 'Compra' ? 'purchase' : 'expense'}
+                                required
                             />
 
                             <Button
