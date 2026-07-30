@@ -195,7 +195,7 @@ const normalizeFilterText = (value) => (
         .trim()
 );
 
-const QB_INVENTORY_ACCOUNT = '11060 INVENTARIO:Alimentos';
+const QB_INVENTORY_ACCOUNT = '11060 INVENTARIO:Productos cárnicos';
 const QB_VAT_ACCOUNT = '110702 IMPUESTOS ACREDITABLES:IVA Acreditable';
 const QB_IR_RETENTION_ACCOUNT = '21041 IMPTOS CORRIENTES X PAGAR:Anticipo IR';
 const QB_MUNICIPAL_RETENTION_ACCOUNT = '21043 IMPTOS CORRIENTES X PAGAR:Impuestos Municipales';

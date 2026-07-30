@@ -8,7 +8,7 @@ const CASHBOX_NAME = process.env.SICAR_CASHBOX_NAME || 'CAJA 2';
 const ACCOUNTING_ENTRIES_COLLECTION = 'contabilidad_asientos';
 const ACCOUNTING_VERSION = 1;
 const ACCOUNTING_ACCOUNTS = {
-  inventory: { code: '11060', name: 'INVENTARIO:Alimentos', type: 'Activos corrientes' },
+  inventory: { code: '11060', name: 'INVENTARIO:Productos cárnicos', type: 'Activos corrientes' },
   ivaCredit: { code: '110702', name: 'IMPUESTOS ACREDITABLES:IVA Acreditable', type: 'Activos corrientes' },
   payable: { code: '2101', name: 'CUENTAS POR PAGAR - NIO', type: 'Cuentas por pagar (C/P)' },
   pettyCash: { code: '11013', name: 'Activos Circulantes Caja:Caja Chica', type: 'Efectivo y equivalentes de efectivo' },

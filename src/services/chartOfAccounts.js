@@ -24,7 +24,7 @@ export const DEFAULT_ACCOUNT_CODES = {
 };
 
 const DEFAULT_CHART_ACCOUNTS = [
-    { number: '11060', name: 'INVENTARIO:Alimentos', type: 'Activos corrientes', detailType: 'Inventario', locked: false },
+    { number: '11060', name: 'INVENTARIO:Productos cárnicos', type: 'Activos corrientes', detailType: 'Inventario', locked: false },
     { number: '110702', name: 'IMPUESTOS ACREDITABLES:IVA Acreditable', type: 'Activos corrientes', detailType: 'Otros activos corrientes', locked: false },
     { number: '21041', name: 'IMPTOS CORRIENTES X PAGAR:Anticipo IR', type: 'Pasivos corrientes', detailType: 'Impuesto a las ganancias por pagar', locked: false },
     { number: '21043', name: 'IMPTOS CORRIENTES X PAGAR:Impuestos Municipales', type: 'Pasivos corrientes', detailType: 'Pasivos por impuestos corriente', locked: false },

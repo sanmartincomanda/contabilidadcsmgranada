@@ -18,7 +18,7 @@ const DEFAULT_EXCLUDED_SUPPLIER_NAME = 'CARNES AMPARITO';
 const ACCOUNTING_ENTRIES_COLLECTION = 'contabilidad_asientos';
 const ACCOUNTING_VERSION = 1;
 const ACCOUNTING_ACCOUNTS = {
-  inventory: { code: '11060', name: 'INVENTARIO:Alimentos', type: 'Activos corrientes' },
+  inventory: { code: '11060', name: 'INVENTARIO:Productos cárnicos', type: 'Activos corrientes' },
   ivaCredit: { code: '110702', name: 'IMPUESTOS ACREDITABLES:IVA Acreditable', type: 'Activos corrientes' },
   retentionIr: { code: '21041', name: 'IMPTOS CORRIENTES X PAGAR:Anticipo IR', type: 'Pasivos corrientes' },
   retentionMunicipal: { code: '21043', name: 'IMPTOS CORRIENTES X PAGAR:Impuestos Municipales', type: 'Pasivos corrientes' },

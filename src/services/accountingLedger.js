@@ -10,7 +10,7 @@ export const ACCOUNTING_VERSION = 1;
 const ACCOUNT_CATALOG = {
     inventory: {
         code: DEFAULT_ACCOUNT_CODES.purchase,
-        name: 'INVENTARIO:Alimentos',
+        name: 'INVENTARIO:Productos cárnicos',
         type: 'Activos corrientes',
     },
     expense: {
