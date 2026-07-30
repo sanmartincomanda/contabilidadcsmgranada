@@ -5,6 +5,15 @@ const CUTOVER_DATE = process.env.SICAR_PRIVATE_CUTOVER_DATE || '2026-05-14';
 const BRANCH_ID = process.env.SICAR_BRANCH_ID || 'granada';
 const BRANCH_NAME = process.env.SICAR_BRANCH_NAME || 'CARNES SAN MARTIN GRANADA';
 const CASHBOX_NAME = process.env.SICAR_CASHBOX_NAME || 'CAJA 2';
+const ACCOUNTING_ENTRIES_COLLECTION = 'contabilidad_asientos';
+const ACCOUNTING_VERSION = 1;
+const ACCOUNTING_ACCOUNTS = {
+  inventory: { code: '11060', name: 'INVENTARIO:Alimentos', type: 'Activos corrientes' },
+  ivaCredit: { code: '110702', name: 'IMPUESTOS ACREDITABLES:IVA Acreditable', type: 'Activos corrientes' },
+  payable: { code: '2101', name: 'CUENTAS POR PAGAR - NIO', type: 'Cuentas por pagar (C/P)' },
+  pettyCash: { code: '11013', name: 'Activos Circulantes Caja:Caja Chica', type: 'Efectivo y equivalentes de efectivo' },
+  bankBac: { code: '1102101', name: 'BANCOS:MONEDA NACIONAL:BAC NO. 362843534 C$', type: 'Efectivo y equivalentes de efectivo' },
+};
 const PURCHASE_CATEGORY_PAYLOAD = {
   category: 'Costos de venta / compras',
   categoria: 'Costos de venta / compras',
@@ -79,6 +88,118 @@ function normalizeAmount(value) {
   const parsed = Number(value ?? 0);
   if (!Number.isFinite(parsed)) return 0;
   return Math.round(parsed * 100) / 100;
+}
+
+function normalizeAccountingIdPart(value = '') {
+  return String(value || '')
+    .trim()
+    .replace(/[^a-zA-Z0-9_-]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, 90) || 'sin_id';
+}
+
+function accountingEntryId(sourceCollection, sourceDocId) {
+  return `${normalizeAccountingIdPart(sourceCollection)}_${normalizeAccountingIdPart(sourceDocId)}`;
+}
+
+function accountingEntryRef(sourceCollection, sourceDocId) {
+  return db.collection(ACCOUNTING_ENTRIES_COLLECTION).doc(accountingEntryId(sourceCollection, sourceDocId));
+}
+
+function addAccountingLine(lines, { account, debit = 0, credit = 0, description = '', reference = '', meta = {} }) {
+  const normalizedDebit = normalizeAmount(debit);
+  const normalizedCredit = normalizeAmount(credit);
+  if (normalizedDebit <= 0 && normalizedCredit <= 0) return;
+  lines.push({
+    lineId: `line_${String(lines.length + 1).padStart(2, '0')}`,
+    accountCode: account.code,
+    accountName: account.name,
+    accountType: account.type || '',
+    debit: normalizedDebit,
+    credit: normalizedCredit,
+    description,
+    reference,
+    ...meta,
+  });
+}
+
+function buildPurchaseAccountingEntry(normalized, targetDocIds, categoryPayload = {}) {
+  const subtotal = normalizeAmount(normalized.subtotal ?? normalized.amount);
+  const iva = normalizeAmount(normalized.iva);
+  const total = normalizeAmount(normalized.total || subtotal + iva);
+  const reference = normalized.invoiceNumber || targetDocIds.compraId;
+  const description = buildDescription(normalized);
+  const paymentAccount = normalized.paymentRoute === 'credito'
+    ? ACCOUNTING_ACCOUNTS.payable
+    : normalized.paymentRoute === 'efectivo'
+      ? ACCOUNTING_ACCOUNTS.pettyCash
+      : ACCOUNTING_ACCOUNTS.bankBac;
+  const lines = [];
+
+  addAccountingLine(lines, {
+    account: ACCOUNTING_ACCOUNTS.inventory,
+    debit: subtotal,
+    description,
+    reference,
+    meta: {
+      lineRole: 'inventory_or_cost',
+      category: categoryPayload.category || PURCHASE_CATEGORY_PAYLOAD.category,
+      subcategory: categoryPayload.subcategory || PURCHASE_CATEGORY_PAYLOAD.subcategory,
+    },
+  });
+  addAccountingLine(lines, {
+    account: ACCOUNTING_ACCOUNTS.ivaCredit,
+    debit: iva,
+    description: `IVA ACREDITABLE ${reference}`.trim(),
+    reference,
+    meta: { lineRole: 'iva_credit' },
+  });
+  addAccountingLine(lines, {
+    account: paymentAccount,
+    credit: total,
+    description: normalized.paymentRoute === 'credito' ? `CUENTA POR PAGAR ${normalized.supplier}` : `PAGO ${normalized.paymentRoute}`,
+    reference,
+    meta: {
+      lineRole: normalized.paymentRoute === 'credito' ? 'accounts_payable' : 'payment',
+      paymentRoute: normalized.paymentRoute,
+    },
+  });
+
+  const totalDebit = normalizeAmount(lines.reduce((sum, line) => sum + normalizeAmount(line.debit), 0));
+  const totalCredit = normalizeAmount(lines.reduce((sum, line) => sum + normalizeAmount(line.credit), 0));
+  const difference = normalizeAmount(totalDebit - totalCredit);
+
+  return {
+    id: accountingEntryId('compras', targetDocIds.compraId),
+    sourceCollection: 'compras',
+    sourceDocId: targetDocIds.compraId,
+    sourceType: 'purchase',
+    source: 'SICAR',
+    status: Math.abs(difference) <= 0.01 ? 'posted' : 'out_of_balance',
+    requiresReview: Math.abs(difference) > 0.01,
+    accountingVersion: ACCOUNTING_VERSION,
+    date: normalized.date,
+    month: normalized.month,
+    branchId: BRANCH_ID,
+    branchName: BRANCH_NAME,
+    documentNumber: reference,
+    partyName: normalized.supplier,
+    description,
+    totalDebit,
+    totalCredit,
+    difference,
+    lines,
+    sourceSnapshot: {
+      subtotal,
+      iva,
+      total,
+      paymentRoute: normalized.paymentRoute,
+      accountingAccountCode: ACCOUNTING_ACCOUNTS.inventory.code,
+      accountingAccountName: ACCOUNTING_ACCOUNTS.inventory.name,
+    },
+    updatedAt: FieldValue.serverTimestamp(),
+    createdAt: FieldValue.serverTimestamp(),
+  };
 }
 
 function normalizeDate(value) {
@@ -400,6 +521,7 @@ async function cancelCreditAbonos(batch, facturaId) {
       batch.delete(db.collection('gastosDiarios').doc(abono.linkedGastoDiarioId));
     }
 
+    batch.delete(accountingEntryRef('abonos_pagar', abono.id));
     batch.delete(db.collection('abonos_pagar').doc(abono.id));
   }
 
@@ -461,11 +583,14 @@ async function processPurchaseDocument(docSnapshot) {
         removedAbonoIds = await cancelCreditAbonos(batch, targetDocIds.cuentaPorPagarId);
         batch.delete(db.collection('cuentas_por_pagar').doc(targetDocIds.cuentaPorPagarId));
         batch.delete(db.collection('compras').doc(targetDocIds.compraId));
+        batch.delete(accountingEntryRef('compras', targetDocIds.compraId));
       } else if (normalized.paymentRoute === 'efectivo') {
         batch.delete(db.collection('gastosDiarios').doc(targetDocIds.gastoDiarioId));
         batch.delete(db.collection('compras').doc(targetDocIds.compraId));
+        batch.delete(accountingEntryRef('compras', targetDocIds.compraId));
       } else {
         batch.delete(db.collection('compras').doc(targetDocIds.compraId));
+        batch.delete(accountingEntryRef('compras', targetDocIds.compraId));
       }
 
       await batch.commit();
@@ -589,6 +714,11 @@ async function processPurchaseDocument(docSnapshot) {
       linkedPayableId: normalized.paymentRoute === 'credito' ? targetDocIds.cuentaPorPagarId : null,
       timestamp: FieldValue.serverTimestamp(),
     });
+    batch.set(
+      accountingEntryRef('compras', targetDocIds.compraId),
+      buildPurchaseAccountingEntry(normalized, targetDocIds, categoryPayload),
+      { merge: false }
+    );
 
     await batch.commit();
 

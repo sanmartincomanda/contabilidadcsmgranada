@@ -28,6 +28,13 @@ import {
     buildExpenseCategoryPayload,
 } from '../services/expenseCategories';
 import { buildAccountingAccountPayload, getDefaultAccountingAccountId } from '../services/chartOfAccounts';
+import {
+    accountingEntryRef,
+    buildPayablePaymentAccountingEntry,
+    buildPurchaseExpenseAccountingEntry,
+    deleteAccountingEntryInTransaction,
+    setAccountingEntryInBatch,
+} from '../services/accountingLedger';
 import { buildPettyCashMovementPayload, pettyCashMovementRef } from '../services/pettyCash';
 import ProviderAutocomplete from './ProviderAutocomplete';
 import AccountingAccountSelect from './AccountingAccountSelect';
@@ -532,7 +539,7 @@ export function AccountsPayable({ data, branchContext }) {
             const batch = writeBatch(db);
             const photoPayload = await uploadFiscalSupportFiles(facturaSupportFiles, 'facturas/cuentas_por_pagar', facturaRef.id);
 
-            batch.set(facturaRef, {
+            const payablePayload = {
                 fecha: facturaForm.fecha,
                 month: facturaForm.fecha.substring(0, 7),
                 proveedor: provider.nombre,
@@ -558,9 +565,9 @@ export function AccountsPayable({ data, branchContext }) {
                 ...fiscal,
                 ...photoPayload,
                 timestamp: Timestamp.now()
-            });
+            };
 
-            batch.set(compraRef, {
+            const purchasePayload = {
                 date: facturaForm.fecha,
                 month: facturaForm.fecha.substring(0, 7),
                 supplier: provider.nombre,
@@ -584,7 +591,16 @@ export function AccountsPayable({ data, branchContext }) {
                 ...fiscal,
                 ...photoPayload,
                 timestamp: Timestamp.now()
-            });
+            };
+
+            batch.set(facturaRef, payablePayload);
+            batch.set(compraRef, purchasePayload);
+            setAccountingEntryInBatch(batch, buildPurchaseExpenseAccountingEntry({
+                sourceCollection: 'compras',
+                sourceDocId: compraRef.id,
+                record: purchasePayload,
+                defaultDebitType: 'purchase',
+            }));
 
             await batch.commit();
             setFacturaForm(prev => ({
@@ -695,17 +711,29 @@ export function AccountsPayable({ data, branchContext }) {
                     restante = Number((restante - pagoParaEstaFactura).toFixed(2));
                 }
 
-                transaction.set(abonoRef, {
+                const abonoPayload = {
                     fecha: fechaAbono,
                     montoTotal: montoTotalAbono,
                     proveedor: proveedorSeleccionado,
                     secuencia: nuevaSecuencia,
                     paymentMethod,
+                    ...branchPayload,
                     linkedGastoDiarioId: gastoDiarioRef?.id || null,
                     detalleAfectado: facturasAfectadas,
+                    facturaIds: facturasAfectadas.map((factura) => factura.id).filter(Boolean),
                     ...supportPayload,
                     timestamp: Timestamp.now()
-                });
+                };
+
+                transaction.set(abonoRef, abonoPayload);
+                transaction.set(
+                    accountingEntryRef('abonos_pagar', abonoRef.id),
+                    buildPayablePaymentAccountingEntry({
+                        sourceCollection: 'abonos_pagar',
+                        sourceDocId: abonoRef.id,
+                        record: abonoPayload,
+                    })
+                );
 
                 if (gastoDiarioRef) {
                     transaction.set(gastoDiarioRef, {
@@ -782,6 +810,7 @@ export function AccountsPayable({ data, branchContext }) {
                     transaction.delete(doc(db, 'gastosDiarios', abonoDoc.linkedGastoDiarioId));
                     transaction.delete(pettyCashMovementRef('gastosDiarios', abonoDoc.linkedGastoDiarioId));
                 }
+                deleteAccountingEntryInTransaction(transaction, 'abonos_pagar', abonoDoc.id);
                 transaction.delete(doc(db, 'abonos_pagar', abonoDoc.id));
             });
         } catch (e) {

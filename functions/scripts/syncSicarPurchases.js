@@ -3,6 +3,7 @@ const path = require('node:path');
 const { createHash, randomUUID } = require('node:crypto');
 const admin = require('firebase-admin');
 const mysql = require('mysql2/promise');
+const { buildSyncLogPayload } = require('./sicarSyncLogRetention');
 
 const PROJECT_ID = 'sistema-contable-csm-granada';
 const BRANCH_ID = 'granada';
@@ -14,6 +15,17 @@ const DEFAULT_ACCOUNTING_METADATA_DIRECTORY = 'C:\\SICAR\\state\\sicar-purchase-
 const DEFAULT_STORAGE_BUCKET = 'sistema-contable-csm-granada.firebasestorage.app';
 const DEFAULT_EXCLUDED_SUPPLIER_ID = 136;
 const DEFAULT_EXCLUDED_SUPPLIER_NAME = 'CARNES AMPARITO';
+const ACCOUNTING_ENTRIES_COLLECTION = 'contabilidad_asientos';
+const ACCOUNTING_VERSION = 1;
+const ACCOUNTING_ACCOUNTS = {
+  inventory: { code: '11060', name: 'INVENTARIO:Alimentos', type: 'Activos corrientes' },
+  ivaCredit: { code: '110702', name: 'IMPUESTOS ACREDITABLES:IVA Acreditable', type: 'Activos corrientes' },
+  retentionIr: { code: '21041', name: 'IMPTOS CORRIENTES X PAGAR:Anticipo IR', type: 'Pasivos corrientes' },
+  retentionMunicipal: { code: '21043', name: 'IMPTOS CORRIENTES X PAGAR:Impuestos Municipales', type: 'Pasivos corrientes' },
+  payable: { code: '2101', name: 'CUENTAS POR PAGAR - NIO', type: 'Cuentas por pagar (C/P)' },
+  pettyCash: { code: '11013', name: 'Activos Circulantes Caja:Caja Chica', type: 'Efectivo y equivalentes de efectivo' },
+  bankBac: { code: '1102101', name: 'BANCOS:MONEDA NACIONAL:BAC NO. 362843534 C$', type: 'Efectivo y equivalentes de efectivo' },
+};
 const PURCHASE_CATEGORY_PAYLOAD = {
   category: 'Costos de venta / compras',
   categoria: 'Costos de venta / compras',
@@ -218,6 +230,143 @@ function money(value) {
   const parsed = Number(value || 0);
   if (!Number.isFinite(parsed)) return 0;
   return Math.round(parsed * 100) / 100;
+}
+
+function normalizeAccountingIdPart(value = '') {
+  return String(value || '')
+    .trim()
+    .replace(/[^a-zA-Z0-9_-]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, 90) || 'sin_id';
+}
+
+function accountingEntryId(sourceCollection, sourceDocId) {
+  return `${normalizeAccountingIdPart(sourceCollection)}_${normalizeAccountingIdPart(sourceDocId)}`;
+}
+
+function accountingEntryRef(db, sourceCollection, sourceDocId) {
+  return db.collection(ACCOUNTING_ENTRIES_COLLECTION).doc(accountingEntryId(sourceCollection, sourceDocId));
+}
+
+function addAccountingLine(lines, { account, debit = 0, credit = 0, description = '', reference = '', meta = {} }) {
+  const normalizedDebit = money(debit);
+  const normalizedCredit = money(credit);
+  if (normalizedDebit <= 0 && normalizedCredit <= 0) return;
+  lines.push({
+    lineId: `line_${String(lines.length + 1).padStart(2, '0')}`,
+    accountCode: account.code,
+    accountName: account.name,
+    accountType: account.type || '',
+    debit: normalizedDebit,
+    credit: normalizedCredit,
+    description,
+    reference,
+    ...meta,
+  });
+}
+
+function buildPurchaseAccountingEntry(entry, purchasePayload = {}) {
+  const FieldValue = admin.firestore.FieldValue;
+  const accountingPayload = entry.accountingPayload || {};
+  const subtotal = money(entry.subtotal ?? entry.amount);
+  const iva = money(entry.iva);
+  const total = money(entry.total || subtotal + iva);
+  const retentionIr2 = money(accountingPayload.retentionIr2 || accountingPayload.retencionIr2);
+  const retentionMunicipal1 = money(accountingPayload.retentionMunicipal1 || accountingPayload.retencionMunicipal1);
+  const retentionTotal = money(accountingPayload.retentionTotal || retentionIr2 + retentionMunicipal1);
+  const netPayment = money(Math.max(total - retentionTotal, 0));
+  const route = entry.paymentRoute;
+  const reference = entry.invoiceNumber || entry.rawId;
+  const description = buildPurchaseDescription(entry).toUpperCase();
+  const lines = [];
+
+  addAccountingLine(lines, {
+    account: ACCOUNTING_ACCOUNTS.inventory,
+    debit: subtotal,
+    description,
+    reference,
+    meta: {
+      lineRole: 'inventory_or_cost',
+      category: purchasePayload.category || PURCHASE_CATEGORY_PAYLOAD.category,
+      subcategory: purchasePayload.subcategory || PURCHASE_CATEGORY_PAYLOAD.subcategory,
+    },
+  });
+  addAccountingLine(lines, {
+    account: ACCOUNTING_ACCOUNTS.ivaCredit,
+    debit: iva,
+    description: `IVA ACREDITABLE ${reference}`.trim(),
+    reference,
+    meta: { lineRole: 'iva_credit' },
+  });
+  addAccountingLine(lines, {
+    account: route === 'credito'
+      ? ACCOUNTING_ACCOUNTS.payable
+      : route === 'efectivo'
+        ? ACCOUNTING_ACCOUNTS.pettyCash
+        : ACCOUNTING_ACCOUNTS.bankBac,
+    credit: netPayment,
+    description: route === 'credito' ? `CUENTA POR PAGAR ${entry.supplier}` : `PAGO ${entry.paymentType || 'TRANSFERENCIA'}`,
+    reference,
+    meta: {
+      lineRole: route === 'credito' ? 'accounts_payable' : 'payment',
+      paymentType: entry.paymentType,
+      paymentRoute: route,
+    },
+  });
+  addAccountingLine(lines, {
+    account: ACCOUNTING_ACCOUNTS.retentionIr,
+    credit: retentionIr2,
+    description: `RETENCION ANTICIPO IR ${reference}`.trim(),
+    reference,
+    meta: { lineRole: 'retention_ir_2' },
+  });
+  addAccountingLine(lines, {
+    account: ACCOUNTING_ACCOUNTS.retentionMunicipal,
+    credit: retentionMunicipal1,
+    description: `RETENCION MUNICIPAL ${reference}`.trim(),
+    reference,
+    meta: { lineRole: 'retention_municipal_1' },
+  });
+
+  const totalDebit = money(lines.reduce((sum, line) => sum + money(line.debit), 0));
+  const totalCredit = money(lines.reduce((sum, line) => sum + money(line.credit), 0));
+  const difference = money(totalDebit - totalCredit);
+
+  return {
+    id: accountingEntryId('compras', entry.compraId),
+    sourceCollection: 'compras',
+    sourceDocId: entry.compraId,
+    sourceType: 'purchase',
+    source: 'SICAR',
+    status: Math.abs(difference) <= 0.01 ? 'posted' : 'out_of_balance',
+    requiresReview: Math.abs(difference) > 0.01,
+    accountingVersion: ACCOUNTING_VERSION,
+    date: entry.date,
+    month: entry.month,
+    branchId: BRANCH_ID,
+    branchName: BRANCH_NAME,
+    documentNumber: reference,
+    partyName: entry.supplier,
+    description,
+    totalDebit,
+    totalCredit,
+    difference,
+    lines,
+    sourceSnapshot: {
+      subtotal,
+      iva,
+      total,
+      retentionIr2,
+      retentionMunicipal1,
+      retentionTotal,
+      paymentType: entry.paymentType,
+      paymentRoute: route,
+      accountingAccountCode: ACCOUNTING_ACCOUNTS.inventory.code,
+      accountingAccountName: ACCOUNTING_ACCOUNTS.inventory.name,
+    },
+    updatedAt: FieldValue.serverTimestamp(),
+    createdAt: FieldValue.serverTimestamp(),
+  };
 }
 
 function getAccountingMetadataDirectory() {
@@ -714,6 +863,7 @@ async function deleteExcludedPurchases(db, excludedEntries, options) {
   excludedEntries.forEach((entry) => {
     batch.delete(db.collection('integraciones_privadas').doc('sicar').collection('compras_raw').doc(entry.rawId));
     batch.delete(db.collection('compras').doc(entry.compraId));
+    batch.delete(accountingEntryRef(db, 'compras', entry.compraId));
     batch.delete(db.collection('gastosDiarios').doc(entry.gastoDiarioId));
     batch.delete(db.collection('cuentas_por_pagar').doc(entry.cuentaPorPagarId));
   });
@@ -796,6 +946,7 @@ async function cancelPurchases(db, cancelledEntries, options) {
 
     if (!options.stageOnly) {
       batch.delete(db.collection('compras').doc(entry.compraId));
+      batch.delete(accountingEntryRef(db, 'compras', entry.compraId));
       batch.delete(db.collection('gastosDiarios').doc(entry.gastoDiarioId));
       batch.delete(db.collection('cuentas_por_pagar').doc(entry.cuentaPorPagarId));
     }
@@ -817,6 +968,7 @@ async function writePurchase(db, entry, options) {
   const purchaseRef = db.collection('compras').doc(entry.compraId);
   const gastoDiarioRef = db.collection('gastosDiarios').doc(entry.gastoDiarioId);
   const cuentaPorPagarRef = db.collection('cuentas_por_pagar').doc(entry.cuentaPorPagarId);
+  const purchaseAccountingRef = accountingEntryRef(db, 'compras', entry.compraId);
   const sourceCollection = buildRawSourcePath(entry.rawId);
   const description = buildPurchaseDescription(entry).toUpperCase();
   const route = entry.paymentRoute;
@@ -834,6 +986,7 @@ async function writePurchase(db, entry, options) {
     if (existingRawSnapshot.exists && existingRawSnapshot.data()?.syncFingerprint === syncFingerprint) {
       const targetSnapshots = await Promise.all([
         purchaseRef.get(),
+        purchaseAccountingRef.get(),
         route === 'credito' ? cuentaPorPagarRef.get() : Promise.resolve({ exists: true }),
         route === 'efectivo' ? gastoDiarioRef.get() : Promise.resolve({ exists: true }),
       ]);
@@ -1031,6 +1184,15 @@ async function writePurchase(db, entry, options) {
         linkedPayableId: null,
       }, { merge: true });
     }
+
+    batch.set(
+      purchaseAccountingRef,
+      buildPurchaseAccountingEntry(entry, {
+        ...basePurchasePayload,
+        ...categoryPayload,
+      }),
+      { merge: false }
+    );
   }
 
   await batch.commit();
@@ -1155,7 +1317,7 @@ async function main() {
     }
 
     if (shouldWriteLog) {
-      await db.collection('sicar_sync_logs').add({
+      await db.collection('sicar_sync_logs').add(buildSyncLogPayload(admin, {
         syncType: 'compras',
         sourceMode: 'local-worker',
         branchId: BRANCH_ID,
@@ -1186,7 +1348,7 @@ async function main() {
         stageOnly: args.stageOnly,
         status: 'ok',
         createdAt: admin.firestore.FieldValue.serverTimestamp(),
-      });
+      }));
     }
 
     console.log(JSON.stringify({

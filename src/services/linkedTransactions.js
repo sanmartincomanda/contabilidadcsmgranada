@@ -13,6 +13,11 @@ import { DEFAULT_PURCHASE_CATEGORY_ID, buildExpenseCategoryPayload, getExpenseCa
 import { getCashPaidAmountAfterRetentions, isCashPayment, normalizePaymentMethod } from './fiscalUtils';
 import { buildPettyCashMovementPayload, pettyCashMovementRef } from './pettyCash';
 import { getBranchPayload, getRecordBranchId } from '../constants';
+import {
+    buildPurchaseExpenseAccountingEntry,
+    deleteAccountingEntryInBatch,
+    setAccountingEntryInBatch,
+} from './accountingLedger';
 
 const uniqueRefs = (refs) => {
     const refMap = new Map();
@@ -225,6 +230,26 @@ const getBlockingAbonos = async (facturaIds) => {
     if (!facturaIds.length) return [];
 
     const facturaIdSet = new Set(facturaIds);
+    const optimizedMatches = [];
+    const chunks = [];
+    for (let index = 0; index < facturaIds.length; index += 10) {
+        chunks.push(facturaIds.slice(index, index + 10));
+    }
+
+    for (const chunk of chunks) {
+        // eslint-disable-next-line no-await-in-loop
+        const indexedSnap = await getDocs(query(
+            collection(db, 'abonos_pagar'),
+            where('facturaIds', 'array-contains-any', chunk)
+        ));
+        indexedSnap.docs.forEach((abonoDoc) => optimizedMatches.push({ id: abonoDoc.id, ...abonoDoc.data() }));
+    }
+
+    if (optimizedMatches.length) {
+        const indexedMap = new Map(optimizedMatches.map((abono) => [abono.id, abono]));
+        return [...indexedMap.values()];
+    }
+
     const abonosSnap = await getDocs(collection(db, 'abonos_pagar'));
 
     return abonosSnap.docs
@@ -427,6 +452,16 @@ export async function updatePurchaseTransaction(purchaseId, updateData, options 
         }
     }
 
+    setAccountingEntryInBatch(batch, buildPurchaseExpenseAccountingEntry({
+        sourceCollection: 'compras',
+        sourceDocId: purchaseId,
+        record: {
+            ...purchaseData,
+            ...cleanUpdate,
+        },
+        defaultDebitType: 'purchase',
+    }));
+
     await batch.commit();
 
     return {
@@ -522,6 +557,16 @@ export async function updateExpenseTransaction(expenseId, updateData, options = 
         }
     }
 
+    setAccountingEntryInBatch(batch, buildPurchaseExpenseAccountingEntry({
+        sourceCollection: 'gastos',
+        sourceDocId: expenseId,
+        record: {
+            ...expenseData,
+            ...cleanUpdate,
+        },
+        defaultDebitType: 'expense',
+    }));
+
     await batch.commit();
 
     return {
@@ -561,8 +606,14 @@ export async function deletePayableTransaction(payableId) {
 
     const batch = writeBatch(db);
     batch.delete(payableRef);
-    purchaseRefs.forEach((purchaseRef) => batch.delete(purchaseRef));
-    expenseRefs.forEach((expenseRef) => batch.delete(expenseRef));
+    purchaseRefs.forEach((purchaseRef) => {
+        batch.delete(purchaseRef);
+        deleteAccountingEntryInBatch(batch, 'compras', purchaseRef.id);
+    });
+    expenseRefs.forEach((expenseRef) => {
+        batch.delete(expenseRef);
+        deleteAccountingEntryInBatch(batch, 'gastos', expenseRef.id);
+    });
     await batch.commit();
 
     return {
@@ -595,6 +646,7 @@ export async function deleteExpenseTransaction(expenseId) {
 
     const batch = writeBatch(db);
     batch.delete(expenseRef);
+    deleteAccountingEntryInBatch(batch, 'gastos', expenseId);
     payableRefs.forEach((payableRef) => batch.delete(payableRef));
     gastoRefs.forEach((gastoRef) => {
         batch.delete(gastoRef);
@@ -633,6 +685,7 @@ export async function deletePurchaseTransaction(purchaseId) {
 
     const batch = writeBatch(db);
     batch.delete(purchaseRef);
+    deleteAccountingEntryInBatch(batch, 'compras', purchaseId);
     payableRefs.forEach((payableRef) => batch.delete(payableRef));
     gastoRefs.forEach((gastoRef) => {
         batch.delete(gastoRef);

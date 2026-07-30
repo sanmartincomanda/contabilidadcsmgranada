@@ -48,6 +48,7 @@ import {
     getExpenseCategoryFromRecord,
 } from '../services/expenseCategories';
 import { buildAccountingAccountPayload, getDefaultAccountingAccountId } from '../services/chartOfAccounts';
+import { buildPurchaseExpenseAccountingEntry, setAccountingEntryInBatch } from '../services/accountingLedger';
 import { buildPettyCashMovementPayload, pettyCashMovementRef } from '../services/pettyCash';
 import ProviderAutocomplete from './ProviderAutocomplete';
 import AccountingAccountSelect from './AccountingAccountSelect';
@@ -432,11 +433,11 @@ const buildEditablePayload = (collectionName, editData, fields) => {
     return dataToSave;
 };
 
-const renderDisplayValue = (fields, key, value) => {
-    const field = fields[key];
-    if (value === null || value === undefined) return '---';
-    if (typeof value === 'object' && value instanceof Timestamp) {
-        try { return value.toDate().toLocaleString('es-ES'); } catch (e) { return '---'; }
+    const renderDisplayValue = (fields, key, value) => {
+        const field = fields[key];
+        if (value === null || value === undefined) return '---';
+        if (typeof value === 'object' && value instanceof Timestamp) {
+            try { return value.toDate().toLocaleString('es-ES'); } catch (e) { return '---'; }
     }
     if (field?.type === 'branch') return branchName(value);
     if (field?.type === 'currency') return fmt(Number(value));
@@ -1809,15 +1810,30 @@ const ExpenseForm = ({ categories, loading, setLoading, onSuccess, branchContext
 
         setLoading(true);
         try {
-            await addDoc(collection(db, 'gastos'), {
+            const accountingPayload = buildAccountingAccountPayload(getDefaultAccountingAccountId('expense'), { transactionType: 'expense' });
+            const gastoRef = doc(collection(db, 'gastos'));
+            const batch = writeBatch(db);
+            const expensePayload = {
                 date,
                 description,
                 amount: numAmount,
+                subtotal: numAmount,
+                total: numAmount,
+                paymentType: 'TRANSFERENCIA',
                 ...categoryPayload,
+                ...accountingPayload,
                 ...branchPayload,
                 timestamp: Timestamp.now(),
                 is_conciled: false,
-            });
+            };
+            batch.set(gastoRef, expensePayload);
+            setAccountingEntryInBatch(batch, buildPurchaseExpenseAccountingEntry({
+                sourceCollection: 'gastos',
+                sourceDocId: gastoRef.id,
+                record: expensePayload,
+                defaultDebitType: 'expense',
+            }));
+            await batch.commit();
             setDescription(''); setAmount(''); setCategoryId('');
             onSuccess?.();
         } catch (error) {
@@ -1846,7 +1862,27 @@ const ExpenseForm = ({ categories, loading, setLoading, onSuccess, branchContext
                 }));
                 setLoading(true);
                 try {
-                    for (const item of validData) await addDoc(collection(db, 'gastos'), item);
+                    for (const item of validData) {
+                        const gastoRef = doc(collection(db, 'gastos'));
+                        const batch = writeBatch(db);
+                        const accountingPayload = buildAccountingAccountPayload(getDefaultAccountingAccountId('expense'), { transactionType: 'expense' });
+                        const expensePayload = {
+                            ...item,
+                            subtotal: Number(item.subtotal ?? item.amount ?? item.monto) || 0,
+                            total: Number(item.total ?? item.amount ?? item.monto) || 0,
+                            paymentType: item.paymentType || 'TRANSFERENCIA',
+                            ...accountingPayload,
+                        };
+                        batch.set(gastoRef, expensePayload);
+                        setAccountingEntryInBatch(batch, buildPurchaseExpenseAccountingEntry({
+                            sourceCollection: 'gastos',
+                            sourceDocId: gastoRef.id,
+                            record: expensePayload,
+                            defaultDebitType: 'expense',
+                        }));
+                        // eslint-disable-next-line no-await-in-loop
+                        await batch.commit();
+                    }
                     alert(`?xito: ${validData.length} gastos importados.`);
                     onSuccess?.();
                 } catch (error) {
@@ -2036,6 +2072,7 @@ const FiscalExpenseForm = ({ categories, providers = [], loading, setLoading, on
                 timestamp: Timestamp.now(),
                 is_conciled: false,
             };
+            let accountingExpenseRecord = expensePayload;
 
             if (isCreditPayment(paymentType)) {
                 const payableRef = doc(collection(db, 'cuentas_por_pagar'));
@@ -2046,6 +2083,7 @@ const FiscalExpenseForm = ({ categories, providers = [], loading, setLoading, on
                     payableType: 'gasto',
                 };
 
+                accountingExpenseRecord = linkedPayload;
                 batch.set(gastoRef, linkedPayload);
                 batch.set(payableRef, {
                     fecha: date,
@@ -2083,7 +2121,8 @@ const FiscalExpenseForm = ({ categories, providers = [], loading, setLoading, on
             } else if (isCashPayment(paymentType)) {
                 const cashRef = doc(collection(db, 'gastosDiarios'));
                 const cashPaidAmount = getCashPaidAmountAfterRetentions(fiscal);
-                batch.set(gastoRef, { ...expensePayload, linkedCashExpenseId: cashRef.id });
+                accountingExpenseRecord = { ...expensePayload, linkedCashExpenseId: cashRef.id };
+                batch.set(gastoRef, accountingExpenseRecord);
                 batch.set(cashRef, {
                     fecha: date,
                     date,
@@ -2141,6 +2180,13 @@ const FiscalExpenseForm = ({ categories, providers = [], loading, setLoading, on
             } else {
                 batch.set(gastoRef, expensePayload);
             }
+
+            setAccountingEntryInBatch(batch, buildPurchaseExpenseAccountingEntry({
+                sourceCollection: 'gastos',
+                sourceDocId: gastoRef.id,
+                record: accountingExpenseRecord,
+                defaultDebitType: 'expense',
+            }));
 
             await batch.commit();
             resetForm();
@@ -2286,9 +2332,11 @@ const FiscalPurchasesForm = ({ categories, providers = [], loading, setLoading, 
                 ...branchPayload,
                 timestamp: Timestamp.now(),
             };
+            let accountingPurchaseRecord = purchasePayload;
 
             if (isCreditPayment(paymentType)) {
                 const payableRef = doc(collection(db, 'cuentas_por_pagar'));
+                accountingPurchaseRecord = { ...purchasePayload, linkedPayableId: payableRef.id, sourceFacturaId: payableRef.id };
                 batch.set(payableRef, {
                     proveedor: provider.nombre,
                     proveedorId: provider.id,
@@ -2315,10 +2363,11 @@ const FiscalPurchasesForm = ({ categories, providers = [], loading, setLoading, 
                     createdAt: Timestamp.now(),
                     updatedAt: Timestamp.now(),
                 });
-                batch.set(purchaseRef, { ...purchasePayload, linkedPayableId: payableRef.id, sourceFacturaId: payableRef.id });
+                batch.set(purchaseRef, accountingPurchaseRecord);
             } else if (isCashPayment(paymentType)) {
                 const cashRef = doc(collection(db, 'gastosDiarios'));
                 const cashPaidAmount = getCashPaidAmountAfterRetentions(fiscal);
+                accountingPurchaseRecord = { ...purchasePayload, linkedCashExpenseId: cashRef.id, sourceGastoDiarioId: cashRef.id };
                 batch.set(cashRef, {
                     fecha: date,
                     date,
@@ -2347,7 +2396,7 @@ const FiscalPurchasesForm = ({ categories, providers = [], loading, setLoading, 
                     timestamp: Timestamp.now(),
                     is_conciled: false,
                 });
-                batch.set(purchaseRef, { ...purchasePayload, linkedCashExpenseId: cashRef.id, sourceGastoDiarioId: cashRef.id });
+                batch.set(purchaseRef, accountingPurchaseRecord);
                 batch.set(
                     pettyCashMovementRef('gastosDiarios', cashRef.id),
                     buildPettyCashMovementPayload({
@@ -2377,6 +2426,13 @@ const FiscalPurchasesForm = ({ categories, providers = [], loading, setLoading, 
             } else {
                 batch.set(purchaseRef, purchasePayload);
             }
+
+            setAccountingEntryInBatch(batch, buildPurchaseExpenseAccountingEntry({
+                sourceCollection: 'compras',
+                sourceDocId: purchaseRef.id,
+                record: accountingPurchaseRecord,
+                defaultDebitType: 'purchase',
+            }));
 
             await batch.commit();
             resetForm();
@@ -2613,8 +2669,11 @@ const PurchasesForm = ({ providers = [], loading, setLoading, onSuccess, branchC
         setLoading(true);
         try {
             const categoryPayload = resolveCategoryPayload(DEFAULT_PURCHASE_CATEGORY_ID, DEFAULT_PURCHASE_CATEGORY_ID);
+            const accountingPayload = buildAccountingAccountPayload(getDefaultAccountingAccountId('purchase'), { transactionType: 'purchase' });
             const provider = await upsertProviderByName(cleanSupplier, { source: 'compras' });
-            await addDoc(collection(db, 'compras'), {
+            const purchaseRef = doc(collection(db, 'compras'));
+            const batch = writeBatch(db);
+            const purchasePayload = {
                 date,
                 month: date.substring(0, 7),
                 supplier: provider.nombre,
@@ -2625,12 +2684,23 @@ const PurchasesForm = ({ providers = [], loading, setLoading, onSuccess, branchC
                 codigoProveedor: provider.code,
                 invoiceNumber: invoiceNumber.trim() || 'S/N',
                 amount: numAmount,
+                subtotal: numAmount,
+                total: numAmount,
                 ...categoryPayload,
+                ...accountingPayload,
                 ...branchPayload,
-                paymentType: 'contado',
+                paymentType: 'TRANSFERENCIA',
                 isInventoryCost: true,
                 timestamp: Timestamp.now(),
-            });
+            };
+            batch.set(purchaseRef, purchasePayload);
+            setAccountingEntryInBatch(batch, buildPurchaseExpenseAccountingEntry({
+                sourceCollection: 'compras',
+                sourceDocId: purchaseRef.id,
+                record: purchasePayload,
+                defaultDebitType: 'purchase',
+            }));
+            await batch.commit();
             setSupplier('');
             setInvoiceNumber('');
             setAmount('');

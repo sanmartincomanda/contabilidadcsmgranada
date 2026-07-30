@@ -24,6 +24,7 @@ import {
     getExpenseCategoryFromRecord,
 } from '../services/expenseCategories';
 import { buildAccountingAccountPayload, getDefaultAccountingAccountId } from '../services/chartOfAccounts';
+import { buildPurchaseExpenseAccountingEntry, setAccountingEntryInBatch } from '../services/accountingLedger';
 import { normalizeProviderName, upsertProviderByName } from '../services/providers';
 import ProviderAutocomplete from './ProviderAutocomplete';
 import AccountingAccountSelect from './AccountingAccountSelect';
@@ -49,6 +50,17 @@ const Icon = ({ path, className = "w-5 h-5" }) => (
         <path strokeLinecap="round" strokeLinejoin="round" d={path} />
     </svg>
 );
+
+const getRelatedDocumentRefs = async (collectionName, fieldNames = [], value = '') => {
+    if (!value) return [];
+    const refs = [];
+    for (const fieldName of fieldNames) {
+        // eslint-disable-next-line no-await-in-loop
+        const snapshot = await getDocs(query(collection(db, collectionName), where(fieldName, '==', value)));
+        snapshot.docs.forEach((recordDoc) => refs.push(recordDoc.ref));
+    }
+    return [...new Map(refs.map((ref) => [ref.path, ref])).values()];
+};
 
 // --- COMPONENTES UI ---
 
@@ -527,25 +539,31 @@ export default function GastosDiarios({ categories = [], providers = [], branchC
             const compraRef = tipo === 'Compra' ? doc(collection(db, 'compras')) : null;
             const batch = writeBatch(db);
 
-            batch.set(gastoDiarioRef, {
+            const gastoDiarioPayload = {
                 fecha,
                 caja: CAJA,
                 descripcion,
                 monto: numMonto,
                 tipo,
+                paymentType: 'EFECTIVO',
                 ...categoryPayload,
                 ...accountingPayload,
                 ...branchPayload,
                 linkedExpenseId: gastoRef?.id || null,
                 linkedPurchaseId: compraRef?.id || null,
                 timestamp
-            });
+            };
+
+            batch.set(gastoDiarioRef, gastoDiarioPayload);
 
             if (gastoRef) {
-                batch.set(gastoRef, {
+                const expensePayload = {
                     date: fecha,
                     description: descripcion,
                     amount: numMonto,
+                    subtotal: numMonto,
+                    total: numMonto,
+                    paymentType: 'EFECTIVO',
                     ...categoryPayload,
                     ...accountingPayload,
                     ...branchPayload,
@@ -553,26 +571,42 @@ export default function GastosDiarios({ categories = [], providers = [], branchC
                     is_conciled: false,
                     origen: 'gastosDiarios',
                     gastoDiarioId: gastoDiarioRef.id
-                });
+                };
+                batch.set(gastoRef, expensePayload);
+                setAccountingEntryInBatch(batch, buildPurchaseExpenseAccountingEntry({
+                    sourceCollection: 'gastos',
+                    sourceDocId: gastoRef.id,
+                    record: expensePayload,
+                    defaultDebitType: 'expense',
+                }));
             }
 
             if (compraRef) {
-                batch.set(compraRef, {
+                const purchasePayload = {
                     date: fecha,
                     month: fecha.substring(0, 7),
                     supplier: descripcion.trim().toUpperCase(),
                     invoiceNumber: `GD-${gastoDiarioRef.id.slice(0, 8).toUpperCase()}`,
                     amount: numMonto,
+                    subtotal: numMonto,
+                    total: numMonto,
                     ...categoryPayload,
                     ...accountingPayload,
                     ...branchPayload,
-                    paymentType: 'contado',
+                    paymentType: 'EFECTIVO',
                     isInventoryCost: true,
                     description: descripcion,
                     sourceCollection: 'gastosDiarios',
                     sourceGastoDiarioId: gastoDiarioRef.id,
                     timestamp
-                });
+                };
+                batch.set(compraRef, purchasePayload);
+                setAccountingEntryInBatch(batch, buildPurchaseExpenseAccountingEntry({
+                    sourceCollection: 'compras',
+                    sourceDocId: compraRef.id,
+                    record: purchasePayload,
+                    defaultDebitType: 'purchase',
+                }));
             }
 
             batch.set(
@@ -666,7 +700,7 @@ export default function GastosDiarios({ categories = [], providers = [], branchC
             };
             const batch = writeBatch(db);
 
-            batch.set(gastoDiarioRef, {
+            const gastoDiarioPayload = {
                 fecha,
                 caja: CAJA,
                 descripcion,
@@ -680,10 +714,12 @@ export default function GastosDiarios({ categories = [], providers = [], branchC
                 linkedExpenseId: gastoRef?.id || null,
                 linkedPurchaseId: compraRef?.id || null,
                 timestamp
-            });
+            };
+
+            batch.set(gastoDiarioRef, gastoDiarioPayload);
 
             if (gastoRef) {
-                batch.set(gastoRef, {
+                const expensePayload = {
                     date: fecha,
                     month: fecha.substring(0, 7),
                     description: descripcion,
@@ -696,11 +732,18 @@ export default function GastosDiarios({ categories = [], providers = [], branchC
                     is_conciled: false,
                     origen: 'gastosDiarios',
                     gastoDiarioId: gastoDiarioRef.id
-                });
+                };
+                batch.set(gastoRef, expensePayload);
+                setAccountingEntryInBatch(batch, buildPurchaseExpenseAccountingEntry({
+                    sourceCollection: 'gastos',
+                    sourceDocId: gastoRef.id,
+                    record: expensePayload,
+                    defaultDebitType: 'expense',
+                }));
             }
 
             if (compraRef) {
-                batch.set(compraRef, {
+                const purchasePayload = {
                     date: fecha,
                     month: fecha.substring(0, 7),
                     supplier: proveedor.trim().toUpperCase() || descripcion.trim().toUpperCase(),
@@ -715,7 +758,14 @@ export default function GastosDiarios({ categories = [], providers = [], branchC
                     sourceGastoDiarioId: gastoDiarioRef.id,
                     ...commonFiscal,
                     timestamp
-                });
+                };
+                batch.set(compraRef, purchasePayload);
+                setAccountingEntryInBatch(batch, buildPurchaseExpenseAccountingEntry({
+                    sourceCollection: 'compras',
+                    sourceDocId: compraRef.id,
+                    record: purchasePayload,
+                    defaultDebitType: 'purchase',
+                }));
             }
 
             if (isCashPayment(paymentType)) {
@@ -809,13 +859,12 @@ export default function GastosDiarios({ categories = [], providers = [], branchC
                 if (registro.linkedExpenseId) {
                     batch.delete(doc(db, 'gastos', registro.linkedExpenseId));
                 } else {
-                    const gastosSnapshot = await getDocs(collection(db, 'gastos'));
-                    const gastosRelacionados = gastosSnapshot.docs.filter(
-                        d => d.data().gastoDiarioId === registro.id
+                    const gastosRelacionados = await getRelatedDocumentRefs(
+                        'gastos',
+                        ['gastoDiarioId', 'sourceGastoDiarioId', 'linkedCashExpenseId', 'sourceCashboxEntryId'],
+                        registro.id
                     );
-                    for (const gastoDoc of gastosRelacionados) {
-                        batch.delete(doc(db, 'gastos', gastoDoc.id));
-                    }
+                    gastosRelacionados.forEach((gastoRef) => batch.delete(gastoRef));
                 }
             }
 
@@ -823,13 +872,12 @@ export default function GastosDiarios({ categories = [], providers = [], branchC
                 if (registro.linkedPurchaseId) {
                     batch.delete(doc(db, 'compras', registro.linkedPurchaseId));
                 } else {
-                    const comprasSnapshot = await getDocs(collection(db, 'compras'));
-                    const comprasRelacionadas = comprasSnapshot.docs.filter(
-                        item => item.data().sourceGastoDiarioId === registro.id
+                    const comprasRelacionadas = await getRelatedDocumentRefs(
+                        'compras',
+                        ['gastoDiarioId', 'sourceGastoDiarioId', 'linkedCashExpenseId', 'linkedGastoDiarioId'],
+                        registro.id
                     );
-                    for (const compraDoc of comprasRelacionadas) {
-                        batch.delete(doc(db, 'compras', compraDoc.id));
-                    }
+                    comprasRelacionadas.forEach((compraRef) => batch.delete(compraRef));
                 }
             }
 
