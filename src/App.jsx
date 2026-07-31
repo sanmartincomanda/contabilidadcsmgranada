@@ -1162,7 +1162,8 @@ function AppContent() {
         selectedBranch,
         allowedBranchIds,
         canSelectBranch: allowedBranchIds.length > 1,
-    }), [allowedBranchIds, selectedBranch]);
+        onBranchChange: handleBranchChange,
+    }), [allowedBranchIds, handleBranchChange, selectedBranch]);
     const [themeMode, setThemeMode] = useState(() => {
         if (typeof window === 'undefined') return 'dark';
         return window.localStorage.getItem('csm-theme-mode') || 'dark';

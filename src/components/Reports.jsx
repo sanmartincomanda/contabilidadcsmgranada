@@ -1938,7 +1938,8 @@ export default function Reports({ data, branchContext }) {
     let finalCostRows = [];
 
     if (filteredReport.length > 0) {
-        const d = filteredReport.find(x => x.branchId === 'consolidado');
+        const targetBranchId = branchScope === CONSOLIDATED_BRANCH_ID ? 'consolidado' : branchScope;
+        const d = filteredReport.find(x => x.branchId === targetBranchId) || filteredReport.find(x => x.branchId === 'consolidado');
         if (d) {
             totalIncome = d.totalIncome;
             totalExpenses = d.totalExpense;

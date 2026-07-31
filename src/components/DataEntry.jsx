@@ -7,7 +7,7 @@ import {
     collection, addDoc, Timestamp, query, where, getDocs, orderBy, doc, deleteDoc, updateDoc, setDoc, writeBatch
 } from 'firebase/firestore';
 import Papa from 'papaparse';
-import { APP_BRAND_NAME, DEFAULT_BRANCH_ID, fmt, branchName, getBranchPayload, getRecordBranchId } from '../constants';
+import { APP_BRAND_NAME, BRANCHES, DEFAULT_BRANCH_ID, fmt, branchName, getBranchById, getBranchPayload, getRecordBranchId } from '../constants';
 import {
     PURCHASE_DISCOUNT_ADJUSTMENT_TYPE,
     isPurchaseDiscountAdjustment,
@@ -2619,6 +2619,10 @@ const StampedSalesInvoiceForm = ({ data, loading, setLoading, onSuccess, branchC
 
 const InventoryForm = ({ loading, setLoading, onSuccess, branchContext }) => {
     const branchPayload = useMemo(() => getBranchPayload(branchContext?.selectedBranchId), [branchContext?.selectedBranchId]);
+    const inventoryBranchOptions = useMemo(() => {
+        const allowed = new Set(branchContext?.allowedBranchIds?.length ? branchContext.allowedBranchIds : [branchPayload.branchId]);
+        return BRANCHES.filter((branch) => allowed.has(branch.id));
+    }, [branchContext?.allowedBranchIds, branchPayload.branchId]);
     const [month, setMonth] = useState(getCurrentMonth());
     const [type, setType] = useState('inicial');
     const [amount, setAmount] = useState('');
@@ -2644,6 +2648,18 @@ const InventoryForm = ({ loading, setLoading, onSuccess, branchContext }) => {
             <div className="rounded-lg border border-[#f2c5c5] bg-[#fff8f8] px-4 py-2.5 text-xs font-semibold text-[#9f111a]">
                 Todo se registra en {branchPayload.branchName} · Serie {branchPayload.documentSeries}.
             </div>
+            <Select
+                label="Sucursal del inventario"
+                icon="box"
+                value={branchPayload.branchId}
+                onChange={(event) => branchContext?.onBranchChange?.(event.target.value)}
+                disabled={!branchContext?.onBranchChange || inventoryBranchOptions.length <= 1}
+                options={inventoryBranchOptions.map((branch) => (
+                    <option key={branch.id} value={branch.id}>
+                        {branch.shortName} - Serie {branch.invoiceSeries}
+                    </option>
+                ))}
+            />
             <Input label="Mes" type="month" icon="calendar" value={month} onChange={e => setMonth(e.target.value)} required />
             <Select label="Tipo" icon="box" value={type} onChange={e => setType(e.target.value)} options={<><option value="inicial">Inicial</option><option value="final">Final</option></>} />
             <Input label="Monto" type="number" step="0.01" icon="dollar" placeholder="0.00" value={amount} onChange={e => setAmount(e.target.value)} required />
@@ -2841,6 +2857,11 @@ export function DataEntry({ categories, data, allowedTabs = null, branchContext 
     const [loading, setLoading] = useState(false);
     const [refreshKey, setRefreshKey] = useState(0);
     const selectedBranchId = branchContext?.selectedBranchId || DEFAULT_BRANCH_ID;
+    const selectedBranch = getBranchById(selectedBranchId);
+    const dataEntryBranchOptions = useMemo(() => {
+        const allowed = new Set(branchContext?.allowedBranchIds?.length ? branchContext.allowedBranchIds : [selectedBranchId]);
+        return BRANCHES.filter((branch) => allowed.has(branch.id));
+    }, [branchContext?.allowedBranchIds, selectedBranchId]);
     const providers = useMemo(() => (
         [...(data.proveedores || [])]
             .map((provider) => ({
@@ -3203,6 +3224,21 @@ export function DataEntry({ categories, data, allowedTabs = null, branchContext 
                             </p>
                         </div>
                         <div className="flex flex-wrap gap-2">
+                            <label className="flex items-center gap-2 rounded-full border border-slate-200 bg-white px-3 py-1.5">
+                                <span className="text-[10px] font-black uppercase tracking-[0.22em] text-slate-500">Sucursal</span>
+                                <select
+                                    value={selectedBranch.id}
+                                    disabled={!branchContext?.onBranchChange || dataEntryBranchOptions.length <= 1}
+                                    onChange={(event) => branchContext?.onBranchChange?.(event.target.value)}
+                                    className="bg-transparent text-[11px] font-black uppercase tracking-[0.14em] text-slate-900 outline-none disabled:opacity-75"
+                                >
+                                    {dataEntryBranchOptions.map((branch) => (
+                                        <option key={branch.id} value={branch.id}>
+                                            {branch.shortName} - Serie {branch.invoiceSeries}
+                                        </option>
+                                    ))}
+                                </select>
+                            </label>
                             <span className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5 text-[10px] font-black uppercase tracking-[0.22em] text-slate-500">
                                 {tabsConfig[activeTab].label}
                             </span>
