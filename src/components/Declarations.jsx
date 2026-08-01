@@ -284,6 +284,7 @@ export default function Declarations({ data = {}, branchContext }) {
         branchContext?.allowedBranchIds?.length > 1 ? CONSOLIDATED_BRANCH_ID : (branchContext?.selectedBranchId || DEFAULT_BRANCH_ID)
     ));
     const [originMonthFilter, setOriginMonthFilter] = useState('all');
+    const [vatTypeFilter, setVatTypeFilter] = useState('all');
     const [selectedKeys, setSelectedKeys] = useState(() => new Set());
     const [selectedVatKeys, setSelectedVatKeys] = useState(() => new Set());
     const [declaring, setDeclaring] = useState(false);
@@ -377,16 +378,20 @@ export default function Declarations({ data = {}, branchContext }) {
         }))
         .filter((row) => !row.isDeclared && row.ageMonths >= 0), [declarationMonth, declaredVatKeys, visibleVatRows]);
 
-    const eligibleVatRows = useMemo(() => pendingVatRows
-        .filter((row) => row.ageMonths < MAX_DECLARATION_AGE_MONTHS), [pendingVatRows]);
+    const typedPendingVatRows = useMemo(() => pendingVatRows.filter((row) => (
+        vatTypeFilter === 'all' || row.vatType === vatTypeFilter
+    )), [pendingVatRows, vatTypeFilter]);
 
-    const expiredVatRows = useMemo(() => pendingVatRows
-        .filter((row) => row.ageMonths >= MAX_DECLARATION_AGE_MONTHS), [pendingVatRows]);
+    const eligibleVatRows = useMemo(() => typedPendingVatRows
+        .filter((row) => row.ageMonths < MAX_DECLARATION_AGE_MONTHS), [typedPendingVatRows]);
+
+    const expiredVatRows = useMemo(() => typedPendingVatRows
+        .filter((row) => row.ageMonths >= MAX_DECLARATION_AGE_MONTHS), [typedPendingVatRows]);
 
     const vatOriginMonthOptions = useMemo(() => (
-        [...new Set(pendingVatRows.map((row) => row.month).filter(Boolean))]
+        [...new Set(typedPendingVatRows.map((row) => row.month).filter(Boolean))]
             .sort((a, b) => String(b).localeCompare(String(a)))
-    ), [pendingVatRows]);
+    ), [typedPendingVatRows]);
 
     const displayedEligibleVatRows = useMemo(() => eligibleVatRows.filter((row) => (
         originMonthFilter === 'all' || row.month === originMonthFilter
@@ -464,6 +469,7 @@ export default function Declarations({ data = {}, branchContext }) {
         setModuleTab(nextModuleTab);
         setActiveTab('pendientes');
         setOriginMonthFilter('all');
+        setVatTypeFilter('all');
     };
 
     const handlePrintPreDeclaration = () => {
@@ -683,7 +689,7 @@ export default function Declarations({ data = {}, branchContext }) {
                     </button>
                 </div>
 
-                <div className="grid gap-3 border-t border-slate-200 p-4 lg:grid-cols-[190px_190px_190px_1fr]">
+                <div className="grid gap-3 border-t border-slate-200 p-4 lg:grid-cols-[190px_190px_190px_190px_1fr]">
                     <label className="space-y-1">
                         <span className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-500">Mes a declarar</span>
                         <input
@@ -720,6 +726,20 @@ export default function Declarations({ data = {}, branchContext }) {
                             ))}
                         </select>
                     </label>
+                    {moduleTab === DECLARATION_MODULES.IVA && (
+                        <label className="space-y-1">
+                            <span className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-500">Tipo IVA</span>
+                            <select
+                                value={vatTypeFilter}
+                                onChange={(event) => setVatTypeFilter(event.target.value)}
+                                className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm font-black text-slate-900 outline-none focus:border-sky-600 focus:ring-2 focus:ring-sky-600/15"
+                            >
+                                <option value="all">Todos</option>
+                                <option value="sold">Vendido</option>
+                                <option value="purchased">Comprado</option>
+                            </select>
+                        </label>
+                    )}
                     <div className="flex flex-wrap items-end gap-2">
                         <button
                             type="button"
