@@ -14,9 +14,16 @@ import {
 } from '../constants';
 
 const DECLARATIONS_COLLECTION = 'declaraciones_retenciones';
+const VAT_DECLARATIONS_COLLECTION = 'declaraciones_iva';
 const INVOICE_COLLECTION = 'facturas_membretadas_ventas';
 const RECEIPT_COLLECTION = 'recibos_caja_membretados';
+const PURCHASE_COLLECTION = 'compras';
+const EXPENSE_COLLECTION = 'gastos';
 const MAX_DECLARATION_AGE_MONTHS = 6;
+const DECLARATION_MODULES = {
+    RETENTION_IR: 'retention_ir',
+    IVA: 'iva',
+};
 
 const Icons = {
     receipt: 'M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01',
@@ -76,9 +83,16 @@ const getDocumentNumber = (item = {}, fallback = '') => (
     )
 );
 
+const getDocumentPrefix = (sourceCollection) => {
+    if (sourceCollection === RECEIPT_COLLECTION) return 'R';
+    if (sourceCollection === PURCHASE_COLLECTION) return 'C';
+    if (sourceCollection === EXPENSE_COLLECTION) return 'G';
+    return 'F';
+};
+
 const formatDeclarationDocument = (sourceCollection, document = '') => {
-    const cleanDocument = cleanText(document).replace(/^[FR]\s*-\s*/i, '');
-    const prefix = sourceCollection === RECEIPT_COLLECTION ? 'R' : 'F';
+    const cleanDocument = cleanText(document).replace(/^[FRCG]\s*-\s*/i, '');
+    const prefix = getDocumentPrefix(sourceCollection);
     return cleanDocument ? `${prefix} - ${cleanDocument}` : `${prefix} -`;
 };
 
@@ -91,6 +105,17 @@ const getClientName = (item = {}) => cleanText(
     || item.receivedFrom
     || item.partyName
     || 'Cliente no especificado'
+);
+
+const getProviderName = (item = {}) => cleanText(
+    item.supplier
+    || item.proveedor
+    || item.provider
+    || item.vendor
+    || item.vendorName
+    || item.concept
+    || item.description
+    || 'Proveedor no especificado'
 );
 
 const getRetentionSupportStatus = (item = {}) => {
@@ -135,6 +160,45 @@ const buildRetentionRows = (data = {}) => ([
     ...(data[RECEIPT_COLLECTION] || []).filter(isActiveFiscalDocument).map((item) => normalizeDeclarationItem(RECEIPT_COLLECTION, item)),
 ]).filter((row) => row.sourceId && row.month && row.retentionIr2 > 0);
 
+const normalizeVatItem = (sourceCollection, item = {}) => {
+    const iva = peso(item.iva ?? item.tax ?? item.taxAmount);
+    const date = getDateString(item.saleDate || item.date || item.fecha || item.createdAt);
+    const sourceId = cleanText(item.id);
+    const isSoldVat = sourceCollection === INVOICE_COLLECTION;
+    const sourceKey = `${sourceCollection}:${sourceId}`;
+    const sourceType = isSoldVat
+        ? 'Factura membretada'
+        : sourceCollection === PURCHASE_COLLECTION
+            ? 'Compra'
+            : 'Gasto';
+
+    return {
+        id: sourceKey,
+        sourceKey,
+        sourceId,
+        sourceCollection,
+        sourceType,
+        vatType: isSoldVat ? 'sold' : 'purchased',
+        date,
+        month: getMonthString(date || item.month || item.mes),
+        branchId: getRecordBranchId(item),
+        branchName: getBranchById(getRecordBranchId(item)).shortName,
+        document: formatDeclarationDocument(sourceCollection, getDocumentNumber(item, sourceId)),
+        party: isSoldVat ? getClientName(item) : getProviderName(item),
+        subtotal: peso(item.subtotal ?? item.amount ?? item.monto),
+        iva,
+        total: peso(item.total ?? item.amount ?? item.monto),
+        vatDeclared: item.vatDeclared === true || item.vatDeclarationStatus === 'declarada',
+        vatDeclaredMonth: item.vatDeclaredMonth || item.vatDeclarationMonth || '',
+    };
+};
+
+const buildVatRows = (data = {}) => ([
+    ...(data[INVOICE_COLLECTION] || []).filter(isActiveFiscalDocument).map((item) => normalizeVatItem(INVOICE_COLLECTION, item)),
+    ...(data[PURCHASE_COLLECTION] || []).filter(isActiveFiscalDocument).map((item) => normalizeVatItem(PURCHASE_COLLECTION, item)),
+    ...(data[EXPENSE_COLLECTION] || []).filter(isActiveFiscalDocument).map((item) => normalizeVatItem(EXPENSE_COLLECTION, item)),
+]).filter((row) => row.sourceId && row.month && row.iva > 0);
+
 const buildDeclaredKeySet = (declarations = []) => {
     const set = new Set();
     declarations
@@ -154,6 +218,31 @@ const sumRows = (rows = []) => rows.reduce((acc, row) => ({
     subtotal: acc.subtotal + peso(row.subtotal),
     total: acc.total + peso(row.total),
 }), { retentionIr2: 0, retentionTotal: 0, subtotal: 0, total: 0 });
+
+const sumVatRows = (rows = []) => rows.reduce((acc, row) => {
+    const iva = peso(row.iva);
+    const subtotal = peso(row.subtotal);
+    const total = peso(row.total);
+    if (row.vatType === 'sold') {
+        acc.soldVat += iva;
+        acc.soldSubtotal += subtotal;
+        acc.soldTotal += total;
+    } else {
+        acc.purchasedVat += iva;
+        acc.purchasedSubtotal += subtotal;
+        acc.purchasedTotal += total;
+    }
+    acc.netVat = acc.soldVat - acc.purchasedVat;
+    return acc;
+}, {
+    soldVat: 0,
+    purchasedVat: 0,
+    netVat: 0,
+    soldSubtotal: 0,
+    purchasedSubtotal: 0,
+    soldTotal: 0,
+    purchasedTotal: 0,
+});
 
 const Card = ({ children, className = '' }) => (
     <div className={`rounded-2xl border border-slate-200 bg-white shadow-sm ${className}`}>{children}</div>
@@ -188,6 +277,7 @@ const SourceBadge = ({ row }) => (
 );
 
 export default function Declarations({ data = {}, branchContext }) {
+    const [moduleTab, setModuleTab] = useState(DECLARATION_MODULES.RETENTION_IR);
     const [activeTab, setActiveTab] = useState('pendientes');
     const [declarationMonth, setDeclarationMonth] = useState(currentMonth());
     const [branchFilter, setBranchFilter] = useState(() => (
@@ -195,7 +285,9 @@ export default function Declarations({ data = {}, branchContext }) {
     ));
     const [originMonthFilter, setOriginMonthFilter] = useState('all');
     const [selectedKeys, setSelectedKeys] = useState(() => new Set());
+    const [selectedVatKeys, setSelectedVatKeys] = useState(() => new Set());
     const [declaring, setDeclaring] = useState(false);
+    const [declaringVat, setDeclaringVat] = useState(false);
 
     const allowedBranchIds = useMemo(
         () => (branchContext?.allowedBranchIds?.length ? branchContext.allowedBranchIds : [branchContext?.selectedBranchId || DEFAULT_BRANCH_ID]),
@@ -214,7 +306,12 @@ export default function Declarations({ data = {}, branchContext }) {
         [...(data[DECLARATIONS_COLLECTION] || [])].sort((a, b) => String(b.declarationMonth || '').localeCompare(String(a.declarationMonth || '')))
     ), [data]);
 
+    const vatDeclarations = useMemo(() => (
+        [...(data[VAT_DECLARATIONS_COLLECTION] || [])].sort((a, b) => String(b.declarationMonth || '').localeCompare(String(a.declarationMonth || '')))
+    ), [data]);
+
     const declaredKeys = useMemo(() => buildDeclaredKeySet(declarations), [declarations]);
+    const declaredVatKeys = useMemo(() => buildDeclaredKeySet(vatDeclarations), [vatDeclarations]);
 
     const allRows = useMemo(() => (
         buildRetentionRows(data)
@@ -262,9 +359,60 @@ export default function Declarations({ data = {}, branchContext }) {
     const pendingTotals = useMemo(() => sumRows(displayedEligibleRows), [displayedEligibleRows]);
     const expiredTotals = useMemo(() => sumRows(displayedExpiredRows), [displayedExpiredRows]);
 
+    const allVatRows = useMemo(() => (
+        buildVatRows(data)
+            .filter((row) => allowedBranchIds.includes(row.branchId))
+            .sort((a, b) => `${a.date}-${a.document}`.localeCompare(`${b.date}-${b.document}`))
+    ), [allowedBranchIds, data]);
+
+    const visibleVatRows = useMemo(() => allVatRows.filter((row) => (
+        branchFilter === CONSOLIDATED_BRANCH_ID || row.branchId === branchFilter
+    )), [allVatRows, branchFilter]);
+
+    const pendingVatRows = useMemo(() => visibleVatRows
+        .map((row) => ({
+            ...row,
+            ageMonths: monthDiff(row.month, declarationMonth),
+            isDeclared: row.vatDeclared || declaredVatKeys.has(row.sourceKey),
+        }))
+        .filter((row) => !row.isDeclared && row.ageMonths >= 0), [declarationMonth, declaredVatKeys, visibleVatRows]);
+
+    const eligibleVatRows = useMemo(() => pendingVatRows
+        .filter((row) => row.ageMonths < MAX_DECLARATION_AGE_MONTHS), [pendingVatRows]);
+
+    const expiredVatRows = useMemo(() => pendingVatRows
+        .filter((row) => row.ageMonths >= MAX_DECLARATION_AGE_MONTHS), [pendingVatRows]);
+
+    const vatOriginMonthOptions = useMemo(() => (
+        [...new Set(pendingVatRows.map((row) => row.month).filter(Boolean))]
+            .sort((a, b) => String(b).localeCompare(String(a)))
+    ), [pendingVatRows]);
+
+    const displayedEligibleVatRows = useMemo(() => eligibleVatRows.filter((row) => (
+        originMonthFilter === 'all' || row.month === originMonthFilter
+    )), [eligibleVatRows, originMonthFilter]);
+
+    const displayedExpiredVatRows = useMemo(() => expiredVatRows.filter((row) => (
+        originMonthFilter === 'all' || row.month === originMonthFilter
+    )), [expiredVatRows, originMonthFilter]);
+
+    const displayedEligibleVatKeys = useMemo(() => new Set(displayedEligibleVatRows.map((row) => row.sourceKey)), [displayedEligibleVatRows]);
+    const displayedSelectedVatCount = useMemo(() => (
+        displayedEligibleVatRows.filter((row) => selectedVatKeys.has(row.sourceKey)).length
+    ), [displayedEligibleVatRows, selectedVatKeys]);
+    const selectedVatRows = useMemo(() => displayedEligibleVatRows.filter((row) => selectedVatKeys.has(row.sourceKey)), [displayedEligibleVatRows, selectedVatKeys]);
+    const selectedVatTotals = useMemo(() => sumVatRows(selectedVatRows), [selectedVatRows]);
+    const pendingVatTotals = useMemo(() => sumVatRows(displayedEligibleVatRows), [displayedEligibleVatRows]);
+    const expiredVatTotals = useMemo(() => sumVatRows(displayedExpiredVatRows), [displayedExpiredVatRows]);
+    const originMonthOptionsForActiveModule = moduleTab === DECLARATION_MODULES.IVA ? vatOriginMonthOptions : originMonthOptions;
+
     useEffect(() => {
         setSelectedKeys((current) => new Set([...current].filter((key) => eligibleRows.some((row) => row.sourceKey === key))));
     }, [eligibleRows]);
+
+    useEffect(() => {
+        setSelectedVatKeys((current) => new Set([...current].filter((key) => eligibleVatRows.some((row) => row.sourceKey === key))));
+    }, [eligibleVatRows]);
 
     const toggleRow = (row) => {
         setSelectedKeys((current) => {
@@ -287,6 +435,35 @@ export default function Declarations({ data = {}, branchContext }) {
             }
             return next;
         });
+    };
+
+    const toggleVatRow = (row) => {
+        setSelectedVatKeys((current) => {
+            const next = new Set(current);
+            if (next.has(row.sourceKey)) next.delete(row.sourceKey);
+            else next.add(row.sourceKey);
+            return next;
+        });
+    };
+
+    const toggleAllVat = () => {
+        setSelectedVatKeys((current) => {
+            const allVisibleSelected = displayedEligibleVatRows.length > 0
+                && displayedEligibleVatRows.every((row) => current.has(row.sourceKey));
+            const next = new Set(current);
+            if (allVisibleSelected) {
+                displayedEligibleVatKeys.forEach((key) => next.delete(key));
+            } else {
+                displayedEligibleVatRows.forEach((row) => next.add(row.sourceKey));
+            }
+            return next;
+        });
+    };
+
+    const selectModuleTab = (nextModuleTab) => {
+        setModuleTab(nextModuleTab);
+        setActiveTab('pendientes');
+        setOriginMonthFilter('all');
     };
 
     const handlePrintPreDeclaration = () => {
@@ -362,11 +539,88 @@ export default function Declarations({ data = {}, branchContext }) {
         }
     };
 
+    const handleDeclareVat = async () => {
+        if (!selectedVatRows.length) {
+            window.alert('Selecciona al menos un documento con IVA para declarar.');
+            return;
+        }
+
+        const netLabel = selectedVatTotals.netVat >= 0 ? 'IVA a pagar' : 'saldo a favor';
+        const confirmed = window.confirm(`Vas a declarar IVA de ${selectedVatRows.length} documento(s). ${netLabel}: ${fmt(Math.abs(selectedVatTotals.netVat))} en ${declarationMonth}. Deseas continuar?`);
+        if (!confirmed) return;
+
+        setDeclaringVat(true);
+        try {
+            const declarationId = `iva_${declarationMonth}_${Date.now()}`;
+            const batch = writeBatch(db);
+            const declarationRef = doc(collection(db, VAT_DECLARATIONS_COLLECTION), declarationId);
+            const totals = {
+                ...selectedVatTotals,
+                vatPayable: Math.max(selectedVatTotals.netVat, 0),
+                vatCredit: Math.max(selectedVatTotals.netVat * -1, 0),
+            };
+            const items = selectedVatRows.map((row) => ({
+                sourceKey: row.sourceKey,
+                sourceId: row.sourceId,
+                sourceCollection: row.sourceCollection,
+                sourceType: row.sourceType,
+                vatType: row.vatType,
+                date: row.date,
+                month: row.month,
+                branchId: row.branchId,
+                branchName: row.branchName,
+                document: row.document,
+                party: row.party,
+                subtotal: peso(row.subtotal),
+                iva: peso(row.iva),
+                total: peso(row.total),
+            }));
+
+            batch.set(declarationRef, {
+                id: declarationId,
+                status: 'declarada',
+                declarationMonth,
+                branchFilter,
+                itemCount: items.length,
+                totals,
+                items,
+                createdAt: serverTimestamp(),
+                declaredAt: serverTimestamp(),
+            });
+
+            selectedVatRows.forEach((row) => {
+                batch.set(doc(db, row.sourceCollection, row.sourceId), {
+                    vatDeclared: true,
+                    vatDeclarationStatus: 'declarada',
+                    vatDeclarationId: declarationId,
+                    vatDeclaredMonth: declarationMonth,
+                    vatDeclaredAt: serverTimestamp(),
+                }, { merge: true });
+            });
+
+            await batch.commit();
+            setSelectedVatKeys(new Set());
+            window.alert('Declaracion IVA registrada. Los documentos seleccionados ya no apareceran como pendientes.');
+        } catch (error) {
+            console.error('Error declarando IVA:', error);
+            window.alert(`No se pudo declarar IVA: ${error.message}`);
+        } finally {
+            setDeclaringVat(false);
+        }
+    };
+
     const historyTotals = useMemo(() => declarations.reduce((acc, declaration) => ({
         retentionIr2: acc.retentionIr2 + peso(declaration.totals?.retentionIr2),
         retentionTotal: acc.retentionTotal + peso(declaration.totals?.retentionIr2 || declaration.totals?.retentionTotal),
         itemCount: acc.itemCount + peso(declaration.itemCount),
     }), { retentionIr2: 0, retentionTotal: 0, itemCount: 0 }), [declarations]);
+
+    const vatHistoryTotals = useMemo(() => vatDeclarations.reduce((acc, declaration) => ({
+        soldVat: acc.soldVat + peso(declaration.totals?.soldVat),
+        purchasedVat: acc.purchasedVat + peso(declaration.totals?.purchasedVat),
+        netVat: acc.netVat + peso(declaration.totals?.netVat),
+        itemCount: acc.itemCount + peso(declaration.itemCount),
+    }), { soldVat: 0, purchasedVat: 0, netVat: 0, itemCount: 0 }), [vatDeclarations]);
 
     return (
         <div className="space-y-5">
@@ -408,6 +662,27 @@ export default function Declarations({ data = {}, branchContext }) {
                     </div>
                 </div>
 
+                <div className="grid gap-2 border-t border-slate-200 p-4 sm:grid-cols-2">
+                    <button
+                        type="button"
+                        onClick={() => selectModuleTab(DECLARATION_MODULES.RETENTION_IR)}
+                        className={`rounded-2xl px-4 py-3 text-left transition ${moduleTab === DECLARATION_MODULES.RETENTION_IR ? 'bg-[#e30613] text-white shadow-sm shadow-red-900/20' : 'border border-slate-200 bg-white text-slate-700 hover:bg-slate-50'}`}
+                    >
+                        <div className="text-[10px] font-black uppercase tracking-[0.24em] opacity-75">Submodulo</div>
+                        <div className="mt-1 text-sm font-black">Retenciones IR</div>
+                        <div className="mt-0.5 text-xs font-semibold opacity-70">Anticipo IR 2% sobre ventas.</div>
+                    </button>
+                    <button
+                        type="button"
+                        onClick={() => selectModuleTab(DECLARATION_MODULES.IVA)}
+                        className={`rounded-2xl px-4 py-3 text-left transition ${moduleTab === DECLARATION_MODULES.IVA ? 'bg-sky-600 text-white shadow-sm shadow-sky-900/20' : 'border border-slate-200 bg-white text-slate-700 hover:bg-slate-50'}`}
+                    >
+                        <div className="text-[10px] font-black uppercase tracking-[0.24em] opacity-75">Submodulo</div>
+                        <div className="mt-1 text-sm font-black">Declaracion IVA</div>
+                        <div className="mt-0.5 text-xs font-semibold opacity-70">IVA comprado vs. IVA vendido de facturas membretadas.</div>
+                    </button>
+                </div>
+
                 <div className="grid gap-3 border-t border-slate-200 p-4 lg:grid-cols-[190px_190px_190px_1fr]">
                     <label className="space-y-1">
                         <span className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-500">Mes a declarar</span>
@@ -440,7 +715,7 @@ export default function Declarations({ data = {}, branchContext }) {
                             className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm font-black text-slate-900 outline-none focus:border-[#e30613] focus:ring-2 focus:ring-[#e30613]/15"
                         >
                             <option value="all">Ultimos 6 meses</option>
-                            {originMonthOptions.map((month) => (
+                            {originMonthOptionsForActiveModule.map((month) => (
                                 <option key={month} value={month}>{month}</option>
                             ))}
                         </select>
@@ -464,7 +739,7 @@ export default function Declarations({ data = {}, branchContext }) {
                 </div>
             </section>
 
-            {activeTab === 'pendientes' && (
+            {moduleTab === DECLARATION_MODULES.RETENTION_IR && activeTab === 'pendientes' && (
                 <div className="space-y-5">
                     <div className="grid gap-3 md:grid-cols-3">
                         <StatCard label="Pendientes visibles" value={displayedEligibleRows.length} tone="blue" help={originMonthFilter === 'all' ? `${MAX_DECLARATION_AGE_MONTHS} meses maximo` : `Origen ${originMonthFilter}`} />
@@ -626,7 +901,186 @@ export default function Declarations({ data = {}, branchContext }) {
                 </div>
             )}
 
-            {activeTab === 'historial' && (
+            {moduleTab === DECLARATION_MODULES.IVA && activeTab === 'pendientes' && (
+                <div className="space-y-5">
+                    <div className="grid gap-3 md:grid-cols-4">
+                        <StatCard label="Documentos IVA visibles" value={displayedEligibleVatRows.length} tone="blue" help={originMonthFilter === 'all' ? `${MAX_DECLARATION_AGE_MONTHS} meses maximo` : `Origen ${originMonthFilter}`} />
+                        <StatCard label="IVA vendido" value={fmt(pendingVatTotals.soldVat)} tone="green" />
+                        <StatCard label="IVA comprado" value={fmt(pendingVatTotals.purchasedVat)} tone="amber" />
+                        <StatCard
+                            label={pendingVatTotals.netVat >= 0 ? 'IVA a pagar' : 'Saldo a favor'}
+                            value={fmt(Math.abs(pendingVatTotals.netVat))}
+                            tone={pendingVatTotals.netVat >= 0 ? 'red' : 'green'}
+                        />
+                    </div>
+
+                    {displayedExpiredVatRows.length > 0 && (
+                        <div className="rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm font-bold text-rose-800">
+                            <div className="flex items-center gap-2">
+                                <Icon path={Icons.alert} />
+                                Hay {displayedExpiredVatRows.length} documento(s) con IVA fuera del plazo de 6 meses por {fmt(expiredVatTotals.netVat)} neto. Revisalos antes de cerrar declaraciones.
+                            </div>
+                        </div>
+                    )}
+
+                    <Card className="overflow-hidden">
+                        <div className="flex flex-col gap-3 border-b border-slate-200 bg-slate-50 px-5 py-4 lg:flex-row lg:items-center lg:justify-between">
+                            <div>
+                                <div className="text-[10px] font-black uppercase tracking-[0.28em] text-sky-600">Bandeja IVA</div>
+                                <h2 className="mt-1 text-lg font-black text-slate-950">IVA comprado y vendido por declarar</h2>
+                                <p className="mt-1 text-xs font-semibold text-slate-500">
+                                    El IVA vendido sale de facturas membretadas. El IVA comprado sale de compras y gastos registrados.
+                                </p>
+                            </div>
+                            <div className="flex flex-wrap gap-2">
+                                <button type="button" onClick={toggleAllVat} disabled={!displayedEligibleVatRows.length} className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-xs font-black uppercase tracking-wider text-slate-700 transition hover:bg-slate-100 disabled:opacity-50">
+                                    {displayedSelectedVatCount === displayedEligibleVatRows.length && displayedEligibleVatRows.length ? 'Limpiar seleccion visible' : 'Seleccionar visible'}
+                                </button>
+                                <button type="button" onClick={handlePrintPreDeclaration} disabled={!selectedVatRows.length} className="inline-flex items-center gap-2 rounded-xl border border-sky-600 bg-white px-4 py-2 text-xs font-black uppercase tracking-wider text-sky-700 transition hover:bg-sky-50 disabled:opacity-50">
+                                    <Icon path={Icons.printer} />
+                                    Reporte pre declaracion
+                                </button>
+                                <button type="button" onClick={handleDeclareVat} disabled={declaringVat || !selectedVatRows.length} className="inline-flex items-center gap-2 rounded-xl bg-sky-600 px-4 py-2 text-xs font-black uppercase tracking-wider text-white shadow-sm shadow-sky-900/20 transition hover:bg-sky-700 disabled:opacity-50">
+                                    <Icon path={Icons.check} />
+                                    {declaringVat ? 'Declarando...' : 'Declarar IVA'}
+                                </button>
+                            </div>
+                        </div>
+
+                        <div className="overflow-x-auto">
+                            <table className="min-w-full divide-y divide-slate-100 text-sm">
+                                <thead className="bg-white">
+                                    <tr className="text-left text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">
+                                        <th className="px-5 py-3">Sel.</th>
+                                        <th className="px-5 py-3">Documento</th>
+                                        <th className="px-5 py-3">Tipo</th>
+                                        <th className="px-5 py-3">Cliente / proveedor</th>
+                                        <th className="px-5 py-3">Mes origen</th>
+                                        <th className="px-5 py-3 text-right">Subtotal</th>
+                                        <th className="px-5 py-3 text-right">IVA</th>
+                                        <th className="px-5 py-3 text-right">Total</th>
+                                    </tr>
+                                </thead>
+                                <tbody className="divide-y divide-slate-100 bg-white">
+                                    {displayedEligibleVatRows.map((row) => (
+                                        <tr key={row.sourceKey} className="transition hover:bg-slate-50">
+                                            <td className="px-5 py-3">
+                                                <input
+                                                    type="checkbox"
+                                                    checked={selectedVatKeys.has(row.sourceKey)}
+                                                    onChange={() => toggleVatRow(row)}
+                                                    className="h-4 w-4 accent-sky-600"
+                                                />
+                                            </td>
+                                            <td className="px-5 py-3">
+                                                <div className="flex flex-wrap items-center gap-2">
+                                                    <div className="font-black text-slate-950">{row.document || '-'}</div>
+                                                    <span className="rounded-full bg-slate-100 px-2.5 py-1 text-[10px] font-black uppercase tracking-wider text-slate-500">{row.branchName}</span>
+                                                </div>
+                                                <div className="mt-1 text-xs font-bold text-slate-400">{row.date || '-'}</div>
+                                            </td>
+                                            <td className="px-5 py-3">
+                                                <span className={`rounded-full px-2.5 py-1 text-[10px] font-black uppercase tracking-wider ${row.vatType === 'sold' ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}`}>
+                                                    {row.vatType === 'sold' ? 'Vendido' : 'Comprado'}
+                                                </span>
+                                                <div className="mt-1 text-xs font-bold text-slate-400">{row.sourceType}</div>
+                                            </td>
+                                            <td className="px-5 py-3 font-bold text-slate-700">{row.party}</td>
+                                            <td className="px-5 py-3">
+                                                <div className="font-mono font-black text-slate-900">{row.month}</div>
+                                                <div className="text-xs font-semibold text-slate-400">
+                                                    {Math.max(MAX_DECLARATION_AGE_MONTHS - row.ageMonths, 0)} mes(es) de plazo
+                                                </div>
+                                            </td>
+                                            <td className="px-5 py-3 text-right font-mono font-bold text-slate-700">{fmt(row.subtotal)}</td>
+                                            <td className="px-5 py-3 text-right font-mono font-black text-sky-700">{fmt(row.iva)}</td>
+                                            <td className="px-5 py-3 text-right font-mono font-black text-slate-950">{fmt(row.total)}</td>
+                                        </tr>
+                                    ))}
+                                    {displayedEligibleVatRows.length === 0 && (
+                                        <tr>
+                                            <td colSpan={8} className="px-5 py-10 text-center text-sm font-bold text-slate-400">
+                                                No hay IVA pendiente para declarar en este mes y sucursal.
+                                            </td>
+                                        </tr>
+                                    )}
+                                </tbody>
+                            </table>
+                        </div>
+                    </Card>
+
+                    <Card className="retention-predeclaration-report overflow-hidden">
+                        <div className="border-b border-slate-200 bg-white px-6 py-5">
+                            <div className="flex items-start justify-between gap-4">
+                                <div className="flex items-center gap-4">
+                                    <img src={APP_BRAND_LOGO} alt={APP_BRAND_NAME} className="h-16 w-16 rounded-2xl border border-slate-200 object-contain p-2" />
+                                    <div>
+                                        <div className="text-[10px] font-black uppercase tracking-[0.34em] text-sky-600">{APP_BRAND_NAME}</div>
+                                        <h2 className="mt-1 text-xl font-black text-slate-950">Reporte Pre Declaracion IVA</h2>
+                                        <p className="text-xs font-bold text-slate-500">Periodo: {declarationMonth} - Sucursal: {branchFilter === CONSOLIDATED_BRANCH_ID ? 'Todas' : getBranchById(branchFilter).shortName}</p>
+                                    </div>
+                                </div>
+                                <div className="text-right text-xs font-bold text-slate-500">
+                                    Generado: {new Date().toLocaleDateString('es-NI')}
+                                </div>
+                            </div>
+                        </div>
+                        <div className="p-6">
+                            <div className="mb-5 grid gap-3 sm:grid-cols-4">
+                                <StatCard label="IVA vendido" value={fmt(selectedVatTotals.soldVat)} tone="green" />
+                                <StatCard label="IVA comprado" value={fmt(selectedVatTotals.purchasedVat)} tone="amber" />
+                                <StatCard
+                                    label={selectedVatTotals.netVat >= 0 ? 'IVA a pagar' : 'Saldo a favor'}
+                                    value={fmt(Math.abs(selectedVatTotals.netVat))}
+                                    tone={selectedVatTotals.netVat >= 0 ? 'red' : 'green'}
+                                />
+                                <StatCard label="Documentos" value={selectedVatRows.length} tone="blue" />
+                            </div>
+                            <table className="w-full text-xs">
+                                <thead>
+                                    <tr className="border-b border-slate-300 text-left font-black uppercase tracking-[0.16em] text-slate-500">
+                                        <th className="py-2">Fecha</th>
+                                        <th className="py-2">Documento</th>
+                                        <th className="py-2">Tipo</th>
+                                        <th className="py-2">Cliente / proveedor</th>
+                                        <th className="py-2">Sucursal</th>
+                                        <th className="py-2 text-right">Subtotal</th>
+                                        <th className="py-2 text-right">IVA</th>
+                                        <th className="py-2 text-right">Total</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {selectedVatRows.map((row) => (
+                                        <tr key={`iva-report-${row.sourceKey}`} className="border-b border-slate-100">
+                                            <td className="py-2 font-semibold">{row.date}</td>
+                                            <td className="py-2 font-black">{row.document}</td>
+                                            <td className="py-2 font-semibold">{row.vatType === 'sold' ? 'Vendido' : 'Comprado'}</td>
+                                            <td className="py-2 font-semibold">{row.party}</td>
+                                            <td className="py-2 font-semibold">{row.branchName}</td>
+                                            <td className="py-2 text-right font-mono font-bold">{fmt(row.subtotal)}</td>
+                                            <td className="py-2 text-right font-mono font-black">{fmt(row.iva)}</td>
+                                            <td className="py-2 text-right font-mono font-bold">{fmt(row.total)}</td>
+                                        </tr>
+                                    ))}
+                                    {!selectedVatRows.length && (
+                                        <tr>
+                                            <td colSpan={8} className="py-8 text-center font-bold text-slate-400">
+                                                Selecciona documentos con IVA para generar este reporte.
+                                            </td>
+                                        </tr>
+                                    )}
+                                </tbody>
+                            </table>
+                            <div className="mt-8 grid gap-8 text-xs font-bold text-slate-600 sm:grid-cols-2">
+                                <div className="border-t border-slate-400 pt-2">Preparado por</div>
+                                <div className="border-t border-slate-400 pt-2">Revisado por</div>
+                            </div>
+                        </div>
+                    </Card>
+                </div>
+            )}
+
+            {moduleTab === DECLARATION_MODULES.RETENTION_IR && activeTab === 'historial' && (
                 <div className="space-y-5">
                     <div className="grid gap-3 md:grid-cols-4">
                         <StatCard label="Declaraciones" value={declarations.length} tone="blue" />
@@ -678,6 +1132,77 @@ export default function Declarations({ data = {}, branchContext }) {
                             {!declarations.length && (
                                 <div className="px-5 py-10 text-center text-sm font-bold text-slate-400">
                                     Todavia no hay declaraciones registradas.
+                                </div>
+                            )}
+                        </div>
+                    </Card>
+                </div>
+            )}
+
+            {moduleTab === DECLARATION_MODULES.IVA && activeTab === 'historial' && (
+                <div className="space-y-5">
+                    <div className="grid gap-3 md:grid-cols-4">
+                        <StatCard label="Declaraciones IVA" value={vatDeclarations.length} tone="blue" />
+                        <StatCard label="Documentos declarados" value={vatHistoryTotals.itemCount} tone="slate" />
+                        <StatCard label="IVA vendido" value={fmt(vatHistoryTotals.soldVat)} tone="green" />
+                        <StatCard label="IVA comprado" value={fmt(vatHistoryTotals.purchasedVat)} tone="amber" />
+                    </div>
+                    <Card className="overflow-hidden">
+                        <div className="border-b border-slate-200 bg-slate-50 px-5 py-4">
+                            <div className="text-[10px] font-black uppercase tracking-[0.28em] text-sky-600">Archivo IVA</div>
+                            <h2 className="mt-1 text-lg font-black text-slate-950">Declaraciones IVA registradas</h2>
+                        </div>
+                        <div className="divide-y divide-slate-100">
+                            {vatDeclarations.map((declaration) => {
+                                const netVat = peso(declaration.totals?.netVat);
+                                return (
+                                    <details key={declaration.id} className="group bg-white px-5 py-4 open:bg-slate-50">
+                                        <summary className="flex cursor-pointer flex-col gap-2 md:flex-row md:items-center md:justify-between">
+                                            <div>
+                                                <div className="font-black text-slate-950">Declaracion IVA {declaration.declarationMonth}</div>
+                                                <div className="mt-1 text-xs font-bold text-slate-400">{declaration.itemCount || 0} documento(s)</div>
+                                            </div>
+                                            <div className="text-right">
+                                                <div className="font-mono text-lg font-black text-slate-950">{fmt(Math.abs(netVat))}</div>
+                                                <div className={`text-[10px] font-black uppercase tracking-[0.18em] ${netVat >= 0 ? 'text-rose-600' : 'text-emerald-600'}`}>
+                                                    {netVat >= 0 ? 'IVA a pagar' : 'Saldo a favor'}
+                                                </div>
+                                            </div>
+                                        </summary>
+                                        <div className="mt-4 overflow-x-auto rounded-2xl border border-slate-200 bg-white">
+                                            <table className="min-w-full divide-y divide-slate-100 text-xs">
+                                                <thead className="bg-slate-50 text-left font-black uppercase tracking-[0.16em] text-slate-400">
+                                                    <tr>
+                                                        <th className="px-4 py-2">Fecha</th>
+                                                        <th className="px-4 py-2">Documento</th>
+                                                        <th className="px-4 py-2">Tipo</th>
+                                                        <th className="px-4 py-2">Cliente / proveedor</th>
+                                                        <th className="px-4 py-2 text-right">Subtotal</th>
+                                                        <th className="px-4 py-2 text-right">IVA</th>
+                                                        <th className="px-4 py-2 text-right">Total</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody className="divide-y divide-slate-100">
+                                                    {(declaration.items || []).map((item) => (
+                                                        <tr key={`${declaration.id}-${item.sourceKey}`}>
+                                                            <td className="px-4 py-2 font-semibold">{item.date}</td>
+                                                            <td className="px-4 py-2 font-black">{formatDeclarationDocument(item.sourceCollection, item.document)}</td>
+                                                            <td className="px-4 py-2 font-semibold">{item.vatType === 'sold' ? 'Vendido' : 'Comprado'}</td>
+                                                            <td className="px-4 py-2 font-semibold">{item.party}</td>
+                                                            <td className="px-4 py-2 text-right font-mono font-bold">{fmt(item.subtotal)}</td>
+                                                            <td className="px-4 py-2 text-right font-mono font-black">{fmt(item.iva)}</td>
+                                                            <td className="px-4 py-2 text-right font-mono font-bold">{fmt(item.total)}</td>
+                                                        </tr>
+                                                    ))}
+                                                </tbody>
+                                            </table>
+                                        </div>
+                                    </details>
+                                );
+                            })}
+                            {!vatDeclarations.length && (
+                                <div className="px-5 py-10 text-center text-sm font-bold text-slate-400">
+                                    Todavia no hay declaraciones IVA registradas.
                                 </div>
                             )}
                         </div>

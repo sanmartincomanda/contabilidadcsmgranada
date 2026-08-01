@@ -1270,7 +1270,10 @@ function AppContent() {
     const declarationCollections = useMemo(() => [
         collectionConfig('facturas_membretadas_ventas', [where('saleDate', '>=', `${declarationStartMonth}-01`)]),
         collectionConfig('recibos_caja_membretados', [where('date', '>=', `${declarationStartMonth}-01`)]),
+        collectionConfig('compras', [where('month', '>=', declarationStartMonth)]),
+        collectionConfig('gastos', [where('date', '>=', `${declarationStartMonth}-01`)]),
         collectionConfig('declaraciones_retenciones', [where('declarationMonth', '>=', declarationStartMonth)]),
+        collectionConfig('declaraciones_iva', [where('declarationMonth', '>=', declarationStartMonth)]),
     ], [declarationStartMonth]);
 
     const { data: categoriesData } = useFirestoreCollections(CATEGORY_COLLECTIONS, !!user && !accessLoading && needsCategories, false);
