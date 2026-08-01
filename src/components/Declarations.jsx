@@ -76,6 +76,12 @@ const getDocumentNumber = (item = {}, fallback = '') => (
     )
 );
 
+const formatDeclarationDocument = (sourceCollection, document = '') => {
+    const cleanDocument = cleanText(document).replace(/^[FR]\s*-\s*/i, '');
+    const prefix = sourceCollection === RECEIPT_COLLECTION ? 'R' : 'F';
+    return cleanDocument ? `${prefix} - ${cleanDocument}` : `${prefix} -`;
+};
+
 const getClientName = (item = {}) => cleanText(
     item.client
     || item.cliente
@@ -112,7 +118,7 @@ const normalizeDeclarationItem = (sourceCollection, item = {}) => {
         month: getMonthString(date || item.month || item.mes),
         branchId: getRecordBranchId(item),
         branchName: getBranchById(getRecordBranchId(item)).shortName,
-        document: getDocumentNumber(item, sourceId),
+        document: formatDeclarationDocument(sourceCollection, getDocumentNumber(item, sourceId)),
         client: getClientName(item),
         subtotal: peso(item.subtotal),
         total: peso(item.total ?? item.amount ?? item.monto),
@@ -658,7 +664,7 @@ export default function Declarations({ data = {}, branchContext }) {
                                                 {(declaration.items || []).map((item) => (
                                                     <tr key={`${declaration.id}-${item.sourceKey}`}>
                                                         <td className="px-4 py-2 font-semibold">{item.date}</td>
-                                                        <td className="px-4 py-2 font-black">{item.document}</td>
+                                                        <td className="px-4 py-2 font-black">{formatDeclarationDocument(item.sourceCollection, item.document)}</td>
                                                         <td className="px-4 py-2 font-semibold">{item.client}</td>
                                                         <td className="px-4 py-2 text-right font-mono font-bold">{fmt(item.retentionIr2)}</td>
                                                         <td className="px-4 py-2 text-right font-mono font-black">{fmt(item.retentionIr2 || item.retentionTotal)}</td>
