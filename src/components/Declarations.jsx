@@ -244,6 +244,12 @@ const sumVatRows = (rows = []) => rows.reduce((acc, row) => {
     purchasedTotal: 0,
 });
 
+const sumVatTableRows = (rows = []) => rows.reduce((acc, row) => ({
+    subtotal: acc.subtotal + peso(row.subtotal),
+    iva: acc.iva + peso(row.iva),
+    total: acc.total + peso(row.total),
+}), { subtotal: 0, iva: 0, total: 0 });
+
 const Card = ({ children, className = '' }) => (
     <div className={`rounded-2xl border border-slate-200 bg-white shadow-sm ${className}`}>{children}</div>
 );
@@ -275,6 +281,75 @@ const SourceBadge = ({ row }) => (
         {row.sourceType}
     </span>
 );
+
+const VatReportTable = ({ title, rows = [], emptyMessage, tone = 'sky', rowKeyPrefix = 'iva' }) => {
+    const totals = sumVatTableRows(rows);
+    const toneClasses = {
+        green: 'bg-emerald-50 text-emerald-800 border-emerald-200',
+        amber: 'bg-amber-50 text-amber-800 border-amber-200',
+        sky: 'bg-sky-50 text-sky-800 border-sky-200',
+    };
+
+    return (
+        <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white">
+            <div className={`flex items-center justify-between gap-3 border-b px-4 py-3 ${toneClasses[tone] || toneClasses.sky}`}>
+                <div>
+                    <h3 className="text-sm font-black uppercase tracking-[0.18em]">{title}</h3>
+                    <p className="mt-0.5 text-[10px] font-bold opacity-70">{rows.length} documento(s)</p>
+                </div>
+                <div className="text-right">
+                    <div className="text-[10px] font-black uppercase tracking-[0.16em] opacity-70">IVA</div>
+                    <div className="font-mono text-sm font-black">{fmt(totals.iva)}</div>
+                </div>
+            </div>
+            <div className="overflow-x-auto">
+                <table className="w-full text-xs">
+                    <thead>
+                        <tr className="border-b border-slate-300 text-left font-black uppercase tracking-[0.16em] text-slate-500">
+                            <th className="py-2 pl-4 pr-2">Fecha</th>
+                            <th className="px-2 py-2">Documento</th>
+                            <th className="px-2 py-2">Cliente / proveedor</th>
+                            <th className="px-2 py-2">Sucursal</th>
+                            <th className="px-2 py-2 text-right">Subtotal</th>
+                            <th className="px-2 py-2 text-right">IVA</th>
+                            <th className="py-2 pl-2 pr-4 text-right">Total</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {rows.map((row) => (
+                            <tr key={`${rowKeyPrefix}-${row.sourceKey || row.sourceId || row.document}`} className="border-b border-slate-100 last:border-b-0">
+                                <td className="py-2 pl-4 pr-2 font-semibold">{row.date}</td>
+                                <td className="px-2 py-2 font-black">{formatDeclarationDocument(row.sourceCollection, row.document)}</td>
+                                <td className="px-2 py-2 font-semibold">{row.party}</td>
+                                <td className="px-2 py-2 font-semibold">{row.branchName}</td>
+                                <td className="px-2 py-2 text-right font-mono font-bold">{fmt(row.subtotal)}</td>
+                                <td className="px-2 py-2 text-right font-mono font-black">{fmt(row.iva)}</td>
+                                <td className="py-2 pl-2 pr-4 text-right font-mono font-bold">{fmt(row.total)}</td>
+                            </tr>
+                        ))}
+                        {!rows.length && (
+                            <tr>
+                                <td colSpan={7} className="py-8 text-center font-bold text-slate-400">
+                                    {emptyMessage}
+                                </td>
+                            </tr>
+                        )}
+                    </tbody>
+                    {rows.length > 0 && (
+                        <tfoot>
+                            <tr className="border-t border-slate-300 bg-slate-50 font-black text-slate-900">
+                                <td colSpan={4} className="py-2 pl-4 pr-2">Total {title.toLowerCase()}</td>
+                                <td className="px-2 py-2 text-right font-mono">{fmt(totals.subtotal)}</td>
+                                <td className="px-2 py-2 text-right font-mono">{fmt(totals.iva)}</td>
+                                <td className="py-2 pl-2 pr-4 text-right font-mono">{fmt(totals.total)}</td>
+                            </tr>
+                        </tfoot>
+                    )}
+                </table>
+            </div>
+        </div>
+    );
+};
 
 export default function Declarations({ data = {}, branchContext }) {
     const [moduleTab, setModuleTab] = useState(DECLARATION_MODULES.RETENTION_IR);
@@ -406,6 +481,8 @@ export default function Declarations({ data = {}, branchContext }) {
         displayedEligibleVatRows.filter((row) => selectedVatKeys.has(row.sourceKey)).length
     ), [displayedEligibleVatRows, selectedVatKeys]);
     const selectedVatRows = useMemo(() => displayedEligibleVatRows.filter((row) => selectedVatKeys.has(row.sourceKey)), [displayedEligibleVatRows, selectedVatKeys]);
+    const selectedSoldVatRows = useMemo(() => selectedVatRows.filter((row) => row.vatType === 'sold'), [selectedVatRows]);
+    const selectedPurchasedVatRows = useMemo(() => selectedVatRows.filter((row) => row.vatType === 'purchased'), [selectedVatRows]);
     const selectedVatTotals = useMemo(() => sumVatRows(selectedVatRows), [selectedVatRows]);
     const pendingVatTotals = useMemo(() => sumVatRows(displayedEligibleVatRows), [displayedEligibleVatRows]);
     const expiredVatTotals = useMemo(() => sumVatRows(displayedExpiredVatRows), [displayedExpiredVatRows]);
@@ -1056,41 +1133,22 @@ export default function Declarations({ data = {}, branchContext }) {
                                 />
                                 <StatCard label="Documentos" value={selectedVatRows.length} tone="blue" />
                             </div>
-                            <table className="w-full text-xs">
-                                <thead>
-                                    <tr className="border-b border-slate-300 text-left font-black uppercase tracking-[0.16em] text-slate-500">
-                                        <th className="py-2">Fecha</th>
-                                        <th className="py-2">Documento</th>
-                                        <th className="py-2">Tipo</th>
-                                        <th className="py-2">Cliente / proveedor</th>
-                                        <th className="py-2">Sucursal</th>
-                                        <th className="py-2 text-right">Subtotal</th>
-                                        <th className="py-2 text-right">IVA</th>
-                                        <th className="py-2 text-right">Total</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    {selectedVatRows.map((row) => (
-                                        <tr key={`iva-report-${row.sourceKey}`} className="border-b border-slate-100">
-                                            <td className="py-2 font-semibold">{row.date}</td>
-                                            <td className="py-2 font-black">{row.document}</td>
-                                            <td className="py-2 font-semibold">{row.vatType === 'sold' ? 'Vendido' : 'Comprado'}</td>
-                                            <td className="py-2 font-semibold">{row.party}</td>
-                                            <td className="py-2 font-semibold">{row.branchName}</td>
-                                            <td className="py-2 text-right font-mono font-bold">{fmt(row.subtotal)}</td>
-                                            <td className="py-2 text-right font-mono font-black">{fmt(row.iva)}</td>
-                                            <td className="py-2 text-right font-mono font-bold">{fmt(row.total)}</td>
-                                        </tr>
-                                    ))}
-                                    {!selectedVatRows.length && (
-                                        <tr>
-                                            <td colSpan={8} className="py-8 text-center font-bold text-slate-400">
-                                                Selecciona documentos con IVA para generar este reporte.
-                                            </td>
-                                        </tr>
-                                    )}
-                                </tbody>
-                            </table>
+                            <div className="space-y-4">
+                                <VatReportTable
+                                    title="IVA vendido"
+                                    rows={selectedSoldVatRows}
+                                    emptyMessage="No hay facturas membretadas vendidas seleccionadas."
+                                    tone="green"
+                                    rowKeyPrefix="iva-sold-report"
+                                />
+                                <VatReportTable
+                                    title="IVA comprado"
+                                    rows={selectedPurchasedVatRows}
+                                    emptyMessage="No hay compras o gastos seleccionados."
+                                    tone="amber"
+                                    rowKeyPrefix="iva-purchased-report"
+                                />
+                            </div>
                             <div className="mt-8 grid gap-8 text-xs font-bold text-slate-600 sm:grid-cols-2">
                                 <div className="border-t border-slate-400 pt-2">Preparado por</div>
                                 <div className="border-t border-slate-400 pt-2">Revisado por</div>
@@ -1175,6 +1233,9 @@ export default function Declarations({ data = {}, branchContext }) {
                         <div className="divide-y divide-slate-100">
                             {vatDeclarations.map((declaration) => {
                                 const netVat = peso(declaration.totals?.netVat);
+                                const declarationItems = declaration.items || [];
+                                const declarationSoldItems = declarationItems.filter((item) => item.vatType === 'sold');
+                                const declarationPurchasedItems = declarationItems.filter((item) => item.vatType === 'purchased');
                                 return (
                                     <details key={declaration.id} className="group bg-white px-5 py-4 open:bg-slate-50">
                                         <summary className="flex cursor-pointer flex-col gap-2 md:flex-row md:items-center md:justify-between">
@@ -1189,33 +1250,21 @@ export default function Declarations({ data = {}, branchContext }) {
                                                 </div>
                                             </div>
                                         </summary>
-                                        <div className="mt-4 overflow-x-auto rounded-2xl border border-slate-200 bg-white">
-                                            <table className="min-w-full divide-y divide-slate-100 text-xs">
-                                                <thead className="bg-slate-50 text-left font-black uppercase tracking-[0.16em] text-slate-400">
-                                                    <tr>
-                                                        <th className="px-4 py-2">Fecha</th>
-                                                        <th className="px-4 py-2">Documento</th>
-                                                        <th className="px-4 py-2">Tipo</th>
-                                                        <th className="px-4 py-2">Cliente / proveedor</th>
-                                                        <th className="px-4 py-2 text-right">Subtotal</th>
-                                                        <th className="px-4 py-2 text-right">IVA</th>
-                                                        <th className="px-4 py-2 text-right">Total</th>
-                                                    </tr>
-                                                </thead>
-                                                <tbody className="divide-y divide-slate-100">
-                                                    {(declaration.items || []).map((item) => (
-                                                        <tr key={`${declaration.id}-${item.sourceKey}`}>
-                                                            <td className="px-4 py-2 font-semibold">{item.date}</td>
-                                                            <td className="px-4 py-2 font-black">{formatDeclarationDocument(item.sourceCollection, item.document)}</td>
-                                                            <td className="px-4 py-2 font-semibold">{item.vatType === 'sold' ? 'Vendido' : 'Comprado'}</td>
-                                                            <td className="px-4 py-2 font-semibold">{item.party}</td>
-                                                            <td className="px-4 py-2 text-right font-mono font-bold">{fmt(item.subtotal)}</td>
-                                                            <td className="px-4 py-2 text-right font-mono font-black">{fmt(item.iva)}</td>
-                                                            <td className="px-4 py-2 text-right font-mono font-bold">{fmt(item.total)}</td>
-                                                        </tr>
-                                                    ))}
-                                                </tbody>
-                                            </table>
+                                        <div className="mt-4 space-y-4">
+                                            <VatReportTable
+                                                title="IVA vendido"
+                                                rows={declarationSoldItems}
+                                                emptyMessage="Esta declaracion no incluye IVA vendido."
+                                                tone="green"
+                                                rowKeyPrefix={`iva-sold-history-${declaration.id}`}
+                                            />
+                                            <VatReportTable
+                                                title="IVA comprado"
+                                                rows={declarationPurchasedItems}
+                                                emptyMessage="Esta declaracion no incluye IVA comprado."
+                                                tone="amber"
+                                                rowKeyPrefix={`iva-purchased-history-${declaration.id}`}
+                                            />
                                         </div>
                                     </details>
                                 );
