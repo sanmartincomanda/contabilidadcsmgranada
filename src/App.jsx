@@ -13,6 +13,7 @@ import GastosDiarios from './components/GastosDiarios';
 import { DataEntry } from './components/DataEntry';
 import Billing from './components/Billing';
 import Reports from './components/Reports';
+import Declarations from './components/Declarations';
 import CategoryManager from './components/CategoryManager';
 import Settings from './components/Settings';
 import { AccountsPayable } from './components/AccountsPayable';
@@ -44,6 +45,7 @@ const DATA_ENTRY_HISTORY_MONTHS = 6;
 const REPORT_HISTORY_MONTHS = 24;
 const ACCOUNT_HISTORY_MONTHS = 12;
 const BILLING_HISTORY_MONTHS = 2;
+const DECLARATION_HISTORY_MONTHS = 7;
 const MAX_ROUTE_BLOCKING_MS = 900;
 const INACTIVITY_TIMEOUT_MS = 3 * 60 * 60 * 1000;
 
@@ -1204,6 +1206,7 @@ function AppContent() {
     const reportStartMonth = useMemo(() => getMonthOffset(REPORT_HISTORY_MONTHS), []);
     const accountStartMonth = useMemo(() => getMonthOffset(ACCOUNT_HISTORY_MONTHS), []);
     const billingStartMonth = useMemo(() => getMonthOffset(BILLING_HISTORY_MONTHS), []);
+    const declarationStartMonth = useMemo(() => getMonthOffset(DECLARATION_HISTORY_MONTHS), []);
     const currentMonthStart = `${currentMonth}-01`;
     const nextMonthStart = getNextMonthStart(currentMonth);
 
@@ -1264,12 +1267,19 @@ function AppContent() {
         'cajeros',
     ], [billingStartMonth]);
 
+    const declarationCollections = useMemo(() => [
+        collectionConfig('facturas_membretadas_ventas', [where('saleDate', '>=', `${declarationStartMonth}-01`)]),
+        collectionConfig('recibos_caja_membretados', [where('date', '>=', `${declarationStartMonth}-01`)]),
+        collectionConfig('declaraciones_retenciones', [where('declarationMonth', '>=', declarationStartMonth)]),
+    ], [declarationStartMonth]);
+
     const { data: categoriesData } = useFirestoreCollections(CATEGORY_COLLECTIONS, !!user && !accessLoading && needsCategories, false);
     const { data: dataEntryData, loading: dataEntryLoading, error: dataEntryError } = useFirestoreCollections(dataEntryCollections, !!user && !accessLoading && canAccess('ingresar') && currentPath === '/ingresar', true);
     const { data: accountsPayableData, loading: accountsPayableLoading, error: accountsPayableError } = useFirestoreCollections(accountsPayableCollections, !!user && !accessLoading && canAccess('cuentas_pagar') && currentPath === '/cuentas-pagar', true);
     const { data: accountsReceivableData, loading: accountsReceivableLoading, error: accountsReceivableError } = useFirestoreCollections(accountsReceivableCollections, !!user && !accessLoading && canAccess('cuentas_cobrar') && currentPath === '/cuentas-cobrar', true);
     const { data: branchTransfersData, loading: branchTransfersLoading, error: branchTransfersError } = useFirestoreCollections(branchTransfersCollections, !!user && !accessLoading && canAccess('traspasos_costos') && currentPath === '/traspasos-costos', true);
     const { data: reportsData, loading: reportsLoading, error: reportsError } = useFirestoreCollections(reportCollections, !!user && !accessLoading && canAccess('reportes') && currentPath === '/reportes', false);
+    const { data: declarationsData, loading: declarationsLoading, error: declarationsError } = useFirestoreCollections(declarationCollections, !!user && !accessLoading && canAccess('declaraciones') && currentPath === '/declaraciones', true);
     const { data: dashboardData, loading: dashboardLoading, error: dashboardError } = useFirestoreCollections(dashboardCollections, !!user && !accessLoading && canAccess('dashboard') && currentPath === '/', false);
     const { data: billingData, loading: billingLoading, error: billingError } = useFirestoreCollections(billingCollections, !!user && !accessLoading && canAccess('facturacion') && currentPath === '/facturacion', true);
 
@@ -1328,6 +1338,7 @@ function AppContent() {
                         <Route path="/cuentas-cobrar" element={<PrivateRoute element={canAccess('cuentas_cobrar') ? (accountsReceivableLoading ? <AppLoadingState /> : accountsReceivableError ? <AppErrorState error={accountsReceivableError} /> : <AccountsReceivable data={accountsReceivableData} branchContext={branchContext} />) : <Navigate to={defaultAllowedPath} replace />} />} />
                         <Route path="/traspasos-costos" element={<PrivateRoute element={canAccess('traspasos_costos') ? (branchTransfersLoading ? <AppLoadingState /> : branchTransfersError ? <AppErrorState error={branchTransfersError} /> : <BranchCostTransfers data={branchTransfersData} branchContext={branchContext} canEdit={canEdit('traspasos_costos')} />) : <Navigate to={defaultAllowedPath} replace />} />} />
                         <Route path="/reportes" element={<PrivateRoute element={canAccess('reportes') ? (reportsLoading ? <AppLoadingState /> : reportsError ? <AppErrorState error={reportsError} /> : <Reports data={reportsData} branchContext={branchContext} />) : <Navigate to={defaultAllowedPath} replace />} />} />
+                        <Route path="/declaraciones" element={<PrivateRoute element={canAccess('declaraciones') ? (declarationsLoading ? <AppLoadingState /> : declarationsError ? <AppErrorState error={declarationsError} /> : <Declarations data={declarationsData} branchContext={branchContext} />) : <Navigate to={defaultAllowedPath} replace />} />} />
                         <Route path="/configuraciones" element={<PrivateRoute element={effectiveIsMaster ? <Settings /> : <Navigate to={defaultAllowedPath} replace />} />} />
                         <Route path="/maestros/categorias" element={<PrivateRoute element={canAccess('categorias') ? <CategoryManager categories={categoriesList} /> : <Navigate to={defaultAllowedPath} replace />} />} />
                         <Route path="/sin-permisos" element={<PrivateRoute element={effectiveIsMaster ? <Navigate to="/" replace /> : <AppErrorState error={{ message: 'Este usuario no tiene modulos asignados. Pide al usuario master que active sus permisos en Configuraciones > Usuarios.' }} />} />} />

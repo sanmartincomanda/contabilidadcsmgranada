@@ -11,6 +11,7 @@ export const ACCESS_MODULES = [
     { id: 'cuentas_cobrar', label: 'Cuentas por Cobrar', description: 'Clientes, saldos de credito y estados de cuenta.', path: '/cuentas-cobrar' },
     { id: 'traspasos_costos', label: 'Traspaso Costos Sucursal', description: 'Movimientos de costo entre sucursales para estado de resultados.', path: '/traspasos-costos' },
     { id: 'facturacion', label: 'Facturacion', description: 'Cierre de caja, membretadas y depositos.', path: '/facturacion' },
+    { id: 'declaraciones', label: 'Declaraciones', description: 'Control y pre declaracion de retenciones sobre ventas.', path: '/declaraciones' },
     { id: 'reportes', label: 'Reportes', description: 'Estados financieros, impuestos y exportaciones.', path: '/reportes' },
     { id: 'categorias', label: 'Categorias', description: 'Catalogo fiscal de categorias y subcategorias.', path: '/maestros/categorias' },
 ];

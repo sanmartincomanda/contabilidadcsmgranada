@@ -153,6 +153,7 @@ export default function Header({
             hintList: billingMenuHints,
             activePaths: ['/facturacion', '/cuentas-cobrar'],
         },
+        canAccess('declaraciones') && { key: 'declaraciones', label: 'Declaraciones', icon: 'scale', to: '/declaraciones' },
         canAccess('reportes') && { key: 'reportes', label: 'Reportes', icon: 'chart', to: '/reportes', hintList: reportHints },
         isMaster && { key: 'config', label: 'Configuraciones', icon: 'gear', to: '/configuraciones' },
     ].filter(Boolean)), [billingMenuHints, isMaster, moduleAccess, procurementHints]);
