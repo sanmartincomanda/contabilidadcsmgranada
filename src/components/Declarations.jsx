@@ -92,14 +92,11 @@ const getRetentionSupportStatus = (item = {}) => {
     return {
         invoice: Boolean(support.invoice || support.main || item.invoiceFileUrl || item.supportUrl),
         ir: Boolean(support.retentionIr2 || item.retentionIrSupportUrl),
-        municipal: Boolean(support.retentionMunicipal1 || item.retentionMunicipalSupportUrl),
     };
 };
 
 const normalizeDeclarationItem = (sourceCollection, item = {}) => {
     const retentionIr2 = peso(item.retentionIr2 ?? item.retencionIr2);
-    const retentionMunicipal1 = peso(item.retentionMunicipal1 ?? item.retencionMunicipal1);
-    const retentionTotal = peso(item.retentionTotal ?? item.retencionTotal ?? (retentionIr2 + retentionMunicipal1));
     const date = getDateString(item.saleDate || item.date || item.fecha || item.createdAt);
     const sourceId = cleanText(item.id);
     const sourceType = sourceCollection === INVOICE_COLLECTION ? 'Factura membretada' : 'Recibo de caja';
@@ -120,8 +117,7 @@ const normalizeDeclarationItem = (sourceCollection, item = {}) => {
         subtotal: peso(item.subtotal),
         total: peso(item.total ?? item.amount ?? item.monto),
         retentionIr2,
-        retentionMunicipal1,
-        retentionTotal,
+        retentionTotal: retentionIr2,
         supportStatus: getRetentionSupportStatus(item),
         retentionDeclared: item.retentionDeclared === true || item.retentionDeclarationStatus === 'declarada',
         retentionDeclaredMonth: item.retentionDeclaredMonth || item.declarationMonth || '',
@@ -131,7 +127,7 @@ const normalizeDeclarationItem = (sourceCollection, item = {}) => {
 const buildRetentionRows = (data = {}) => ([
     ...(data[INVOICE_COLLECTION] || []).filter(isActiveFiscalDocument).map((item) => normalizeDeclarationItem(INVOICE_COLLECTION, item)),
     ...(data[RECEIPT_COLLECTION] || []).filter(isActiveFiscalDocument).map((item) => normalizeDeclarationItem(RECEIPT_COLLECTION, item)),
-]).filter((row) => row.sourceId && row.month && row.retentionTotal > 0);
+]).filter((row) => row.sourceId && row.month && row.retentionIr2 > 0);
 
 const buildDeclaredKeySet = (declarations = []) => {
     const set = new Set();
@@ -148,11 +144,10 @@ const buildDeclaredKeySet = (declarations = []) => {
 
 const sumRows = (rows = []) => rows.reduce((acc, row) => ({
     retentionIr2: acc.retentionIr2 + peso(row.retentionIr2),
-    retentionMunicipal1: acc.retentionMunicipal1 + peso(row.retentionMunicipal1),
-    retentionTotal: acc.retentionTotal + peso(row.retentionTotal),
+    retentionTotal: acc.retentionTotal + peso(row.retentionIr2),
     subtotal: acc.subtotal + peso(row.subtotal),
     total: acc.total + peso(row.total),
-}), { retentionIr2: 0, retentionMunicipal1: 0, retentionTotal: 0, subtotal: 0, total: 0 });
+}), { retentionIr2: 0, retentionTotal: 0, subtotal: 0, total: 0 });
 
 const Card = ({ children, className = '' }) => (
     <div className={`rounded-2xl border border-slate-200 bg-white shadow-sm ${className}`}>{children}</div>
@@ -192,6 +187,7 @@ export default function Declarations({ data = {}, branchContext }) {
     const [branchFilter, setBranchFilter] = useState(() => (
         branchContext?.allowedBranchIds?.length > 1 ? CONSOLIDATED_BRANCH_ID : (branchContext?.selectedBranchId || DEFAULT_BRANCH_ID)
     ));
+    const [originMonthFilter, setOriginMonthFilter] = useState('all');
     const [selectedKeys, setSelectedKeys] = useState(() => new Set());
     const [declaring, setDeclaring] = useState(false);
 
@@ -238,10 +234,27 @@ export default function Declarations({ data = {}, branchContext }) {
     const expiredRows = useMemo(() => pendingRows
         .filter((row) => row.ageMonths >= MAX_DECLARATION_AGE_MONTHS), [pendingRows]);
 
-    const selectedRows = useMemo(() => eligibleRows.filter((row) => selectedKeys.has(row.sourceKey)), [eligibleRows, selectedKeys]);
+    const originMonthOptions = useMemo(() => (
+        [...new Set(pendingRows.map((row) => row.month).filter(Boolean))]
+            .sort((a, b) => String(b).localeCompare(String(a)))
+    ), [pendingRows]);
+
+    const displayedEligibleRows = useMemo(() => eligibleRows.filter((row) => (
+        originMonthFilter === 'all' || row.month === originMonthFilter
+    )), [eligibleRows, originMonthFilter]);
+
+    const displayedExpiredRows = useMemo(() => expiredRows.filter((row) => (
+        originMonthFilter === 'all' || row.month === originMonthFilter
+    )), [expiredRows, originMonthFilter]);
+
+    const displayedEligibleKeys = useMemo(() => new Set(displayedEligibleRows.map((row) => row.sourceKey)), [displayedEligibleRows]);
+    const displayedSelectedCount = useMemo(() => (
+        displayedEligibleRows.filter((row) => selectedKeys.has(row.sourceKey)).length
+    ), [displayedEligibleRows, selectedKeys]);
+    const selectedRows = useMemo(() => displayedEligibleRows.filter((row) => selectedKeys.has(row.sourceKey)), [displayedEligibleRows, selectedKeys]);
     const selectedTotals = useMemo(() => sumRows(selectedRows), [selectedRows]);
-    const pendingTotals = useMemo(() => sumRows(eligibleRows), [eligibleRows]);
-    const expiredTotals = useMemo(() => sumRows(expiredRows), [expiredRows]);
+    const pendingTotals = useMemo(() => sumRows(displayedEligibleRows), [displayedEligibleRows]);
+    const expiredTotals = useMemo(() => sumRows(displayedExpiredRows), [displayedExpiredRows]);
 
     useEffect(() => {
         setSelectedKeys((current) => new Set([...current].filter((key) => eligibleRows.some((row) => row.sourceKey === key))));
@@ -257,11 +270,17 @@ export default function Declarations({ data = {}, branchContext }) {
     };
 
     const toggleAll = () => {
-        setSelectedKeys((current) => (
-            current.size === eligibleRows.length
-                ? new Set()
-                : new Set(eligibleRows.map((row) => row.sourceKey))
-        ));
+        setSelectedKeys((current) => {
+            const allVisibleSelected = displayedEligibleRows.length > 0
+                && displayedEligibleRows.every((row) => current.has(row.sourceKey));
+            const next = new Set(current);
+            if (allVisibleSelected) {
+                displayedEligibleKeys.forEach((key) => next.delete(key));
+            } else {
+                displayedEligibleRows.forEach((row) => next.add(row.sourceKey));
+            }
+            return next;
+        });
     };
 
     const handlePrintPreDeclaration = () => {
@@ -300,8 +319,7 @@ export default function Declarations({ data = {}, branchContext }) {
                 subtotal: peso(row.subtotal),
                 total: peso(row.total),
                 retentionIr2: peso(row.retentionIr2),
-                retentionMunicipal1: peso(row.retentionMunicipal1),
-                retentionTotal: peso(row.retentionTotal),
+                retentionTotal: peso(row.retentionIr2),
                 supportStatus: row.supportStatus,
             }));
 
@@ -340,10 +358,9 @@ export default function Declarations({ data = {}, branchContext }) {
 
     const historyTotals = useMemo(() => declarations.reduce((acc, declaration) => ({
         retentionIr2: acc.retentionIr2 + peso(declaration.totals?.retentionIr2),
-        retentionMunicipal1: acc.retentionMunicipal1 + peso(declaration.totals?.retentionMunicipal1),
-        retentionTotal: acc.retentionTotal + peso(declaration.totals?.retentionTotal),
+        retentionTotal: acc.retentionTotal + peso(declaration.totals?.retentionIr2 || declaration.totals?.retentionTotal),
         itemCount: acc.itemCount + peso(declaration.itemCount),
-    }), { retentionIr2: 0, retentionMunicipal1: 0, retentionTotal: 0, itemCount: 0 }), [declarations]);
+    }), { retentionIr2: 0, retentionTotal: 0, itemCount: 0 }), [declarations]);
 
     return (
         <div className="space-y-5">
@@ -371,7 +388,7 @@ export default function Declarations({ data = {}, branchContext }) {
                             <div className="text-[10px] font-black uppercase tracking-[0.38em] text-[#f5b51b]">{APP_BRAND_NAME}</div>
                             <h1 className="mt-1 text-2xl font-black tracking-tight">Declaraciones</h1>
                             <p className="mt-1 max-w-3xl text-sm font-semibold text-white/65">
-                                Control de retenciones que nos hicieron sobre ventas. Lo no declarado se arrastra al siguiente mes hasta 6 meses.
+                                Control de retenciones de anticipo IR que nos hicieron sobre ventas. Lo no declarado se arrastra al siguiente mes hasta 6 meses.
                             </p>
                         </div>
                         <div className="flex flex-wrap gap-2">
@@ -385,7 +402,7 @@ export default function Declarations({ data = {}, branchContext }) {
                     </div>
                 </div>
 
-                <div className="grid gap-3 border-t border-slate-200 p-4 lg:grid-cols-[190px_190px_1fr]">
+                <div className="grid gap-3 border-t border-slate-200 p-4 lg:grid-cols-[190px_190px_190px_1fr]">
                     <label className="space-y-1">
                         <span className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-500">Mes a declarar</span>
                         <input
@@ -406,6 +423,19 @@ export default function Declarations({ data = {}, branchContext }) {
                                 <option key={branch.id} value={branch.id}>
                                     {branch.id === CONSOLIDATED_BRANCH_ID ? branch.shortName : `${branch.shortName} - Serie ${branch.invoiceSeries}`}
                                 </option>
+                            ))}
+                        </select>
+                    </label>
+                    <label className="space-y-1">
+                        <span className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-500">Mes origen</span>
+                        <select
+                            value={originMonthFilter}
+                            onChange={(event) => setOriginMonthFilter(event.target.value)}
+                            className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm font-black text-slate-900 outline-none focus:border-[#e30613] focus:ring-2 focus:ring-[#e30613]/15"
+                        >
+                            <option value="all">Ultimos 6 meses</option>
+                            {originMonthOptions.map((month) => (
+                                <option key={month} value={month}>{month}</option>
                             ))}
                         </select>
                     </label>
@@ -430,18 +460,17 @@ export default function Declarations({ data = {}, branchContext }) {
 
             {activeTab === 'pendientes' && (
                 <div className="space-y-5">
-                    <div className="grid gap-3 md:grid-cols-4">
-                        <StatCard label="Pendientes seleccionables" value={eligibleRows.length} tone="blue" help={`${MAX_DECLARATION_AGE_MONTHS} meses maximo`} />
+                    <div className="grid gap-3 md:grid-cols-3">
+                        <StatCard label="Pendientes visibles" value={displayedEligibleRows.length} tone="blue" help={originMonthFilter === 'all' ? `${MAX_DECLARATION_AGE_MONTHS} meses maximo` : `Origen ${originMonthFilter}`} />
                         <StatCard label="Retencion IR 2%" value={fmt(pendingTotals.retentionIr2)} tone="green" />
-                        <StatCard label="Retencion Municipal 1%" value={fmt(pendingTotals.retentionMunicipal1)} tone="amber" />
-                        <StatCard label="Total pendiente" value={fmt(pendingTotals.retentionTotal)} tone="slate" />
+                        <StatCard label="Total IR pendiente" value={fmt(pendingTotals.retentionTotal)} tone="slate" />
                     </div>
 
-                    {expiredRows.length > 0 && (
+                    {displayedExpiredRows.length > 0 && (
                         <div className="rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm font-bold text-rose-800">
                             <div className="flex items-center gap-2">
                                 <Icon path={Icons.alert} />
-                                Hay {expiredRows.length} retencion(es) fuera del plazo de 6 meses por {fmt(expiredTotals.retentionTotal)}. Revisalas antes de cerrar declaraciones.
+                                Hay {displayedExpiredRows.length} retencion(es) fuera del plazo de 6 meses por {fmt(expiredTotals.retentionTotal)}. Revisalas antes de cerrar declaraciones.
                             </div>
                         </div>
                     )}
@@ -456,8 +485,8 @@ export default function Declarations({ data = {}, branchContext }) {
                                 </p>
                             </div>
                             <div className="flex flex-wrap gap-2">
-                                <button type="button" onClick={toggleAll} disabled={!eligibleRows.length} className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-xs font-black uppercase tracking-wider text-slate-700 transition hover:bg-slate-100 disabled:opacity-50">
-                                    {selectedKeys.size === eligibleRows.length && eligibleRows.length ? 'Limpiar seleccion' : 'Seleccionar todo'}
+                                <button type="button" onClick={toggleAll} disabled={!displayedEligibleRows.length} className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-xs font-black uppercase tracking-wider text-slate-700 transition hover:bg-slate-100 disabled:opacity-50">
+                                    {displayedSelectedCount === displayedEligibleRows.length && displayedEligibleRows.length ? 'Limpiar seleccion visible' : 'Seleccionar visible'}
                                 </button>
                                 <button type="button" onClick={handlePrintPreDeclaration} disabled={!selectedRows.length} className="inline-flex items-center gap-2 rounded-xl border border-[#e30613] bg-white px-4 py-2 text-xs font-black uppercase tracking-wider text-[#e30613] transition hover:bg-[#fff1f2] disabled:opacity-50">
                                     <Icon path={Icons.printer} />
@@ -480,12 +509,11 @@ export default function Declarations({ data = {}, branchContext }) {
                                         <th className="px-5 py-3">Mes origen</th>
                                         <th className="px-5 py-3">Soportes</th>
                                         <th className="px-5 py-3 text-right">IR 2%</th>
-                                        <th className="px-5 py-3 text-right">Municipal 1%</th>
-                                        <th className="px-5 py-3 text-right">Total</th>
+                                        <th className="px-5 py-3 text-right">Total IR</th>
                                     </tr>
                                 </thead>
                                 <tbody className="divide-y divide-slate-100 bg-white">
-                                    {eligibleRows.map((row) => (
+                                    {displayedEligibleRows.map((row) => (
                                         <tr key={row.sourceKey} className="transition hover:bg-slate-50">
                                             <td className="px-5 py-3">
                                                 <input
@@ -513,17 +541,15 @@ export default function Declarations({ data = {}, branchContext }) {
                                             <td className="px-5 py-3">
                                                 <div className="flex flex-wrap gap-1">
                                                     {row.retentionIr2 > 0 && <span className={`rounded-full px-2 py-0.5 text-[10px] font-black ${row.supportStatus.ir ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}`}>IR</span>}
-                                                    {row.retentionMunicipal1 > 0 && <span className={`rounded-full px-2 py-0.5 text-[10px] font-black ${row.supportStatus.municipal ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}`}>Municipal</span>}
                                                 </div>
                                             </td>
                                             <td className="px-5 py-3 text-right font-mono font-black text-emerald-700">{fmt(row.retentionIr2)}</td>
-                                            <td className="px-5 py-3 text-right font-mono font-black text-amber-700">{fmt(row.retentionMunicipal1)}</td>
                                             <td className="px-5 py-3 text-right font-mono font-black text-slate-950">{fmt(row.retentionTotal)}</td>
                                         </tr>
                                     ))}
-                                    {eligibleRows.length === 0 && (
+                                    {displayedEligibleRows.length === 0 && (
                                         <tr>
-                                            <td colSpan={8} className="px-5 py-10 text-center text-sm font-bold text-slate-400">
+                                            <td colSpan={7} className="px-5 py-10 text-center text-sm font-bold text-slate-400">
                                                 No hay retenciones pendientes para declarar en este mes y sucursal.
                                             </td>
                                         </tr>
@@ -550,10 +576,9 @@ export default function Declarations({ data = {}, branchContext }) {
                             </div>
                         </div>
                         <div className="p-6">
-                            <div className="mb-5 grid gap-3 sm:grid-cols-3">
+                            <div className="mb-5 grid gap-3 sm:grid-cols-2">
                                 <StatCard label="IR 2%" value={fmt(selectedTotals.retentionIr2)} tone="green" />
-                                <StatCard label="Municipal 1%" value={fmt(selectedTotals.retentionMunicipal1)} tone="amber" />
-                                <StatCard label="Total a declarar" value={fmt(selectedTotals.retentionTotal)} tone="slate" />
+                                <StatCard label="Total IR a declarar" value={fmt(selectedTotals.retentionTotal)} tone="slate" />
                             </div>
                             <table className="w-full text-xs">
                                 <thead>
@@ -563,8 +588,7 @@ export default function Declarations({ data = {}, branchContext }) {
                                         <th className="py-2">Cliente</th>
                                         <th className="py-2">Sucursal</th>
                                         <th className="py-2 text-right">IR 2%</th>
-                                        <th className="py-2 text-right">Municipal</th>
-                                        <th className="py-2 text-right">Total</th>
+                                        <th className="py-2 text-right">Total IR</th>
                                     </tr>
                                 </thead>
                                 <tbody>
@@ -575,13 +599,12 @@ export default function Declarations({ data = {}, branchContext }) {
                                             <td className="py-2 font-semibold">{row.client}</td>
                                             <td className="py-2 font-semibold">{row.branchName}</td>
                                             <td className="py-2 text-right font-mono font-bold">{fmt(row.retentionIr2)}</td>
-                                            <td className="py-2 text-right font-mono font-bold">{fmt(row.retentionMunicipal1)}</td>
                                             <td className="py-2 text-right font-mono font-black">{fmt(row.retentionTotal)}</td>
                                         </tr>
                                     ))}
                                     {!selectedRows.length && (
                                         <tr>
-                                            <td colSpan={7} className="py-8 text-center font-bold text-slate-400">
+                                            <td colSpan={6} className="py-8 text-center font-bold text-slate-400">
                                                 Selecciona retenciones para generar este reporte.
                                             </td>
                                         </tr>
@@ -603,7 +626,7 @@ export default function Declarations({ data = {}, branchContext }) {
                         <StatCard label="Declaraciones" value={declarations.length} tone="blue" />
                         <StatCard label="Documentos declarados" value={historyTotals.itemCount} tone="slate" />
                         <StatCard label="IR declarado" value={fmt(historyTotals.retentionIr2)} tone="green" />
-                        <StatCard label="Total declarado" value={fmt(historyTotals.retentionTotal)} tone="amber" />
+                        <StatCard label="Total IR declarado" value={fmt(historyTotals.retentionTotal)} tone="amber" />
                     </div>
                     <Card className="overflow-hidden">
                         <div className="border-b border-slate-200 bg-slate-50 px-5 py-4">
@@ -628,8 +651,7 @@ export default function Declarations({ data = {}, branchContext }) {
                                                     <th className="px-4 py-2">Documento</th>
                                                     <th className="px-4 py-2">Cliente</th>
                                                     <th className="px-4 py-2 text-right">IR</th>
-                                                    <th className="px-4 py-2 text-right">Municipal</th>
-                                                    <th className="px-4 py-2 text-right">Total</th>
+                                                    <th className="px-4 py-2 text-right">Total IR</th>
                                                 </tr>
                                             </thead>
                                             <tbody className="divide-y divide-slate-100">
@@ -639,8 +661,7 @@ export default function Declarations({ data = {}, branchContext }) {
                                                         <td className="px-4 py-2 font-black">{item.document}</td>
                                                         <td className="px-4 py-2 font-semibold">{item.client}</td>
                                                         <td className="px-4 py-2 text-right font-mono font-bold">{fmt(item.retentionIr2)}</td>
-                                                        <td className="px-4 py-2 text-right font-mono font-bold">{fmt(item.retentionMunicipal1)}</td>
-                                                        <td className="px-4 py-2 text-right font-mono font-black">{fmt(item.retentionTotal)}</td>
+                                                        <td className="px-4 py-2 text-right font-mono font-black">{fmt(item.retentionIr2 || item.retentionTotal)}</td>
                                                     </tr>
                                                 ))}
                                             </tbody>
