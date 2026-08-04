@@ -1274,6 +1274,7 @@ function AppContent() {
         collectionConfig('gastos', [where('date', '>=', `${declarationStartMonth}-01`)]),
         collectionConfig('declaraciones_retenciones', [where('declarationMonth', '>=', declarationStartMonth)]),
         collectionConfig('declaraciones_iva', [where('declarationMonth', '>=', declarationStartMonth)]),
+        collectionConfig('declaraciones_facturas_membretadas', [where('declarationMonth', '>=', declarationStartMonth)]),
     ], [declarationStartMonth]);
 
     const { data: categoriesData } = useFirestoreCollections(CATEGORY_COLLECTIONS, !!user && !accessLoading && needsCategories, false);

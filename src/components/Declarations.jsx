@@ -15,6 +15,7 @@ import {
 
 const DECLARATIONS_COLLECTION = 'declaraciones_retenciones';
 const VAT_DECLARATIONS_COLLECTION = 'declaraciones_iva';
+const STAMPED_INVOICE_DECLARATIONS_COLLECTION = 'declaraciones_facturas_membretadas';
 const INVOICE_COLLECTION = 'facturas_membretadas_ventas';
 const RECEIPT_COLLECTION = 'recibos_caja_membretados';
 const PURCHASE_COLLECTION = 'compras';
@@ -23,6 +24,7 @@ const MAX_DECLARATION_AGE_MONTHS = 6;
 const DECLARATION_MODULES = {
     RETENTION_IR: 'retention_ir',
     IVA: 'iva',
+    STAMPED_INVOICES: 'facturas_membretadas',
 };
 
 const Icons = {
@@ -199,6 +201,49 @@ const buildVatRows = (data = {}) => ([
     ...(data[EXPENSE_COLLECTION] || []).filter(isActiveFiscalDocument).map((item) => normalizeVatItem(EXPENSE_COLLECTION, item)),
 ]).filter((row) => row.sourceId && row.month && row.iva > 0);
 
+const normalizeStampedInvoiceDeclarationItem = (item = {}) => {
+    const date = getDateString(item.saleDate || item.date || item.fecha || item.createdAt);
+    const sourceId = cleanText(item.id);
+    const sourceKey = `${INVOICE_COLLECTION}:${sourceId}`;
+    const subtotal = peso(item.subtotal);
+    const iva = peso(item.iva ?? item.tax ?? item.taxAmount);
+    const total = peso(item.total ?? item.amount ?? item.monto);
+    const retentionIr2 = peso(item.retentionIr2 ?? item.retencionIr2);
+    const retentionMunicipal1 = peso(item.retentionMunicipal1 ?? item.retencionMunicipal1);
+    const retentionTotal = peso(item.retentionTotal || retentionIr2 + retentionMunicipal1);
+
+    return {
+        id: sourceKey,
+        sourceKey,
+        sourceId,
+        sourceCollection: INVOICE_COLLECTION,
+        sourceType: 'Factura membretada',
+        date,
+        month: getMonthString(date || item.month || item.mes),
+        branchId: getRecordBranchId(item),
+        branchName: getBranchById(getRecordBranchId(item)).shortName,
+        document: formatDeclarationDocument(INVOICE_COLLECTION, getDocumentNumber(item, sourceId)),
+        client: getClientName(item),
+        paymentMethod: cleanText(item.paymentMethod || item.metodoPago || item.paymentType || ''),
+        subtotal,
+        iva,
+        total,
+        retentionIr2,
+        retentionMunicipal1,
+        retentionTotal,
+        netTotal: peso(item.netTotal ?? item.paymentNetTotal ?? (total - retentionTotal)),
+        declared: item.stampedInvoiceDeclared === true || item.stampedInvoiceDeclarationStatus === 'declarada',
+        declaredMonth: item.stampedInvoiceDeclaredMonth || item.stampedInvoiceDeclarationMonth || '',
+    };
+};
+
+const buildStampedInvoiceRows = (data = {}) => (
+    (data[INVOICE_COLLECTION] || [])
+        .filter(isActiveFiscalDocument)
+        .map(normalizeStampedInvoiceDeclarationItem)
+        .filter((row) => row.sourceId && row.month && row.total > 0)
+);
+
 const buildDeclaredKeySet = (declarations = []) => {
     const set = new Set();
     declarations
@@ -249,6 +294,24 @@ const sumVatTableRows = (rows = []) => rows.reduce((acc, row) => ({
     iva: acc.iva + peso(row.iva),
     total: acc.total + peso(row.total),
 }), { subtotal: 0, iva: 0, total: 0 });
+
+const sumStampedInvoiceRows = (rows = []) => rows.reduce((acc, row) => ({
+    subtotal: acc.subtotal + peso(row.subtotal),
+    iva: acc.iva + peso(row.iva),
+    total: acc.total + peso(row.total),
+    retentionIr2: acc.retentionIr2 + peso(row.retentionIr2),
+    retentionMunicipal1: acc.retentionMunicipal1 + peso(row.retentionMunicipal1),
+    retentionTotal: acc.retentionTotal + peso(row.retentionTotal),
+    netTotal: acc.netTotal + peso(row.netTotal),
+}), {
+    subtotal: 0,
+    iva: 0,
+    total: 0,
+    retentionIr2: 0,
+    retentionMunicipal1: 0,
+    retentionTotal: 0,
+    netTotal: 0,
+});
 
 const Card = ({ children, className = '' }) => (
     <div className={`rounded-2xl border border-slate-200 bg-white shadow-sm ${className}`}>{children}</div>
@@ -351,6 +414,78 @@ const VatReportTable = ({ title, rows = [], emptyMessage, tone = 'sky', rowKeyPr
     );
 };
 
+const StampedInvoiceReportTable = ({ rows = [], emptyMessage = 'No hay facturas membretadas para mostrar.', rowKeyPrefix = 'stamped' }) => {
+    const totals = sumStampedInvoiceRows(rows);
+
+    return (
+        <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white">
+            <div className="flex items-center justify-between gap-3 border-b border-sky-200 bg-sky-50 px-4 py-3 text-sky-800">
+                <div>
+                    <h3 className="text-sm font-black uppercase tracking-[0.18em]">Facturas membretadas</h3>
+                    <p className="mt-0.5 text-[10px] font-bold opacity-70">{rows.length} factura(s)</p>
+                </div>
+                <div className="text-right">
+                    <div className="text-[10px] font-black uppercase tracking-[0.16em] opacity-70">Total</div>
+                    <div className="font-mono text-sm font-black">{fmt(totals.total)}</div>
+                </div>
+            </div>
+            <div className="overflow-x-auto">
+                <table className="w-full text-xs">
+                    <thead>
+                        <tr className="border-b border-slate-300 text-left font-black uppercase tracking-[0.16em] text-slate-500">
+                            <th className="py-2 pl-4 pr-2">Fecha</th>
+                            <th className="px-2 py-2">Factura</th>
+                            <th className="px-2 py-2">Cliente</th>
+                            <th className="px-2 py-2">Sucursal</th>
+                            <th className="px-2 py-2">Metodo</th>
+                            <th className="px-2 py-2 text-right">Subtotal</th>
+                            <th className="px-2 py-2 text-right">IVA</th>
+                            <th className="px-2 py-2 text-right">Total</th>
+                            <th className="px-2 py-2 text-right">Ret.</th>
+                            <th className="py-2 pl-2 pr-4 text-right">Neto</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {rows.map((row) => (
+                            <tr key={`${rowKeyPrefix}-${row.sourceKey || row.sourceId || row.document}`} className="border-b border-slate-100 last:border-b-0">
+                                <td className="py-2 pl-4 pr-2 font-semibold">{row.date}</td>
+                                <td className="px-2 py-2 font-black">{formatDeclarationDocument(row.sourceCollection, row.document)}</td>
+                                <td className="px-2 py-2 font-semibold">{row.client}</td>
+                                <td className="px-2 py-2 font-semibold">{row.branchName}</td>
+                                <td className="px-2 py-2 font-semibold">{row.paymentMethod || '-'}</td>
+                                <td className="px-2 py-2 text-right font-mono font-bold">{fmt(row.subtotal)}</td>
+                                <td className="px-2 py-2 text-right font-mono font-bold">{fmt(row.iva)}</td>
+                                <td className="px-2 py-2 text-right font-mono font-black">{fmt(row.total)}</td>
+                                <td className="px-2 py-2 text-right font-mono font-bold">{fmt(row.retentionTotal)}</td>
+                                <td className="py-2 pl-2 pr-4 text-right font-mono font-bold">{fmt(row.netTotal)}</td>
+                            </tr>
+                        ))}
+                        {!rows.length && (
+                            <tr>
+                                <td colSpan={10} className="py-8 text-center font-bold text-slate-400">
+                                    {emptyMessage}
+                                </td>
+                            </tr>
+                        )}
+                    </tbody>
+                    {rows.length > 0 && (
+                        <tfoot>
+                            <tr className="border-t border-slate-300 bg-slate-50 font-black text-slate-900">
+                                <td colSpan={5} className="py-2 pl-4 pr-2">Total facturas membretadas</td>
+                                <td className="px-2 py-2 text-right font-mono">{fmt(totals.subtotal)}</td>
+                                <td className="px-2 py-2 text-right font-mono">{fmt(totals.iva)}</td>
+                                <td className="px-2 py-2 text-right font-mono">{fmt(totals.total)}</td>
+                                <td className="px-2 py-2 text-right font-mono">{fmt(totals.retentionTotal)}</td>
+                                <td className="py-2 pl-2 pr-4 text-right font-mono">{fmt(totals.netTotal)}</td>
+                            </tr>
+                        </tfoot>
+                    )}
+                </table>
+            </div>
+        </div>
+    );
+};
+
 export default function Declarations({ data = {}, branchContext }) {
     const [moduleTab, setModuleTab] = useState(DECLARATION_MODULES.RETENTION_IR);
     const [activeTab, setActiveTab] = useState('pendientes');
@@ -362,8 +497,10 @@ export default function Declarations({ data = {}, branchContext }) {
     const [vatTypeFilter, setVatTypeFilter] = useState('all');
     const [selectedKeys, setSelectedKeys] = useState(() => new Set());
     const [selectedVatKeys, setSelectedVatKeys] = useState(() => new Set());
+    const [selectedStampedInvoiceKeys, setSelectedStampedInvoiceKeys] = useState(() => new Set());
     const [declaring, setDeclaring] = useState(false);
     const [declaringVat, setDeclaringVat] = useState(false);
+    const [declaringStampedInvoices, setDeclaringStampedInvoices] = useState(false);
 
     const allowedBranchIds = useMemo(
         () => (branchContext?.allowedBranchIds?.length ? branchContext.allowedBranchIds : [branchContext?.selectedBranchId || DEFAULT_BRANCH_ID]),
@@ -386,8 +523,13 @@ export default function Declarations({ data = {}, branchContext }) {
         [...(data[VAT_DECLARATIONS_COLLECTION] || [])].sort((a, b) => String(b.declarationMonth || '').localeCompare(String(a.declarationMonth || '')))
     ), [data]);
 
+    const stampedInvoiceDeclarations = useMemo(() => (
+        [...(data[STAMPED_INVOICE_DECLARATIONS_COLLECTION] || [])].sort((a, b) => String(b.declarationMonth || '').localeCompare(String(a.declarationMonth || '')))
+    ), [data]);
+
     const declaredKeys = useMemo(() => buildDeclaredKeySet(declarations), [declarations]);
     const declaredVatKeys = useMemo(() => buildDeclaredKeySet(vatDeclarations), [vatDeclarations]);
+    const declaredStampedInvoiceKeys = useMemo(() => buildDeclaredKeySet(stampedInvoiceDeclarations), [stampedInvoiceDeclarations]);
 
     const allRows = useMemo(() => (
         buildRetentionRows(data)
@@ -486,7 +628,60 @@ export default function Declarations({ data = {}, branchContext }) {
     const selectedVatTotals = useMemo(() => sumVatRows(selectedVatRows), [selectedVatRows]);
     const pendingVatTotals = useMemo(() => sumVatRows(displayedEligibleVatRows), [displayedEligibleVatRows]);
     const expiredVatTotals = useMemo(() => sumVatRows(displayedExpiredVatRows), [displayedExpiredVatRows]);
-    const originMonthOptionsForActiveModule = moduleTab === DECLARATION_MODULES.IVA ? vatOriginMonthOptions : originMonthOptions;
+
+    const allStampedInvoiceRows = useMemo(() => (
+        buildStampedInvoiceRows(data)
+            .filter((row) => allowedBranchIds.includes(row.branchId))
+            .sort((a, b) => `${a.date}-${a.document}`.localeCompare(`${b.date}-${b.document}`))
+    ), [allowedBranchIds, data]);
+
+    const visibleStampedInvoiceRows = useMemo(() => allStampedInvoiceRows.filter((row) => (
+        branchFilter === CONSOLIDATED_BRANCH_ID || row.branchId === branchFilter
+    )), [allStampedInvoiceRows, branchFilter]);
+
+    const pendingStampedInvoiceRows = useMemo(() => visibleStampedInvoiceRows
+        .map((row) => ({
+            ...row,
+            ageMonths: monthDiff(row.month, declarationMonth),
+            isDeclared: row.declared || declaredStampedInvoiceKeys.has(row.sourceKey),
+        }))
+        .filter((row) => !row.isDeclared && row.ageMonths >= 0), [declarationMonth, declaredStampedInvoiceKeys, visibleStampedInvoiceRows]);
+
+    const eligibleStampedInvoiceRows = useMemo(() => pendingStampedInvoiceRows
+        .filter((row) => row.ageMonths < MAX_DECLARATION_AGE_MONTHS), [pendingStampedInvoiceRows]);
+
+    const expiredStampedInvoiceRows = useMemo(() => pendingStampedInvoiceRows
+        .filter((row) => row.ageMonths >= MAX_DECLARATION_AGE_MONTHS), [pendingStampedInvoiceRows]);
+
+    const stampedInvoiceOriginMonthOptions = useMemo(() => (
+        [...new Set(pendingStampedInvoiceRows.map((row) => row.month).filter(Boolean))]
+            .sort((a, b) => String(b).localeCompare(String(a)))
+    ), [pendingStampedInvoiceRows]);
+
+    const displayedEligibleStampedInvoiceRows = useMemo(() => eligibleStampedInvoiceRows.filter((row) => (
+        originMonthFilter === 'all' || row.month === originMonthFilter
+    )), [eligibleStampedInvoiceRows, originMonthFilter]);
+
+    const displayedExpiredStampedInvoiceRows = useMemo(() => expiredStampedInvoiceRows.filter((row) => (
+        originMonthFilter === 'all' || row.month === originMonthFilter
+    )), [expiredStampedInvoiceRows, originMonthFilter]);
+
+    const displayedEligibleStampedInvoiceKeys = useMemo(() => new Set(displayedEligibleStampedInvoiceRows.map((row) => row.sourceKey)), [displayedEligibleStampedInvoiceRows]);
+    const displayedSelectedStampedInvoiceCount = useMemo(() => (
+        displayedEligibleStampedInvoiceRows.filter((row) => selectedStampedInvoiceKeys.has(row.sourceKey)).length
+    ), [displayedEligibleStampedInvoiceRows, selectedStampedInvoiceKeys]);
+    const selectedStampedInvoiceRows = useMemo(() => (
+        displayedEligibleStampedInvoiceRows.filter((row) => selectedStampedInvoiceKeys.has(row.sourceKey))
+    ), [displayedEligibleStampedInvoiceRows, selectedStampedInvoiceKeys]);
+    const selectedStampedInvoiceTotals = useMemo(() => sumStampedInvoiceRows(selectedStampedInvoiceRows), [selectedStampedInvoiceRows]);
+    const pendingStampedInvoiceTotals = useMemo(() => sumStampedInvoiceRows(displayedEligibleStampedInvoiceRows), [displayedEligibleStampedInvoiceRows]);
+    const expiredStampedInvoiceTotals = useMemo(() => sumStampedInvoiceRows(displayedExpiredStampedInvoiceRows), [displayedExpiredStampedInvoiceRows]);
+
+    const originMonthOptionsForActiveModule = moduleTab === DECLARATION_MODULES.IVA
+        ? vatOriginMonthOptions
+        : moduleTab === DECLARATION_MODULES.STAMPED_INVOICES
+            ? stampedInvoiceOriginMonthOptions
+            : originMonthOptions;
 
     useEffect(() => {
         setSelectedKeys((current) => new Set([...current].filter((key) => eligibleRows.some((row) => row.sourceKey === key))));
@@ -495,6 +690,10 @@ export default function Declarations({ data = {}, branchContext }) {
     useEffect(() => {
         setSelectedVatKeys((current) => new Set([...current].filter((key) => eligibleVatRows.some((row) => row.sourceKey === key))));
     }, [eligibleVatRows]);
+
+    useEffect(() => {
+        setSelectedStampedInvoiceKeys((current) => new Set([...current].filter((key) => eligibleStampedInvoiceRows.some((row) => row.sourceKey === key))));
+    }, [eligibleStampedInvoiceRows]);
 
     const toggleRow = (row) => {
         setSelectedKeys((current) => {
@@ -537,6 +736,29 @@ export default function Declarations({ data = {}, branchContext }) {
                 displayedEligibleVatKeys.forEach((key) => next.delete(key));
             } else {
                 displayedEligibleVatRows.forEach((row) => next.add(row.sourceKey));
+            }
+            return next;
+        });
+    };
+
+    const toggleStampedInvoiceRow = (row) => {
+        setSelectedStampedInvoiceKeys((current) => {
+            const next = new Set(current);
+            if (next.has(row.sourceKey)) next.delete(row.sourceKey);
+            else next.add(row.sourceKey);
+            return next;
+        });
+    };
+
+    const toggleAllStampedInvoices = () => {
+        setSelectedStampedInvoiceKeys((current) => {
+            const allVisibleSelected = displayedEligibleStampedInvoiceRows.length > 0
+                && displayedEligibleStampedInvoiceRows.every((row) => current.has(row.sourceKey));
+            const next = new Set(current);
+            if (allVisibleSelected) {
+                displayedEligibleStampedInvoiceKeys.forEach((key) => next.delete(key));
+            } else {
+                displayedEligibleStampedInvoiceRows.forEach((row) => next.add(row.sourceKey));
             }
             return next;
         });
@@ -692,6 +914,74 @@ export default function Declarations({ data = {}, branchContext }) {
         }
     };
 
+    const handleDeclareStampedInvoices = async () => {
+        if (!selectedStampedInvoiceRows.length) {
+            window.alert('Selecciona al menos una factura membretada para declarar.');
+            return;
+        }
+
+        const confirmed = window.confirm(`Vas a declarar ${selectedStampedInvoiceRows.length} factura(s) membretada(s) por ${fmt(selectedStampedInvoiceTotals.total)} en ${declarationMonth}. Deseas continuar?`);
+        if (!confirmed) return;
+
+        setDeclaringStampedInvoices(true);
+        try {
+            const declarationId = `facturas_membretadas_${declarationMonth}_${Date.now()}`;
+            const batch = writeBatch(db);
+            const declarationRef = doc(collection(db, STAMPED_INVOICE_DECLARATIONS_COLLECTION), declarationId);
+            const items = selectedStampedInvoiceRows.map((row) => ({
+                sourceKey: row.sourceKey,
+                sourceId: row.sourceId,
+                sourceCollection: row.sourceCollection,
+                sourceType: row.sourceType,
+                date: row.date,
+                month: row.month,
+                branchId: row.branchId,
+                branchName: row.branchName,
+                document: row.document,
+                client: row.client,
+                paymentMethod: row.paymentMethod,
+                subtotal: peso(row.subtotal),
+                iva: peso(row.iva),
+                total: peso(row.total),
+                retentionIr2: peso(row.retentionIr2),
+                retentionMunicipal1: peso(row.retentionMunicipal1),
+                retentionTotal: peso(row.retentionTotal),
+                netTotal: peso(row.netTotal),
+            }));
+
+            batch.set(declarationRef, {
+                id: declarationId,
+                status: 'declarada',
+                declarationMonth,
+                branchFilter,
+                itemCount: items.length,
+                totals: selectedStampedInvoiceTotals,
+                items,
+                createdAt: serverTimestamp(),
+                declaredAt: serverTimestamp(),
+            });
+
+            selectedStampedInvoiceRows.forEach((row) => {
+                batch.set(doc(db, row.sourceCollection, row.sourceId), {
+                    stampedInvoiceDeclared: true,
+                    stampedInvoiceDeclarationStatus: 'declarada',
+                    stampedInvoiceDeclarationId: declarationId,
+                    stampedInvoiceDeclaredMonth: declarationMonth,
+                    stampedInvoiceDeclaredAt: serverTimestamp(),
+                }, { merge: true });
+            });
+
+            await batch.commit();
+            setSelectedStampedInvoiceKeys(new Set());
+            window.alert('Declaracion de facturas membretadas registrada. Las facturas seleccionadas ya no apareceran como pendientes.');
+        } catch (error) {
+            console.error('Error declarando facturas membretadas:', error);
+            window.alert(`No se pudo declarar facturas membretadas: ${error.message}`);
+        } finally {
+            setDeclaringStampedInvoices(false);
+        }
+    };
+
     const historyTotals = useMemo(() => declarations.reduce((acc, declaration) => ({
         retentionIr2: acc.retentionIr2 + peso(declaration.totals?.retentionIr2),
         retentionTotal: acc.retentionTotal + peso(declaration.totals?.retentionIr2 || declaration.totals?.retentionTotal),
@@ -704,6 +994,15 @@ export default function Declarations({ data = {}, branchContext }) {
         netVat: acc.netVat + peso(declaration.totals?.netVat),
         itemCount: acc.itemCount + peso(declaration.itemCount),
     }), { soldVat: 0, purchasedVat: 0, netVat: 0, itemCount: 0 }), [vatDeclarations]);
+
+    const stampedInvoiceHistoryTotals = useMemo(() => stampedInvoiceDeclarations.reduce((acc, declaration) => ({
+        subtotal: acc.subtotal + peso(declaration.totals?.subtotal),
+        iva: acc.iva + peso(declaration.totals?.iva),
+        total: acc.total + peso(declaration.totals?.total),
+        retentionTotal: acc.retentionTotal + peso(declaration.totals?.retentionTotal),
+        netTotal: acc.netTotal + peso(declaration.totals?.netTotal),
+        itemCount: acc.itemCount + peso(declaration.itemCount),
+    }), { subtotal: 0, iva: 0, total: 0, retentionTotal: 0, netTotal: 0, itemCount: 0 }), [stampedInvoiceDeclarations]);
 
     return (
         <div className="space-y-5">
@@ -745,7 +1044,7 @@ export default function Declarations({ data = {}, branchContext }) {
                     </div>
                 </div>
 
-                <div className="grid gap-2 border-t border-slate-200 p-4 sm:grid-cols-2">
+                <div className="grid gap-2 border-t border-slate-200 p-4 sm:grid-cols-3">
                     <button
                         type="button"
                         onClick={() => selectModuleTab(DECLARATION_MODULES.RETENTION_IR)}
@@ -763,6 +1062,15 @@ export default function Declarations({ data = {}, branchContext }) {
                         <div className="text-[10px] font-black uppercase tracking-[0.24em] opacity-75">Submodulo</div>
                         <div className="mt-1 text-sm font-black">Declaracion IVA</div>
                         <div className="mt-0.5 text-xs font-semibold opacity-70">IVA comprado vs. IVA vendido de facturas membretadas.</div>
+                    </button>
+                    <button
+                        type="button"
+                        onClick={() => selectModuleTab(DECLARATION_MODULES.STAMPED_INVOICES)}
+                        className={`rounded-2xl px-4 py-3 text-left transition ${moduleTab === DECLARATION_MODULES.STAMPED_INVOICES ? 'bg-slate-950 text-white shadow-sm shadow-slate-900/20' : 'border border-slate-200 bg-white text-slate-700 hover:bg-slate-50'}`}
+                    >
+                        <div className="text-[10px] font-black uppercase tracking-[0.24em] opacity-75">Submodulo</div>
+                        <div className="mt-1 text-sm font-black">Facturas membretadas</div>
+                        <div className="mt-0.5 text-xs font-semibold opacity-70">Control de facturas ya declaradas.</div>
                     </button>
                 </div>
 
@@ -1158,6 +1466,145 @@ export default function Declarations({ data = {}, branchContext }) {
                 </div>
             )}
 
+            {moduleTab === DECLARATION_MODULES.STAMPED_INVOICES && activeTab === 'pendientes' && (
+                <div className="space-y-5">
+                    <div className="grid gap-3 md:grid-cols-5">
+                        <StatCard label="Facturas visibles" value={displayedEligibleStampedInvoiceRows.length} tone="blue" help={originMonthFilter === 'all' ? `${MAX_DECLARATION_AGE_MONTHS} meses maximo` : `Origen ${originMonthFilter}`} />
+                        <StatCard label="Subtotal" value={fmt(pendingStampedInvoiceTotals.subtotal)} tone="slate" />
+                        <StatCard label="IVA" value={fmt(pendingStampedInvoiceTotals.iva)} tone="green" />
+                        <StatCard label="Total" value={fmt(pendingStampedInvoiceTotals.total)} tone="amber" />
+                        <StatCard label="Retenciones" value={fmt(pendingStampedInvoiceTotals.retentionTotal)} tone="red" />
+                    </div>
+
+                    {displayedExpiredStampedInvoiceRows.length > 0 && (
+                        <div className="rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm font-bold text-rose-800">
+                            <div className="flex items-center gap-2">
+                                <Icon path={Icons.alert} />
+                                Hay {displayedExpiredStampedInvoiceRows.length} factura(s) membretada(s) fuera del plazo de 6 meses por {fmt(expiredStampedInvoiceTotals.total)}. Revisalas antes de cerrar declaraciones.
+                            </div>
+                        </div>
+                    )}
+
+                    <Card className="overflow-hidden">
+                        <div className="flex flex-col gap-3 border-b border-slate-200 bg-slate-50 px-5 py-4 lg:flex-row lg:items-center lg:justify-between">
+                            <div>
+                                <div className="text-[10px] font-black uppercase tracking-[0.28em] text-slate-600">Bandeja fiscal</div>
+                                <h2 className="mt-1 text-lg font-black text-slate-950">Facturas membretadas por declarar</h2>
+                                <p className="mt-1 text-xs font-semibold text-slate-500">
+                                    Selecciona las facturas membretadas que ya quedaran declaradas en {declarationMonth}. El reporte conserva subtotal, IVA, total, retenciones y neto.
+                                </p>
+                            </div>
+                            <div className="flex flex-wrap gap-2">
+                                <button type="button" onClick={toggleAllStampedInvoices} disabled={!displayedEligibleStampedInvoiceRows.length} className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-xs font-black uppercase tracking-wider text-slate-700 transition hover:bg-slate-100 disabled:opacity-50">
+                                    {displayedSelectedStampedInvoiceCount === displayedEligibleStampedInvoiceRows.length && displayedEligibleStampedInvoiceRows.length ? 'Limpiar seleccion visible' : 'Seleccionar visible'}
+                                </button>
+                                <button type="button" onClick={handlePrintPreDeclaration} disabled={!selectedStampedInvoiceRows.length} className="inline-flex items-center gap-2 rounded-xl border border-slate-800 bg-white px-4 py-2 text-xs font-black uppercase tracking-wider text-slate-800 transition hover:bg-slate-50 disabled:opacity-50">
+                                    <Icon path={Icons.printer} />
+                                    Reporte pre declaracion
+                                </button>
+                                <button type="button" onClick={handleDeclareStampedInvoices} disabled={declaringStampedInvoices || !selectedStampedInvoiceRows.length} className="inline-flex items-center gap-2 rounded-xl bg-slate-950 px-4 py-2 text-xs font-black uppercase tracking-wider text-white shadow-sm shadow-slate-900/20 transition hover:bg-slate-800 disabled:opacity-50">
+                                    <Icon path={Icons.check} />
+                                    {declaringStampedInvoices ? 'Declarando...' : 'Declarar facturas'}
+                                </button>
+                            </div>
+                        </div>
+
+                        <div className="overflow-x-auto">
+                            <table className="min-w-full divide-y divide-slate-100 text-sm">
+                                <thead className="bg-white">
+                                    <tr className="text-left text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">
+                                        <th className="px-5 py-3">Sel.</th>
+                                        <th className="px-5 py-3">Factura</th>
+                                        <th className="px-5 py-3">Cliente</th>
+                                        <th className="px-5 py-3">Mes origen</th>
+                                        <th className="px-5 py-3">Metodo</th>
+                                        <th className="px-5 py-3 text-right">Subtotal</th>
+                                        <th className="px-5 py-3 text-right">IVA</th>
+                                        <th className="px-5 py-3 text-right">Total</th>
+                                        <th className="px-5 py-3 text-right">Ret.</th>
+                                    </tr>
+                                </thead>
+                                <tbody className="divide-y divide-slate-100 bg-white">
+                                    {displayedEligibleStampedInvoiceRows.map((row) => (
+                                        <tr key={row.sourceKey} className="transition hover:bg-slate-50">
+                                            <td className="px-5 py-3">
+                                                <input
+                                                    type="checkbox"
+                                                    checked={selectedStampedInvoiceKeys.has(row.sourceKey)}
+                                                    onChange={() => toggleStampedInvoiceRow(row)}
+                                                    className="h-4 w-4 accent-slate-950"
+                                                />
+                                            </td>
+                                            <td className="px-5 py-3">
+                                                <div className="flex flex-wrap items-center gap-2">
+                                                    <div className="font-black text-slate-950">{row.document || '-'}</div>
+                                                    <span className="rounded-full bg-slate-100 px-2.5 py-1 text-[10px] font-black uppercase tracking-wider text-slate-500">{row.branchName}</span>
+                                                </div>
+                                                <div className="mt-1 text-xs font-bold text-slate-400">{row.date || '-'}</div>
+                                            </td>
+                                            <td className="px-5 py-3 font-bold text-slate-700">{row.client}</td>
+                                            <td className="px-5 py-3">
+                                                <div className="font-mono font-black text-slate-900">{row.month}</div>
+                                                <div className="text-xs font-semibold text-slate-400">
+                                                    {Math.max(MAX_DECLARATION_AGE_MONTHS - row.ageMonths, 0)} mes(es) de plazo
+                                                </div>
+                                            </td>
+                                            <td className="px-5 py-3 font-bold text-slate-600">{row.paymentMethod || '-'}</td>
+                                            <td className="px-5 py-3 text-right font-mono font-bold text-slate-700">{fmt(row.subtotal)}</td>
+                                            <td className="px-5 py-3 text-right font-mono font-black text-emerald-700">{fmt(row.iva)}</td>
+                                            <td className="px-5 py-3 text-right font-mono font-black text-slate-950">{fmt(row.total)}</td>
+                                            <td className="px-5 py-3 text-right font-mono font-bold text-rose-700">{fmt(row.retentionTotal)}</td>
+                                        </tr>
+                                    ))}
+                                    {displayedEligibleStampedInvoiceRows.length === 0 && (
+                                        <tr>
+                                            <td colSpan={9} className="px-5 py-10 text-center text-sm font-bold text-slate-400">
+                                                No hay facturas membretadas pendientes para declarar en este mes y sucursal.
+                                            </td>
+                                        </tr>
+                                    )}
+                                </tbody>
+                            </table>
+                        </div>
+                    </Card>
+
+                    <Card className="retention-predeclaration-report overflow-hidden">
+                        <div className="border-b border-slate-200 bg-white px-6 py-5">
+                            <div className="flex items-start justify-between gap-4">
+                                <div className="flex items-center gap-4">
+                                    <img src={APP_BRAND_LOGO} alt={APP_BRAND_NAME} className="h-16 w-16 rounded-2xl border border-slate-200 object-contain p-2" />
+                                    <div>
+                                        <div className="text-[10px] font-black uppercase tracking-[0.34em] text-slate-600">{APP_BRAND_NAME}</div>
+                                        <h2 className="mt-1 text-xl font-black text-slate-950">Reporte Pre Declaracion de Facturas Membretadas</h2>
+                                        <p className="text-xs font-bold text-slate-500">Periodo: {declarationMonth} - Sucursal: {branchFilter === CONSOLIDATED_BRANCH_ID ? 'Todas' : getBranchById(branchFilter).shortName}</p>
+                                    </div>
+                                </div>
+                                <div className="text-right text-xs font-bold text-slate-500">
+                                    Generado: {new Date().toLocaleDateString('es-NI')}
+                                </div>
+                            </div>
+                        </div>
+                        <div className="p-6">
+                            <div className="mb-5 grid gap-3 sm:grid-cols-4">
+                                <StatCard label="Subtotal" value={fmt(selectedStampedInvoiceTotals.subtotal)} tone="slate" />
+                                <StatCard label="IVA" value={fmt(selectedStampedInvoiceTotals.iva)} tone="green" />
+                                <StatCard label="Total" value={fmt(selectedStampedInvoiceTotals.total)} tone="amber" />
+                                <StatCard label="Retenciones" value={fmt(selectedStampedInvoiceTotals.retentionTotal)} tone="red" />
+                            </div>
+                            <StampedInvoiceReportTable
+                                rows={selectedStampedInvoiceRows}
+                                emptyMessage="Selecciona facturas membretadas para generar este reporte."
+                                rowKeyPrefix="stamped-pre-report"
+                            />
+                            <div className="mt-8 grid gap-8 text-xs font-bold text-slate-600 sm:grid-cols-2">
+                                <div className="border-t border-slate-400 pt-2">Preparado por</div>
+                                <div className="border-t border-slate-400 pt-2">Revisado por</div>
+                            </div>
+                        </div>
+                    </Card>
+                </div>
+            )}
+
             {moduleTab === DECLARATION_MODULES.RETENTION_IR && activeTab === 'historial' && (
                 <div className="space-y-5">
                     <div className="grid gap-3 md:grid-cols-4">
@@ -1272,6 +1719,54 @@ export default function Declarations({ data = {}, branchContext }) {
                             {!vatDeclarations.length && (
                                 <div className="px-5 py-10 text-center text-sm font-bold text-slate-400">
                                     Todavia no hay declaraciones IVA registradas.
+                                </div>
+                            )}
+                        </div>
+                    </Card>
+                </div>
+            )}
+
+            {moduleTab === DECLARATION_MODULES.STAMPED_INVOICES && activeTab === 'historial' && (
+                <div className="space-y-5">
+                    <div className="grid gap-3 md:grid-cols-5">
+                        <StatCard label="Declaraciones" value={stampedInvoiceDeclarations.length} tone="blue" />
+                        <StatCard label="Facturas declaradas" value={stampedInvoiceHistoryTotals.itemCount} tone="slate" />
+                        <StatCard label="Total declarado" value={fmt(stampedInvoiceHistoryTotals.total)} tone="amber" />
+                        <StatCard label="Retenciones" value={fmt(stampedInvoiceHistoryTotals.retentionTotal)} tone="red" />
+                        <StatCard label="Neto" value={fmt(stampedInvoiceHistoryTotals.netTotal)} tone="green" />
+                    </div>
+                    <Card className="overflow-hidden">
+                        <div className="border-b border-slate-200 bg-slate-50 px-5 py-4">
+                            <div className="text-[10px] font-black uppercase tracking-[0.28em] text-slate-600">Archivo facturas</div>
+                            <h2 className="mt-1 text-lg font-black text-slate-950">Declaraciones de facturas membretadas</h2>
+                        </div>
+                        <div className="divide-y divide-slate-100">
+                            {stampedInvoiceDeclarations.map((declaration) => (
+                                <details key={declaration.id} className="group bg-white px-5 py-4 open:bg-slate-50">
+                                    <summary className="flex cursor-pointer flex-col gap-2 md:flex-row md:items-center md:justify-between">
+                                        <div>
+                                            <div className="font-black text-slate-950">Declaracion facturas {declaration.declarationMonth}</div>
+                                            <div className="mt-1 text-xs font-bold text-slate-400">{declaration.itemCount || 0} factura(s)</div>
+                                        </div>
+                                        <div className="text-right">
+                                            <div className="font-mono text-lg font-black text-slate-950">{fmt(declaration.totals?.total)}</div>
+                                            <div className="text-[10px] font-black uppercase tracking-[0.18em] text-slate-500">
+                                                Neto {fmt(declaration.totals?.netTotal)}
+                                            </div>
+                                        </div>
+                                    </summary>
+                                    <div className="mt-4">
+                                        <StampedInvoiceReportTable
+                                            rows={declaration.items || []}
+                                            emptyMessage="Esta declaracion no tiene facturas."
+                                            rowKeyPrefix={`stamped-history-${declaration.id}`}
+                                        />
+                                    </div>
+                                </details>
+                            ))}
+                            {!stampedInvoiceDeclarations.length && (
+                                <div className="px-5 py-10 text-center text-sm font-bold text-slate-400">
+                                    Todavia no hay declaraciones de facturas membretadas registradas.
                                 </div>
                             )}
                         </div>
