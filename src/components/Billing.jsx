@@ -7607,6 +7607,7 @@ function StampedInvoiceHistory({ data, canEdit = true, branchContext }) {
     const [selectedMonth, setSelectedMonth] = useState(getMonth(todayString()));
     const [selectedDate, setSelectedDate] = useState('');
     const [paymentMethodFilter, setPaymentMethodFilter] = useState('');
+    const [closureStatusFilter, setClosureStatusFilter] = useState('');
     const [page, setPage] = useState(1);
     const [message, setMessage] = useState('');
     const [detailTarget, setDetailTarget] = useState(null);
@@ -7688,9 +7689,11 @@ function StampedInvoiceHistory({ data, canEdit = true, branchContext }) {
             const matchesPayment = !paymentMethodFilter
                 || normalizeText(invoice.paymentMethod) === normalizeText(paymentMethodFilter)
                 || paymentRows.some((row) => normalizeText(row.method) === normalizeText(paymentMethodFilter));
-            return matchesDate && matchesPayment;
+            const closureInfo = getInvoiceClosureInfo(invoice, closureIndex);
+            const matchesClosure = !closureStatusFilter || closureInfo.status === closureStatusFilter;
+            return matchesDate && matchesPayment && matchesClosure;
         })
-    ), [searchedInvoices, selectedMonth, selectedDate, paymentMethodFilter]);
+    ), [searchedInvoices, selectedMonth, selectedDate, paymentMethodFilter, closureStatusFilter, closureIndex]);
 
     const pagedInvoices = useMemo(() => (
         paginateRecords(filteredInvoices, page)
@@ -7709,7 +7712,7 @@ function StampedInvoiceHistory({ data, canEdit = true, branchContext }) {
 
     useEffect(() => {
         setPage(1);
-    }, [search, selectedMonth, selectedDate, paymentMethodFilter, branchFilter]);
+    }, [search, selectedMonth, selectedDate, paymentMethodFilter, closureStatusFilter, branchFilter]);
 
     useEffect(() => {
         if (page !== pagedInvoices.page) setPage(pagedInvoices.page);
@@ -8254,7 +8257,7 @@ function StampedInvoiceHistory({ data, canEdit = true, branchContext }) {
                     eyebrow="Facturas ya registradas"
                     action={<Badge tone="green">{filteredInvoices.length} de {savedInvoices.length}</Badge>}
                 >
-                    <div className="grid gap-3 lg:grid-cols-[1.3fr_0.55fr_0.5fr_0.5fr_0.75fr_auto]">
+                    <div className="grid gap-3 lg:grid-cols-[1.2fr_0.55fr_0.5fr_0.5fr_0.75fr_0.62fr_auto]">
                         <SearchBox
                             value={search}
                             onChange={setSearch}
@@ -8284,6 +8287,14 @@ function StampedInvoiceHistory({ data, canEdit = true, branchContext }) {
                                 ))}
                             </select>
                         </Field>
+                        <Field label="Estado cierre">
+                            <select className={inputClass} value={closureStatusFilter} onChange={(event) => setClosureStatusFilter(event.target.value)}>
+                                <option value="">Todos</option>
+                                <option value="vinculada">Con cierre</option>
+                                <option value="sin_cierre">Sin cierre</option>
+                                <option value="pendiente">Pendiente</option>
+                            </select>
+                        </Field>
                         <div className="flex items-end">
                             <button
                                 type="button"
@@ -8292,6 +8303,7 @@ function StampedInvoiceHistory({ data, canEdit = true, branchContext }) {
                                     setSelectedMonth('');
                                     setSelectedDate('');
                                     setPaymentMethodFilter('');
+                                    setClosureStatusFilter('');
                                     setBranchFilter(selectedBranchId);
                                 }}
                                 className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-xs font-black uppercase tracking-[0.16em] text-slate-600 transition hover:border-[#e30613] hover:text-[#e30613]"
