@@ -55,6 +55,11 @@ const isActiveFiscalDocument = (item = {}) => {
     return !['ANULADA', 'ANULADO', 'CANCELADA', 'CANCELADO', 'DELETED', 'VOID', 'VOIDED'].includes(status);
 };
 
+const isAnnulledFiscalDocument = (item = {}) => {
+    const status = normalizeText(item.status || item.estado || item.accountingStatus || item.integrationStatus || '');
+    return ['ANULADA', 'ANULADO', 'CANCELADA', 'CANCELADO', 'VOID', 'VOIDED'].includes(status);
+};
+
 const getDateString = (value, fallback = '') => {
     if (typeof value === 'string') return value.substring(0, 10);
     if (value?.toDate) return value.toDate().toISOString().substring(0, 10);
@@ -211,6 +216,7 @@ const normalizeStampedInvoiceDeclarationItem = (item = {}) => {
     const retentionIr2 = peso(item.retentionIr2 ?? item.retencionIr2);
     const retentionMunicipal1 = peso(item.retentionMunicipal1 ?? item.retencionMunicipal1);
     const retentionTotal = peso(item.retentionTotal || retentionIr2 + retentionMunicipal1);
+    const isAnnulled = isAnnulledFiscalDocument(item);
 
     return {
         id: sourceKey,
@@ -232,6 +238,8 @@ const normalizeStampedInvoiceDeclarationItem = (item = {}) => {
         retentionMunicipal1,
         retentionTotal,
         netTotal: peso(item.netTotal ?? item.paymentNetTotal ?? (total - retentionTotal)),
+        status: cleanText(item.status || item.estado || ''),
+        isAnnulled,
         declared: item.stampedInvoiceDeclared === true || item.stampedInvoiceDeclarationStatus === 'declarada',
         declaredMonth: item.stampedInvoiceDeclaredMonth || item.stampedInvoiceDeclarationMonth || '',
     };
@@ -239,9 +247,8 @@ const normalizeStampedInvoiceDeclarationItem = (item = {}) => {
 
 const buildStampedInvoiceRows = (data = {}) => (
     (data[INVOICE_COLLECTION] || [])
-        .filter(isActiveFiscalDocument)
         .map(normalizeStampedInvoiceDeclarationItem)
-        .filter((row) => row.sourceId && row.month && row.total > 0)
+        .filter((row) => row.sourceId && row.month && (row.total > 0 || row.isAnnulled))
 );
 
 const buildDeclaredKeySet = (declarations = []) => {
@@ -312,6 +319,24 @@ const sumStampedInvoiceRows = (rows = []) => rows.reduce((acc, row) => ({
     retentionTotal: 0,
     netTotal: 0,
 });
+
+const countAnnulledRows = (rows = []) => rows.filter((row) => row.isAnnulled).length;
+
+const groupRowsByBranch = (rows = []) => {
+    const groups = new Map();
+    rows.forEach((row) => {
+        const branchId = row.branchId || DEFAULT_BRANCH_ID;
+        if (!groups.has(branchId)) {
+            groups.set(branchId, {
+                branchId,
+                branchName: row.branchName || getBranchById(branchId).shortName,
+                rows: [],
+            });
+        }
+        groups.get(branchId).rows.push(row);
+    });
+    return [...groups.values()].sort((left, right) => left.branchName.localeCompare(right.branchName));
+};
 
 const Card = ({ children, className = '' }) => (
     <div className={`rounded-2xl border border-slate-200 bg-white shadow-sm ${className}`}>{children}</div>
@@ -414,15 +439,18 @@ const VatReportTable = ({ title, rows = [], emptyMessage, tone = 'sky', rowKeyPr
     );
 };
 
-const StampedInvoiceReportTable = ({ rows = [], emptyMessage = 'No hay facturas membretadas para mostrar.', rowKeyPrefix = 'stamped' }) => {
+const StampedInvoiceReportTable = ({ title = 'Facturas membretadas', rows = [], emptyMessage = 'No hay facturas membretadas para mostrar.', rowKeyPrefix = 'stamped' }) => {
     const totals = sumStampedInvoiceRows(rows);
+    const annulledCount = countAnnulledRows(rows);
 
     return (
         <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white">
             <div className="flex items-center justify-between gap-3 border-b border-sky-200 bg-sky-50 px-4 py-3 text-sky-800">
                 <div>
-                    <h3 className="text-sm font-black uppercase tracking-[0.18em]">Facturas membretadas</h3>
-                    <p className="mt-0.5 text-[10px] font-bold opacity-70">{rows.length} factura(s)</p>
+                    <h3 className="text-sm font-black uppercase tracking-[0.18em]">{title}</h3>
+                    <p className="mt-0.5 text-[10px] font-bold opacity-70">
+                        {rows.length} factura(s) · {annulledCount} anulada(s)
+                    </p>
                 </div>
                 <div className="text-right">
                     <div className="text-[10px] font-black uppercase tracking-[0.16em] opacity-70">Total</div>
@@ -449,7 +477,16 @@ const StampedInvoiceReportTable = ({ rows = [], emptyMessage = 'No hay facturas 
                         {rows.map((row) => (
                             <tr key={`${rowKeyPrefix}-${row.sourceKey || row.sourceId || row.document}`} className="border-b border-slate-100 last:border-b-0">
                                 <td className="py-2 pl-4 pr-2 font-semibold">{row.date}</td>
-                                <td className="px-2 py-2 font-black">{formatDeclarationDocument(row.sourceCollection, row.document)}</td>
+                                <td className="px-2 py-2">
+                                    <div className="flex flex-wrap items-center gap-1.5">
+                                        <span className="font-black">{formatDeclarationDocument(row.sourceCollection, row.document)}</span>
+                                        {row.isAnnulled && (
+                                            <span className="rounded-full bg-rose-100 px-2 py-0.5 text-[9px] font-black uppercase tracking-[0.12em] text-rose-700">
+                                                Anulada
+                                            </span>
+                                        )}
+                                    </div>
+                                </td>
                                 <td className="px-2 py-2 font-semibold">{row.client}</td>
                                 <td className="px-2 py-2 font-semibold">{row.branchName}</td>
                                 <td className="px-2 py-2 font-semibold">{row.paymentMethod || '-'}</td>
@@ -482,6 +519,34 @@ const StampedInvoiceReportTable = ({ rows = [], emptyMessage = 'No hay facturas 
                     )}
                 </table>
             </div>
+        </div>
+    );
+};
+
+const StampedInvoiceReportByBranch = ({ rows = [], emptyMessage = 'No hay facturas membretadas para mostrar.', rowKeyPrefix = 'stamped-branch' }) => {
+    const groups = groupRowsByBranch(rows);
+
+    if (!rows.length) {
+        return (
+            <StampedInvoiceReportTable
+                rows={[]}
+                emptyMessage={emptyMessage}
+                rowKeyPrefix={`${rowKeyPrefix}-empty`}
+            />
+        );
+    }
+
+    return (
+        <div className="space-y-4">
+            {groups.map((group) => (
+                <StampedInvoiceReportTable
+                    key={`${rowKeyPrefix}-${group.branchId}`}
+                    title={`Sucursal ${group.branchName}`}
+                    rows={group.rows}
+                    emptyMessage={emptyMessage}
+                    rowKeyPrefix={`${rowKeyPrefix}-${group.branchId}`}
+                />
+            ))}
         </div>
     );
 };
@@ -674,7 +739,9 @@ export default function Declarations({ data = {}, branchContext }) {
         displayedEligibleStampedInvoiceRows.filter((row) => selectedStampedInvoiceKeys.has(row.sourceKey))
     ), [displayedEligibleStampedInvoiceRows, selectedStampedInvoiceKeys]);
     const selectedStampedInvoiceTotals = useMemo(() => sumStampedInvoiceRows(selectedStampedInvoiceRows), [selectedStampedInvoiceRows]);
+    const selectedStampedInvoiceAnnulledCount = useMemo(() => countAnnulledRows(selectedStampedInvoiceRows), [selectedStampedInvoiceRows]);
     const pendingStampedInvoiceTotals = useMemo(() => sumStampedInvoiceRows(displayedEligibleStampedInvoiceRows), [displayedEligibleStampedInvoiceRows]);
+    const pendingStampedInvoiceAnnulledCount = useMemo(() => countAnnulledRows(displayedEligibleStampedInvoiceRows), [displayedEligibleStampedInvoiceRows]);
     const expiredStampedInvoiceTotals = useMemo(() => sumStampedInvoiceRows(displayedExpiredStampedInvoiceRows), [displayedExpiredStampedInvoiceRows]);
 
     const originMonthOptionsForActiveModule = moduleTab === DECLARATION_MODULES.IVA
@@ -947,6 +1014,8 @@ export default function Declarations({ data = {}, branchContext }) {
                 retentionMunicipal1: peso(row.retentionMunicipal1),
                 retentionTotal: peso(row.retentionTotal),
                 netTotal: peso(row.netTotal),
+                status: row.status,
+                isAnnulled: row.isAnnulled,
             }));
 
             batch.set(declarationRef, {
@@ -955,6 +1024,7 @@ export default function Declarations({ data = {}, branchContext }) {
                 declarationMonth,
                 branchFilter,
                 itemCount: items.length,
+                annulledCount: selectedStampedInvoiceAnnulledCount,
                 totals: selectedStampedInvoiceTotals,
                 items,
                 createdAt: serverTimestamp(),
@@ -1002,7 +1072,8 @@ export default function Declarations({ data = {}, branchContext }) {
         retentionTotal: acc.retentionTotal + peso(declaration.totals?.retentionTotal),
         netTotal: acc.netTotal + peso(declaration.totals?.netTotal),
         itemCount: acc.itemCount + peso(declaration.itemCount),
-    }), { subtotal: 0, iva: 0, total: 0, retentionTotal: 0, netTotal: 0, itemCount: 0 }), [stampedInvoiceDeclarations]);
+        annulledCount: acc.annulledCount + peso(declaration.annulledCount ?? countAnnulledRows(declaration.items || [])),
+    }), { subtotal: 0, iva: 0, total: 0, retentionTotal: 0, netTotal: 0, itemCount: 0, annulledCount: 0 }), [stampedInvoiceDeclarations]);
 
     return (
         <div className="space-y-5">
@@ -1468,12 +1539,13 @@ export default function Declarations({ data = {}, branchContext }) {
 
             {moduleTab === DECLARATION_MODULES.STAMPED_INVOICES && activeTab === 'pendientes' && (
                 <div className="space-y-5">
-                    <div className="grid gap-3 md:grid-cols-5">
+                    <div className="grid gap-3 md:grid-cols-6">
                         <StatCard label="Facturas visibles" value={displayedEligibleStampedInvoiceRows.length} tone="blue" help={originMonthFilter === 'all' ? `${MAX_DECLARATION_AGE_MONTHS} meses maximo` : `Origen ${originMonthFilter}`} />
                         <StatCard label="Subtotal" value={fmt(pendingStampedInvoiceTotals.subtotal)} tone="slate" />
                         <StatCard label="IVA" value={fmt(pendingStampedInvoiceTotals.iva)} tone="green" />
                         <StatCard label="Total" value={fmt(pendingStampedInvoiceTotals.total)} tone="amber" />
                         <StatCard label="Retenciones" value={fmt(pendingStampedInvoiceTotals.retentionTotal)} tone="red" />
+                        <StatCard label="Anuladas" value={pendingStampedInvoiceAnnulledCount} tone="red" />
                     </div>
 
                     {displayedExpiredStampedInvoiceRows.length > 0 && (
@@ -1538,6 +1610,11 @@ export default function Declarations({ data = {}, branchContext }) {
                                             <td className="px-5 py-3">
                                                 <div className="flex flex-wrap items-center gap-2">
                                                     <div className="font-black text-slate-950">{row.document || '-'}</div>
+                                                    {row.isAnnulled && (
+                                                        <span className="rounded-full bg-rose-100 px-2.5 py-1 text-[10px] font-black uppercase tracking-wider text-rose-700">
+                                                            Anulada
+                                                        </span>
+                                                    )}
                                                     <span className="rounded-full bg-slate-100 px-2.5 py-1 text-[10px] font-black uppercase tracking-wider text-slate-500">{row.branchName}</span>
                                                 </div>
                                                 <div className="mt-1 text-xs font-bold text-slate-400">{row.date || '-'}</div>
@@ -1585,16 +1662,17 @@ export default function Declarations({ data = {}, branchContext }) {
                             </div>
                         </div>
                         <div className="p-6">
-                            <div className="mb-5 grid gap-3 sm:grid-cols-4">
+                            <div className="mb-5 grid gap-3 sm:grid-cols-5">
                                 <StatCard label="Subtotal" value={fmt(selectedStampedInvoiceTotals.subtotal)} tone="slate" />
                                 <StatCard label="IVA" value={fmt(selectedStampedInvoiceTotals.iva)} tone="green" />
                                 <StatCard label="Total" value={fmt(selectedStampedInvoiceTotals.total)} tone="amber" />
                                 <StatCard label="Retenciones" value={fmt(selectedStampedInvoiceTotals.retentionTotal)} tone="red" />
+                                <StatCard label="Facturas anuladas" value={selectedStampedInvoiceAnnulledCount} tone="red" />
                             </div>
-                            <StampedInvoiceReportTable
+                            <StampedInvoiceReportByBranch
                                 rows={selectedStampedInvoiceRows}
                                 emptyMessage="Selecciona facturas membretadas para generar este reporte."
-                                rowKeyPrefix="stamped-pre-report"
+                                rowKeyPrefix="stamped-pre-report-branch"
                             />
                             <div className="mt-8 grid gap-8 text-xs font-bold text-slate-600 sm:grid-cols-2">
                                 <div className="border-t border-slate-400 pt-2">Preparado por</div>
@@ -1728,12 +1806,13 @@ export default function Declarations({ data = {}, branchContext }) {
 
             {moduleTab === DECLARATION_MODULES.STAMPED_INVOICES && activeTab === 'historial' && (
                 <div className="space-y-5">
-                    <div className="grid gap-3 md:grid-cols-5">
+                    <div className="grid gap-3 md:grid-cols-6">
                         <StatCard label="Declaraciones" value={stampedInvoiceDeclarations.length} tone="blue" />
                         <StatCard label="Facturas declaradas" value={stampedInvoiceHistoryTotals.itemCount} tone="slate" />
                         <StatCard label="Total declarado" value={fmt(stampedInvoiceHistoryTotals.total)} tone="amber" />
                         <StatCard label="Retenciones" value={fmt(stampedInvoiceHistoryTotals.retentionTotal)} tone="red" />
                         <StatCard label="Neto" value={fmt(stampedInvoiceHistoryTotals.netTotal)} tone="green" />
+                        <StatCard label="Anuladas" value={stampedInvoiceHistoryTotals.annulledCount} tone="red" />
                     </div>
                     <Card className="overflow-hidden">
                         <div className="border-b border-slate-200 bg-slate-50 px-5 py-4">
@@ -1756,10 +1835,10 @@ export default function Declarations({ data = {}, branchContext }) {
                                         </div>
                                     </summary>
                                     <div className="mt-4">
-                                        <StampedInvoiceReportTable
+                                        <StampedInvoiceReportByBranch
                                             rows={declaration.items || []}
                                             emptyMessage="Esta declaracion no tiene facturas."
-                                            rowKeyPrefix={`stamped-history-${declaration.id}`}
+                                            rowKeyPrefix={`stamped-history-branch-${declaration.id}`}
                                         />
                                     </div>
                                 </details>
