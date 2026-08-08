@@ -4,7 +4,8 @@ param(
     [string]$EndDate = '',
     [int]$LookbackDays = 31,
     [switch]$Preview,
-    [switch]$StageOnly
+    [switch]$StageOnly,
+    [switch]$ForceFirebaseCheck
 )
 
 function Import-EnvFile {
@@ -60,6 +61,9 @@ if ($EndDate) { $argsList += "--endDate=$EndDate" }
 if (-not $Date -and -not $StartDate -and -not $EndDate) { $argsList += "--lookbackDays=$LookbackDays" }
 if ($Preview) { $argsList += '--preview' }
 if ($StageOnly) { $argsList += '--stage-only' }
+# La auditoria diaria amplia confirma que los documentos visibles sigan
+# existiendo, aunque el estado local conserve un fingerprint previo.
+if ($ForceFirebaseCheck -or $LookbackDays -ge 31) { $argsList += '--forceFirebaseCheck' }
 
 Push-Location $functionsRoot
 try {
