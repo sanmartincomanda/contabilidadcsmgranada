@@ -52,6 +52,7 @@ import { buildPurchaseExpenseAccountingEntry, setAccountingEntryInBatch } from '
 import { buildPettyCashMovementPayload, pettyCashMovementRef } from '../services/pettyCash';
 import ProviderAutocomplete from './ProviderAutocomplete';
 import AccountingAccountSelect from './AccountingAccountSelect';
+import AccountingAIAgent from './AccountingAIAgent';
 
 // --- ICONOS SVG INLINE ---
 const Icons = {
@@ -2836,7 +2837,7 @@ const EquityForm = ({ loading, setLoading, onSuccess, branchContext }) => {
 
 // --- COMPONENTE PRINCIPAL ---
 
-const VALID_TABS = ['Ingresos', 'Gastos', 'Inventario', 'Compras', 'Presupuesto', 'Cuentas por Cobrar', 'Patrimonio'];
+const VALID_TABS = ['Ingresos', 'Gastos', 'Inventario', 'Compras', 'Agente Contable IA', 'Presupuesto', 'Cuentas por Cobrar', 'Patrimonio'];
 
 export function DataEntry({ categories, data, allowedTabs = null, branchContext }) {
     const [searchParams] = useSearchParams();
@@ -2903,6 +2904,7 @@ export function DataEntry({ categories, data, allowedTabs = null, branchContext 
         Gastos: getCurrentMonth(),
         Inventario: getCurrentMonth(),
         Compras: getCurrentMonth(),
+        'Agente Contable IA': getCurrentMonth(),
         Presupuesto: getCurrentMonth(),
         'Cuentas por Cobrar': getCurrentMonth(),
         Patrimonio: getCurrentMonth(),
@@ -2914,6 +2916,7 @@ export function DataEntry({ categories, data, allowedTabs = null, branchContext 
         Gastos: { dateFrom: '', dateTo: '', search: '' },
         Inventario: {},
         Compras: { dateFrom: '', dateTo: '', supplier: '', invoiceNumber: '' },
+        'Agente Contable IA': {},
         Presupuesto: {},
         'Cuentas por Cobrar': {},
         Patrimonio: {},
@@ -2924,6 +2927,7 @@ export function DataEntry({ categories, data, allowedTabs = null, branchContext 
         'Gastos': { icon: 'trendingDown', label: 'Gastos' },
         'Inventario': { icon: 'box', label: 'Inventario' },
         'Compras': { icon: 'shoppingCart', label: 'Compras' },
+        'Agente Contable IA': { icon: 'target', label: 'Agente IA' },
         'Presupuesto': { icon: 'target', label: 'Presupuesto' },
         'Cuentas por Cobrar': { icon: 'handCoin', label: 'C. Cobrar' },
         'Patrimonio': { icon: 'scale', label: 'Patrimonio' }
@@ -2935,6 +2939,7 @@ export function DataEntry({ categories, data, allowedTabs = null, branchContext 
         Gastos: { type: 'month', label: 'Filtrar por Mes' },
         Inventario: { type: 'month', label: 'Filtrar por Mes' },
         Compras: { type: 'month', label: 'Filtrar por Mes' },
+        'Agente Contable IA': { type: 'month', label: 'Filtrar por Mes' },
         Presupuesto: { type: 'month', label: 'Filtrar por Mes' },
         'Cuentas por Cobrar': { type: 'month', label: 'Filtrar por Mes' },
         Patrimonio: { type: 'month', label: 'Filtrar por Mes' },
@@ -3269,6 +3274,10 @@ export function DataEntry({ categories, data, allowedTabs = null, branchContext 
                 </div>
             </section>
 
+            {activeTab === 'Agente Contable IA' ? (
+                <AccountingAIAgent providers={providers} />
+            ) : (
+            <>
             <div className="no-print flex justify-center">
                 <div className="inline-flex rounded-2xl border border-slate-200 bg-white p-1 shadow-sm">
                     {[
@@ -3323,6 +3332,8 @@ export function DataEntry({ categories, data, allowedTabs = null, branchContext 
                         />
                     </Card>
                 </div>
+            )}
+            </>
             )}
         </div>
     );

@@ -10,7 +10,63 @@ service cloud.firestore {
       return signedIn() && request.auth.token.email == 'luis.s.97@hotmail.com';
     }
 
+    function isAgentEditor() {
+      return isMaster()
+        || (
+          signedIn()
+          && exists(/databases/$(database)/documents/usuarios_sistema/$(request.auth.token.email))
+          && get(/databases/$(database)/documents/usuarios_sistema/$(request.auth.token.email)).data.active != false
+          && (
+            get(/databases/$(database)/documents/usuarios_sistema/$(request.auth.token.email)).data.modules.ingresar == true
+            || get(/databases/$(database)/documents/usuarios_sistema/$(request.auth.token.email)).data.modules.ingresar == 'edit'
+          )
+          && get(/databases/$(database)/documents/usuarios_sistema/$(request.auth.token.email)).data.moduleModes.ingresar != 'view'
+        );
+    }
+
     match /integraciones_privadas/{document=**} {
+      allow read, write: if false;
+    }
+
+    match /whatsapp_eventos/{document=**} {
+      allow read, write: if false;
+    }
+
+    match /whatsapp_inbox/{document=**} {
+      allow read: if isAgentEditor();
+      allow write: if false;
+    }
+
+    match /agente_contable_borradores/{document=**} {
+      allow read: if isAgentEditor();
+      allow write: if false;
+    }
+
+    match /agente_contable_auditoria/{document=**} {
+      allow read: if isAgentEditor();
+      allow write: if false;
+    }
+
+    match /agente_contable_usuarios/{document=**} {
+      allow read: if isMaster();
+      allow write: if false;
+    }
+
+    match /agente_contable_reglas/{document=**} {
+      allow read: if isAgentEditor();
+      allow write: if false;
+    }
+
+    match /agente_contable_configuracion/{document=**} {
+      allow read: if isAgentEditor();
+      allow write: if false;
+    }
+
+    match /agente_contable_duplicados/{document=**} {
+      allow read, write: if false;
+    }
+
+    match /agente_contable_archivos/{document=**} {
       allow read, write: if false;
     }
 
@@ -33,6 +89,15 @@ service cloud.firestore {
     match /{collection}/{document=**} {
       allow read, write: if signedIn()
         && collection != 'integraciones_privadas'
+        && collection != 'whatsapp_eventos'
+        && collection != 'whatsapp_inbox'
+        && collection != 'agente_contable_borradores'
+        && collection != 'agente_contable_auditoria'
+        && collection != 'agente_contable_usuarios'
+        && collection != 'agente_contable_reglas'
+        && collection != 'agente_contable_configuracion'
+        && collection != 'agente_contable_duplicados'
+        && collection != 'agente_contable_archivos'
         && collection != 'usuarios_sistema'
         && collection != 'diferencias_caja'
         && collection != 'abonos_diferencias_caja';

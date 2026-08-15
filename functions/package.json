@@ -9,6 +9,7 @@
     "serve": "firebase emulators:start --only functions",
     "deploy": "firebase deploy --only functions",
     "lint": "node --check index.js",
+    "test:agent": "node --test tests/accountingAgent.test.js",
     "replay-pending-purchases": "node scripts/processPendingSicarPurchases.js",
     "sync-daily-sales": "node scripts/syncDailySicarSales.js",
     "sync-billing": "node scripts/syncSicarBilling.js",

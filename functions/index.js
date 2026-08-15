@@ -2,9 +2,11 @@ const { createHash, randomUUID } = require('node:crypto');
 const admin = require('firebase-admin');
 const logger = require('firebase-functions/logger');
 const { onCall, onRequest, HttpsError } = require('firebase-functions/v2/https');
-const { onDocumentWritten } = require('firebase-functions/v2/firestore');
+const { onDocumentCreated, onDocumentWritten } = require('firebase-functions/v2/firestore');
 const { defineSecret, defineString } = require('firebase-functions/params');
 const mysql = require('mysql2/promise');
+const { AGENT_STATUSES, normalizePhone, verifyMetaSignature } = require('./accountingAgent');
+const { COLLECTIONS: ACCOUNTING_AGENT_COLLECTIONS, createAccountingAgentRuntime } = require('./accountingAgentRuntime');
 
 admin.initializeApp();
 
@@ -21,7 +23,10 @@ const SICAR_COMPRAS_QUERY = defineSecret('SICAR_COMPRAS_QUERY');
 const SICAR_SYNC_API_TOKEN = defineSecret('SICAR_SYNC_API_TOKEN');
 const WHATSAPP_VERIFY_TOKEN = defineSecret('WHATSAPP_VERIFY_TOKEN');
 const WHATSAPP_ACCESS_TOKEN = defineSecret('WHATSAPP_ACCESS_TOKEN');
+const META_APP_SECRET = defineSecret('META_APP_SECRET');
+const OPENAI_API_KEY = defineSecret('OPENAI_API_KEY');
 const WHATSAPP_GRAPH_VERSION = defineString('WHATSAPP_GRAPH_VERSION', { default: 'v21.0' });
+const OPENAI_ACCOUNTING_MODEL = defineString('OPENAI_ACCOUNTING_MODEL', { default: 'gpt-5-mini' });
 const SICAR_BRANCH_ID = defineString('SICAR_BRANCH_ID', { default: 'granada' });
 const SICAR_BRANCH_NAME = defineString('SICAR_BRANCH_NAME', { default: 'CARNES SAN MARTIN GRANADA' });
 const SICAR_TIMEZONE = defineString('SICAR_TIMEZONE', { default: 'America/Managua' });
@@ -107,8 +112,30 @@ const WHATSAPP_WEBHOOK_FUNCTION_OPTIONS = {
   memory: '512MiB',
   secrets: [
     WHATSAPP_VERIFY_TOKEN,
-    WHATSAPP_ACCESS_TOKEN,
+    META_APP_SECRET,
   ],
+};
+
+const ACCOUNTING_AGENT_PROCESSOR_OPTIONS = {
+  ...BASE_FUNCTION_OPTIONS,
+  timeoutSeconds: 300,
+  memory: '1GiB',
+  secrets: [
+    WHATSAPP_ACCESS_TOKEN,
+    OPENAI_API_KEY,
+  ],
+};
+
+const ACCOUNTING_AGENT_CALLABLE_OPTIONS = {
+  ...ADMIN_CALLABLE_FUNCTION_OPTIONS,
+  timeoutSeconds: 180,
+  memory: '512MiB',
+  secrets: [WHATSAPP_ACCESS_TOKEN],
+};
+
+const ACCOUNTING_AGENT_RETRY_OPTIONS = {
+  ...ACCOUNTING_AGENT_CALLABLE_OPTIONS,
+  secrets: [WHATSAPP_ACCESS_TOKEN, OPENAI_API_KEY],
 };
 
 const PURCHASE_TRIGGER_DOCUMENT = 'integraciones_privadas/sicar/compras_raw/{rawId}';
@@ -2658,6 +2685,39 @@ async function upsertWhatsappInboxMessage({ message, value, contact }) {
   };
 }
 
+function getAccountingAgentRuntime() {
+  return createAccountingAgentRuntime({
+    admin,
+    firestore,
+    FieldValue,
+    logger,
+    config: {
+      whatsappAccessToken: () => WHATSAPP_ACCESS_TOKEN.value(),
+      graphVersion: () => WHATSAPP_GRAPH_VERSION.value(),
+      openAiKey: () => OPENAI_API_KEY.value(),
+      openAiModel: () => OPENAI_ACCOUNTING_MODEL.value(),
+    },
+  });
+}
+
+async function ensureAccountingAgentEditor(auth, actionLabel = 'usar el Agente Contable IA') {
+  const email = normalizeUserEmail(auth?.token?.email || '');
+  if (!auth || !email) {
+    throw new HttpsError('unauthenticated', `Debes iniciar sesion para ${actionLabel}.`);
+  }
+  if (email === MASTER_USER_EMAIL) return { email, role: 'master' };
+
+  const profileSnapshot = await firestore.collection(USER_PROFILES_COLLECTION).doc(getUserProfileDocId(email)).get();
+  const profile = profileSnapshot.exists ? profileSnapshot.data() : null;
+  const moduleValue = profile?.modules?.ingresar;
+  const enabled = moduleValue === true || moduleValue === 'edit' || moduleValue?.enabled === true;
+  const mode = profile?.moduleModes?.ingresar || (typeof moduleValue === 'string' ? moduleValue : moduleValue?.mode);
+  if (!profile || profile.active === false || !enabled || mode === 'view') {
+    throw new HttpsError('permission-denied', `No tienes permisos de edicion para ${actionLabel}.`);
+  }
+  return { email, role: profile.role || 'limited', displayName: profile.displayName || profile.name || '' };
+}
+
 exports.whatsappWebhook = onRequest(WHATSAPP_WEBHOOK_FUNCTION_OPTIONS, async (request, response) => {
   if (request.method === 'GET') {
     const mode = request.query['hub.mode'];
@@ -2679,17 +2739,51 @@ exports.whatsappWebhook = onRequest(WHATSAPP_WEBHOOK_FUNCTION_OPTIONS, async (re
   }
 
   try {
+    const rawBody = request.rawBody || Buffer.from(JSON.stringify(request.body || {}));
+    const signature = request.get('x-hub-signature-256') || '';
+    if (!verifyMetaSignature(rawBody, signature, META_APP_SECRET.value())) {
+      logger.warn('Firma Meta invalida en whatsappWebhook', { ip: request.ip || '' });
+      response.status(401).json({ ok: false, error: 'Firma Meta invalida.' });
+      return;
+    }
+
     const messages = getWhatsappMessages(request.body || {});
-    const processed = [];
+    let queued = 0;
+    let duplicated = 0;
 
     for (const item of messages) {
-      processed.push(await upsertWhatsappInboxMessage(item));
+      const messageId = item.message.id || createHash('sha1').update(JSON.stringify(item.message)).digest('hex');
+      const eventRef = firestore.collection(ACCOUNTING_AGENT_COLLECTIONS.events).doc(messageId);
+      const created = await firestore.runTransaction(async (transaction) => {
+        const existing = await transaction.get(eventRef);
+        if (existing.exists) return false;
+        transaction.create(eventRef, {
+          messageId,
+          message: item.message,
+          value: {
+            metadata: item.value?.metadata || {},
+            messaging_product: item.value?.messaging_product || 'whatsapp',
+          },
+          senderName: normalizeText(item.contact?.profile?.name),
+          senderPhone: normalizePhone(item.message?.from),
+          status: AGENT_STATUSES.RECEIVED,
+          receivedAt: item.message?.timestamp
+            ? admin.firestore.Timestamp.fromMillis(Number(item.message.timestamp) * 1000)
+            : FieldValue.serverTimestamp(),
+          createdAt: FieldValue.serverTimestamp(),
+          updatedAt: FieldValue.serverTimestamp(),
+        });
+        return true;
+      });
+      if (created) queued += 1;
+      else duplicated += 1;
     }
 
     response.status(200).json({
       ok: true,
       received: messages.length,
-      processed,
+      queued,
+      duplicated,
     });
   } catch (error) {
     logger.error('Error en whatsappWebhook', error);
@@ -2698,6 +2792,177 @@ exports.whatsappWebhook = onRequest(WHATSAPP_WEBHOOK_FUNCTION_OPTIONS, async (re
       error: error.message || 'Error procesando webhook de WhatsApp.',
     });
   }
+});
+
+exports.processAccountingAgentWhatsappEvent = onDocumentCreated({
+  ...ACCOUNTING_AGENT_PROCESSOR_OPTIONS,
+  document: `${ACCOUNTING_AGENT_COLLECTIONS.events}/{eventId}`,
+}, async (event) => {
+  const eventId = event.params.eventId;
+  try {
+    return await getAccountingAgentRuntime().processEvent(eventId);
+  } catch (error) {
+    logger.error('Fallo processAccountingAgentWhatsappEvent', { eventId, error: error.message });
+    return null;
+  }
+});
+
+exports.updateAccountingAgentDraft = onCall(ACCOUNTING_AGENT_CALLABLE_OPTIONS, async (request) => {
+  const actor = await ensureAccountingAgentEditor(request.auth, 'corregir borradores del Agente Contable IA');
+  const draftId = normalizeText(request.data?.draftId);
+  if (!draftId) throw new HttpsError('invalid-argument', 'Debes indicar el borrador.');
+  try {
+    const draft = await getAccountingAgentRuntime().updateDraft({ draftId, patch: request.data?.patch || {}, actor, origin: 'app' });
+    return { ok: true, draft };
+  } catch (error) {
+    throw new HttpsError('failed-precondition', error.message || 'No se pudo actualizar el borrador.');
+  }
+});
+
+exports.confirmAccountingAgentDraft = onCall(ACCOUNTING_AGENT_CALLABLE_OPTIONS, async (request) => {
+  const actor = await ensureAccountingAgentEditor(request.auth, 'confirmar borradores del Agente Contable IA');
+  const draftId = normalizeText(request.data?.draftId);
+  if (!draftId) throw new HttpsError('invalid-argument', 'Debes indicar el borrador.');
+  try {
+    return { ok: true, ...(await getAccountingAgentRuntime().registerDraft({ draftId, actor, origin: 'app' })) };
+  } catch (error) {
+    throw new HttpsError('failed-precondition', error.message || 'No se pudo registrar el borrador.');
+  }
+});
+
+exports.rejectAccountingAgentDraft = onCall(ADMIN_CALLABLE_FUNCTION_OPTIONS, async (request) => {
+  const actor = await ensureAccountingAgentEditor(request.auth, 'rechazar borradores del Agente Contable IA');
+  const draftId = normalizeText(request.data?.draftId);
+  if (!draftId) throw new HttpsError('invalid-argument', 'Debes indicar el borrador.');
+  try {
+    return await getAccountingAgentRuntime().rejectDraft({ draftId, reason: request.data?.reason || '', actor, origin: 'app' });
+  } catch (error) {
+    throw new HttpsError('failed-precondition', error.message || 'No se pudo rechazar el borrador.');
+  }
+});
+
+exports.retryAccountingAgentItem = onCall(ACCOUNTING_AGENT_RETRY_OPTIONS, async (request) => {
+  const actor = await ensureAccountingAgentEditor(request.auth, 'reintentar mensajes del Agente Contable IA');
+  const eventId = normalizeText(request.data?.eventId || request.data?.inboxId);
+  if (!eventId) throw new HttpsError('invalid-argument', 'Debes indicar el mensaje.');
+  await firestore.collection(ACCOUNTING_AGENT_COLLECTIONS.events).doc(eventId).set({
+    status: AGENT_STATUSES.RECEIVED,
+    error: FieldValue.delete(),
+    retriedBy: actor,
+    retriedAt: FieldValue.serverTimestamp(),
+    updatedAt: FieldValue.serverTimestamp(),
+  }, { merge: true });
+  try {
+    return { ok: true, ...(await getAccountingAgentRuntime().processEvent(eventId)) };
+  } catch (error) {
+    throw new HttpsError('internal', error.message || 'No se pudo reprocesar el mensaje.');
+  }
+});
+
+exports.adminSaveAccountingAgentAuthorizedUser = onCall(ADMIN_CALLABLE_FUNCTION_OPTIONS, async (request) => {
+  const actorEmail = ensureMasterUser(request.auth, 'administrar numeros autorizados del agente');
+  const phone = normalizePhone(request.data?.phone);
+  if (phone.length < 8) throw new HttpsError('invalid-argument', 'Indica un numero de WhatsApp valido con codigo de pais.');
+  const payload = {
+    userId: normalizeText(request.data?.userId),
+    name: normalizeText(request.data?.name || request.data?.nombre),
+    nombre: normalizeText(request.data?.name || request.data?.nombre),
+    phone,
+    active: request.data?.active !== false,
+    permissions: {
+      submitDocuments: request.data?.permissions?.submitDocuments !== false,
+      confirmOwnDrafts: request.data?.permissions?.confirmOwnDrafts !== false,
+      registerWithoutSupport: request.data?.permissions?.registerWithoutSupport === true,
+    },
+    updatedBy: actorEmail,
+    updatedAt: FieldValue.serverTimestamp(),
+  };
+  const ref = firestore.collection(ACCOUNTING_AGENT_COLLECTIONS.authorizedUsers).doc(phone);
+  const existing = await ref.get();
+  await ref.set({ ...payload, createdAt: existing.exists ? existing.data()?.createdAt : FieldValue.serverTimestamp() }, { merge: true });
+  await getAccountingAgentRuntime().audit('AUTHORIZED_USER_SAVED', { actorEmail, phone, active: payload.active });
+  return { ok: true, id: phone };
+});
+
+exports.adminDeleteAccountingAgentAuthorizedUser = onCall(ADMIN_CALLABLE_FUNCTION_OPTIONS, async (request) => {
+  const actorEmail = ensureMasterUser(request.auth, 'eliminar numeros autorizados del agente');
+  const phone = normalizePhone(request.data?.phone);
+  if (!phone) throw new HttpsError('invalid-argument', 'Indica el numero a eliminar.');
+  await firestore.collection(ACCOUNTING_AGENT_COLLECTIONS.authorizedUsers).doc(phone).delete();
+  await getAccountingAgentRuntime().audit('AUTHORIZED_USER_DELETED', { actorEmail, phone });
+  return { ok: true };
+});
+
+exports.adminSaveAccountingAgentRule = onCall(ADMIN_CALLABLE_FUNCTION_OPTIONS, async (request) => {
+  const actorEmail = ensureMasterUser(request.auth, 'administrar reglas del agente');
+  const ruleId = sanitizeStorageSegment(request.data?.id || randomUUID(), 'regla');
+  const category = normalizeText(request.data?.category);
+  const subcategory = normalizeText(request.data?.subcategory);
+  const ruleRef = firestore.collection(ACCOUNTING_AGENT_COLLECTIONS.rules).doc(ruleId);
+  const existing = await ruleRef.get();
+  const payload = {
+    providerId: normalizeText(request.data?.providerId),
+    provider: normalizeText(request.data?.provider),
+    normalizedProvider: normalizeText(request.data?.provider),
+    type: ['compra', 'gasto'].includes(request.data?.type) ? request.data.type : '',
+    category,
+    subcategory,
+    branchId: ['granada', 'nindiri'].includes(request.data?.branchId) ? request.data.branchId : '',
+    priority: Number(request.data?.priority) || 100,
+    origin: request.data?.origin === 'fixed' ? 'fixed' : 'human_approved',
+    confirmations: Number(request.data?.confirmations) || 1,
+    active: request.data?.active !== false,
+    updatedBy: actorEmail,
+    updatedAt: FieldValue.serverTimestamp(),
+    createdAt: existing.exists ? existing.data()?.createdAt : FieldValue.serverTimestamp(),
+  };
+  await ruleRef.set(payload, { merge: true });
+  await getAccountingAgentRuntime().audit('AGENT_RULE_SAVED', { actorEmail, ruleId, provider: payload.provider, category, subcategory });
+  return { ok: true, id: ruleId };
+});
+
+exports.adminDeleteAccountingAgentRule = onCall(ADMIN_CALLABLE_FUNCTION_OPTIONS, async (request) => {
+  const actorEmail = ensureMasterUser(request.auth, 'eliminar reglas del agente');
+  const ruleId = sanitizeStorageSegment(request.data?.id, '');
+  if (!ruleId) throw new HttpsError('invalid-argument', 'Indica la regla a eliminar.');
+  const ruleRef = firestore.collection(ACCOUNTING_AGENT_COLLECTIONS.rules).doc(ruleId);
+  const snapshot = await ruleRef.get();
+  if (!snapshot.exists) return { ok: true, alreadyDeleted: true };
+  if (snapshot.data()?.origin === 'fixed') {
+    throw new HttpsError('failed-precondition', 'Las reglas fijas no se eliminan; puedes desactivarlas temporalmente.');
+  }
+  await ruleRef.delete();
+  await getAccountingAgentRuntime().audit('AGENT_RULE_DELETED', { actorEmail, ruleId, provider: snapshot.data()?.provider || '' });
+  return { ok: true };
+});
+
+exports.adminSeedAccountingAgentRules = onCall(ADMIN_CALLABLE_FUNCTION_OPTIONS, async (request) => {
+  const actorEmail = ensureMasterUser(request.auth, 'inicializar reglas fijas del agente');
+  const rules = [
+    ['industrial_comercial_san_martin', 'Industrial Comercial San Martin', 'Compra de carne res'],
+    ['cargill', 'Cargill', 'Compra de pollo'],
+    ['matadero_cacique', 'Matadero Cacique', 'Compra de cerdo'],
+    ['delmor', 'Delmor', 'Compra de embutidos'],
+    ['los_artesanos', 'Los Artesanos', 'Compra de embutidos'],
+    ['sigma_alimentos', 'Sigma Alimentos', 'Compra de embutidos'],
+  ];
+  const batch = firestore.batch();
+  rules.forEach(([id, provider, subcategory]) => batch.set(firestore.collection(ACCOUNTING_AGENT_COLLECTIONS.rules).doc(id), {
+    provider,
+    normalizedProvider: normalizeText(provider),
+    type: 'compra',
+    category: 'Costos de venta / compras',
+    subcategory,
+    priority: 10,
+    origin: 'fixed',
+    confirmations: 0,
+    active: true,
+    updatedBy: actorEmail,
+    updatedAt: FieldValue.serverTimestamp(),
+    createdAt: FieldValue.serverTimestamp(),
+  }, { merge: true }));
+  await batch.commit();
+  return { ok: true, count: rules.length };
 });
 
 exports.syncSicarIngresosCarnesAmparito = onCall(INCOME_CALLABLE_FUNCTION_OPTIONS, async (request) => {
