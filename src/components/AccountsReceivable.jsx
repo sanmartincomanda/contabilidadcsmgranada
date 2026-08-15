@@ -427,6 +427,7 @@ const createReceiptForm = (invoiceOrInvoices = []) => {
         retentionMunicipal1: '',
         paymentMethod: '',
         reference: '',
+        includedInSicarRecovery: '',
         applications,
         concept: invoiceNumbers.length
             ? `Pago factura${invoiceNumbers.length > 1 ? 's' : ''} ${invoiceNumbers.join(', ')}`
@@ -700,6 +701,7 @@ export default function AccountsReceivable({ data = {}, branchContext }) {
             const retentionMunicipal1 = safeNumber(receiptForm.retentionMunicipal1);
             const retentionTotal = safeNumber(retentionIr2 + retentionMunicipal1);
             const paymentMethod = String(receiptForm.paymentMethod || '').trim();
+            const includedInSicarRecovery = receiptForm.includedInSicarRecovery === 'yes';
             const branchIds = [...new Set(receiptInvoices.map((invoice) => invoice.branchId || getRecordBranchId(invoice)).filter(Boolean))];
             const customerKeys = [...new Set(receiptInvoices.map(buildCustomerKey).filter(Boolean))];
             const firstInvoice = receiptInvoices[0] || {};
@@ -707,6 +709,9 @@ export default function AccountsReceivable({ data = {}, branchContext }) {
 
             if (!receiptNumber) throw new Error('Ingresa el numero de recibo / folio.');
             if (!paymentMethod) throw new Error('Selecciona metodo de pago.');
+            if (!['yes', 'no'].includes(receiptForm.includedInSicarRecovery)) {
+                throw new Error('Indica si el abono ya fue registrado en SICAR.');
+            }
             if (branchIds.length > 1) throw new Error('Un recibo no puede mezclar facturas de distintas sucursales/series.');
             if (customerKeys.length > 1) throw new Error('Un recibo solo puede aplicarse a facturas del mismo cliente.');
             if (!applications.length) throw new Error('Selecciona al menos una factura con monto aplicado.');
@@ -769,6 +774,8 @@ export default function AccountsReceivable({ data = {}, branchContext }) {
                 paymentMethod,
                 metodoPago: paymentMethod,
                 reference: String(receiptForm.reference || '').trim(),
+                includedInSicarRecovery,
+                sicarRecoveryMode: includedInSicarRecovery ? 'included' : 'external_accounting',
                 invoiceApplications,
                 linkedInvoices: invoiceApplications,
                 linkedInvoiceIds: invoiceApplications.map((application) => application.invoiceId),
@@ -1054,6 +1061,22 @@ export default function AccountsReceivable({ data = {}, branchContext }) {
                             <label className="space-y-2">
                                 <span className={labelClass}>Referencia</span>
                                 <input className={inputClass} value={receiptForm.reference} onChange={(event) => updateReceiptForm('reference', event.target.value)} placeholder="Transferencia, POS, cheque..." />
+                            </label>
+                            <label className="space-y-2 md:col-span-2">
+                                <span className={labelClass}>Registro en SICAR</span>
+                                <select
+                                    className={inputClass}
+                                    value={receiptForm.includedInSicarRecovery}
+                                    onChange={(event) => updateReceiptForm('includedInSicarRecovery', event.target.value)}
+                                    required
+                                >
+                                    <option value="">Confirmar origen del abono...</option>
+                                    <option value="yes">Si, el abono tambien fue registrado en SICAR</option>
+                                    <option value="no">No, este abono existe solo en el sistema contable</option>
+                                </select>
+                                <p className="text-xs font-semibold text-slate-500">
+                                    Si no esta en SICAR, el cierre lo suma al esperado para conciliar el ingreso y sus retenciones sin crear diferencias falsas.
+                                </p>
                             </label>
                             <div className="rounded-3xl border border-sky-100 bg-sky-50/70 p-4 md:col-span-2">
                                 <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
