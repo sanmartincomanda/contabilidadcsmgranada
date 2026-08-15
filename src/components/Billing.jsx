@@ -885,10 +885,34 @@ const normalizeStampedInvoiceRecord = (item = {}) => ({
     items: Array.isArray(item.items) ? item.items : [],
 });
 
-const getCashReceiptRetentionTotal = (receipt = {}) => safeNumber(
-    receipt.retentionTotal
-    ?? receipt.retencionTotal
-    ?? (safeNumber(receipt.retentionIr2 || receipt.retencionIr2) + safeNumber(receipt.retentionMunicipal1 || receipt.retencionMunicipal1))
+const getCashReceiptRetentionBreakdown = (receipt = {}) => {
+    const retentionIr2 = safeNumber(receipt.retentionIr2 ?? receipt.retencionIr2);
+    const retentionMunicipal1 = safeNumber(receipt.retentionMunicipal1 ?? receipt.retencionMunicipal1);
+    const detailedTotal = safeNumber(retentionIr2 + retentionMunicipal1);
+    const storedTotal = safeNumber(receipt.retentionTotal ?? receipt.retencionTotal);
+
+    return {
+        retentionIr2,
+        retentionMunicipal1,
+        // The detailed fiscal fields are authoritative when present. This repairs
+        // legacy receipts whose cached total was saved as zero or became stale.
+        retentionTotal: detailedTotal > 0 ? detailedTotal : storedTotal,
+    };
+};
+
+const getCashReceiptRetentionTotal = (receipt = {}) => (
+    getCashReceiptRetentionBreakdown(receipt).retentionTotal
+);
+
+const isCashReceiptIncludedInSicarRecovery = (receipt = {}) => (
+    receipt.includedInSicarRecovery !== false
+    && normalizeText(receipt.sicarRecoveryMode) !== 'EXTERNAL_ACCOUNTING'
+);
+
+const getExternalCashReceiptTotal = (receipts = []) => safeNumber(
+    (Array.isArray(receipts) ? receipts : []).reduce((sum, receipt) => (
+        sum + (isCashReceiptIncludedInSicarRecovery(receipt) ? 0 : safeNumber(receipt.amount || receipt.cantidad))
+    ), 0)
 );
 
 const getCashReceiptNetAmount = (receipt = {}) => {
@@ -902,9 +926,7 @@ const getCashReceiptNetAmount = (receipt = {}) => {
 
 const normalizeCashReceiptRecord = (item = {}) => {
     const amount = safeNumber(item.amount || item.cantidad);
-    const retentionIr2 = safeNumber(item.retentionIr2 || item.retencionIr2);
-    const retentionMunicipal1 = safeNumber(item.retentionMunicipal1 || item.retencionMunicipal1);
-    const retentionTotal = safeNumber(item.retentionTotal ?? item.retencionTotal ?? (retentionIr2 + retentionMunicipal1));
+    const { retentionIr2, retentionMunicipal1, retentionTotal } = getCashReceiptRetentionBreakdown(item);
     return {
         ...item,
         id: item.id || item.docId || item.receiptId || '',
@@ -921,6 +943,8 @@ const normalizeCashReceiptRecord = (item = {}) => {
         reference: item.reference || item.referencia || '',
         netAmount: getCashReceiptNetAmount({ ...item, amount, retentionIr2, retentionMunicipal1, retentionTotal }),
         linkedCashClosureId: item.linkedCashClosureId || item.cashClosureId || '',
+        includedInSicarRecovery: isCashReceiptIncludedInSicarRecovery(item),
+        sicarRecoveryMode: item.sicarRecoveryMode || (item.includedInSicarRecovery === false ? 'external_accounting' : 'included'),
         isOtherReceipt: Boolean(item.isOtherReceipt || normalizeText(item.receiptMode) === 'OTHER'),
         invoiceApplications: getReceiptInvoiceApplications(item),
     };
@@ -965,7 +989,9 @@ const getEffectiveCashDifferencePendingAmount = (item = {}) => (
 
 const getCashDifferenceType = (amount = 0) => (safeNumber(amount) < 0 ? 'faltante' : 'sobrante');
 
-const getCashClosureComparableExpectedTotal = (sicarExpected = 0) => safeNumber(sicarExpected);
+const getCashClosureComparableExpectedTotal = (sicarExpected = 0, externalCreditRecoveryTotal = 0) => (
+    safeNumber(safeNumber(sicarExpected) + safeNumber(externalCreditRecoveryTotal))
+);
 
 const getCashClosureManualTotalWithRetentions = (manualTotal = 0, retentionAdjustment = 0) => (
     safeNumber(safeNumber(manualTotal) + safeNumber(retentionAdjustment))
@@ -985,14 +1011,19 @@ const normalizeCashClosureStoredTotals = (closure = {}) => {
     const manualTotal = safeNumber(closure.manualTotal);
     const retentionAdjustment = safeNumber(closure.retentionAdjustment);
     const sicarExpected = safeNumber(closure.sicarExpected);
-    const expectedAfterRetentions = getCashClosureComparableExpectedTotal(sicarExpected);
+    const externalCreditRecoveryTotal = safeNumber(
+        closure.externalCreditRecoveryTotal ?? getExternalCashReceiptTotal(getCashClosureReceipts(closure))
+    );
+    const expectedAfterRetentions = getCashClosureComparableExpectedTotal(sicarExpected, externalCreditRecoveryTotal);
     const manualTotalWithRetentions = getCashClosureManualTotalWithRetentions(manualTotal, retentionAdjustment);
-    const difference = getCashClosureDifference(manualTotal, sicarExpected, retentionAdjustment);
+    const difference = getCashClosureDifference(manualTotal, expectedAfterRetentions, retentionAdjustment);
     return {
         manualTotal,
         manualTotalWithRetentions,
         retentionAdjustment,
         sicarExpected,
+        externalCreditRecoveryTotal,
+        comparisonExpectedTotal: expectedAfterRetentions,
         expectedAfterRetentions,
         difference,
         status: getCashClosureStatusFromDifference(closure.status || 'cerrado', difference),
@@ -1134,6 +1165,7 @@ const buildClosureAccountingSummary = ({
     creditRecoveryTotal = 0,
     stampedInvoices = [],
     cashReceipts = [],
+    externalCreditRecoveryTotal = getExternalCashReceiptTotal(cashReceipts),
     transferTotals = {},
     posTotals = {},
     cashCordobasTotal = 0,
@@ -1160,7 +1192,8 @@ const buildClosureAccountingSummary = ({
     const cashIncomeNetTotal = safeNumber(stampedCashTotal + cashReceiptNetTotal);
     const ticketCashSales = safeNumber(cashSalesTotal - stampedCashTotal);
     const ticketCreditSales = safeNumber(creditSalesTotal - stampedCreditTotal);
-    const ticketCashReceipts = safeNumber(creditRecoveryTotal - cashReceiptGrossTotal);
+    const comparableCreditRecoveryTotal = getCashClosureComparableExpectedTotal(creditRecoveryTotal, externalCreditRecoveryTotal);
+    const ticketCashReceipts = safeNumber(comparableCreditRecoveryTotal - cashReceiptGrossTotal);
     const cardTotal = safeNumber((posTotals.bac || 0) + (posTotals.banpro || 0) + (posTotals.lafise || 0));
     const transferTotal = safeNumber(
         (transferTotals.bac || 0)
@@ -1180,7 +1213,9 @@ const buildClosureAccountingSummary = ({
         general: {
             cashSalesTotal: safeNumber(cashSalesTotal),
             creditSalesTotal: safeNumber(creditSalesTotal),
-            creditRecoveryTotal: safeNumber(creditRecoveryTotal),
+            sicarCreditRecoveryTotal: safeNumber(creditRecoveryTotal),
+            externalCreditRecoveryTotal: safeNumber(externalCreditRecoveryTotal),
+            creditRecoveryTotal: comparableCreditRecoveryTotal,
         },
         stampedDocuments: {
             stampedCashInvoices: stampedCashTotal,
@@ -1491,11 +1526,13 @@ const syncLinkedClosureForCashReceipt = async (receiptId = '', receiptPayload = 
     const cashReceiptNetTotal = receiptsForTotals.reduce((sum, receipt) => (
         safeNumber(sum + getCashReceiptNetAmount(receipt))
     ), 0);
+    const externalCreditRecoveryTotal = getExternalCashReceiptTotal(receiptsForTotals);
     const retentionAdjustment = safeNumber(invoiceRetentionTotal + cashReceiptRetentionTotal);
     const sicarExpected = safeNumber(closure.sicarExpected);
     const manualTotal = safeNumber(closure.manualTotal);
-    const expectedAfterRetentions = getCashClosureComparableExpectedTotal(sicarExpected);
-    const difference = getCashClosureDifference(manualTotal, sicarExpected, retentionAdjustment);
+    const comparisonExpectedTotal = getCashClosureComparableExpectedTotal(sicarExpected, externalCreditRecoveryTotal);
+    const expectedAfterRetentions = comparisonExpectedTotal;
+    const difference = getCashClosureDifference(manualTotal, comparisonExpectedTotal, retentionAdjustment);
     const payment = closure.accountingSummary?.paymentBreakdown || {};
     const stamped = closure.accountingSummary?.stampedDocuments || {};
     const cashIncomeNetTotal = safeNumber(safeNumber(stamped.stampedCashInvoices) + cashReceiptNetTotal);
@@ -1517,7 +1554,13 @@ const syncLinkedClosureForCashReceipt = async (receiptId = '', receiptPayload = 
         },
         sicarTickets: {
             ...(closure.accountingSummary.sicarTickets || {}),
-            cashReceiptTickets: safeNumber(safeNumber(closure.accountingSummary.general?.creditRecoveryTotal) - cashReceiptGrossTotal),
+            cashReceiptTickets: safeNumber(comparisonExpectedTotal - cashReceiptGrossTotal),
+        },
+        general: {
+            ...(closure.accountingSummary.general || {}),
+            sicarCreditRecoveryTotal: sicarExpected,
+            externalCreditRecoveryTotal,
+            creditRecoveryTotal: comparisonExpectedTotal,
         },
         paymentBreakdown: {
             ...(closure.accountingSummary.paymentBreakdown || {}),
@@ -1535,6 +1578,9 @@ const syncLinkedClosureForCashReceipt = async (receiptId = '', receiptPayload = 
         ...(cashReceipts.length ? { cashReceipts } : {}),
         ...(cashReceiptDrafts.length ? { cashReceiptDrafts } : {}),
         retentionAdjustment,
+        cashReceiptRetentionTotal,
+        externalCreditRecoveryTotal,
+        comparisonExpectedTotal,
         expectedAfterRetentions,
         manualTotalWithRetentions: getCashClosureManualTotalWithRetentions(manualTotal, retentionAdjustment),
         difference,
@@ -1571,6 +1617,7 @@ const syncLinkedClosureForStampedInvoice = async (invoiceId = '', invoicePayload
         creditRecoveryTotal: safeNumber(closure.creditRecoveryTotal || closure.sicar?.creditRecoveryTotal || closure.sicar?.recuperacionCredito || closure.sicar?.entCre),
         stampedInvoices: invoicesForTotals,
         cashReceipts,
+        externalCreditRecoveryTotal: getExternalCashReceiptTotal(cashReceipts),
         transferTotals: closure.transferTotals || {},
         posTotals: closure.posTotals || {},
         houseDiscountTotal: closure.houseDiscountTotal ?? getHouseDiscountTotal(closure.houseDiscountDetails),
@@ -1585,15 +1632,20 @@ const syncLinkedClosureForStampedInvoice = async (invoiceId = '', invoicePayload
         safeNumber(sum + getCashReceiptRetentionTotal(receipt))
     ), 0);
     const retentionAdjustment = safeNumber(invoiceRetentionTotal + cashReceiptRetentionTotal);
+    const externalCreditRecoveryTotal = getExternalCashReceiptTotal(cashReceipts);
     const sicarExpected = safeNumber(closure.sicarExpected);
     const manualTotal = safeNumber(closure.manualTotal);
-    const expectedAfterRetentions = getCashClosureComparableExpectedTotal(sicarExpected);
-    const difference = getCashClosureDifference(manualTotal, sicarExpected, retentionAdjustment);
+    const comparisonExpectedTotal = getCashClosureComparableExpectedTotal(sicarExpected, externalCreditRecoveryTotal);
+    const expectedAfterRetentions = comparisonExpectedTotal;
+    const difference = getCashClosureDifference(manualTotal, comparisonExpectedTotal, retentionAdjustment);
 
     await setDoc(closureRef, {
         ...(stampedInvoices.length ? { stampedInvoices } : {}),
         ...(stampedInvoiceDrafts.length ? { stampedInvoiceDrafts } : {}),
         retentionAdjustment,
+        cashReceiptRetentionTotal,
+        externalCreditRecoveryTotal,
+        comparisonExpectedTotal,
         expectedAfterRetentions,
         manualTotalWithRetentions: getCashClosureManualTotalWithRetentions(manualTotal, retentionAdjustment),
         difference,
@@ -3081,6 +3133,7 @@ function CashClosure({ data, branchContext }) {
         sum + getCashReceiptRetentionTotal(receipt)
     ), 0));
     const retentionTotal = safeNumber(invoiceRetentionTotal + cashReceiptRetentionTotal);
+    const externalCreditRecoveryTotal = getExternalCashReceiptTotal(closureCashReceipts);
     const sicarExpected = safeNumber(selectedClosure?.calculatedTotal ?? selectedClosure?.calculado ?? selectedClosure?.totalDineroIngresado);
     const sicarNetSalesTotals = useMemo(() => getNetSicarSalesTotals(selectedClosure || {}), [selectedClosure]);
     const sicarCashSalesTotal = sicarNetSalesTotals.cashSalesNetTotal;
@@ -3092,6 +3145,7 @@ function CashClosure({ data, branchContext }) {
         creditRecoveryTotal: sicarCreditRecoveryTotal,
         stampedInvoices: closureInvoices,
         cashReceipts: closureCashReceipts,
+        externalCreditRecoveryTotal,
         transferTotals,
         posTotals,
         houseDiscountTotal,
@@ -3101,9 +3155,10 @@ function CashClosure({ data, branchContext }) {
     }), [sicarCashSalesTotal, sicarCreditSalesTotal, sicarCreditRecoveryTotal, closureInvoices, closureCashReceipts, transferTotals, posTotals, houseDiscountTotal, cashTotal, dollarCashTotalCordobas, preCloseDepositTotal]);
     const closureRc = getCashClosureRcValue(closureAccountingSummary);
     const isClosureRcPositive = isPositiveCashClosureRc(closureRc);
-    const expectedAfterRetentions = getCashClosureComparableExpectedTotal(sicarExpected);
+    const comparisonExpectedTotal = getCashClosureComparableExpectedTotal(sicarExpected, externalCreditRecoveryTotal);
+    const expectedAfterRetentions = comparisonExpectedTotal;
     const manualTotalWithRetentions = getCashClosureManualTotalWithRetentions(manualTotal, retentionTotal);
-    const difference = getCashClosureDifference(manualTotal, sicarExpected, retentionTotal);
+    const difference = getCashClosureDifference(manualTotal, comparisonExpectedTotal, retentionTotal);
     const shouldTrackDifference = Math.abs(difference) > CASH_DIFFERENCE_THRESHOLD;
 
     const resetClosureWorkspace = () => {
@@ -3153,7 +3208,12 @@ function CashClosure({ data, branchContext }) {
         setHouseDiscountDetails(normalizeHouseDiscountDetails(closure.houseDiscountDetails || closure.discountDetails));
         const loadedInvoices = (closure.stampedInvoiceDrafts || closure.stampedInvoices || []).map((invoice) => createInvoiceDraft(invoice, closure.date || todayString()));
         setClosureInvoices(loadedInvoices);
-        const loadedReceipts = (closure.cashReceiptDrafts || closure.cashReceipts || []).map((receipt) => createCashReceiptDraft(receipt, closure.date || todayString()));
+        const latestReceiptById = new Map(cashReceipts.map((receipt) => [receipt.docId || receipt.id, receipt]));
+        const loadedReceipts = (closure.cashReceiptDrafts || closure.cashReceipts || []).map((receipt) => {
+            const receiptId = receipt.docId || receipt.id || receipt.receiptId || '';
+            const latestReceipt = latestReceiptById.get(receiptId);
+            return createCashReceiptDraft(latestReceipt ? { ...receipt, ...latestReceipt } : receipt, closure.date || todayString());
+        });
         setClosureCashReceipts(loadedReceipts);
         setActiveClosureInvoiceLocalId(loadedInvoices[0]?.localId || '');
         setNotes(closure.notes || '');
@@ -3617,6 +3677,8 @@ function CashClosure({ data, branchContext }) {
                 linkedSicarRccId: selectedClosure?.rccId || selectedClosure?.rcc_id || null,
                 sicar: selectedClosure || null,
                 sicarExpected,
+                externalCreditRecoveryTotal,
+                comparisonExpectedTotal,
                 cashSalesGrossTotal: sicarNetSalesTotals.cashSalesGrossTotal,
                 cancelledCashSalesTotal: sicarNetSalesTotals.cancelledCashSalesTotal,
                 cashSalesNetTotal: sicarNetSalesTotals.cashSalesNetTotal,
@@ -3627,6 +3689,8 @@ function CashClosure({ data, branchContext }) {
                 creditSalesTotal: sicarCreditSalesTotal,
                 creditRecoveryTotal: sicarCreditRecoveryTotal,
                 retentionAdjustment: retentionTotal,
+                invoiceRetentionTotal,
+                cashReceiptRetentionTotal,
                 expectedAfterRetentions,
                 accountingSummary: closureAccountingSummary,
                 cashCount,
@@ -3687,6 +3751,8 @@ function CashClosure({ data, branchContext }) {
                     retentionMunicipal1: safeNumber(receipt.retentionMunicipal1),
                     retentionTotal: getCashReceiptRetentionTotal(receipt),
                     netAmount: safeNumber(receipt.netAmount),
+                    includedInSicarRecovery: isCashReceiptIncludedInSicarRecovery(receipt),
+                    sicarRecoveryMode: receipt.sicarRecoveryMode || (isCashReceiptIncludedInSicarRecovery(receipt) ? 'included' : 'external_accounting'),
                     concept: receipt.concept,
                     paymentMethod: receipt.paymentMethod,
                     status: receipt.status,
@@ -3968,11 +4034,21 @@ function CashClosure({ data, branchContext }) {
                     </div>
 
                     <div className="mt-5 grid gap-3 md:grid-cols-4">
-                        <SummaryCard label="SICAR esperado" value={fmt(sicarExpected)} tone="blue" />
+                        <SummaryCard
+                            label={externalCreditRecoveryTotal > 0 ? 'Esperado conciliable' : 'SICAR esperado'}
+                            value={fmt(comparisonExpectedTotal)}
+                            tone="blue"
+                        />
                         <SummaryCard label="Retenciones membretadas" value={fmt(retentionTotal)} tone="amber" />
                         <SummaryCard label="App + retenciones" value={fmt(manualTotalWithRetentions)} tone="slate" />
                         <SummaryCard label="Diferencia" value={fmt(difference)} tone={shouldTrackDifference ? 'red' : 'green'} />
                     </div>
+
+                    {externalCreditRecoveryTotal > 0 && (
+                        <div className="mt-3 rounded-2xl border border-sky-200 bg-sky-50 px-4 py-3 text-sm font-bold text-sky-900">
+                            Incluye {fmt(externalCreditRecoveryTotal)} de recibos creados en Cuentas por Cobrar que no fueron registrados en SICAR. Sus retenciones tambien forman parte de la conciliacion.
+                        </div>
+                    )}
 
                     {isClosureRcPositive && (
                         <div className="mt-5">
@@ -4241,7 +4317,10 @@ function CashClosure({ data, branchContext }) {
                                     Selecciona los recibos del dia que pertenecen a este cierre. Se restan de recuperacion de credito para calcular recibos ticket SICAR.
                                 </div>
                             </div>
-                            <Badge tone="amber">{fmt(closureCashReceipts.reduce((sum, receipt) => safeNumber(sum + safeNumber(receipt.amount)), 0))}</Badge>
+                            <div className="flex flex-wrap items-center gap-2">
+                                <Badge tone="amber">Bruto {fmt(closureCashReceipts.reduce((sum, receipt) => safeNumber(sum + safeNumber(receipt.amount)), 0))}</Badge>
+                                <Badge tone="blue">Ret. {fmt(cashReceiptRetentionTotal)}</Badge>
+                            </div>
                         </div>
 
                         <div className="mb-4">
@@ -4305,6 +4384,9 @@ function CashClosure({ data, branchContext }) {
                                             <div className="min-w-0">
                                                 <div className="truncate text-sm font-black text-slate-950">Recibo {receipt.receiptNumber || '-'}</div>
                                                 <div className="text-xs font-bold text-slate-500">{receipt.customerName || 'Sin cliente'} - {receipt.paymentMethod || 'Sin metodo'}</div>
+                                                {!isCashReceiptIncludedInSicarRecovery(receipt) && (
+                                                    <div className="mt-1 text-[10px] font-black uppercase tracking-[0.14em] text-sky-700">Abono solo contable - se suma al esperado</div>
+                                                )}
                                             </div>
                                             <div className="flex items-center gap-2">
                                                 <div className="text-right font-mono text-sm font-black text-amber-800">{fmt(receipt.amount)}</div>
@@ -8809,9 +8891,10 @@ const calculateClosureEditTotals = (form = {}) => {
     );
     const retentionAdjustment = safeNumber(form.retentionAdjustment);
     const sicarExpected = safeNumber(form.sicarExpected);
-    const expectedAfterRetentions = getCashClosureComparableExpectedTotal(sicarExpected);
+    const externalCreditRecoveryTotal = safeNumber(form.externalCreditRecoveryTotal);
+    const expectedAfterRetentions = getCashClosureComparableExpectedTotal(sicarExpected, externalCreditRecoveryTotal);
     const manualTotalWithRetentions = getCashClosureManualTotalWithRetentions(manualTotal, retentionAdjustment);
-    const difference = getCashClosureDifference(manualTotal, sicarExpected, retentionAdjustment);
+    const difference = getCashClosureDifference(manualTotal, expectedAfterRetentions, retentionAdjustment);
     const shouldTrackDifference = Math.abs(difference) > CASH_DIFFERENCE_THRESHOLD;
 
     return {
@@ -8829,6 +8912,8 @@ const calculateClosureEditTotals = (form = {}) => {
         manualTotalWithRetentions,
         retentionAdjustment,
         sicarExpected,
+        externalCreditRecoveryTotal,
+        comparisonExpectedTotal: expectedAfterRetentions,
         expectedAfterRetentions,
         difference,
         shouldTrackDifference,
@@ -8853,6 +8938,9 @@ const createCashClosureEditForm = (closure = {}) => {
         posDetails: normalizeClosureBankDetails(closure.posDetails, 'pos'),
         houseDiscountDetails: normalizeHouseDiscountDetails(closure.houseDiscountDetails || closure.discountDetails),
         sicarExpected: String(safeNumber(closure.sicarExpected)),
+        externalCreditRecoveryTotal: String(safeNumber(
+            closure.externalCreditRecoveryTotal ?? getExternalCashReceiptTotal(getCashClosureReceipts(closure))
+        )),
         cashSalesTotal: String(netSalesTotals.cashSalesNetTotal),
         creditSalesTotal: String(netSalesTotals.creditSalesNetTotal),
         creditRecoveryTotal: String(safeNumber(closure.creditRecoveryTotal || closure.sicar?.creditRecoveryTotal || closure.sicar?.recuperacionCredito || closure.sicar?.entCre)),
@@ -10821,6 +10909,8 @@ function CashClosureHistory({ data, canEdit = true, branchContext }) {
                 linkedSicarRccId: editForm.linkedSicarRccId || null,
                 sicar: editForm.sicar || null,
                 sicarExpected: totals.sicarExpected,
+                externalCreditRecoveryTotal: totals.externalCreditRecoveryTotal,
+                comparisonExpectedTotal: totals.comparisonExpectedTotal,
                 cashSalesTotal: safeNumber(editForm.cashSalesTotal),
                 creditSalesTotal: safeNumber(editForm.creditSalesTotal),
                 creditRecoveryTotal: safeNumber(editForm.creditRecoveryTotal),
