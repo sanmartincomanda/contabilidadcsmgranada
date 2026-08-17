@@ -609,7 +609,7 @@ function buildCancelledFingerprint(entry) {
 }
 
 function getMysqlConfig() {
-  const host = process.env.MYSQL_HOST || process.env.SICAR_DB_HOST || '127.0.0.1';
+  const host = process.env.MYSQL_HOST || process.env.SICAR_DB_HOST || '::1';
   const port = Number(process.env.MYSQL_PORT || process.env.SICAR_DB_PORT || 3307);
   const database = process.env.MYSQL_DATABASE || process.env.SICAR_DB_NAME || 'sicar';
   const user = process.env.MYSQL_USER || process.env.SICAR_DB_USER || 'root';
