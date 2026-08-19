@@ -393,6 +393,26 @@ function findAccount(accounts, analysis) {
 
 function applyDeterministicRules(analysis, catalog) {
   const next = { ...analysis };
+  const memoryHaystack = normalizeKey([next.descripcion, next.categoria, next.subcategoria].filter(Boolean).join(' '));
+  const memoryRule = [...(catalog.rules || [])]
+    .sort((a, b) => Number(b.priority || 0) - Number(a.priority || 0))
+    .find((rule) => {
+      const expectedType = rule.matchRecordType || rule.matchType || '';
+      const keywords = Array.isArray(rule.matchKeywords) ? rule.matchKeywords : (rule.keywords || []);
+      if (expectedType && normalizeKey(expectedType) !== normalizeKey(next.tipoRegistro)) return false;
+      return keywords.some((keyword) => normalizeKey(keyword) && memoryHaystack.includes(normalizeKey(keyword)));
+    });
+  if (memoryRule) {
+    next.tipoRegistro = memoryRule.assignRecordType || next.tipoRegistro;
+    next.proveedor = memoryRule.assignProviderName || next.proveedor;
+    next.providerId = memoryRule.assignProviderId || next.providerId;
+    next.providerCode = memoryRule.assignProviderCode || next.providerCode;
+    next.rucProveedor = memoryRule.assignProviderRuc ?? next.rucProveedor;
+    next.categoria = memoryRule.assignCategory || next.categoria;
+    next.subcategoria = memoryRule.assignSubcategory || next.subcategoria;
+    next.accountingAccountId = memoryRule.assignAccountCode || next.accountingAccountId;
+    next.accountingAccountCode = memoryRule.assignAccountCode || next.accountingAccountCode;
+  }
   const supplierKey = normalizeKey(next.proveedor);
   const configuredRules = [...SUPPLIER_RULES, ...(catalog.rules || []).map((rule) => ({
     includes: rule.providerMatch || rule.supplierIncludes || rule.proveedor || '',

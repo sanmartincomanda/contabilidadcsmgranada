@@ -18,6 +18,7 @@ const catalog = {
     { id: 'sigma', nombre: 'SIGMA ALIMENTOS S.A.', ruc: 'J0310000000003', code: 'PRV-003' },
     { id: 'energia-uno', nombre: 'ENERGIA CENTRAL', ruc: 'J0310000000004', code: 'PRV-004' },
     { id: 'energia-dos', nombre: 'ENERGIA CENTRAL NICARAGUA', ruc: 'J0310000000005', code: 'PRV-005' },
+    { id: 'planilla_interna', nombre: 'PLANILLA INTERNA', ruc: '', code: 'PRV-35120' },
   ],
   accounts: [
     { id: '11060', number: '11060', name: 'INVENTARIO:Alimentos', type: 'Activos corrientes' },
@@ -207,6 +208,30 @@ test('subtotal igual al total implica IVA cero', () => {
   const result = applyDeterministicRules(validBase({ subtotal: 8980.39, iva: null, total: 8980.39 }), catalog);
   assert.equal(result.iva, 0);
   assert.ok(!validate(result).datosFaltantes.includes('iva'));
+});
+
+test('la memoria usa Planilla Interna para viáticos y gastos de planilla', () => {
+  const result = applyDeterministicRules(validBase({
+    providerId: 'personal_san_martin',
+    proveedor: 'PERSONAL SAN MARTIN',
+    rucProveedor: '',
+    descripcion: 'Pago semanal de viáticos, recarga y horas extras',
+    categoria: 'Gastos de Nomina',
+    subcategoria: 'Horas extras',
+  }), {
+    ...catalog,
+    rules: [{
+      active: true,
+      priority: 100,
+      matchRecordType: 'gasto',
+      matchKeywords: ['PLANILLA', 'NOMINA', 'SUELDO', 'SALARIO', 'HORAS EXTRA', 'VIATICO', 'RECARGA'],
+      assignProviderId: 'planilla_interna',
+      assignProviderName: 'PLANILLA INTERNA',
+    }],
+  });
+  assert.equal(result.providerId, 'planilla_interna');
+  assert.equal(result.providerCode, 'PRV-35120');
+  assert.equal(result.proveedor, 'PLANILLA INTERNA');
 });
 
 test('retención sin soporte queda pendiente', () => {
