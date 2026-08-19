@@ -4,6 +4,9 @@ const {
   AGENT_STATUSES,
   PAYMENT_METHODS,
   applyDeterministicRules,
+  canonicalCurrency,
+  canonicalPaymentMethod,
+  extractDeterministicConversationUpdates,
   normalizePhone,
   validateAnalysis,
 } = require('./accountingAgent');
@@ -144,6 +147,39 @@ test('todos los métodos de pago oficiales son aceptados', () => {
     }));
     assert.ok(!result.datosFaltantes.includes('metodoPago'), method);
   });
+});
+
+test('normaliza la tarjeta Mastercard 4660 sin perder su nombre oficial', () => {
+  assert.equal(canonicalPaymentMethod('Tarjeta black Mastercard ** 4660'), 'TARJETA BLACK MASTERCARD ***4660');
+  const result = applyDeterministicRules(validBase({ metodoPago: 'TARJETA BLACK MASTERCARD 4660' }), catalog);
+  assert.equal(result.metodoPago, 'TARJETA BLACK MASTERCARD ***4660');
+  assert.ok(!validate(result).datosFaltantes.includes('metodoPago'));
+});
+
+test('córdobas se normaliza a NIO con tasa uno', () => {
+  assert.equal(canonicalCurrency('Córdobas'), 'NIO');
+  const result = applyDeterministicRules(validBase({ moneda: 'Córdobas', tasaCambio: null }), catalog);
+  assert.equal(result.moneda, 'NIO');
+  assert.equal(result.tasaCambio, 1);
+  assert.ok(!validate(result).datosFaltantes.includes('moneda'));
+});
+
+test('una respuesta puede corregir sucursal y proveedor al mismo tiempo', () => {
+  const updates = extractDeterministicConversationUpdates('Corresponde a Granada\nPero\nProveedor es Gasolinera Puma');
+  assert.deepEqual(updates, { branchId: 'granada', proveedor: 'Gasolinera Puma' });
+});
+
+test('contado no reemplaza una tarjeta ya confirmada', () => {
+  const updates = extractDeterministicConversationUpdates('Contado', {
+    metodoPago: 'TARJETA BLACK MASTERCARD ***4660',
+  });
+  assert.equal(updates.metodoPago, undefined);
+});
+
+test('respuesta en córdobas completa moneda y tasa sin otra pregunta', () => {
+  const updates = extractDeterministicConversationUpdates('Moneda Córdobas\nSin tasa de cambio');
+  assert.equal(updates.moneda, 'NIO');
+  assert.equal(updates.tasaCambio, 1);
 });
 
 test('retención sin soporte queda pendiente', () => {

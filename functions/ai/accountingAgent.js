@@ -211,6 +211,56 @@ const isDate = (value) => /^\d{4}-\d{2}-\d{2}$/.test(String(value || ''));
 const isCredit = (value) => normalizeKey(value) === 'CREDITO';
 const isTransfer = (value) => normalizeKey(value).includes('TRANSFERENCIA');
 
+function canonicalPaymentMethod(value = '') {
+  const key = normalizeKey(value);
+  if (!key) return '';
+  const exact = PAYMENT_METHODS.find((method) => normalizeKey(method) === key);
+  if (exact) return exact;
+  if (key.includes('BLACK MASTERCARD') && key.includes('4660')) return 'TARJETA BLACK MASTERCARD ***4660';
+  if (key.includes('AMEX') && key.includes('PRICESMART')) return 'TARJETA AMEX PRICESMART';
+  if (key.includes('AMEX') && key.includes('BLACK')) return 'TARJETA AMEX BLACK';
+  if (key.includes('LA COLONIA') && key.includes('BAC')) return 'TARJETA LA COLONIA BAC';
+  if (key.includes('UNO') && key.includes('BANPRO')) return 'TARJETA UNO BANPRO';
+  if (key.includes('BLACK') && key.includes('BANPRO')) return 'TARJETA BLACK BANPRO';
+  if (key.includes('TRANSFERENCIA')) return 'TRANSFERENCIA';
+  if (key === 'EFECTIVO' || key.includes('PAGADO EN EFECTIVO')) return 'EFECTIVO';
+  if (key === 'CREDITO' || key.includes('PAGADO A CREDITO')) return 'CREDITO';
+  return '';
+}
+
+function canonicalCurrency(value = '') {
+  const key = normalizeKey(value);
+  if (!key) return '';
+  if (['NIO', 'CORDOBA', 'CORDOBAS', 'CORDOBA NICARAGUENSE', 'CORDOBAS NICARAGUENSES', 'C'].includes(key)) return 'NIO';
+  if (['USD', 'DOLAR', 'DOLARES', 'DOLAR AMERICANO', 'DOLARES AMERICANOS'].includes(key)) return 'USD';
+  return key;
+}
+
+function extractDeterministicConversationUpdates(text = '', draft = {}) {
+  const raw = normalizeText(text);
+  const key = normalizeKey(raw);
+  const updates = {};
+  if (/\bGRANADA\b/.test(key)) updates.branchId = 'granada';
+  if (/\bNINDIRI\b/.test(key)) updates.branchId = 'nindiri';
+
+  const providerMatch = raw.match(/(?:PROVEEDOR|SUPLIDOR)(?:\s+ES|\s*:)?\s+([^\r\n]+)/i);
+  if (providerMatch?.[1]) updates.proveedor = providerMatch[1].trim();
+
+  const paymentMethod = canonicalPaymentMethod(raw);
+  if (paymentMethod) updates.metodoPago = paymentMethod;
+  if (key === 'CONTADO' && canonicalPaymentMethod(draft.metodoPago)) delete updates.metodoPago;
+
+  if (/\b(?:NIO|CORDOBA|CORDOBAS)\b/.test(key) || raw.includes('C$')) {
+    updates.moneda = 'NIO';
+    updates.tasaCambio = 1;
+  } else if (/\b(?:USD|DOLAR|DOLARES)\b/.test(key)) {
+    updates.moneda = 'USD';
+    const rateMatch = raw.match(/(?:TASA(?:\s+DE\s+CAMBIO)?|TC)\s*[:=]?\s*(\d+(?:[.,]\d+)?)/i);
+    if (rateMatch?.[1]) updates.tasaCambio = Number(rateMatch[1].replace(',', '.'));
+  }
+  return updates;
+}
+
 function sanitizeStorageSegment(value, fallback = 'sin_identificar') {
   return normalizeText(value || fallback)
     .replace(/[^a-zA-Z0-9_-]+/g, '_')
@@ -379,7 +429,9 @@ function applyDeterministicRules(analysis, catalog) {
     next.accountingAccountName = '';
   }
   next.numeroFactura = normalizeText(next.numeroFactura);
-  next.metodoPago = normalizeKey(next.metodoPago);
+  next.metodoPago = canonicalPaymentMethod(next.metodoPago);
+  next.moneda = canonicalCurrency(next.moneda) || 'NIO';
+  if (next.moneda === 'NIO') next.tasaCambio = 1;
   next.subtotal = money(next.subtotal);
   next.iva = money(next.iva);
   next.total = money(next.total);
@@ -428,7 +480,7 @@ function buildQuestion(missing) {
     descripcion: '¿Cuál es el concepto o descripción contable de esta transacción?',
     categoria: 'No pude asignar una categoría fiscal válida. ¿Cuál corresponde?',
     accountingAccountId: 'No encontré una cuenta contable compatible. Selecciona una cuenta existente.',
-    metodoPago: '¿Cuál fue el método de pago utilizado?',
+    metodoPago: '¿Cómo se pagó? Responde “Efectivo”, “Transferencia”, “Crédito” o el nombre exacto de la tarjeta.',
     referenciaPago: '¿Cuál es la referencia de la transferencia?',
     subtotal: 'No pude confirmar el subtotal. ¿Cuál es el monto correcto?',
     iva: 'No pude confirmar el IVA. Indica el monto, aunque sea C$0.00.',
@@ -516,6 +568,9 @@ Reglas:
 - Subtotal + IVA debe coincidir con total con tolerancia C$0.02.
 - Retención IR usual: 2% del subtotal. Municipal usual: 1% del subtotal. No confirmes una retención solo por cálculo.
 - Si falta método de pago, referencia, vencimiento o sucursal, usa accion preguntar.
+- Si el documento usa C$ o córdobas, devuelve moneda NIO y tasaCambio 1.
+- CONTADO describe la condición de venta y no significa EFECTIVO. No cambies una tarjeta por efectivo salvo que el usuario diga explícitamente efectivo.
+- La tarjeta terminada en 4660 debe devolverse exactamente como TARJETA BLACK MASTERCARD ***4660.
 - Sucursales permitidas para el remitente: ${allowedBranches.join(', ')}.
 - Métodos exactos permitidos: ${PAYMENT_METHODS.join(' | ')}.
 - Texto recibido: ${text || '(sin comentario)'}.
@@ -774,7 +829,12 @@ async function handleConversationMessage({
   }
   const catalog = await loadCatalogContext(firestore);
   const parsed = await analyzeConversationUpdate({ apiKey: openaiApiKey, model: openaiModel, text: claimed.text, draft, catalog });
-  const updates = Object.fromEntries(Object.entries(parsed.updates || {}).filter(([, value]) => value !== null));
+  const modelUpdates = Object.fromEntries(Object.entries(parsed.updates || {}).filter(([, value]) => value !== null));
+  if (reply === 'CONTADO' && canonicalPaymentMethod(draft.metodoPago)) delete modelUpdates.metodoPago;
+  const updates = {
+    ...modelUpdates,
+    ...extractDeterministicConversationUpdates(claimed.text, draft),
+  };
   if (parsed.intent !== 'correction' || !Object.keys(updates).length) {
     await sendWhatsappText({ accessToken, graphVersion, phoneNumberId: claimed.phoneNumberId, to: phone, text: parsed.question || 'No pude identificar qué dato deseas cambiar. Escríbelo de forma directa.', logger });
     return { handled: true, status: draft.status, draftId: draft.id };
@@ -1217,6 +1277,9 @@ module.exports = {
   CATEGORY_OPTIONS,
   PAYMENT_METHODS,
   applyDeterministicRules,
+  canonicalCurrency,
+  canonicalPaymentMethod,
+  extractDeterministicConversationUpdates,
   loadCatalogContext,
   normalizePhone,
   processAccountingAgentInbox,
