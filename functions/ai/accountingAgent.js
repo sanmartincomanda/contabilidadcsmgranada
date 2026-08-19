@@ -963,7 +963,28 @@ async function processAccountingAgentInbox({
         updatedAt: FieldValue.serverTimestamp(),
         completedAt: FieldValue.serverTimestamp(),
       }, { merge: true });
-      await writeAudit(firestore, FieldValue, { event: 'UNAUTHORIZED_MESSAGE', messageId, senderPhone: phone });
+      let replyResult = { skipped: true };
+      try {
+        replyResult = await sendWhatsappText({
+          accessToken,
+          graphVersion,
+          phoneNumberId: claimed.phoneNumberId,
+          to: phone,
+          text: 'Este número todavía no está autorizado para usar MARTIN IA. Solicita al administrador que lo agregue en Ingresar Datos > Agente IA.',
+          logger,
+        });
+      } catch (replyError) {
+        logger?.warn?.('No se pudo informar por WhatsApp que el número no está autorizado', {
+          messageId,
+          error: replyError.message,
+        });
+      }
+      await writeAudit(firestore, FieldValue, {
+        event: 'UNAUTHORIZED_MESSAGE',
+        messageId,
+        senderPhone: phone,
+        replySent: !replyResult?.skipped && !replyResult?.error,
+      });
       return { status: AGENT_STATUSES.UNAUTHORIZED };
     }
 
