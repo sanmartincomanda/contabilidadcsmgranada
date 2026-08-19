@@ -10,6 +10,28 @@ service cloud.firestore {
       return signedIn() && request.auth.token.email == 'luis.s.97@hotmail.com';
     }
 
+    function agentProfile() {
+      return get(/databases/$(database)/documents/usuarios_sistema/$(request.auth.token.email));
+    }
+
+    function hasAgentProfile() {
+      return signedIn() && exists(/databases/$(database)/documents/usuarios_sistema/$(request.auth.token.email));
+    }
+
+    function canReadAccountingAgent() {
+      return signedIn() && (isMaster() || (hasAgentProfile() && (
+        agentProfile().data.active != false
+        && (
+          ('modules' in agentProfile().data
+            && 'ingresar' in agentProfile().data.modules
+            && agentProfile().data.modules.ingresar == true)
+          || ('moduleModes' in agentProfile().data
+            && 'ingresar' in agentProfile().data.moduleModes
+            && agentProfile().data.moduleModes.ingresar == 'edit')
+        )
+      )));
+    }
+
     match /integraciones_privadas/{document=**} {
       allow read, write: if false;
     }
@@ -30,12 +52,64 @@ service cloud.firestore {
       allow write: if isMaster();
     }
 
+    match /whatsapp_inbox/{document} {
+      allow read: if canReadAccountingAgent();
+      allow write: if false;
+    }
+
+    match /agente_ia_borradores/{document} {
+      allow read: if canReadAccountingAgent();
+      allow write: if false;
+    }
+
+    match /agente_ia_auditoria/{document} {
+      allow read: if canReadAccountingAgent();
+      allow write: if false;
+    }
+
+    match /agente_ia_hashes/{document} {
+      allow read, write: if false;
+    }
+
+    match /agente_ia_registros/{document} {
+      allow read: if canReadAccountingAgent();
+      allow write: if false;
+    }
+
+    match /agente_ia_registros_claves/{document} {
+      allow read, write: if false;
+    }
+
+    match /agente_ia_sesiones/{document} {
+      allow read: if canReadAccountingAgent();
+      allow write: if false;
+    }
+
+    match /agente_ia_usuarios/{document} {
+      allow read: if canReadAccountingAgent();
+      allow write: if isMaster();
+    }
+
+    match /agente_ia_reglas/{document} {
+      allow read: if canReadAccountingAgent();
+      allow write: if isMaster();
+    }
+
     match /{collection}/{document=**} {
       allow read, write: if signedIn()
         && collection != 'integraciones_privadas'
         && collection != 'usuarios_sistema'
         && collection != 'diferencias_caja'
-        && collection != 'abonos_diferencias_caja';
+        && collection != 'abonos_diferencias_caja'
+        && collection != 'whatsapp_inbox'
+        && collection != 'agente_ia_borradores'
+        && collection != 'agente_ia_auditoria'
+        && collection != 'agente_ia_hashes'
+        && collection != 'agente_ia_registros'
+        && collection != 'agente_ia_registros_claves'
+        && collection != 'agente_ia_sesiones'
+        && collection != 'agente_ia_usuarios'
+        && collection != 'agente_ia_reglas';
     }
   }
 }

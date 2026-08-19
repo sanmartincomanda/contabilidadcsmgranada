@@ -45,6 +45,7 @@ const DATA_ENTRY_HISTORY_MONTHS = 6;
 const REPORT_HISTORY_MONTHS = 24;
 const ACCOUNT_HISTORY_MONTHS = 12;
 const BILLING_HISTORY_MONTHS = 2;
+const BILLING_LIVE_INVOICE_DAYS = 3;
 const DECLARATION_HISTORY_MONTHS = 7;
 const MAX_ROUTE_BLOCKING_MS = 900;
 const INACTIVITY_TIMEOUT_MS = 3 * 60 * 60 * 1000;
@@ -80,6 +81,12 @@ const getMonthOffset = (monthsBack = 0) => {
 const getNextMonthStart = (month) => {
     const [year, monthIndex] = month.split('-').map(Number);
     const date = new Date(year, monthIndex, 1);
+    return date.toISOString().substring(0, 10);
+};
+
+const getDateOffset = (daysBack = 0) => {
+    const date = new Date();
+    date.setDate(date.getDate() - daysBack);
     return date.toISOString().substring(0, 10);
 };
 
@@ -1206,6 +1213,7 @@ function AppContent() {
     const reportStartMonth = useMemo(() => getMonthOffset(REPORT_HISTORY_MONTHS), []);
     const accountStartMonth = useMemo(() => getMonthOffset(ACCOUNT_HISTORY_MONTHS), []);
     const billingStartMonth = useMemo(() => getMonthOffset(BILLING_HISTORY_MONTHS), []);
+    const billingLiveInvoiceStartDate = useMemo(() => getDateOffset(BILLING_LIVE_INVOICE_DAYS), []);
     const declarationStartMonth = useMemo(() => getMonthOffset(DECLARATION_HISTORY_MONTHS), []);
     const currentMonthStart = `${currentMonth}-01`;
     const nextMonthStart = getNextMonthStart(currentMonth);
@@ -1257,15 +1265,15 @@ function AppContent() {
 
     const billingCollections = useMemo(() => [
         collectionConfig('sicar_cierres_caja', [where('date', '>=', `${billingStartMonth}-01`)]),
-        collectionConfig('sicar_facturas_membretadas', [where('date', '>=', `${billingStartMonth}-01`)]),
+        collectionConfig('sicar_facturas_membretadas', [where('date', '>=', billingLiveInvoiceStartDate)]),
         collectionConfig('cierres_caja', [where('date', '>=', `${billingStartMonth}-01`)]),
         collectionConfig('depositos_bancarios', [where('date', '>=', `${billingStartMonth}-01`)]),
         collectionConfig('diferencias_caja', [where('date', '>=', `${billingStartMonth}-01`)]),
-        collectionConfig('facturas_membretadas_ventas', [where('saleDate', '>=', `${billingStartMonth}-01`)]),
+        collectionConfig('facturas_membretadas_ventas', [where('saleDate', '>=', billingLiveInvoiceStartDate)]),
         collectionConfig('recibos_caja_membretados', [where('date', '>=', `${billingStartMonth}-01`)]),
         'clientes_facturacion',
         'cajeros',
-    ], [billingStartMonth]);
+    ], [billingLiveInvoiceStartDate, billingStartMonth]);
 
     const declarationCollections = useMemo(() => [
         collectionConfig('facturas_membretadas_ventas', [where('saleDate', '>=', `${declarationStartMonth}-01`)]),

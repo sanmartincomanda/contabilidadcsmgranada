@@ -256,6 +256,16 @@ const isCostCategory = (item) => (
     getExpenseCategoryFromRecord(item, DEFAULT_PURCHASE_CATEGORY_ID).category === 'Costos de venta / compras'
 );
 
+const isAccountingReadyBranchTransfer = (item = {}) => {
+    const sourceType = normalizeReportText(item.sourceType || item.source || '');
+    if (sourceType !== 'BRANCH_TRANSFER_SICAR') {
+        return true;
+    }
+
+    const status = normalizeReportText(item.accountingStatus || item.integrationStatus || '');
+    return ['READY', 'COMPLETED', 'COMPLETADO', 'APPLIED', 'OK'].includes(status);
+};
+
 const PURCHASE_DISCOUNT_CATEGORY_RECORD = {
     category: 'Costos de venta / compras',
     categoria: 'Costos de venta / compras',
@@ -630,6 +640,7 @@ const aggregateData = (data, branchScope = CONSOLIDATED_BRANCH_ID) => {
 
     traspasosCostos.forEach((item) => {
         if (String(item.status || 'activo').toLowerCase() === 'anulado') return;
+        if (!isAccountingReadyBranchTransfer(item)) return;
 
         const month = getMonthString(item, ['date', 'fecha']);
         const amount = accountingAmount(item);
@@ -1034,6 +1045,8 @@ const buildTaxReport = (data, selectedMonth, branchScope = CONSOLIDATED_BRANCH_I
         .filter(inMonth)
         .filter((item) => String(item.status || 'activo').toLowerCase() !== 'anulado')
         .forEach((item) => {
+            if (!isAccountingReadyBranchTransfer(item)) return;
+
             const amount = accountingAmount(item);
             if (!amount) return;
 

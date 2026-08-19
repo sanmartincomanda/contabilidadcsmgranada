@@ -338,6 +338,192 @@ const groupRowsByBranch = (rows = []) => {
     return [...groups.values()].sort((left, right) => left.branchName.localeCompare(right.branchName));
 };
 
+const escapeXml = (value) => String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+
+const safeSheetName = (value = 'Reporte') => (
+    String(value || 'Reporte')
+        .replace(/[\\/?*[\]:]/g, ' ')
+        .trim()
+        .slice(0, 31) || 'Reporte'
+);
+
+const isDeclarationCurrencyHeader = (header = '') => (
+    ['SUBTOTAL', 'IVA', 'TOTAL', 'RETENCIONIR2', 'RETENCIONMUNICIPAL1', 'RETENCIONES', 'NETO']
+        .includes(normalizeText(header).replace(/[^A-Z0-9]/g, ''))
+);
+
+const buildDeclarationWorksheetXml = ({ name = 'Reporte', rows = [] }) => {
+    const headers = rows.length ? Object.keys(rows[0]) : [];
+    const rowXml = [
+        `<Row>${headers.map((header) => `<Cell ss:StyleID="Header"><Data ss:Type="String">${escapeXml(header)}</Data></Cell>`).join('')}</Row>`,
+        ...rows.map((row) => (
+            `<Row>${headers.map((header) => {
+                const value = row[header];
+                const isNumber = typeof value === 'number' && Number.isFinite(value);
+                const style = isNumber && isDeclarationCurrencyHeader(header) ? 'Currency' : 'Text';
+                return `<Cell ss:StyleID="${style}"><Data ss:Type="${isNumber ? 'Number' : 'String'}">${escapeXml(value)}</Data></Cell>`;
+            }).join('')}</Row>`
+        )),
+    ].join('');
+
+    return `<Worksheet ss:Name="${escapeXml(safeSheetName(name))}">
+        <Table>${rowXml}</Table>
+        <WorksheetOptions xmlns="urn:schemas-microsoft-com:office:excel">
+            <Selected/>
+            <Panes><Pane><Number>3</Number><ActiveRow>1</ActiveRow></Pane></Panes>
+        </WorksheetOptions>
+    </Worksheet>`;
+};
+
+const downloadDeclarationXls = (filename, sheets = []) => {
+    const filledSheets = sheets.filter((sheet) => (sheet.rows || []).length);
+    if (!filledSheets.length) {
+        window.alert('No hay facturas declaradas para exportar.');
+        return;
+    }
+
+    const workbook = `<?xml version="1.0" encoding="UTF-8"?>
+<?mso-application progid="Excel.Sheet"?>
+<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet"
+    xmlns:o="urn:schemas-microsoft-com:office:office"
+    xmlns:x="urn:schemas-microsoft-com:office:excel"
+    xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet"
+    xmlns:html="http://www.w3.org/TR/REC-html40">
+    <Styles>
+        <Style ss:ID="Header">
+            <Font ss:Bold="1" ss:Color="#FFFFFF"/>
+            <Interior ss:Color="#9F111A" ss:Pattern="Solid"/>
+            <Borders>
+                <Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#D8DEE6"/>
+                <Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#D8DEE6"/>
+                <Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#D8DEE6"/>
+                <Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#D8DEE6"/>
+            </Borders>
+        </Style>
+        <Style ss:ID="Text">
+            <Borders>
+                <Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#D8DEE6"/>
+                <Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#D8DEE6"/>
+                <Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#D8DEE6"/>
+                <Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#D8DEE6"/>
+            </Borders>
+        </Style>
+        <Style ss:ID="Currency">
+            <NumberFormat ss:Format="&quot;C$&quot; #,##0.00"/>
+            <Borders>
+                <Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#D8DEE6"/>
+                <Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#D8DEE6"/>
+                <Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#D8DEE6"/>
+                <Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#D8DEE6"/>
+            </Borders>
+        </Style>
+    </Styles>
+    ${filledSheets.map(buildDeclarationWorksheetXml).join('')}
+</Workbook>`;
+
+    const blob = new Blob([workbook], { type: 'application/vnd.ms-excel;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    link.click();
+    URL.revokeObjectURL(url);
+};
+
+const getDeclarationFileSlug = (declaration = {}) => (
+    String(declaration.declarationMonth || declaration.id || 'facturas-declaradas')
+        .replace(/[^a-zA-Z0-9-]+/g, '-')
+        .replace(/^-+|-+$/g, '')
+        .toLowerCase() || 'facturas-declaradas'
+);
+
+const sortStampedDeclarationRows = (rows = []) => [...rows].sort((left, right) => {
+    const branchCompare = String(left.branchName || '').localeCompare(String(right.branchName || ''), 'es');
+    if (branchCompare !== 0) return branchCompare;
+    const leftNumber = Number(String(left.document || '').replace(/\D/g, ''));
+    const rightNumber = Number(String(right.document || '').replace(/\D/g, ''));
+    if (Number.isFinite(leftNumber) && Number.isFinite(rightNumber) && leftNumber !== rightNumber) return leftNumber - rightNumber;
+    return String(left.date || '').localeCompare(String(right.date || ''));
+});
+
+const getStampedDeclarationRows = (declaration = {}) => sortStampedDeclarationRows(
+    (declaration.items || []).map((row) => ({
+        ...row,
+        sourceCollection: row.sourceCollection || INVOICE_COLLECTION,
+        branchId: row.branchId || DEFAULT_BRANCH_ID,
+        branchName: row.branchName || getBranchById(row.branchId || DEFAULT_BRANCH_ID).shortName,
+        document: formatDeclarationDocument(row.sourceCollection || INVOICE_COLLECTION, row.document || row.invoiceNumber || row.numeroFactura || ''),
+        paymentMethod: row.paymentMethod || '-',
+        subtotal: peso(row.subtotal),
+        iva: peso(row.iva),
+        total: peso(row.total),
+        retentionIr2: peso(row.retentionIr2),
+        retentionMunicipal1: peso(row.retentionMunicipal1),
+        retentionTotal: peso(row.retentionTotal),
+        netTotal: peso(row.netTotal),
+        isAnnulled: Boolean(row.isAnnulled),
+    }))
+);
+
+const buildStampedDeclarationDetailRows = (declaration = {}) => getStampedDeclarationRows(declaration).map((row) => ({
+    Sucursal: row.branchName,
+    Fecha: row.date,
+    Factura: row.document,
+    Cliente: row.client,
+    Metodo: row.paymentMethod || '-',
+    Subtotal: peso(row.subtotal),
+    IVA: peso(row.iva),
+    Total: peso(row.total),
+    'Retencion IR 2%': peso(row.retentionIr2),
+    'Retencion Municipal 1%': peso(row.retentionMunicipal1),
+    Retenciones: peso(row.retentionTotal),
+    Neto: peso(row.netTotal),
+    Estado: row.isAnnulled ? 'ANULADA' : (row.status || 'DECLARADA'),
+}));
+
+const buildStampedDeclarationSummaryRows = (declaration = {}) => {
+    const rows = getStampedDeclarationRows(declaration);
+    const branchRows = groupRowsByBranch(rows).map((group) => {
+        const totals = sumStampedInvoiceRows(group.rows);
+        return {
+            Sucursal: group.branchName,
+            Facturas: group.rows.length,
+            Anuladas: countAnnulledRows(group.rows),
+            Subtotal: peso(totals.subtotal),
+            IVA: peso(totals.iva),
+            Total: peso(totals.total),
+            Retenciones: peso(totals.retentionTotal),
+            Neto: peso(totals.netTotal),
+        };
+    });
+    const totals = sumStampedInvoiceRows(rows);
+    return [
+        {
+            Sucursal: 'TOTAL GENERAL',
+            Facturas: rows.length,
+            Anuladas: countAnnulledRows(rows),
+            Subtotal: peso(totals.subtotal),
+            IVA: peso(totals.iva),
+            Total: peso(totals.total),
+            Retenciones: peso(totals.retentionTotal),
+            Neto: peso(totals.netTotal),
+        },
+        ...branchRows,
+    ];
+};
+
+const exportStampedDeclarationXls = (declaration = {}) => {
+    const slug = getDeclarationFileSlug(declaration);
+    downloadDeclarationXls(`facturas-declaradas-${slug}.xls`, [
+        { name: 'Resumen', rows: buildStampedDeclarationSummaryRows(declaration) },
+        { name: 'Detalle facturas', rows: buildStampedDeclarationDetailRows(declaration) },
+    ]);
+};
+
 const Card = ({ children, className = '' }) => (
     <div className={`rounded-2xl border border-slate-200 bg-white shadow-sm ${className}`}>{children}</div>
 );
@@ -551,6 +737,127 @@ const StampedInvoiceReportByBranch = ({ rows = [], emptyMessage = 'No hay factur
     );
 };
 
+const StampedDeclarationPrintReport = ({ declaration }) => {
+    if (!declaration) return null;
+    const rows = getStampedDeclarationRows(declaration);
+    const summaryRows = buildStampedDeclarationSummaryRows(declaration);
+    const totals = sumStampedInvoiceRows(rows);
+    const groups = groupRowsByBranch(rows);
+
+    return (
+        <div className="stamped-declaration-print-report pointer-events-none fixed -left-[10000px] top-0 w-[8.5in] bg-white p-8 text-slate-950">
+            <div className="flex items-start justify-between gap-6 border-b-2 border-slate-900 pb-4">
+                <div className="flex items-center gap-4">
+                    {APP_BRAND_LOGO && <img src={APP_BRAND_LOGO} alt="Carnes San Martin" className="h-14 w-14 rounded-xl object-contain" />}
+                    <div>
+                        <div className="text-[10px] font-black uppercase tracking-[0.28em] text-[#e30613]">{APP_BRAND_NAME}</div>
+                        <h1 className="mt-1 text-2xl font-black uppercase tracking-tight">Reporte de facturas declaradas</h1>
+                        <p className="mt-1 text-xs font-bold text-slate-500">Declaracion {declaration.declarationMonth || '-'} · Generado para archivo fiscal</p>
+                    </div>
+                </div>
+                <div className="rounded-2xl border border-slate-300 px-4 py-3 text-right">
+                    <div className="text-[9px] font-black uppercase tracking-[0.2em] text-slate-500">Total declarado</div>
+                    <div className="mt-1 font-mono text-lg font-black">{fmt(totals.total)}</div>
+                </div>
+            </div>
+
+            <div className="mt-5 grid grid-cols-5 gap-2">
+                <div className="rounded-xl border border-slate-200 p-3">
+                    <div className="text-[8px] font-black uppercase tracking-[0.16em] text-slate-500">Facturas</div>
+                    <div className="mt-1 font-mono text-base font-black">{rows.length}</div>
+                </div>
+                <div className="rounded-xl border border-slate-200 p-3">
+                    <div className="text-[8px] font-black uppercase tracking-[0.16em] text-slate-500">Subtotal</div>
+                    <div className="mt-1 font-mono text-base font-black">{fmt(totals.subtotal)}</div>
+                </div>
+                <div className="rounded-xl border border-slate-200 p-3">
+                    <div className="text-[8px] font-black uppercase tracking-[0.16em] text-slate-500">IVA</div>
+                    <div className="mt-1 font-mono text-base font-black">{fmt(totals.iva)}</div>
+                </div>
+                <div className="rounded-xl border border-slate-200 p-3">
+                    <div className="text-[8px] font-black uppercase tracking-[0.16em] text-slate-500">Retenciones</div>
+                    <div className="mt-1 font-mono text-base font-black">{fmt(totals.retentionTotal)}</div>
+                </div>
+                <div className="rounded-xl border border-slate-200 p-3">
+                    <div className="text-[8px] font-black uppercase tracking-[0.16em] text-slate-500">Neto</div>
+                    <div className="mt-1 font-mono text-base font-black">{fmt(totals.netTotal)}</div>
+                </div>
+            </div>
+
+            <section className="mt-5">
+                <h2 className="text-xs font-black uppercase tracking-[0.22em] text-slate-700">Resumen por sucursal</h2>
+                <table className="mt-2 w-full border-collapse text-[10px]">
+                    <thead>
+                        <tr className="bg-slate-900 text-left text-white">
+                            <th className="border border-slate-300 px-2 py-1.5">Sucursal</th>
+                            <th className="border border-slate-300 px-2 py-1.5 text-right">Facturas</th>
+                            <th className="border border-slate-300 px-2 py-1.5 text-right">Anuladas</th>
+                            <th className="border border-slate-300 px-2 py-1.5 text-right">Subtotal</th>
+                            <th className="border border-slate-300 px-2 py-1.5 text-right">IVA</th>
+                            <th className="border border-slate-300 px-2 py-1.5 text-right">Total</th>
+                            <th className="border border-slate-300 px-2 py-1.5 text-right">Ret.</th>
+                            <th className="border border-slate-300 px-2 py-1.5 text-right">Neto</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {summaryRows.map((row) => (
+                            <tr key={`print-summary-${row.Sucursal}`} className={row.Sucursal === 'TOTAL GENERAL' ? 'bg-slate-100 font-black' : ''}>
+                                <td className="border border-slate-300 px-2 py-1.5">{row.Sucursal}</td>
+                                <td className="border border-slate-300 px-2 py-1.5 text-right font-mono">{row.Facturas}</td>
+                                <td className="border border-slate-300 px-2 py-1.5 text-right font-mono">{row.Anuladas}</td>
+                                <td className="border border-slate-300 px-2 py-1.5 text-right font-mono">{fmt(row.Subtotal)}</td>
+                                <td className="border border-slate-300 px-2 py-1.5 text-right font-mono">{fmt(row.IVA)}</td>
+                                <td className="border border-slate-300 px-2 py-1.5 text-right font-mono">{fmt(row.Total)}</td>
+                                <td className="border border-slate-300 px-2 py-1.5 text-right font-mono">{fmt(row.Retenciones)}</td>
+                                <td className="border border-slate-300 px-2 py-1.5 text-right font-mono">{fmt(row.Neto)}</td>
+                            </tr>
+                        ))}
+                    </tbody>
+                </table>
+            </section>
+
+            <section className="mt-5 space-y-4">
+                <h2 className="text-xs font-black uppercase tracking-[0.22em] text-slate-700">Detalle de facturas declaradas</h2>
+                {groups.map((group) => (
+                    <div key={`print-branch-${group.branchId}`} className="break-inside-avoid">
+                        <div className="mb-1 text-[10px] font-black uppercase tracking-[0.18em] text-slate-500">Sucursal {group.branchName}</div>
+                        <table className="w-full border-collapse text-[9px]">
+                            <thead>
+                                <tr className="bg-slate-100 text-left">
+                                    <th className="border border-slate-300 px-1.5 py-1">Fecha</th>
+                                    <th className="border border-slate-300 px-1.5 py-1">Factura</th>
+                                    <th className="border border-slate-300 px-1.5 py-1">Cliente</th>
+                                    <th className="border border-slate-300 px-1.5 py-1">Metodo</th>
+                                    <th className="border border-slate-300 px-1.5 py-1 text-right">Subtotal</th>
+                                    <th className="border border-slate-300 px-1.5 py-1 text-right">IVA</th>
+                                    <th className="border border-slate-300 px-1.5 py-1 text-right">Total</th>
+                                    <th className="border border-slate-300 px-1.5 py-1 text-right">Ret.</th>
+                                    <th className="border border-slate-300 px-1.5 py-1 text-right">Neto</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {group.rows.map((row) => (
+                                    <tr key={`print-${group.branchId}-${row.sourceKey || row.document}`}>
+                                        <td className="border border-slate-300 px-1.5 py-1">{row.date}</td>
+                                        <td className="border border-slate-300 px-1.5 py-1 font-bold">{row.document}{row.isAnnulled ? ' · ANULADA' : ''}</td>
+                                        <td className="border border-slate-300 px-1.5 py-1">{row.client}</td>
+                                        <td className="border border-slate-300 px-1.5 py-1">{row.paymentMethod || '-'}</td>
+                                        <td className="border border-slate-300 px-1.5 py-1 text-right font-mono">{fmt(row.subtotal)}</td>
+                                        <td className="border border-slate-300 px-1.5 py-1 text-right font-mono">{fmt(row.iva)}</td>
+                                        <td className="border border-slate-300 px-1.5 py-1 text-right font-mono">{fmt(row.total)}</td>
+                                        <td className="border border-slate-300 px-1.5 py-1 text-right font-mono">{fmt(row.retentionTotal)}</td>
+                                        <td className="border border-slate-300 px-1.5 py-1 text-right font-mono">{fmt(row.netTotal)}</td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                    </div>
+                ))}
+            </section>
+        </div>
+    );
+};
+
 export default function Declarations({ data = {}, branchContext }) {
     const [moduleTab, setModuleTab] = useState(DECLARATION_MODULES.RETENTION_IR);
     const [activeTab, setActiveTab] = useState('pendientes');
@@ -566,6 +873,7 @@ export default function Declarations({ data = {}, branchContext }) {
     const [declaring, setDeclaring] = useState(false);
     const [declaringVat, setDeclaringVat] = useState(false);
     const [declaringStampedInvoices, setDeclaringStampedInvoices] = useState(false);
+    const [stampedInvoicePrintDeclaration, setStampedInvoicePrintDeclaration] = useState(null);
 
     const allowedBranchIds = useMemo(
         () => (branchContext?.allowedBranchIds?.length ? branchContext.allowedBranchIds : [branchContext?.selectedBranchId || DEFAULT_BRANCH_ID]),
@@ -749,6 +1057,27 @@ export default function Declarations({ data = {}, branchContext }) {
         : moduleTab === DECLARATION_MODULES.STAMPED_INVOICES
             ? stampedInvoiceOriginMonthOptions
             : originMonthOptions;
+
+    useEffect(() => {
+        if (!stampedInvoicePrintDeclaration) return undefined;
+
+        const printClass = 'print-stamped-invoice-declaration';
+        const cleanup = () => {
+            document.body.classList.remove(printClass);
+            setStampedInvoicePrintDeclaration(null);
+        };
+        const timeout = window.setTimeout(() => {
+            document.body.classList.add(printClass);
+            window.print();
+        }, 120);
+
+        window.addEventListener('afterprint', cleanup, { once: true });
+        return () => {
+            window.clearTimeout(timeout);
+            window.removeEventListener('afterprint', cleanup);
+            document.body.classList.remove(printClass);
+        };
+    }, [stampedInvoicePrintDeclaration]);
 
     useEffect(() => {
         setSelectedKeys((current) => new Set([...current].filter((key) => eligibleRows.some((row) => row.sourceKey === key))));
@@ -1090,6 +1419,22 @@ export default function Declarations({ data = {}, branchContext }) {
                         box-shadow: none !important;
                     }
                     body.print-retention-predeclaration .no-print { display: none !important; }
+                    body.print-stamped-invoice-declaration * { visibility: hidden !important; }
+                    body.print-stamped-invoice-declaration .stamped-declaration-print-report,
+                    body.print-stamped-invoice-declaration .stamped-declaration-print-report * { visibility: visible !important; }
+                    body.print-stamped-invoice-declaration .stamped-declaration-print-report {
+                        position: absolute !important;
+                        inset: 0 auto auto 0 !important;
+                        left: 0 !important;
+                        width: 100% !important;
+                        padding: 0 !important;
+                        border: 0 !important;
+                        box-shadow: none !important;
+                    }
+                    body.print-stamped-invoice-declaration .no-print { display: none !important; }
+                    body.print-stamped-invoice-declaration table { page-break-inside: auto; }
+                    body.print-stamped-invoice-declaration tr { page-break-inside: avoid; page-break-after: auto; }
+                    body.print-stamped-invoice-declaration .break-inside-avoid { break-inside: avoid; }
                     @page { size: letter portrait; margin: 0.45in; }
                 }
             `}</style>
@@ -1822,15 +2167,41 @@ export default function Declarations({ data = {}, branchContext }) {
                         <div className="divide-y divide-slate-100">
                             {stampedInvoiceDeclarations.map((declaration) => (
                                 <details key={declaration.id} className="group bg-white px-5 py-4 open:bg-slate-50">
-                                    <summary className="flex cursor-pointer flex-col gap-2 md:flex-row md:items-center md:justify-between">
+                                    <summary className="flex cursor-pointer flex-col gap-3 md:flex-row md:items-center md:justify-between">
                                         <div>
                                             <div className="font-black text-slate-950">Declaracion facturas {declaration.declarationMonth}</div>
                                             <div className="mt-1 text-xs font-bold text-slate-400">{declaration.itemCount || 0} factura(s)</div>
                                         </div>
-                                        <div className="text-right">
-                                            <div className="font-mono text-lg font-black text-slate-950">{fmt(declaration.totals?.total)}</div>
-                                            <div className="text-[10px] font-black uppercase tracking-[0.18em] text-slate-500">
-                                                Neto {fmt(declaration.totals?.netTotal)}
+                                        <div className="flex flex-col gap-2 md:items-end">
+                                            <div className="text-right">
+                                                <div className="font-mono text-lg font-black text-slate-950">{fmt(declaration.totals?.total)}</div>
+                                                <div className="text-[10px] font-black uppercase tracking-[0.18em] text-slate-500">
+                                                    Neto {fmt(declaration.totals?.netTotal)}
+                                                </div>
+                                            </div>
+                                            <div className="flex flex-wrap justify-end gap-2">
+                                                <button
+                                                    type="button"
+                                                    onClick={(event) => {
+                                                        event.preventDefault();
+                                                        event.stopPropagation();
+                                                        exportStampedDeclarationXls(declaration);
+                                                    }}
+                                                    className="rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-[10px] font-black uppercase tracking-[0.16em] text-emerald-700 transition hover:border-emerald-400 hover:bg-emerald-100"
+                                                >
+                                                    Excel
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    onClick={(event) => {
+                                                        event.preventDefault();
+                                                        event.stopPropagation();
+                                                        setStampedInvoicePrintDeclaration(declaration);
+                                                    }}
+                                                    className="rounded-full border border-slate-300 bg-white px-3 py-1.5 text-[10px] font-black uppercase tracking-[0.16em] text-slate-700 transition hover:border-[#e30613] hover:text-[#e30613]"
+                                                >
+                                                    PDF
+                                                </button>
                                             </div>
                                         </div>
                                     </summary>
@@ -1852,6 +2223,7 @@ export default function Declarations({ data = {}, branchContext }) {
                     </Card>
                 </div>
             )}
+            <StampedDeclarationPrintReport declaration={stampedInvoicePrintDeclaration} />
         </div>
     );
 }

@@ -2,6 +2,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const mysql = require('mysql2/promise');
 const admin = require('firebase-admin');
+const { buildSyncLogPayload } = require('./sicarSyncLogRetention');
 const {
   addDays,
   buildClosureFingerprint,
@@ -167,7 +168,7 @@ async function writeClosures(db, closures, options, state) {
   }
 
   if (writtenCount > 0) {
-    await db.collection('sicar_sync_logs').add({
+    await db.collection('sicar_sync_logs').add(buildSyncLogPayload(admin, {
       syncType: 'cash_closure_watch',
       sourceMode: 'local-worker-watch',
       closureCount: closures.length,
@@ -178,7 +179,7 @@ async function writeClosures(db, closures, options, state) {
       stageOnly: options.stageOnly,
       status: 'ok',
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
-    });
+    }));
   }
 
   return { writtenCount, skippedCount, results };
