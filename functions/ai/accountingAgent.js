@@ -21,9 +21,16 @@ const AGENT_STATUSES = Object.freeze({
   CONFIRMED: 'CONFIRMED',
   REGISTERED: 'REGISTERED',
   REJECTED: 'REJECTED',
+  DUPLICATE_DISCARDED: 'DUPLICATE_DISCARDED',
   UNAUTHORIZED: 'UNAUTHORIZED',
   ERROR: 'ERROR',
 });
+
+const TERMINAL_DRAFT_STATUSES = new Set([
+  AGENT_STATUSES.REGISTERED,
+  AGENT_STATUSES.REJECTED,
+  AGENT_STATUSES.DUPLICATE_DISCARDED,
+]);
 
 const MAX_MEDIA_SIZE_BYTES = 10 * 1024 * 1024;
 const ALLOWED_MEDIA_TYPES = new Set(['image/jpeg', 'image/png', 'application/pdf']);
@@ -234,6 +241,12 @@ function canonicalCurrency(value = '') {
   if (['NIO', 'CORDOBA', 'CORDOBAS', 'CORDOBA NICARAGUENSE', 'CORDOBAS NICARAGUENSES', 'C'].includes(key)) return 'NIO';
   if (['USD', 'DOLAR', 'DOLARES', 'DOLAR AMERICANO', 'DOLARES AMERICANOS'].includes(key)) return 'USD';
   return key;
+}
+
+function isDiscardDraftIntent(value = '') {
+  const key = normalizeKey(value);
+  return /\b(?:ELIMINAR|BORRAR|DESCARTAR|ANULAR|QUITAR)\b/.test(key)
+    && /\b(?:PENDIENTE|BORRADOR|DOCUMENTO|FACTURA)\b/.test(key);
 }
 
 function extractDeterministicConversationUpdates(text = '', draft = {}) {
@@ -724,6 +737,17 @@ async function sendWhatsappText({ accessToken, graphVersion, phoneNumberId, to, 
 
 function formatAccountingSummary(draft) {
   const format = (value) => Number(value || 0).toLocaleString('es-NI', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  if (draft.status === AGENT_STATUSES.DUPLICATE_DISCARDED) {
+    return [
+      'Documento repetido detectado.',
+      '',
+      `Factura: ${draft.numeroFactura || '(sin número)'}`,
+      `Proveedor: ${draft.proveedor || 'Sin identificar'}`,
+      `Total: C$${format(draft.total)}`,
+      '',
+      'Ya existe en el sistema. No lo volví a registrar y no quedó pendiente.',
+    ].join('\n');
+  }
   const title = draft.status === AGENT_STATUSES.READY_FOR_CONFIRMATION
     ? 'Factura lista para registrar.'
     : 'Revisé el documento, pero todavía necesito información.';
@@ -782,7 +806,7 @@ async function analyzeConversationUpdate({ apiKey, model, text, draft, catalog }
   return JSON.parse(response.output_text);
 }
 
-async function getConversationDraft({ firestore, phone, text }) {
+async function getConversationDraft({ firestore, FieldValue, phone, text }) {
   const sessionRef = firestore.collection(AGENT_COLLECTIONS.sessions).doc(phone);
   const sessionSnap = await sessionRef.get();
   if (!sessionSnap.exists) return { sessionRef, session: null, draft: null };
@@ -795,7 +819,17 @@ async function getConversationDraft({ firestore, phone, text }) {
   const activeDrafts = draftSnaps
     .filter((snapshot) => snapshot.exists)
     .map((snapshot) => ({ id: snapshot.id, ...snapshot.data() }))
-    .filter((draft) => ![AGENT_STATUSES.REGISTERED, AGENT_STATUSES.REJECTED].includes(draft.status));
+    .filter((draft) => !TERMINAL_DRAFT_STATUSES.has(draft.status));
+  const staleIds = draftSnaps
+    .filter((snapshot) => !snapshot.exists || TERMINAL_DRAFT_STATUSES.has(snapshot.data()?.status))
+    .map((snapshot) => snapshot.id);
+  if (staleIds.length) {
+    await sessionRef.set({
+      pendingDraftIds: FieldValue.arrayRemove(...staleIds),
+      ...(staleIds.includes(session.activeDraftId) ? { activeDraftId: '' } : {}),
+      updatedAt: FieldValue.serverTimestamp(),
+    }, { merge: true });
+  }
   if (!activeDrafts.length) return { sessionRef, session, draft: null };
   if (activeDrafts.length === 1) return { sessionRef, session, draft: activeDrafts[0] };
   const replyKey = normalizeKey(text);
@@ -807,7 +841,7 @@ async function handleConversationMessage({
   firestore, FieldValue, Timestamp, claimed, phone, authorizedUser, accessToken, graphVersion,
   openaiApiKey, openaiModel, logger,
 }) {
-  const conversation = await getConversationDraft({ firestore, phone, text: claimed.text });
+  const conversation = await getConversationDraft({ firestore, FieldValue, phone, text: claimed.text });
   if (!conversation.session) return { handled: false };
   if (conversation.ambiguousDrafts?.length) {
     const options = conversation.ambiguousDrafts.map((draft) => `Factura ${draft.numeroFactura || '(sin número)'} - ${draft.proveedor || 'sin proveedor'}`).join('\n');
@@ -849,13 +883,13 @@ async function handleConversationMessage({
     });
     return { handled: true, status: AGENT_STATUSES.REGISTERED, draftId: draft.id, targetDocIds: result };
   }
-  if (rejectWords.has(reply)) {
+  if (rejectWords.has(reply) || isDiscardDraftIntent(claimed.text)) {
     await Promise.all([
       draftRef.set({ status: AGENT_STATUSES.REJECTED, accion: 'rechazado', rejectedBy: `whatsapp:${phone}`, rejectedAt: FieldValue.serverTimestamp(), updatedAt: FieldValue.serverTimestamp() }, { merge: true }),
       originalInboxRef.set({ status: AGENT_STATUSES.REJECTED, updatedAt: FieldValue.serverTimestamp() }, { merge: true }),
       conversation.sessionRef.set({ activeDraftId: '', pendingDraftIds: FieldValue.arrayRemove(draft.id), updatedAt: FieldValue.serverTimestamp() }, { merge: true }),
     ]);
-    await sendWhatsappText({ accessToken, graphVersion, phoneNumberId: claimed.phoneNumberId, to: phone, text: 'Borrador rechazado. No se registró ninguna transacción.', logger });
+    await sendWhatsappText({ accessToken, graphVersion, phoneNumberId: claimed.phoneNumberId, to: phone, text: `Pendiente de factura ${draft.numeroFactura || '(sin número)'} eliminado. No se registró ninguna transacción.`, logger });
     return { handled: true, status: AGENT_STATUSES.REJECTED, draftId: draft.id };
   }
   if (reply.includes('ESTA MAL')) {
@@ -876,7 +910,34 @@ async function handleConversationMessage({
   }
   updates.confianza = Math.max(0.9, Number(draft.confianza || 0));
   const allowedBranches = Array.isArray(authorizedUser.branchAccess) && authorizedUser.branchAccess.length ? authorizedUser.branchAccess : ['granada'];
-  const validated = validateManualDraftUpdate(draft, updates, catalog, allowedBranches);
+  let validated = validateManualDraftUpdate(draft, updates, catalog, allowedBranches);
+  const duplicateCandidates = await findDuplicateCandidates(
+    firestore,
+    validated,
+    draft.supportHash || '',
+    draft.messageId || draft.id,
+  );
+  validated = validateManualDraftUpdate(draft, updates, catalog, allowedBranches, { duplicateCandidates });
+  if (validated.status === AGENT_STATUSES.POSSIBLE_DUPLICATE) {
+    const discarded = {
+      ...validated,
+      status: AGENT_STATUSES.DUPLICATE_DISCARDED,
+      accion: 'duplicado_descartado',
+      pregunta: '',
+      duplicateDiscardedAt: FieldValue.serverTimestamp(),
+    };
+    await Promise.all([
+      draftRef.set({ ...discarded, lastCorrection: { text: claimed.text, source: 'whatsapp', correctedAt: FieldValue.serverTimestamp() }, updatedAt: FieldValue.serverTimestamp() }, { merge: true }),
+      originalInboxRef.set({ status: discarded.status, duplicateCandidates, updatedAt: FieldValue.serverTimestamp() }, { merge: true }),
+      conversation.sessionRef.set({ activeDraftId: '', pendingDraftIds: FieldValue.arrayRemove(draft.id), updatedAt: FieldValue.serverTimestamp() }, { merge: true }),
+    ]);
+    await sendWhatsappText({
+      accessToken, graphVersion, phoneNumberId: claimed.phoneNumberId, to: phone,
+      text: `La factura ${discarded.numeroFactura || '(sin número)'} ya existe en el sistema. No la volví a registrar y la quité de pendientes.`,
+      logger,
+    });
+    return { handled: true, status: discarded.status, draftId: draft.id };
+  }
   await Promise.all([
     draftRef.set({ ...validated, lastCorrection: { text: claimed.text, source: 'whatsapp', correctedAt: FieldValue.serverTimestamp() }, updatedAt: FieldValue.serverTimestamp() }, { merge: true }),
     originalInboxRef.set({ status: validated.status, analysisSummary: { proveedor: validated.proveedor || '', numeroFactura: validated.numeroFactura || '', branchId: validated.branchId || '', fecha: validated.fecha || '', total: validated.total, categoria: validated.categoria || '', subcategoria: validated.subcategoria || '', confianza: validated.confianza, pregunta: validated.pregunta || '' }, updatedAt: FieldValue.serverTimestamp() }, { merge: true }),
@@ -1181,10 +1242,19 @@ async function processAccountingAgentInbox({
       hasRetentionSupport: false,
       duplicateCandidates,
     });
+    const finalValidation = validated.status === AGENT_STATUSES.POSSIBLE_DUPLICATE
+      ? {
+        ...validated,
+        status: AGENT_STATUSES.DUPLICATE_DISCARDED,
+        accion: 'duplicado_descartado',
+        pregunta: '',
+        duplicateDiscardedAt: FieldValue.serverTimestamp(),
+      }
+      : validated;
     const draftRef = firestore.collection(AGENT_COLLECTIONS.drafts).doc(messageId);
     const supportFiles = mediaRecord ? [{ ...mediaRecord, type: 'invoice' }] : [];
     const draftPayload = {
-      ...validated,
+      ...finalValidation,
       id: messageId,
       messageId,
       source: claimed.source || 'whatsapp',
@@ -1213,37 +1283,46 @@ async function processAccountingAgentInbox({
       }, { merge: true });
     }
     await inboxRef.set({
-      status: validated.status,
+      status: finalValidation.status,
       draftId: draftRef.id,
-      targetType: validated.tipoRegistro || 'unknown',
+      targetType: finalValidation.tipoRegistro || 'unknown',
       analysisSummary: {
-        proveedor: validated.proveedor || '',
-        numeroFactura: validated.numeroFactura || '',
-        branchId: validated.branchId || '',
-        fecha: validated.fecha || '',
-        total: validated.total,
-        categoria: validated.categoria || '',
-        subcategoria: validated.subcategoria || '',
-        confianza: validated.confianza,
-        pregunta: validated.pregunta || '',
+        proveedor: finalValidation.proveedor || '',
+        numeroFactura: finalValidation.numeroFactura || '',
+        branchId: finalValidation.branchId || '',
+        fecha: finalValidation.fecha || '',
+        total: finalValidation.total,
+        categoria: finalValidation.categoria || '',
+        subcategoria: finalValidation.subcategoria || '',
+        confianza: finalValidation.confianza,
+        pregunta: finalValidation.pregunta || '',
       },
       error: '',
       completedAt: FieldValue.serverTimestamp(),
       updatedAt: FieldValue.serverTimestamp(),
     }, { merge: true });
-    await firestore.collection(AGENT_COLLECTIONS.sessions).doc(phone).set({
-      phone,
-      activeDraftId: draftRef.id,
-      pendingDraftIds: FieldValue.arrayUnion(draftRef.id),
-      lastMessageId: messageId,
-      updatedAt: FieldValue.serverTimestamp(),
-      createdAt: FieldValue.serverTimestamp(),
-    }, { merge: true });
+    const sessionRef = firestore.collection(AGENT_COLLECTIONS.sessions).doc(phone);
+    const sessionPayload = finalValidation.status === AGENT_STATUSES.DUPLICATE_DISCARDED
+      ? {
+        phone,
+        pendingDraftIds: FieldValue.arrayRemove(draftRef.id),
+        lastMessageId: messageId,
+        updatedAt: FieldValue.serverTimestamp(),
+      }
+      : {
+        phone,
+        activeDraftId: draftRef.id,
+        pendingDraftIds: FieldValue.arrayUnion(draftRef.id),
+        lastMessageId: messageId,
+        updatedAt: FieldValue.serverTimestamp(),
+        createdAt: FieldValue.serverTimestamp(),
+      };
+    await sessionRef.set(sessionPayload, { merge: true });
     await writeAudit(firestore, FieldValue, {
       event: 'ANALYSIS_COMPLETED',
       messageId,
       draftId: draftRef.id,
-      status: validated.status,
+      status: finalValidation.status,
       senderPhone: phone,
       openaiResponseId: openaiResult.responseId,
     });
@@ -1252,10 +1331,10 @@ async function processAccountingAgentInbox({
       graphVersion,
       phoneNumberId: claimed.phoneNumberId,
       to: phone,
-      text: formatAccountingSummary(validated),
+      text: formatAccountingSummary(finalValidation),
       logger,
     });
-    return { status: validated.status, draftId: draftRef.id };
+    return { status: finalValidation.status, draftId: draftRef.id };
   } catch (error) {
     logger?.error?.('Error procesando mensaje para Agente Contable IA', { messageId, error: error.message });
     await inboxRef.set({
@@ -1302,7 +1381,7 @@ function validateManualDraftUpdate(current, updates, catalog, allowedBranches, o
     hasPrimarySupport: Boolean(current.fotoFacturaPath || current.supportFiles?.length || current.allowWithoutSupport),
     hasRetentionSupport: options.hasRetentionSupport === true || (current.supportFiles || [])
       .some((support) => ['retentionIr2', 'retentionMunicipal1'].includes(support.type)),
-    duplicateCandidates: current.duplicateCandidates || [],
+    duplicateCandidates: options.duplicateCandidates ?? current.duplicateCandidates ?? [],
   });
 }
 
@@ -1316,6 +1395,7 @@ module.exports = {
   canonicalCurrency,
   canonicalPaymentMethod,
   extractDeterministicConversationUpdates,
+  isDiscardDraftIntent,
   loadCatalogContext,
   normalizePhone,
   processAccountingAgentInbox,

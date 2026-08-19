@@ -7,6 +7,7 @@ const {
   canonicalCurrency,
   canonicalPaymentMethod,
   extractDeterministicConversationUpdates,
+  isDiscardDraftIntent,
   normalizePhone,
   validateAnalysis,
 } = require('./accountingAgent');
@@ -68,6 +69,12 @@ const validate = (analysis, duplicateCandidates = []) => validateAnalysis(analys
 
 test('normaliza números de WhatsApp sin símbolos', () => {
   assert.equal(normalizePhone('+505 8888-7777'), '50588887777');
+});
+
+test('entiende una solicitud natural para eliminar un pendiente', () => {
+  assert.equal(isDiscardDraftIntent('Quiero eliminar de pendiente la factura 132761'), true);
+  assert.equal(isDiscardDraftIntent('Confirmo borrar el documento pendiente'), true);
+  assert.equal(isDiscardDraftIntent('Cambiar proveedor de la factura 132761'), false);
 });
 
 test('Cargill se clasifica como compra de pollo', () => {
