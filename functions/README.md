@@ -44,62 +44,72 @@ Cada documento queda con:
 
 Esto sirve como capa oculta de staging para luego seguir trabajando la integracion sin tocar la operacion diaria.
 
-## Soportes desde WhatsApp
+## Agente Contable IA por WhatsApp
 
-El webhook `whatsappWebhook` queda preparado para recibir imagenes y documentos.
+El webhook existente `whatsappWebhook` recibe texto, imagen JPEG/PNG y PDF. El webhook solo valida la firma de Meta y encola el mensaje; el análisis ocurre en `processAccountingAgentInbox` para responder HTTP 200 rápidamente.
 
 Secrets requeridos:
 
 ```powershell
 firebase functions:secrets:set WHATSAPP_VERIFY_TOKEN
 firebase functions:secrets:set WHATSAPP_ACCESS_TOKEN
-```
-
-Parametro opcional de Functions:
-
-```text
-WHATSAPP_GRAPH_VERSION
-```
-
-Contrato de soporte compartido:
-
-- el archivo original se guarda una sola vez en Firebase Storage
-- el documento de WhatsApp queda en `whatsapp_ai_inbox/{messageId}`
-- la transaccion contable guarda la misma URL/ruta en `fotoFacturaUrl`, `fotoFacturaPath` y `support`
-- si luego se confirma como cuenta por pagar, abono, gasto o compra, se copia la referencia, no el archivo
-
-## Agente IA dentro de la app
-
-El modulo `Agente IA` evita depender de WhatsApp al inicio.
-
-Funcion callable:
-
-```text
-fiscalAssistantChat
-```
-
-Secret requerido:
-
-```powershell
+firebase functions:secrets:set META_APP_SECRET
 firebase functions:secrets:set OPENAI_API_KEY
 ```
 
-Parametro opcional:
+Nunca reutilizar una clave publicada en chat, GitHub o logs. Revocarla y crear una nueva antes del despliegue.
+
+Parámetros con valor predeterminado:
 
 ```text
-OPENAI_FISCAL_MODEL
+WHATSAPP_GRAPH_VERSION=v21.0
+OPENAI_ACCOUNTING_MODEL=gpt-5.5
 ```
-
-Por costo, el valor por defecto del agente es `gpt-5-mini`. Si se necesita maxima precision para documentos dificiles, se puede cambiar el parametro a `gpt-5.5` sin tocar codigo.
 
 Flujo:
 
-- el navegador sube la foto/PDF a Storage
-- la Function recibe la URL del soporte y un mensaje del usuario
-- la Function resume datos contables de Firestore
-- OpenAI responde en JSON estructurado con respuesta conversacional y posible borrador fiscal
-- se guarda auditoria en `ai_fiscal_chats`
-- si hay soporte o borrador, se crea `ai_fiscal_inbox` para revision
+- Meta escribe una sola vez en `whatsapp_inbox/{messageId}`.
+- La Function valida que el teléfono exista en `agente_ia_usuarios`.
+- El original se descarga, valida, calcula SHA-256 y guarda una sola vez en `whatsapp/inbox/...`.
+- OpenAI devuelve JSON bajo schema estricto; el backend vuelve a validar proveedor, categoría, cuenta, método, impuestos y duplicados.
+- El borrador se guarda en `agente_ia_borradores/{messageId}` y se revisa en `Ingresar Datos > Agente IA`.
+- Una confirmación registra de forma transaccional e idempotente gasto/compra, CxP para crédito, Caja Chica por pago neto para efectivo y asiento contable.
+- Las transacciones reutilizan la ruta del soporte original; no duplican la imagen.
+- Las constancias IR/municipal se vinculan por factura, RUC y proveedor. Una coincidencia ambigua se detiene.
+
+Colecciones privadas de control:
+
+```text
+agente_ia_auditoria
+agente_ia_hashes
+agente_ia_registros
+agente_ia_registros_claves
+agente_ia_sesiones
+```
+
+Despliegue específico:
+
+```powershell
+npx firebase-tools deploy --project sistema-contable-csm-granada --only "functions:whatsappWebhook,functions:processAccountingAgentInbox,functions:agentUpdateDraft,functions:agentSetDraftStatus,functions:agentRegisterDraft,firestore:rules,storage"
+```
+
+Pruebas locales:
+
+```powershell
+cd functions
+npm run lint
+npm run test:agent
+cd ..
+npm run build
+```
+
+Antes de la primera prueba real:
+
+1. En Meta, confirmar la URL actual del webhook y la suscripción al campo `messages`.
+2. Confirmar que el número y el token permanente pertenecen a la misma cuenta de WhatsApp Business.
+3. Abrir `Ingresar Datos > Agente IA` con el usuario master y autorizar el teléfono con código de país, por ejemplo `50588887777`.
+4. Enviar una factura JPEG legible con un mensaje indicando sucursal y método de pago cuando no aparezcan en el documento.
+5. Revisar el borrador en la app o responder por WhatsApp; `CONFIRMAR` registra únicamente cuando no hay faltantes, duplicados ni confianza menor a 90%.
 
 ## Tiempo real
 

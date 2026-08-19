@@ -2,6 +2,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const mysql = require('mysql2/promise');
 const admin = require('firebase-admin');
+const { buildSyncLogPayload } = require('./sicarSyncLogRetention');
 const {
   addDays,
   buildInvoiceFingerprint,
@@ -151,7 +152,7 @@ async function processStartupBackfill({ connection, db, options, state }) {
   }
 
   if (writtenCount > 0) {
-    await db.collection('sicar_sync_logs').add({
+    await db.collection('sicar_sync_logs').add(buildSyncLogPayload(admin, {
       syncType: 'facturacion_watch_startup_backfill',
       sourceMode: 'local-worker-watch',
       startDate,
@@ -164,7 +165,7 @@ async function processStartupBackfill({ connection, db, options, state }) {
       stageOnly: options.stageOnly,
       status: 'ok',
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
-    });
+    }));
   }
 
   console.log(`[${new Date().toISOString()}] Backfill inicial ${startDate} a ${endDate}: ${invoices.length} factura/s revisadas, ${writtenCount} escrita/s, ${skippedCount} sin cambios.`);
@@ -218,7 +219,7 @@ async function processNewInvoices({ connection, db, lastFacId, options, state })
     }
 
     if (writtenCount > 0) {
-      await db.collection('sicar_sync_logs').add({
+      await db.collection('sicar_sync_logs').add(buildSyncLogPayload(admin, {
         syncType: 'facturacion_watch',
         sourceMode: 'local-worker-watch',
         invoiceCount: invoices.length,
@@ -229,7 +230,7 @@ async function processNewInvoices({ connection, db, lastFacId, options, state })
         stageOnly: options.stageOnly,
         status: 'ok',
         createdAt: admin.firestore.FieldValue.serverTimestamp(),
-      });
+      }));
     }
   }
 
@@ -239,15 +240,7 @@ async function processNewInvoices({ connection, db, lastFacId, options, state })
   };
 }
 
-async function main() {
-  const rootDir = path.resolve(__dirname, '..', '..');
-  const functionsDir = path.resolve(__dirname, '..');
-  loadEnvFile(path.join(rootDir, '.env.local'));
-  loadEnvFile(path.join(functionsDir, '.env.local'));
-
-  const options = parseArgs(process.argv.slice(2));
-  options.intervalMs = Math.max(15000, Math.min(Number(options.intervalMs || DEFAULT_INTERVAL_MS), 60000));
-
+async function runWatcherSession(options) {
   const connection = await mysql.createConnection(getMysqlConfig());
   const db = options.preview ? null : initFirebase();
 
@@ -280,25 +273,50 @@ async function main() {
     }
 
     do {
-      try {
-        const result = await processNewInvoices({ connection, db, lastFacId, options, state });
-        if (result.lastFacId !== lastFacId) {
-          lastFacId = result.lastFacId;
-          state.lastFacId = lastFacId;
-          writeState(options.statePath, state);
-        } else if (result.count > 0) {
-          writeState(options.statePath, state);
-        }
-      } catch (error) {
-        console.error(`[${new Date().toISOString()}] Error sincronizando facturas membretadas:`, error.message || error);
+      const result = await processNewInvoices({ connection, db, lastFacId, options, state });
+      if (result.lastFacId !== lastFacId) {
+        lastFacId = result.lastFacId;
+        state.lastFacId = lastFacId;
+        writeState(options.statePath, state);
+      } else if (result.count > 0) {
+        writeState(options.statePath, state);
       }
 
       if (options.once) break;
       await sleep(options.intervalMs);
     } while (true);
   } finally {
-    await connection.end();
+    await connection.end().catch(() => {});
   }
+}
+
+async function main() {
+  const rootDir = path.resolve(__dirname, '..', '..');
+  const functionsDir = path.resolve(__dirname, '..');
+  loadEnvFile(path.join(rootDir, '.env.local'));
+  loadEnvFile(path.join(functionsDir, '.env.local'));
+
+  const options = parseArgs(process.argv.slice(2));
+  options.intervalMs = Math.max(15000, Math.min(Number(options.intervalMs || DEFAULT_INTERVAL_MS), 60000));
+  const retryDelayMs = Math.max(options.intervalMs, 30000);
+  let firstAttempt = true;
+
+  do {
+    try {
+      await runWatcherSession({
+        ...options,
+        resetState: options.resetState && firstAttempt,
+      });
+      if (options.once) return;
+    } catch (error) {
+      console.error(`[${new Date().toISOString()}] Conexion del watcher interrumpida:`, error.message || error);
+      if (options.once) throw error;
+    }
+
+    firstAttempt = false;
+    console.log(`[${new Date().toISOString()}] Reintentando conexion en ${Math.round(retryDelayMs / 1000)} segundos...`);
+    await sleep(retryDelayMs);
+  } while (true);
 }
 
 main().catch((error) => {

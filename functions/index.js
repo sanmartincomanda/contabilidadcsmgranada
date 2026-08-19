@@ -1,10 +1,19 @@
-const { createHash, randomUUID } = require('node:crypto');
+const { createHash, createHmac, randomUUID, timingSafeEqual } = require('node:crypto');
 const admin = require('firebase-admin');
 const logger = require('firebase-functions/logger');
 const { onCall, onRequest, HttpsError } = require('firebase-functions/v2/https');
 const { onDocumentWritten } = require('firebase-functions/v2/firestore');
 const { defineSecret, defineString } = require('firebase-functions/params');
 const mysql = require('mysql2/promise');
+const { buildSyncLogPayload } = require('./scripts/sicarSyncLogRetention');
+const {
+  AGENT_COLLECTIONS,
+  AGENT_STATUSES,
+  loadCatalogContext,
+  processAccountingAgentInbox,
+  validateManualDraftUpdate,
+} = require('./ai/accountingAgent');
+const { registerAccountingDraft } = require('./ai/accountingRegistration');
 
 admin.initializeApp();
 
@@ -21,7 +30,10 @@ const SICAR_COMPRAS_QUERY = defineSecret('SICAR_COMPRAS_QUERY');
 const SICAR_SYNC_API_TOKEN = defineSecret('SICAR_SYNC_API_TOKEN');
 const WHATSAPP_VERIFY_TOKEN = defineSecret('WHATSAPP_VERIFY_TOKEN');
 const WHATSAPP_ACCESS_TOKEN = defineSecret('WHATSAPP_ACCESS_TOKEN');
+const META_APP_SECRET = defineSecret('META_APP_SECRET');
+const OPENAI_API_KEY = defineSecret('OPENAI_API_KEY');
 const WHATSAPP_GRAPH_VERSION = defineString('WHATSAPP_GRAPH_VERSION', { default: 'v21.0' });
+const OPENAI_ACCOUNTING_MODEL = defineString('OPENAI_ACCOUNTING_MODEL', { default: 'gpt-5.5' });
 const SICAR_BRANCH_ID = defineString('SICAR_BRANCH_ID', { default: 'granada' });
 const SICAR_BRANCH_NAME = defineString('SICAR_BRANCH_NAME', { default: 'CARNES SAN MARTIN GRANADA' });
 const SICAR_TIMEZONE = defineString('SICAR_TIMEZONE', { default: 'America/Managua' });
@@ -103,11 +115,21 @@ const PRIVATE_REPLAY_HTTP_FUNCTION_OPTIONS = {
 
 const WHATSAPP_WEBHOOK_FUNCTION_OPTIONS = {
   ...BASE_FUNCTION_OPTIONS,
-  timeoutSeconds: 60,
-  memory: '512MiB',
+  timeoutSeconds: 15,
+  memory: '256MiB',
   secrets: [
     WHATSAPP_VERIFY_TOKEN,
+    META_APP_SECRET,
+  ],
+};
+
+const ACCOUNTING_AGENT_TRIGGER_OPTIONS = {
+  ...BASE_FUNCTION_OPTIONS,
+  timeoutSeconds: 300,
+  memory: '1GiB',
+  secrets: [
     WHATSAPP_ACCESS_TOKEN,
+    OPENAI_API_KEY,
   ],
 };
 
@@ -703,10 +725,10 @@ async function fetchDailyIncomeRows({ startDate, endDate, branchName }) {
 }
 
 async function writeSyncLog(summary) {
-  await firestore.collection('sicar_sync_logs').add({
+  await firestore.collection('sicar_sync_logs').add(buildSyncLogPayload(admin, {
     ...summary,
     createdAt: FieldValue.serverTimestamp(),
-  });
+  }));
 }
 
 async function upsertDailyIncomes(entries, actorEmail) {
@@ -2589,49 +2611,10 @@ async function upsertWhatsappInboxMessage({ message, value, contact }) {
   const messageId = message.id || createHash('sha1').update(JSON.stringify(message)).digest('hex');
   const inboxRef = firestore.collection('whatsapp_inbox').doc(messageId);
   const textBody = message.text?.body || media?.caption || '';
-  let mediaPayload = {};
-  let supportPayload = {};
-  let status = 'received';
-  let errorMessage = '';
-
-  if (media?.id) {
-    try {
-      const storedMedia = await storeWhatsappMedia({ message, media, senderPhone, contactName });
-      mediaPayload = {
-        ...storedMedia,
-        type: media.type,
-      };
-      supportPayload = {
-        fotoFacturaUrl: storedMedia.url,
-        fotoFacturaPath: storedMedia.path,
-        support: {
-          url: storedMedia.url,
-          path: storedMedia.path,
-          source: 'whatsapp',
-          sourceCollection: 'whatsapp_inbox',
-          sourceDocId: messageId,
-          fileName: storedMedia.fileName,
-          contentType: storedMedia.mimeType,
-          uploadedAt: new Date().toISOString(),
-          whatsappMediaId: media.id,
-          whatsappMessageId: messageId,
-        },
-      };
-    } catch (error) {
-      status = 'error';
-      errorMessage = error.message;
-      logger.error('Error guardando media WhatsApp', {
-        messageId,
-        mediaId: media.id,
-        error: error.message,
-      });
-    }
-  }
-
-  await inboxRef.set({
+  const payload = {
     source: 'whatsapp',
     channel: 'whatsapp',
-    status,
+    status: AGENT_STATUSES.RECEIVED,
     targetType: 'unknown',
     messageId,
     senderPhone,
@@ -2640,22 +2623,37 @@ async function upsertWhatsappInboxMessage({ message, value, contact }) {
     displayPhoneNumber: value.metadata?.display_phone_number || '',
     messageType: message.type || '',
     text: normalizeText(textBody),
-    media: mediaPayload,
-    error: errorMessage,
+    media: media || {},
+    error: '',
     receivedAt: message.timestamp
       ? admin.firestore.Timestamp.fromMillis(Number(message.timestamp) * 1000)
       : FieldValue.serverTimestamp(),
     createdAt: FieldValue.serverTimestamp(),
     updatedAt: FieldValue.serverTimestamp(),
-    ...supportPayload,
-  }, { merge: true });
-
-  return {
-    messageId,
-    status,
-    hasMedia: Boolean(media?.id),
-    supportPath: supportPayload.fotoFacturaPath || '',
   };
+
+  try {
+    await inboxRef.create(payload);
+    return { messageId, status: payload.status, hasMedia: Boolean(media?.id), duplicate: false };
+  } catch (error) {
+    if (error.code === 6 || error.code === 'already-exists') {
+      return { messageId, status: 'DUPLICATE_IGNORED', hasMedia: Boolean(media?.id), duplicate: true };
+    }
+    throw error;
+  }
+}
+
+function verifyMetaWebhookSignature(request) {
+  const signature = normalizeText(request.get('x-hub-signature-256'));
+  const appSecret = META_APP_SECRET.value();
+  const rawBody = Buffer.isBuffer(request.rawBody)
+    ? request.rawBody
+    : Buffer.from(JSON.stringify(request.body || {}));
+  if (!signature || !appSecret) return false;
+  const expected = `sha256=${createHmac('sha256', appSecret).update(rawBody).digest('hex')}`;
+  const receivedBuffer = Buffer.from(signature);
+  const expectedBuffer = Buffer.from(expected);
+  return receivedBuffer.length === expectedBuffer.length && timingSafeEqual(receivedBuffer, expectedBuffer);
 }
 
 exports.whatsappWebhook = onRequest(WHATSAPP_WEBHOOK_FUNCTION_OPTIONS, async (request, response) => {
@@ -2678,6 +2676,12 @@ exports.whatsappWebhook = onRequest(WHATSAPP_WEBHOOK_FUNCTION_OPTIONS, async (re
     return;
   }
 
+  if (!verifyMetaWebhookSignature(request)) {
+    logger.warn('Firma invalida recibida en whatsappWebhook');
+    response.status(401).json({ ok: false, error: 'Firma de Meta invalida.' });
+    return;
+  }
+
   try {
     const messages = getWhatsappMessages(request.body || {});
     const processed = [];
@@ -2689,7 +2693,7 @@ exports.whatsappWebhook = onRequest(WHATSAPP_WEBHOOK_FUNCTION_OPTIONS, async (re
     response.status(200).json({
       ok: true,
       received: messages.length,
-      processed,
+      queued: processed,
     });
   } catch (error) {
     logger.error('Error en whatsappWebhook', error);
@@ -2698,6 +2702,180 @@ exports.whatsappWebhook = onRequest(WHATSAPP_WEBHOOK_FUNCTION_OPTIONS, async (re
       error: error.message || 'Error procesando webhook de WhatsApp.',
     });
   }
+});
+
+async function ensureAccountingAgentOperator(auth, actionLabel = 'gestionar borradores del agente') {
+  const email = normalizeUserEmail(auth?.token?.email || '');
+  if (!auth) {
+    throw new HttpsError('unauthenticated', `Debes iniciar sesion para ${actionLabel}.`);
+  }
+  if (email === MASTER_USER_EMAIL) {
+    return { email, branchAccess: [...USER_ACCESS_BRANCHES], role: 'master' };
+  }
+  const profileSnap = await firestore.collection(USER_PROFILES_COLLECTION).doc(getUserProfileDocId(email)).get();
+  const profile = profileSnap.data() || {};
+  const moduleMode = profile.moduleModes?.ingresar || (profile.modules?.ingresar ? 'edit' : 'none');
+  if (!profileSnap.exists || profile.active === false || moduleMode !== 'edit') {
+    throw new HttpsError('permission-denied', `No tienes permisos para ${actionLabel}.`);
+  }
+  return { email, branchAccess: getUserBranchAccess(email, profile), role: profile.role || 'limited' };
+}
+
+exports.processAccountingAgentInbox = onDocumentWritten({
+  ...ACCOUNTING_AGENT_TRIGGER_OPTIONS,
+  document: `${AGENT_COLLECTIONS.inbox}/{messageId}`,
+}, async (event) => {
+  const afterData = event.data?.after?.data();
+  if (!afterData || afterData.status !== AGENT_STATUSES.RECEIVED) return;
+  await processAccountingAgentInbox({
+    firestore,
+    FieldValue,
+    bucket: admin.storage().bucket(),
+    messageId: event.params.messageId,
+    Timestamp: admin.firestore.Timestamp,
+    accessToken: WHATSAPP_ACCESS_TOKEN.value(),
+    graphVersion: WHATSAPP_GRAPH_VERSION.value(),
+    openaiApiKey: OPENAI_API_KEY.value(),
+    openaiModel: OPENAI_ACCOUNTING_MODEL.value(),
+    logger,
+  });
+});
+
+exports.agentUpdateDraft = onCall(ADMIN_CALLABLE_FUNCTION_OPTIONS, async (request) => {
+  const actor = await ensureAccountingAgentOperator(request.auth, 'corregir borradores del agente');
+  const draftId = normalizeText(request.data?.draftId);
+  if (!draftId) throw new HttpsError('invalid-argument', 'Falta el identificador del borrador.');
+  const draftRef = firestore.collection(AGENT_COLLECTIONS.drafts).doc(draftId);
+  const draftSnap = await draftRef.get();
+  if (!draftSnap.exists) throw new HttpsError('not-found', 'El borrador ya no existe.');
+  const catalog = await loadCatalogContext(firestore);
+  const validated = validateManualDraftUpdate(draftSnap.data(), request.data?.updates || {}, catalog, actor.branchAccess);
+  await draftRef.set({
+    ...validated,
+    reviewedBy: actor.email,
+    reviewedAt: FieldValue.serverTimestamp(),
+    updatedAt: FieldValue.serverTimestamp(),
+  }, { merge: true });
+  await firestore.collection(AGENT_COLLECTIONS.inbox).doc(draftSnap.data().messageId || draftId).set({
+    status: validated.status,
+    targetType: validated.tipoRegistro || 'unknown',
+    analysisSummary: {
+      proveedor: validated.proveedor || '',
+      numeroFactura: validated.numeroFactura || '',
+      branchId: validated.branchId || '',
+      fecha: validated.fecha || '',
+      total: validated.total,
+      categoria: validated.categoria || '',
+      subcategoria: validated.subcategoria || '',
+      confianza: validated.confianza,
+      pregunta: validated.pregunta || '',
+    },
+    updatedAt: FieldValue.serverTimestamp(),
+  }, { merge: true });
+  await firestore.collection(AGENT_COLLECTIONS.audit).add({
+    event: 'DRAFT_UPDATED',
+    draftId,
+    actorEmail: actor.email,
+    status: validated.status,
+    createdAt: FieldValue.serverTimestamp(),
+  });
+  return { ok: true, draft: { ...validated, id: draftId } };
+});
+
+exports.agentSetDraftStatus = onCall(ADMIN_CALLABLE_FUNCTION_OPTIONS, async (request) => {
+  const actor = await ensureAccountingAgentOperator(request.auth, 'cambiar el estado de borradores del agente');
+  const draftId = normalizeText(request.data?.draftId);
+  const action = normalizeText(request.data?.action).toLowerCase();
+  if (!draftId || !['confirm', 'reject', 'retry'].includes(action)) {
+    throw new HttpsError('invalid-argument', 'Accion o borrador invalido.');
+  }
+  const draftRef = firestore.collection(AGENT_COLLECTIONS.drafts).doc(draftId);
+  const draftSnap = await draftRef.get();
+  if (action !== 'retry' && !draftSnap.exists) throw new HttpsError('not-found', 'El borrador ya no existe.');
+  const draft = draftSnap.data() || {};
+  const inboxRef = firestore.collection(AGENT_COLLECTIONS.inbox).doc(draft.messageId || draftId);
+  let status = AGENT_STATUSES.REJECTED;
+  if (action === 'retry') {
+    const inboxSnap = await inboxRef.get();
+    if (!inboxSnap.exists) throw new HttpsError('not-found', 'El mensaje original ya no existe.');
+    status = AGENT_STATUSES.RECEIVED;
+    await inboxRef.set({ status, error: '', completedAt: null, updatedAt: FieldValue.serverTimestamp() }, { merge: true });
+  } else if (action === 'confirm') {
+    if ((draft.datosFaltantes || []).length || draft.status === AGENT_STATUSES.POSSIBLE_DUPLICATE) {
+      throw new HttpsError('failed-precondition', 'Corrige los datos faltantes o el posible duplicado antes de confirmar.');
+    }
+    status = AGENT_STATUSES.CONFIRMED;
+    await Promise.all([
+      draftRef.set({ status, accion: 'confirmado', confirmedBy: actor.email, confirmedAt: FieldValue.serverTimestamp(), updatedAt: FieldValue.serverTimestamp() }, { merge: true }),
+      inboxRef.set({ status, updatedAt: FieldValue.serverTimestamp() }, { merge: true }),
+    ]);
+  } else {
+    await Promise.all([
+      draftRef.set({ status, accion: 'rechazado', rejectedBy: actor.email, rejectedAt: FieldValue.serverTimestamp(), updatedAt: FieldValue.serverTimestamp() }, { merge: true }),
+      inboxRef.set({ status, updatedAt: FieldValue.serverTimestamp() }, { merge: true }),
+    ]);
+  }
+  await firestore.collection(AGENT_COLLECTIONS.audit).add({
+    event: `DRAFT_${action.toUpperCase()}`,
+    draftId,
+    actorEmail: actor.email,
+    status,
+    createdAt: FieldValue.serverTimestamp(),
+  });
+  return { ok: true, status };
+});
+
+exports.agentRegisterDraft = onCall(ADMIN_CALLABLE_FUNCTION_OPTIONS, async (request) => {
+  const actor = await ensureAccountingAgentOperator(request.auth, 'registrar documentos del agente');
+  const draftId = normalizeText(request.data?.draftId);
+  if (!draftId) throw new HttpsError('invalid-argument', 'Falta el identificador del borrador.');
+  const draftRef = firestore.collection(AGENT_COLLECTIONS.drafts).doc(draftId);
+  const draftSnap = await draftRef.get();
+  if (!draftSnap.exists) throw new HttpsError('not-found', 'El borrador ya no existe.');
+  const draft = { id: draftSnap.id, ...draftSnap.data() };
+  if (!actor.branchAccess.includes(draft.branchId)) {
+    throw new HttpsError('permission-denied', 'No tienes permiso para registrar en esta sucursal.');
+  }
+  if ((draft.datosFaltantes || []).length || Number(draft.confianza || 0) < 0.9) {
+    throw new HttpsError('failed-precondition', 'El borrador todavía tiene datos pendientes o confianza menor a 90%.');
+  }
+  if (draft.status === AGENT_STATUSES.POSSIBLE_DUPLICATE || (draft.duplicateCandidates || []).length) {
+    throw new HttpsError('failed-precondition', 'Debes resolver el posible duplicado antes de registrar.');
+  }
+  const result = await registerAccountingDraft({
+    firestore,
+    FieldValue,
+    Timestamp: admin.firestore.Timestamp,
+    draft,
+    actorEmail: actor.email,
+  });
+  const inboxRef = firestore.collection(AGENT_COLLECTIONS.inbox).doc(draft.messageId || draftId);
+  await Promise.all([
+    draftRef.set({
+      status: AGENT_STATUSES.REGISTERED,
+      accion: 'registrado',
+      targetDocIds: result,
+      confirmedBy: actor.email,
+      confirmedAt: FieldValue.serverTimestamp(),
+      registeredAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+    }, { merge: true }),
+    inboxRef.set({
+      status: AGENT_STATUSES.REGISTERED,
+      targetDocIds: result,
+      updatedAt: FieldValue.serverTimestamp(),
+      completedAt: FieldValue.serverTimestamp(),
+    }, { merge: true }),
+    firestore.collection(AGENT_COLLECTIONS.audit).add({
+      event: 'ACCOUNTING_RECORD_REGISTERED',
+      draftId,
+      actorEmail: actor.email,
+      targetDocIds: result,
+      alreadyRegistered: result.alreadyRegistered === true,
+      createdAt: FieldValue.serverTimestamp(),
+    }),
+  ]);
+  return { ok: true, status: AGENT_STATUSES.REGISTERED, targetDocIds: result };
 });
 
 exports.syncSicarIngresosCarnesAmparito = onCall(INCOME_CALLABLE_FUNCTION_OPTIONS, async (request) => {

@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
-import { collection, deleteDoc, doc, getDoc, serverTimestamp, setDoc, writeBatch } from 'firebase/firestore';
+import { collection, deleteDoc, doc, getDoc, getDocs, query, serverTimestamp, setDoc, where, writeBatch } from 'firebase/firestore';
 import { db } from '../firebase';
 import { useAuth } from '../context/AuthContext';
 import {
@@ -126,19 +126,28 @@ const getCashClosureRcDisplayValue = (summary = {}) => {
 
 const getRcEligibleTransferTotal = (transferTotals = {}) => safeNumber(
     (transferTotals.bac || 0)
+    + (transferTotals.bac2 || 0)
     + (transferTotals.banpro || 0)
     + (transferTotals.lafise || 0)
     + (transferTotals.bacUsd || 0)
     + (transferTotals.lafiseUsd || 0)
 );
 
-const getRcEligibleTransferTotalFromPayment = (payment = {}) => safeNumber(
-    safeNumber(payment.transferBac)
-    + safeNumber(payment.transferBanpro)
-    + safeNumber(payment.transferLafise)
-    + safeNumber(payment.transferBacUsd)
-    + safeNumber(payment.transferLafiseUsd)
-);
+const getRcEligibleTransferTotalFromPayment = (payment = {}) => {
+    const transferFields = [
+        payment.transferBac,
+        payment.transferBac2,
+        payment.transferBanpro,
+        payment.transferLafise,
+        payment.transferBacUsd,
+        payment.transferLafiseUsd,
+    ];
+    const hasTransferBreakdown = transferFields.some((value) => value !== undefined && value !== null && value !== '');
+
+    return hasTransferBreakdown
+        ? safeNumber(transferFields.reduce((sum, value) => sum + safeNumber(value), 0))
+        : safeNumber(payment.transferTotal ?? payment.rcEligibleTransferTotal);
+};
 
 const isPositiveCashClosureRc = (value = 0) => safeNumber(value) > CASH_CLOSURE_POSITIVE_RC_THRESHOLD;
 
@@ -864,6 +873,30 @@ const compareSicarPendingInvoices = (a = {}, b = {}) => {
     return safeNumber(b.facId || b.sourceRecordId) - safeNumber(a.facId || a.sourceRecordId);
 };
 
+const getInvoiceSortNumber = (invoice = {}) => {
+    const numeric = String(invoice.invoiceNumber || invoice.numeroFactura || invoice.document || '')
+        .replace(/\D/g, '');
+    return numeric ? Number(numeric) : null;
+};
+
+const compareStampedInvoicesByNumber = (a = {}, b = {}) => {
+    const numberA = getInvoiceSortNumber(a);
+    const numberB = getInvoiceSortNumber(b);
+    if (numberA !== null && numberB !== null && numberA !== numberB) return numberA - numberB;
+    if (numberA !== null && numberB === null) return -1;
+    if (numberA === null && numberB !== null) return 1;
+
+    const textCompare = String(a.invoiceNumber || a.numeroFactura || '')
+        .localeCompare(String(b.invoiceNumber || b.numeroFactura || ''), 'es', { numeric: true, sensitivity: 'base' });
+    if (textCompare !== 0) return textCompare;
+
+    const branchCompare = getBranchById(getRecordBranchId(a)).shortName
+        .localeCompare(getBranchById(getRecordBranchId(b)).shortName, 'es');
+    if (branchCompare !== 0) return branchCompare;
+
+    return String(a.date || a.saleDate || '').localeCompare(String(b.date || b.saleDate || ''));
+};
+
 const normalizeStampedInvoiceRecord = (item = {}) => ({
     ...item,
     date: item.saleDate || item.date || '',
@@ -957,6 +990,29 @@ const isPdfSupportFile = (support = {}) => (
 
 const getMonth = (date = '') => String(date || todayString()).substring(0, 7);
 
+const getMonthEndExclusive = (month = getMonth(todayString())) => {
+    const [year, monthIndex] = String(month || getMonth(todayString())).split('-').map(Number);
+    const date = new Date(year || new Date().getFullYear(), monthIndex || 1, 1);
+    const safeMonth = String(date.getMonth() + 1).padStart(2, '0');
+    return `${date.getFullYear()}-${safeMonth}-01`;
+};
+
+const getHistoryRange = (selectedMonth = '', selectedDate = '') => {
+    if (selectedDate) {
+        return {
+            cacheKey: `date:${selectedDate}`,
+            endExclusive: shiftDateString(selectedDate, 1),
+            start: selectedDate,
+        };
+    }
+    const month = selectedMonth || getMonth(todayString());
+    return {
+        cacheKey: `month:${month}`,
+        endExclusive: getMonthEndExclusive(month),
+        start: `${month}-01`,
+    };
+};
+
 const getRecordDate = (value) => {
     if (!value) return '';
     if (typeof value === 'string') return value.substring(0, 10);
@@ -968,9 +1024,71 @@ const getRecordDate = (value) => {
 const matchesHistoryDateFilters = (value, selectedMonth = '', selectedDate = '') => {
     const recordDate = getRecordDate(value);
     if (selectedDate) return recordDate === selectedDate;
-    if (!selectedMonth) return true;
-    return getMonth(recordDate) === selectedMonth;
+    const month = selectedMonth || getMonth(todayString());
+    return getMonth(recordDate) === month;
 };
+
+const getMergeKey = (record = {}, fallbackPrefix = 'record') => (
+    record.id
+    || record.docId
+    || record.rawId
+    || record.sourceRawId
+    || [
+        fallbackPrefix,
+        record.date || record.saleDate || record.fecha || '',
+        record.invoiceNumber || record.numeroFactura || record.receiptNumber || record.code || '',
+        record.customerName || record.cliente || record.cashierName || '',
+    ].join('|')
+);
+
+const mergeRecordsByKey = (...recordGroups) => {
+    const map = new Map();
+    recordGroups.flat().filter(Boolean).forEach((record, index) => {
+        const key = getMergeKey(record, `record_${index}`);
+        map.set(key, { ...(map.get(key) || {}), ...record });
+    });
+    return [...map.values()];
+};
+
+function useFirestoreDateArchive(collectionName, dateField, selectedMonth, selectedDate, enabled = true) {
+    const range = useMemo(() => getHistoryRange(selectedMonth, selectedDate), [selectedMonth, selectedDate]);
+    const [cache, setCache] = useState({});
+    const [loading, setLoading] = useState(false);
+    const [error, setError] = useState(null);
+
+    useEffect(() => {
+        if (!enabled || !collectionName || !dateField || !range.start || !range.endExclusive) return undefined;
+        const cacheKey = `${collectionName}:${dateField}:${range.cacheKey}`;
+        if (cache[cacheKey]) return undefined;
+
+        let mounted = true;
+        setLoading(true);
+        setError(null);
+
+        getDocs(query(
+            collection(db, collectionName),
+            where(dateField, '>=', range.start),
+            where(dateField, '<', range.endExclusive)
+        ))
+            .then((snapshot) => {
+                if (!mounted) return;
+                const records = snapshot.docs.map((recordDoc) => ({ id: recordDoc.id, ...recordDoc.data() }));
+                setCache((current) => ({ ...current, [cacheKey]: records }));
+            })
+            .catch((archiveError) => {
+                console.error(`Error cargando archivo ${collectionName}:`, archiveError);
+                if (mounted) setError(archiveError);
+            })
+            .finally(() => {
+                if (mounted) setLoading(false);
+            });
+
+        return () => { mounted = false; };
+    }, [cache, collectionName, dateField, enabled, range.cacheKey, range.endExclusive, range.start]);
+
+    const records = useMemo(() => Object.values(cache).flat(), [cache]);
+    return { records, loading, error, range };
+}
 
 const createLineId = (prefix = 'line') => `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
@@ -1253,7 +1371,7 @@ const buildClosureAccountingSummary = ({
         internalRatio: {
             rc,
             cashResidual,
-            formula: 'Tarjeta + transferencias sin BAC (2) + descuentos casa - flujo de caja',
+            formula: 'Tarjeta + todas las transferencias + descuentos casa - flujo de caja',
         },
     };
 };
@@ -1290,9 +1408,7 @@ const normalizeClosureAccountingSummarySales = (summary = {}, netSalesTotals = {
             + safeNumber(payment.transferBacUsd)
             + safeNumber(payment.transferLafiseUsd)
         );
-    const rcEligibleTransferTotal = hasNumericValue(payment.rcEligibleTransferTotal)
-        ? safeNumber(payment.rcEligibleTransferTotal)
-        : getRcEligibleTransferTotalFromPayment(payment);
+    const rcEligibleTransferTotal = getRcEligibleTransferTotalFromPayment(payment);
     const houseDiscountTotal = safeNumber(payment.houseDiscountTotal ?? closure.houseDiscountTotal ?? getHouseDiscountTotal(closure.houseDiscountDetails));
     const rc = safeNumber(cardTotal + rcEligibleTransferTotal + houseDiscountTotal - cashIncomeNetTotal);
     const cashResidual = safeNumber(cashIncomeNetTotal - cardTotal - rcEligibleTransferTotal - houseDiscountTotal);
@@ -1339,7 +1455,7 @@ const normalizeClosureAccountingSummarySales = (summary = {}, netSalesTotals = {
             ...(summary.internalRatio || {}),
             rc,
             cashResidual,
-            formula: 'Tarjeta + transferencias sin BAC (2) + descuentos casa - flujo de caja',
+            formula: 'Tarjeta + todas las transferencias + descuentos casa - flujo de caja',
         },
     };
 };
@@ -1536,9 +1652,7 @@ const syncLinkedClosureForCashReceipt = async (receiptId = '', receiptPayload = 
     const payment = closure.accountingSummary?.paymentBreakdown || {};
     const stamped = closure.accountingSummary?.stampedDocuments || {};
     const cashIncomeNetTotal = safeNumber(safeNumber(stamped.stampedCashInvoices) + cashReceiptNetTotal);
-    const rcEligibleTransferTotal = hasNumericValue(payment.rcEligibleTransferTotal)
-        ? safeNumber(payment.rcEligibleTransferTotal)
-        : getRcEligibleTransferTotalFromPayment(payment);
+    const rcEligibleTransferTotal = getRcEligibleTransferTotalFromPayment(payment);
     const houseDiscountTotal = safeNumber(payment.houseDiscountTotal ?? closure.houseDiscountTotal ?? getHouseDiscountTotal(closure.houseDiscountDetails));
     const rc = safeNumber(safeNumber(payment.cardTotal) + rcEligibleTransferTotal + houseDiscountTotal - cashIncomeNetTotal);
     const cashResidual = safeNumber(cashIncomeNetTotal - safeNumber(payment.cardTotal) - rcEligibleTransferTotal - houseDiscountTotal);
@@ -1570,7 +1684,7 @@ const syncLinkedClosureForCashReceipt = async (receiptId = '', receiptPayload = 
             ...(closure.accountingSummary.internalRatio || {}),
             rc,
             cashResidual,
-            formula: 'Tarjeta + transferencias sin BAC (2) + descuentos casa - flujo de caja',
+            formula: 'Tarjeta + todas las transferencias + descuentos casa - flujo de caja',
         },
     } : null;
 
@@ -6162,12 +6276,20 @@ function CashReceiptHistory({ data, canEdit = true, branchContext }) {
         saveCashReceiptLayout,
         saveNewCashReceiptLayout,
     } = useCashReceiptPrintTemplates(setMessage);
+    const receiptArchive = useFirestoreDateArchive('recibos_caja_membretados', 'date', selectedMonth, selectedDate);
+    const invoiceArchive = useFirestoreDateArchive('facturas_membretadas_ventas', 'saleDate', selectedMonth, selectedDate);
+    const receiptRecords = useMemo(() => (
+        mergeRecordsByKey(receiptArchive.records, data.recibos_caja_membretados || [])
+    ), [data.recibos_caja_membretados, receiptArchive.records]);
+    const invoiceRecords = useMemo(() => (
+        mergeRecordsByKey(invoiceArchive.records, data.facturas_membretadas_ventas || [])
+    ), [data.facturas_membretadas_ventas, invoiceArchive.records]);
     const savedInvoices = useMemo(() => (
-        [...(data.facturas_membretadas_ventas || [])]
+        [...invoiceRecords]
             .map(normalizeStampedInvoiceRecord)
             .filter((invoice) => isRecordInBillingBranch(invoice, selectedBranchId))
             .sort((a, b) => String(b.date).localeCompare(String(a.date)))
-    ), [data.facturas_membretadas_ventas, selectedBranchId]);
+    ), [invoiceRecords, selectedBranchId]);
     const invoiceIndex = useMemo(() => new Map(
         savedInvoices
             .map((invoice) => [getInvoiceDocId(invoice), invoice])
@@ -6217,11 +6339,11 @@ function CashReceiptHistory({ data, canEdit = true, branchContext }) {
     ), [buildAvailableCreditInvoices, editForm, editInvoiceSearch]);
 
     const receipts = useMemo(() => (
-        [...(data.recibos_caja_membretados || [])]
+        [...receiptRecords]
             .map(normalizeCashReceiptRecord)
             .filter((receipt) => isRecordInBillingBranch(receipt, selectedBranchId))
             .sort((a, b) => String(b.date).localeCompare(String(a.date)))
-    ), [data.recibos_caja_membretados, selectedBranchId]);
+    ), [receiptRecords, selectedBranchId]);
 
     const searchedReceipts = useMemo(() => filterRecords(receipts, search, [
         'date',
@@ -6419,7 +6541,7 @@ function CashReceiptHistory({ data, canEdit = true, branchContext }) {
                             type="button"
                             onClick={() => {
                                 setSearch('');
-                                setSelectedMonth('');
+                                setSelectedMonth(getMonth(todayString()));
                                 setSelectedDate('');
                             }}
                             className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-xs font-black uppercase tracking-[0.16em] text-slate-600 transition hover:border-[#e30613] hover:text-[#e30613]"
@@ -6428,6 +6550,11 @@ function CashReceiptHistory({ data, canEdit = true, branchContext }) {
                         </button>
                     </div>
                 </div>
+                {(receiptArchive.loading || invoiceArchive.loading) && (
+                    <div className="mt-3 rounded-2xl border border-sky-200 bg-sky-50 px-4 py-3 text-sm font-bold text-sky-800">
+                        Cargando recibos del rango seleccionado sin traer todo Firestore...
+                    </div>
+                )}
                 {message && <div className="mt-3 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-bold text-slate-700">{message}</div>}
                 <div className="mt-5 grid gap-3 md:grid-cols-3">
                     <SummaryCard label="Recibos" value={totals.count} />
@@ -7712,6 +7839,14 @@ function StampedInvoiceHistory({ data, canEdit = true, branchContext }) {
         savePrintLayout,
         saveNewPrintLayout,
     } = useStampedPrintTemplates(setMessage);
+    const invoiceArchive = useFirestoreDateArchive('facturas_membretadas_ventas', 'saleDate', selectedMonth, selectedDate);
+    const closureArchive = useFirestoreDateArchive('cierres_caja', 'date', selectedMonth, selectedDate);
+    const invoiceRecords = useMemo(() => (
+        mergeRecordsByKey(invoiceArchive.records, data.facturas_membretadas_ventas || [])
+    ), [data.facturas_membretadas_ventas, invoiceArchive.records]);
+    const closureRecords = useMemo(() => (
+        mergeRecordsByKey(closureArchive.records, data.cierres_caja || [])
+    ), [closureArchive.records, data.cierres_caja]);
 
     const branchFilterOptions = useMemo(() => {
         const allowed = new Set(allowedBranchIds);
@@ -7732,7 +7867,7 @@ function StampedInvoiceHistory({ data, canEdit = true, branchContext }) {
     }, [allowedBranchIds, branchFilter, selectedBranchId]);
 
     const savedInvoices = useMemo(() => (
-        [...(data.facturas_membretadas_ventas || [])]
+        [...invoiceRecords]
             .map(normalizeStampedInvoiceRecord)
             .filter((invoice) => {
                 const invoiceBranchId = getRecordBranchId(invoice);
@@ -7740,16 +7875,16 @@ function StampedInvoiceHistory({ data, canEdit = true, branchContext }) {
                     ? allowedBranchIds.includes(invoiceBranchId)
                     : invoiceBranchId === branchFilter;
             })
-            .sort((a, b) => String(b.date).localeCompare(String(a.date)))
-    ), [allowedBranchIds, branchFilter, data.facturas_membretadas_ventas, isCombinedBranchFilter]);
+            .sort(compareStampedInvoicesByNumber)
+    ), [allowedBranchIds, branchFilter, invoiceRecords, isCombinedBranchFilter]);
 
     const closureIndex = useMemo(() => {
         const map = new Map();
-        (data.cierres_caja || []).forEach((closure) => {
+        (closureRecords || []).forEach((closure) => {
             if (closure.id) map.set(closure.id, closure);
         });
         return map;
-    }, [data.cierres_caja]);
+    }, [closureRecords]);
 
     const searchedInvoices = useMemo(() => filterRecords(savedInvoices, search, [
         'date',
@@ -8382,7 +8517,7 @@ function StampedInvoiceHistory({ data, canEdit = true, branchContext }) {
                                 type="button"
                                 onClick={() => {
                                     setSearch('');
-                                    setSelectedMonth('');
+                                    setSelectedMonth(getMonth(todayString()));
                                     setSelectedDate('');
                                     setPaymentMethodFilter('');
                                     setClosureStatusFilter('');
@@ -8403,6 +8538,11 @@ function StampedInvoiceHistory({ data, canEdit = true, branchContext }) {
                         <SummaryCard label="Retenciones" value={fmt(stats.retentionTotal)} tone="amber" />
                     </div>
 
+                    {(invoiceArchive.loading || closureArchive.loading) && (
+                        <div className="mt-4 rounded-2xl border border-sky-200 bg-sky-50 p-3 text-sm font-bold text-sky-800">
+                            Cargando historial del rango seleccionado sin traer todo Firestore...
+                        </div>
+                    )}
                     {message && <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-3 text-sm font-bold text-slate-700">{message}</div>}
                 </Section>
 
@@ -8606,28 +8746,36 @@ function CashDifferences({ data, branchContext }) {
     const selectedBranchId = getActiveBillingBranchId(branchContext);
     const branchPayload = useMemo(() => getBranchPayload(selectedBranchId), [selectedBranchId]);
     const [message, setMessage] = useState('');
-    const [selectedMonth, setSelectedMonth] = useState('');
+    const [selectedMonth, setSelectedMonth] = useState(getMonth(todayString()));
     const [selectedDate, setSelectedDate] = useState('');
+    const closureArchive = useFirestoreDateArchive('cierres_caja', 'date', selectedMonth, selectedDate);
+    const differenceArchive = useFirestoreDateArchive('diferencias_caja', 'date', selectedMonth, selectedDate);
+    const closureRecords = useMemo(() => (
+        mergeRecordsByKey(closureArchive.records, data.cierres_caja || [])
+    ), [closureArchive.records, data.cierres_caja]);
+    const differenceRecords = useMemo(() => (
+        mergeRecordsByKey(differenceArchive.records, data.diferencias_caja || [])
+    ), [data.diferencias_caja, differenceArchive.records]);
 
     const closureIndex = useMemo(() => {
         const map = new Map();
-        (data.cierres_caja || [])
+        (closureRecords || [])
             .filter((closure) => isRecordInBillingBranch(closure, selectedBranchId))
             .forEach((closure) => {
             if (closure.id) map.set(closure.id, closure);
         });
         return map;
-    }, [data.cierres_caja, selectedBranchId]);
+    }, [closureRecords, selectedBranchId]);
 
     const differences = useMemo(() => (
-        [...(data.diferencias_caja || [])]
+        [...differenceRecords]
             .filter((item) => isRecordInBillingBranch(item, selectedBranchId))
             .map((item) => ({
                 ...item,
                 effectivePendingAmount: getReconciledCashDifferencePendingAmount(item, closureIndex),
             }))
             .sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')))
-    ), [closureIndex, data.diferencias_caja, selectedBranchId]);
+    ), [closureIndex, differenceRecords, selectedBranchId]);
 
     const filteredDifferences = useMemo(() => (
         differences.filter((item) => matchesHistoryDateFilters(item.date, selectedMonth, selectedDate))
@@ -8784,7 +8932,7 @@ function CashDifferences({ data, branchContext }) {
                         <button
                             type="button"
                             onClick={() => {
-                                setSelectedMonth('');
+                                setSelectedMonth(getMonth(todayString()));
                                 setSelectedDate('');
                             }}
                             className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-xs font-black uppercase tracking-[0.16em] text-slate-600 transition hover:border-[#e30613] hover:text-[#e30613]"
@@ -8793,6 +8941,11 @@ function CashDifferences({ data, branchContext }) {
                         </button>
                     </div>
                 </div>
+                {(closureArchive.loading || differenceArchive.loading) && (
+                    <div className="mb-4 rounded-2xl border border-sky-200 bg-sky-50 px-4 py-3 text-sm font-bold text-sky-800">
+                        Cargando diferencias del rango seleccionado sin traer todo Firestore...
+                    </div>
+                )}
                 <div className="overflow-x-auto">
                     <table className="min-w-full text-left text-sm">
                         <thead>
@@ -9314,13 +9467,14 @@ const buildCashClosureTicketData = (closure = {}) => {
     const posBanproTotal = safeNumber(payment.posBanpro ?? closure.posTotals?.banpro);
     const posLafiseTotal = safeNumber(payment.posLafise ?? closure.posTotals?.lafise);
     const transferBacTotal = safeNumber(payment.transferBac ?? closure.transferTotals?.bac);
+    const transferBac2Total = safeNumber(payment.transferBac2 ?? closure.transferTotals?.bac2);
     const transferBacUsdTotal = safeNumber(payment.transferBacUsd ?? closure.transferTotals?.bacUsd);
     const transferLafiseTotal = safeNumber(payment.transferLafise ?? closure.transferTotals?.lafise);
     const transferLafiseUsdTotal = safeNumber(payment.transferLafiseUsd ?? closure.transferTotals?.lafiseUsd);
     const transferBanproTotal = safeNumber(payment.transferBanpro ?? closure.transferTotals?.banpro);
     const houseDiscountTotal = safeNumber(payment.houseDiscountTotal ?? closure.houseDiscountTotal ?? context.houseDiscountTotal);
     const visibleCardTotal = safeNumber(posBacTotal + posBanproTotal + posLafiseTotal);
-    // BAC (2) no se imprime; queda absorbido en efectivo para cuadrar el ticket.
+    // BAC (2) no se imprime, pero participa en el calculo del efectivo/RC.
     const visibleTransferTotal = safeNumber(
         transferBacTotal
         + transferBacUsdTotal
@@ -9328,7 +9482,8 @@ const buildCashClosureTicketData = (closure = {}) => {
         + transferLafiseUsdTotal
         + transferBanproTotal
     );
-    const efectivoResidual = safeNumber(cashIncomeTotal - visibleCardTotal - visibleTransferTotal - houseDiscountTotal);
+    const rcTransferTotal = safeNumber(visibleTransferTotal + transferBac2Total);
+    const efectivoResidual = safeNumber(cashIncomeTotal - visibleCardTotal - rcTransferTotal - houseDiscountTotal);
     const paymentMethods = [
         buildTicketPaymentMethod({
             label: 'POS BAC TOTAL:',
@@ -10603,9 +10758,17 @@ function CashClosureHistory({ data, canEdit = true, branchContext }) {
     const [ticketPreviewClosure, setTicketPreviewClosure] = useState(null);
     const [dailyReportOpen, setDailyReportOpen] = useState(false);
     const [message, setMessage] = useState('');
+    const closureArchive = useFirestoreDateArchive('cierres_caja', 'date', selectedMonth, selectedDate);
+    const differenceArchive = useFirestoreDateArchive('diferencias_caja', 'date', selectedMonth, selectedDate);
+    const closureRecords = useMemo(() => (
+        mergeRecordsByKey(closureArchive.records, data.cierres_caja || [])
+    ), [closureArchive.records, data.cierres_caja]);
+    const differenceRecords = useMemo(() => (
+        mergeRecordsByKey(differenceArchive.records, data.diferencias_caja || [])
+    ), [data.diferencias_caja, differenceArchive.records]);
 
     const closures = useMemo(() => (
-        [...(data.cierres_caja || [])]
+        [...closureRecords]
             .filter((closure) => isRecordInBillingBranch(closure, selectedBranchId))
             .map((closure) => {
                 const totals = normalizeCashClosureStoredTotals(closure);
@@ -10627,7 +10790,7 @@ function CashClosureHistory({ data, canEdit = true, branchContext }) {
                 };
             })
             .sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')))
-    ), [branchPayload, data.cierres_caja, selectedBranchId]);
+    ), [branchPayload, closureRecords, selectedBranchId]);
 
     const clients = useMemo(() => (
         [...(data.clientes_facturacion || [])]
@@ -10642,7 +10805,7 @@ function CashClosureHistory({ data, canEdit = true, branchContext }) {
 
     const differencesByClosureId = useMemo(() => {
         const map = new Map();
-        (data.diferencias_caja || [])
+        (differenceRecords || [])
             .filter((item) => isRecordInBillingBranch(item, selectedBranchId))
             .forEach((item) => {
             const closureId = item.closureId || '';
@@ -10652,7 +10815,7 @@ function CashClosureHistory({ data, canEdit = true, branchContext }) {
             map.set(closureId, rows);
         });
         return map;
-    }, [data.diferencias_caja, selectedBranchId]);
+    }, [differenceRecords, selectedBranchId]);
 
     const searchedClosures = useMemo(() => filterRecords(closures, search, [
         'date',
@@ -11128,7 +11291,7 @@ function CashClosureHistory({ data, canEdit = true, branchContext }) {
                             type="button"
                             onClick={() => {
                                 setSearch('');
-                                setSelectedMonth('');
+                                setSelectedMonth(getMonth(todayString()));
                                 setSelectedDate('');
                                 setStatusFilter('');
                             }}
@@ -11150,6 +11313,11 @@ function CashClosureHistory({ data, canEdit = true, branchContext }) {
                 {message && (
                     <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-bold text-slate-700">
                         {message}
+                    </div>
+                )}
+                {(closureArchive.loading || differenceArchive.loading) && (
+                    <div className="mt-4 rounded-2xl border border-sky-200 bg-sky-50 px-4 py-3 text-sm font-bold text-sky-800">
+                        Cargando cierres del rango seleccionado sin traer todo Firestore...
                     </div>
                 )}
             </Section>
@@ -11311,19 +11479,27 @@ function RetentionHistory({ data, type, branchContext }) {
     const amountField = isMunicipal ? 'retentionMunicipal1' : 'retentionIr2';
     const title = isMunicipal ? 'Retencion Municipal' : 'Anticipo de IR';
     const eyebrow = isMunicipal ? '1% vinculado a facturas' : '2% vinculado a facturas';
+    const invoiceArchive = useFirestoreDateArchive('facturas_membretadas_ventas', 'saleDate', selectedMonth, selectedDate);
+    const closureArchive = useFirestoreDateArchive('cierres_caja', 'date', selectedMonth, selectedDate);
+    const invoiceRecords = useMemo(() => (
+        mergeRecordsByKey(invoiceArchive.records, data.facturas_membretadas_ventas || [])
+    ), [data.facturas_membretadas_ventas, invoiceArchive.records]);
+    const closureRecords = useMemo(() => (
+        mergeRecordsByKey(closureArchive.records, data.cierres_caja || [])
+    ), [closureArchive.records, data.cierres_caja]);
 
     const closureIndex = useMemo(() => {
         const map = new Map();
-        (data.cierres_caja || [])
+        (closureRecords || [])
             .filter((closure) => isRecordInBillingBranch(closure, selectedBranchId))
             .forEach((closure) => {
             if (closure.id) map.set(closure.id, closure);
         });
         return map;
-    }, [data.cierres_caja, selectedBranchId]);
+    }, [closureRecords, selectedBranchId]);
 
     const retentions = useMemo(() => (
-        [...(data.facturas_membretadas_ventas || [])]
+        [...invoiceRecords]
             .map(normalizeStampedInvoiceRecord)
             .filter((invoice) => isRecordInBillingBranch(invoice, selectedBranchId))
             .map((invoice) => ({
@@ -11333,7 +11509,7 @@ function RetentionHistory({ data, type, branchContext }) {
             }))
             .filter((invoice) => invoice.retentionAmount > 0)
             .sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')))
-    ), [amountField, closureIndex, data.facturas_membretadas_ventas, selectedBranchId]);
+    ), [amountField, closureIndex, invoiceRecords, selectedBranchId]);
 
     const searchedRetentions = useMemo(() => filterRecords(retentions, search, [
         'date',
@@ -11383,7 +11559,7 @@ function RetentionHistory({ data, type, branchContext }) {
                             type="button"
                             onClick={() => {
                                 setSearch('');
-                                setSelectedMonth('');
+                                setSelectedMonth(getMonth(todayString()));
                                 setSelectedDate('');
                             }}
                             className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-xs font-black uppercase tracking-[0.16em] text-slate-600 transition hover:border-[#e30613] hover:text-[#e30613]"
@@ -11393,6 +11569,11 @@ function RetentionHistory({ data, type, branchContext }) {
                     </div>
                 </div>
 
+                {(invoiceArchive.loading || closureArchive.loading) && (
+                    <div className="mt-4 rounded-2xl border border-sky-200 bg-sky-50 px-4 py-3 text-sm font-bold text-sky-800">
+                        Cargando retenciones del rango seleccionado sin traer todo Firestore...
+                    </div>
+                )}
                 <div className="mt-5 grid gap-3 md:grid-cols-3">
                     <SummaryCard label="Registros" value={filteredRetentions.length} />
                     <SummaryCard label="Total retencion" value={fmt(totalRetention)} tone="amber" />

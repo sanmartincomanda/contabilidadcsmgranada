@@ -52,6 +52,7 @@ import { buildPurchaseExpenseAccountingEntry, setAccountingEntryInBatch } from '
 import { buildPettyCashMovementPayload, pettyCashMovementRef } from '../services/pettyCash';
 import ProviderAutocomplete from './ProviderAutocomplete';
 import AccountingAccountSelect from './AccountingAccountSelect';
+import AgentAccountingAI from './AgentAccountingAI';
 
 // --- ICONOS SVG INLINE ---
 const Icons = {
@@ -82,7 +83,8 @@ const Icons = {
     dollar: "M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z",
     tag: "M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A1.994 1.994 0 013 12V7a4 4 0 014-4z",
     refresh: "M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15",
-    eye: "M15 12a3 3 0 11-6 0 3 3 0 016 0z M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"
+    eye: "M15 12a3 3 0 11-6 0 3 3 0 016 0z M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z",
+    sparkles: "M5 3v4M3 5h4m10-2v4m-2-2h4M6 14v7m-3.5-3.5h7M16 10l1.3 3.7L21 15l-3.7 1.3L16 20l-1.3-3.7L11 15l3.7-1.3L16 10z"
 };
 
 const Icon = ({ path, className = "w-5 h-5" }) => (
@@ -2836,7 +2838,7 @@ const EquityForm = ({ loading, setLoading, onSuccess, branchContext }) => {
 
 // --- COMPONENTE PRINCIPAL ---
 
-const VALID_TABS = ['Ingresos', 'Gastos', 'Inventario', 'Compras', 'Presupuesto', 'Cuentas por Cobrar', 'Patrimonio'];
+const VALID_TABS = ['Ingresos', 'Gastos', 'Compras', 'Agente IA', 'Inventario', 'Presupuesto', 'Cuentas por Cobrar', 'Patrimonio'];
 
 export function DataEntry({ categories, data, allowedTabs = null, branchContext }) {
     const [searchParams] = useSearchParams();
@@ -2924,6 +2926,7 @@ export function DataEntry({ categories, data, allowedTabs = null, branchContext 
         'Gastos': { icon: 'trendingDown', label: 'Gastos' },
         'Inventario': { icon: 'box', label: 'Inventario' },
         'Compras': { icon: 'shoppingCart', label: 'Compras' },
+        'Agente IA': { icon: 'sparkles', label: 'Agente IA' },
         'Presupuesto': { icon: 'target', label: 'Presupuesto' },
         'Cuentas por Cobrar': { icon: 'handCoin', label: 'C. Cobrar' },
         'Patrimonio': { icon: 'scale', label: 'Patrimonio' }
@@ -3269,7 +3272,7 @@ export function DataEntry({ categories, data, allowedTabs = null, branchContext 
                 </div>
             </section>
 
-            <div className="no-print flex justify-center">
+            {activeTab !== 'Agente IA' && <div className="no-print flex justify-center">
                 <div className="inline-flex rounded-2xl border border-slate-200 bg-white p-1 shadow-sm">
                     {[
                         ['ingresar', 'Ingresar', tabsConfig[activeTab].icon],
@@ -3290,9 +3293,13 @@ export function DataEntry({ categories, data, allowedTabs = null, branchContext 
                         </button>
                     ))}
                 </div>
-            </div>
+            </div>}
 
-            {entryView === 'ingresar' ? (
+            {activeTab === 'Agente IA' ? (
+                <div className="no-print animate-fade-in">
+                    <AgentAccountingAI providers={providers} branchContext={branchContext} />
+                </div>
+            ) : entryView === 'ingresar' ? (
                 <div className="no-print mx-auto max-w-4xl animate-fade-in">
                     <Card title={`Nuevo - ${tabsConfig[activeTab].label}`} icon={tabsConfig[activeTab].icon} gradient={true}>
                         {activeTab === 'Ingresos' && <IncomeForm loading={loading} setLoading={setLoading} onSuccess={handleSuccess} branchContext={branchContext} />}
