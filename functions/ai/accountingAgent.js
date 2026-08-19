@@ -1170,6 +1170,21 @@ async function processAccountingAgentInbox({
       completedAt: FieldValue.serverTimestamp(),
     }, { merge: true });
     await writeAudit(firestore, FieldValue, { event: 'PROCESSING_ERROR', messageId, error: error.message || 'Error desconocido' });
+    try {
+      await sendWhatsappText({
+        accessToken,
+        graphVersion,
+        phoneNumberId: claimed.phoneNumberId,
+        to: phone,
+        text: 'Recibí el documento, pero ocurrió un problema al analizarlo. El administrador ya puede ver el error en MARTIN IA y podrá reintentarlo sin que envíes nuevamente la foto.',
+        logger,
+      });
+    } catch (replyError) {
+      logger?.warn?.('No se pudo informar por WhatsApp el error de procesamiento', {
+        messageId,
+        error: replyError.message,
+      });
+    }
     throw error;
   }
 }
