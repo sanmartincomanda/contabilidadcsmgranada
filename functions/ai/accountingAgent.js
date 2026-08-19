@@ -250,6 +250,13 @@ function extractDeterministicConversationUpdates(text = '', draft = {}) {
   if (paymentMethod) updates.metodoPago = paymentMethod;
   if (key === 'CONTADO' && canonicalPaymentMethod(draft.metodoPago)) delete updates.metodoPago;
 
+  const referenceExplicitlyBlank = /\bSIN REFERENCIA\b/.test(key)
+    || (/\bREFERENCIA\b/.test(key) && /\b(?:EN BLANCO|VACIA|VACIO|NO TIENE|SIN DATO)\b/.test(key));
+  if (referenceExplicitlyBlank) {
+    updates.referenciaPago = '';
+    updates.referenciaConfirmadaSinDato = true;
+  }
+
   if (/\b(?:NIO|CORDOBA|CORDOBAS)\b/.test(key) || raw.includes('C$')) {
     updates.moneda = 'NIO';
     updates.tasaCambio = 1;
@@ -377,7 +384,9 @@ function findAccount(accounts, analysis) {
   if (type === 'compra') {
     return compatible.find((account) => normalizeKey(account.number || account.code) === '11060') || null;
   }
-  if (!requested) return null;
+  if (!requested) {
+    return compatible.find((account) => normalizeKey(account.number || account.code) === '5') || null;
+  }
   return compatible.find((account) => [account.id, account.number, account.code, account.name]
     .some((value) => normalizeKey(value) === requested)) || null;
 }
@@ -435,6 +444,10 @@ function applyDeterministicRules(analysis, catalog) {
   next.subtotal = money(next.subtotal);
   next.iva = money(next.iva);
   next.total = money(next.total);
+  if (next.iva === null && next.subtotal !== null && next.total !== null
+    && Math.abs(next.subtotal - next.total) <= 0.02) {
+    next.iva = 0;
+  }
   next.retencionIr2 = money(next.retencionIr2) ?? 0;
   next.retencionMunicipal1 = money(next.retencionMunicipal1) ?? 0;
   next.totalRetenciones = money(next.retencionIr2 + next.retencionMunicipal1);
@@ -508,7 +521,9 @@ function validateAnalysis(analysis, {
   if (!analysis.categoria || !analysis.subcategoria) missing.push('categoria');
   if (!analysis.accountingAccountId) missing.push('accountingAccountId');
   if (!PAYMENT_METHODS.includes(analysis.metodoPago)) missing.push('metodoPago');
-  if (isTransfer(analysis.metodoPago) && !analysis.referenciaPago) missing.push('referenciaPago');
+  if (isTransfer(analysis.metodoPago) && !analysis.referenciaPago && analysis.referenciaConfirmadaSinDato !== true) {
+    missing.push('referenciaPago');
+  }
   if (analysis.subtotal === null) missing.push('subtotal');
   if (analysis.iva === null) missing.push('iva');
   if (analysis.total === null) missing.push('total');
@@ -1253,7 +1268,8 @@ function validateManualDraftUpdate(current, updates, catalog, allowedBranches, o
   const allowedFields = [
     'tipoRegistro', 'branchId', 'fecha', 'vencimiento', 'providerId', 'providerCode', 'proveedor',
     'rucProveedor', 'numeroFactura', 'descripcion', 'categoria', 'subcategoria',
-    'accountingAccountId', 'accountingAccountCode', 'metodoPago', 'referenciaPago', 'subtotal', 'iva',
+    'accountingAccountId', 'accountingAccountCode', 'metodoPago', 'referenciaPago',
+    'referenciaConfirmadaSinDato', 'subtotal', 'iva',
     'total', 'retencionIr2', 'retencionMunicipal1', 'moneda', 'tasaCambio', 'soportes', 'confianza',
   ];
   const sanitized = {};

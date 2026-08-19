@@ -138,6 +138,15 @@ test('transferencia sin referencia queda incompleta', () => {
   assert.ok(result.datosFaltantes.includes('referenciaPago'));
 });
 
+test('transferencia puede quedar sin referencia cuando el usuario lo confirma', () => {
+  const updates = extractDeterministicConversationUpdates('Dejar en blanco la referencia', {
+    datosFaltantes: ['referenciaPago'],
+  });
+  const result = validate(validBase({ metodoPago: 'TRANSFERENCIA', ...updates }));
+  assert.equal(updates.referenciaConfirmadaSinDato, true);
+  assert.ok(!result.datosFaltantes.includes('referenciaPago'));
+});
+
 test('todos los métodos de pago oficiales son aceptados', () => {
   PAYMENT_METHODS.forEach((method) => {
     const result = validate(validBase({
@@ -180,6 +189,24 @@ test('respuesta en córdobas completa moneda y tasa sin otra pregunta', () => {
   const updates = extractDeterministicConversationUpdates('Moneda Córdobas\nSin tasa de cambio');
   assert.equal(updates.moneda, 'NIO');
   assert.equal(updates.tasaCambio, 1);
+});
+
+test('un gasto sin cuenta indicada usa automáticamente la cuenta cinco', () => {
+  const result = applyDeterministicRules(validBase({
+    providerId: 'energia-uno',
+    proveedor: 'ENERGIA CENTRAL',
+    rucProveedor: 'J0310000000004',
+    accountingAccountId: '',
+    accountingAccountCode: '',
+  }), catalog);
+  assert.equal(result.accountingAccountId, '5');
+  assert.equal(result.accountingAccountCode, '5');
+});
+
+test('subtotal igual al total implica IVA cero', () => {
+  const result = applyDeterministicRules(validBase({ subtotal: 8980.39, iva: null, total: 8980.39 }), catalog);
+  assert.equal(result.iva, 0);
+  assert.ok(!validate(result).datosFaltantes.includes('iva'));
 });
 
 test('retención sin soporte queda pendiente', () => {
