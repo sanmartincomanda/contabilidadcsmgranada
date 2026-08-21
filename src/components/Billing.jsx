@@ -9474,16 +9474,15 @@ const buildCashClosureTicketData = (closure = {}) => {
     const transferBanproTotal = safeNumber(payment.transferBanpro ?? closure.transferTotals?.banpro);
     const houseDiscountTotal = safeNumber(payment.houseDiscountTotal ?? closure.houseDiscountTotal ?? context.houseDiscountTotal);
     const visibleCardTotal = safeNumber(posBacTotal + posBanproTotal + posLafiseTotal);
-    // BAC (2) no se imprime, pero participa en el calculo del efectivo/RC.
     const visibleTransferTotal = safeNumber(
         transferBacTotal
+        + transferBac2Total
         + transferBacUsdTotal
         + transferLafiseTotal
         + transferLafiseUsdTotal
         + transferBanproTotal
     );
-    const rcTransferTotal = safeNumber(visibleTransferTotal + transferBac2Total);
-    const efectivoResidual = safeNumber(cashIncomeTotal - visibleCardTotal - rcTransferTotal - houseDiscountTotal);
+    const efectivoResidual = safeNumber(cashIncomeTotal - visibleCardTotal - visibleTransferTotal - houseDiscountTotal);
     const paymentMethods = [
         buildTicketPaymentMethod({
             label: 'POS BAC TOTAL:',
@@ -9510,6 +9509,12 @@ const buildCashClosureTicketData = (closure = {}) => {
             label: 'TRANSFERENCIA BAC TOTAL:',
             total: transferBacTotal,
             rows: getRowsByBankKey(context.transferRows, 'bac'),
+            type: 'transfer',
+        }),
+        buildTicketPaymentMethod({
+            label: 'TRANSFERENCIA BAC (2) TOTAL:',
+            total: transferBac2Total,
+            rows: getRowsByBankKey(context.transferRows, 'bac2'),
             type: 'transfer',
         }),
         buildTicketPaymentMethod({
@@ -9567,6 +9572,7 @@ const buildCashClosureTicketData = (closure = {}) => {
         posBanpro: posBanproTotal,
         posLafise: posLafiseTotal,
         transferBac: transferBacTotal,
+        transferBac2: transferBac2Total,
         transferBacUsd: transferBacUsdTotal,
         transferLafise: safeNumber(transferLafiseTotal + transferLafiseUsdTotal),
         transferBanpro: transferBanproTotal,
@@ -9670,6 +9676,7 @@ const buildDailyCashClosureTicketData = (closures = [], date = '') => {
         posBanpro: safeNumber(acc.posBanpro + ticket.posBanpro),
         posLafise: safeNumber(acc.posLafise + ticket.posLafise),
         transferBac: safeNumber(acc.transferBac + ticket.transferBac),
+        transferBac2: safeNumber(acc.transferBac2 + ticket.transferBac2),
         transferBacUsd: safeNumber(acc.transferBacUsd + ticket.transferBacUsd),
         transferLafise: safeNumber(acc.transferLafise + ticket.transferLafise),
         transferBanpro: safeNumber(acc.transferBanpro + ticket.transferBanpro),
@@ -9695,6 +9702,7 @@ const buildDailyCashClosureTicketData = (closures = [], date = '') => {
         posBanpro: 0,
         posLafise: 0,
         transferBac: 0,
+        transferBac2: 0,
         transferBacUsd: 0,
         transferLafise: 0,
         transferBanpro: 0,
