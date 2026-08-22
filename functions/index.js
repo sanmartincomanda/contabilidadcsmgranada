@@ -144,7 +144,10 @@ const USER_ACCESS_MODULES = [
   'ingresar',
   'caja_chica',
   'cuentas_pagar',
+  'cuentas_cobrar',
+  'traspasos_costos',
   'facturacion',
+  'declaraciones',
   'reportes',
   'categorias',
 ];
