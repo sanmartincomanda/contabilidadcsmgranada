@@ -347,6 +347,7 @@ async function fetchStampedInvoices(connection, startDate, endExclusive) {
     LEFT JOIN caja cj ON cj.caj_id = f.caj_id
     WHERE f.fecha >= ?
       AND f.fecha < ?
+      AND IFNULL(f.status, 0) >= 0
     ORDER BY f.fecha, f.fac_id
   `, [startDate, endExclusive]);
 
@@ -381,6 +382,7 @@ async function fetchStampedInvoices(connection, startDate, endExclusive) {
     LEFT JOIN caja cj ON cj.caj_id = f.caj_id
     WHERE v.fecha >= ?
       AND v.fecha < ?
+      AND IFNULL(f.status, 0) >= 0
     GROUP BY
       f.fac_id,
       f.folio,
@@ -499,6 +501,7 @@ async function fetchStampedInvoicesByIds(connection, facIds) {
     LEFT JOIN cliente cli ON cli.cli_id = f.cli_id
     LEFT JOIN caja cj ON cj.caj_id = f.caj_id
     WHERE f.fac_id IN (${placeholders(ids)})
+      AND IFNULL(f.status, 0) >= 0
     GROUP BY
       f.fac_id,
       f.folio,

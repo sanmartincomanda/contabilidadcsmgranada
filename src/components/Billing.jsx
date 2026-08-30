@@ -6668,6 +6668,11 @@ function StampedInvoices({ data, branchContext }) {
             }))
             .filter((invoice) => isRecordInBillingBranch(invoice, selectedBranchId))
             .filter((invoice) => {
+                const numericStatus = Number(invoice.status);
+                return (!Number.isFinite(numericStatus) || numericStatus >= 0)
+                    && (invoice.items || []).length > 0;
+            })
+            .filter((invoice) => {
                 const invoiceDate = String(invoice.date || '').substring(0, 10);
                 return invoiceDate >= sicarInvoiceStartDate && invoiceDate <= todaySicarInvoiceDate;
             })

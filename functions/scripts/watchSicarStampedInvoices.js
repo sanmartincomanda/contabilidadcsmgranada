@@ -74,6 +74,11 @@ function writeState(statePath, state) {
 function ensureStateShape(state = {}) {
   return {
     ...state,
+    pendingInvoiceFacIds: [...new Set(
+      (state.pendingInvoiceFacIds || [])
+        .map((facId) => Number(facId))
+        .filter(Number.isFinite)
+    )],
     invoiceFingerprints: { ...(state.invoiceFingerprints || {}) },
   };
 }
@@ -117,6 +122,13 @@ async function processStartupBackfill({ connection, db, options, state }) {
   const { startDate, endDate } = getBackfillRange(options.startupBackfillDays);
   const invoices = await fetchStampedInvoices(connection, startDate, addDays(endDate, 1));
   const maxFacId = invoices.reduce((max, invoice) => Math.max(max, Number(invoice.facId || 0)), 0);
+  const incompleteInvoices = invoices.filter((invoice) => !(invoice.items || []).length);
+  const completeInvoices = invoices.filter((invoice) => (invoice.items || []).length > 0);
+
+  state.pendingInvoiceFacIds = [...new Set([
+    ...(state.pendingInvoiceFacIds || []),
+    ...incompleteInvoices.map((invoice) => Number(invoice.facId)).filter(Number.isFinite),
+  ])];
 
   if (options.preview) {
     console.log(JSON.stringify({
@@ -125,6 +137,7 @@ async function processStartupBackfill({ connection, db, options, state }) {
       startDate,
       endDate,
       invoiceCount: invoices.length,
+      incompleteInvoiceCount: incompleteInvoices.length,
       maxFacId,
       invoices: invoices.map((invoice) => ({
         facId: invoice.facId,
@@ -139,7 +152,7 @@ async function processStartupBackfill({ connection, db, options, state }) {
 
   let writtenCount = 0;
   let skippedCount = 0;
-  for (const invoice of invoices) {
+  for (const invoice of completeInvoices) {
     const fingerprint = buildInvoiceFingerprint(invoice);
     if (!options.stageOnly && invoiceMatchesLocalState(state, invoice, fingerprint)) {
       skippedCount += 1;
@@ -158,6 +171,7 @@ async function processStartupBackfill({ connection, db, options, state }) {
       startDate,
       endDate,
       invoiceCount: invoices.length,
+      incompleteInvoiceCount: incompleteInvoices.length,
       writtenCount,
       skippedCount,
       invoiceFacIds: invoices.map((invoice) => invoice.facId),
@@ -168,7 +182,7 @@ async function processStartupBackfill({ connection, db, options, state }) {
     }));
   }
 
-  console.log(`[${new Date().toISOString()}] Backfill inicial ${startDate} a ${endDate}: ${invoices.length} factura/s revisadas, ${writtenCount} escrita/s, ${skippedCount} sin cambios.`);
+  console.log(`[${new Date().toISOString()}] Backfill inicial ${startDate} a ${endDate}: ${invoices.length} factura/s revisadas, ${writtenCount} escrita/s, ${skippedCount} sin cambios, ${incompleteInvoices.length} pendiente/s de articulos.`);
   return { count: invoices.length, maxFacId, skippedCount, writtenCount };
 }
 
@@ -186,14 +200,23 @@ async function fetchNewFacturaIds(connection, lastFacId, batchSize) {
 }
 
 async function processNewInvoices({ connection, db, lastFacId, options, state }) {
-  const ids = await fetchNewFacturaIds(connection, lastFacId, options.batchSize);
+  const newIds = await fetchNewFacturaIds(connection, lastFacId, options.batchSize);
+  const previousPendingIds = [...(state.pendingInvoiceFacIds || [])];
+  const ids = [...new Set([...previousPendingIds, ...newIds])];
   if (ids.length === 0) return { count: 0, lastFacId };
 
   const invoices = await fetchStampedInvoicesByIds(connection, ids);
+  const incompleteInvoices = invoices.filter((invoice) => !(invoice.items || []).length);
+  const completeInvoices = invoices.filter((invoice) => (invoice.items || []).length > 0);
+  const incompleteIds = new Set(incompleteInvoices.map((invoice) => Number(invoice.facId)).filter(Number.isFinite));
+  state.pendingInvoiceFacIds = [...incompleteIds];
+  const pendingStateChanged = previousPendingIds.join(',') !== state.pendingInvoiceFacIds.join(',');
+
   if (options.preview) {
     console.log(JSON.stringify({
       preview: true,
       ids,
+      incompleteInvoiceIds: state.pendingInvoiceFacIds,
       invoices: invoices.map((invoice) => ({
         facId: invoice.facId,
         invoiceNumber: invoice.invoiceNumber,
@@ -205,7 +228,7 @@ async function processNewInvoices({ connection, db, lastFacId, options, state })
   } else {
     let writtenCount = 0;
     let skippedCount = 0;
-    for (const invoice of invoices) {
+    for (const invoice of completeInvoices) {
       const fingerprint = buildInvoiceFingerprint(invoice);
       if (!options.stageOnly && invoiceMatchesLocalState(state, invoice, fingerprint)) {
         skippedCount += 1;
@@ -236,7 +259,8 @@ async function processNewInvoices({ connection, db, lastFacId, options, state })
 
   return {
     count: invoices.length,
-    lastFacId: Math.max(lastFacId, ...ids),
+    lastFacId: newIds.length ? Math.max(lastFacId, ...newIds) : lastFacId,
+    pendingStateChanged,
   };
 }
 
@@ -278,7 +302,7 @@ async function runWatcherSession(options) {
         lastFacId = result.lastFacId;
         state.lastFacId = lastFacId;
         writeState(options.statePath, state);
-      } else if (result.count > 0) {
+      } else if (result.pendingStateChanged) {
         writeState(options.statePath, state);
       }
 
