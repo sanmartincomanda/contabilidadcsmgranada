@@ -5,6 +5,10 @@ const {
   buildDailyRollupFingerprint,
   buildTicketFingerprint,
 } = require('./syncSicarTicketSales');
+const {
+  buildCancellationMarker,
+  findChangedCancellationMarkers,
+} = require('./watchSicarTicketSales');
 
 test('daily ticket rollup excludes cancelled sales and sums fiscal values', () => {
   const rollup = buildDailyRollup([
@@ -64,5 +68,26 @@ test('fingerprints are stable when object key order changes', () => {
   assert.equal(
     buildDailyRollupFingerprint({ total: 10, ticketCount: 1 }),
     buildDailyRollupFingerprint({ ticketCount: 1, total: 10 })
+  );
+});
+
+test('detects only new or changed SICAR cancellation markers', () => {
+  const first = buildCancellationMarker({
+    ven_id: 100,
+    status: -1,
+    can_caj_id: 2,
+    can_rcc_id: null,
+  });
+  const updated = buildCancellationMarker({
+    ven_id: 101,
+    status: -1,
+    can_caj_id: 3,
+    can_rcc_id: 7250,
+  });
+
+  assert.deepEqual(first, { saleId: 100, signature: '-1|2|' });
+  assert.deepEqual(
+    findChangedCancellationMarkers([first, updated], { 100: '-1|2|' }),
+    [updated]
   );
 });

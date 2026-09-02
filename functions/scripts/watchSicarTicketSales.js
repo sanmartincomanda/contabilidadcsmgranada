@@ -68,6 +68,7 @@ function writeState(statePath, state) {
 function normalizeState(state = {}) {
   return {
     ...state,
+    cancellationMarkers: { ...(state.cancellationMarkers || {}) },
     ticketFingerprints: { ...(state.ticketFingerprints || {}) },
     rollupFingerprints: { ...(state.rollupFingerprints || {}) },
   };
@@ -98,6 +99,44 @@ async function fetchNewSaleIds(connection, lastSaleId, batchSize) {
     LIMIT ${safeBatchSize}
   `, [Number(lastSaleId || 0)]);
   return rows.map((row) => Number(row.ven_id)).filter(Number.isFinite);
+}
+
+function buildCancellationMarker(row = {}) {
+  const saleId = Number(row.ven_id || row.saleId || 0);
+  const status = Number(row.status || 0);
+  const cancellationCashboxId = row.can_caj_id === null || row.can_caj_id === undefined
+    ? null
+    : Number(row.can_caj_id);
+  const cancellationClosureId = row.can_rcc_id === null || row.can_rcc_id === undefined
+    ? null
+    : Number(row.can_rcc_id);
+
+  return {
+    saleId,
+    signature: `${status}|${cancellationCashboxId ?? ''}|${cancellationClosureId ?? ''}`,
+  };
+}
+
+function findChangedCancellationMarkers(markers = [], knownMarkers = {}) {
+  return markers.filter((marker) => (
+    marker.saleId > 0
+    && knownMarkers[String(marker.saleId)] !== marker.signature
+  ));
+}
+
+async function fetchCancellationMarkers(connection, trackingStartSaleId) {
+  const startSaleId = Number(trackingStartSaleId || 0);
+  if (startSaleId <= 0) return [];
+
+  const [rows] = await connection.execute(`
+    SELECT ven_id, status, can_caj_id, can_rcc_id
+    FROM venta
+    WHERE ven_id >= ?
+      AND (status < 0 OR can_caj_id IS NOT NULL OR can_rcc_id IS NOT NULL)
+    ORDER BY ven_id
+  `, [startSaleId]);
+
+  return rows.map(buildCancellationMarker).filter((marker) => marker.saleId > 0);
 }
 
 async function writeChangedTickets({ db, entries, options, state }) {
@@ -177,6 +216,7 @@ function pruneState(state, oldestDate) {
 async function processBackfill({ connection, db, options, state }) {
   const range = getBackfillRange(options.startupBackfillDays);
   const entries = await fetchTicketSales(connection, range.startDate, range.endExclusive);
+  const saleIds = entries.map((entry) => Number(entry.saleId || 0)).filter((saleId) => saleId > 0);
   const result = await writeChangedTickets({ db, entries, options, state });
   const allDates = new Set(entries.map((entry) => entry.date).filter(Boolean));
   const rollupWrittenCount = await refreshDailyRollups({ connection, db, dates: allDates, options, state });
@@ -187,7 +227,8 @@ async function processBackfill({ connection, db, options, state }) {
   }
 
   return {
-    maxSaleId: entries.reduce((maximum, entry) => Math.max(maximum, Number(entry.saleId || 0)), 0),
+    maxSaleId: saleIds.length ? Math.max(...saleIds) : 0,
+    minSaleId: saleIds.length ? Math.min(...saleIds) : 0,
     writtenCount: result.writtenCount,
     rollupWrittenCount,
   };
@@ -202,6 +243,11 @@ async function processNewSales({ connection, db, lastSaleId, options, state }) {
     // eslint-disable-next-line no-await-in-loop
     const newIds = await fetchNewSaleIds(connection, cursor, options.batchSize);
     if (!newIds.length) break;
+
+    const minimumNewId = Math.min(...newIds);
+    if (!state.trackingStartSaleId || minimumNewId < state.trackingStartSaleId) {
+      state.trackingStartSaleId = minimumNewId;
+    }
 
     // eslint-disable-next-line no-await-in-loop
     const entries = await fetchTicketSalesByIds(connection, newIds);
@@ -224,6 +270,33 @@ async function processNewSales({ connection, db, lastSaleId, options, state }) {
   return cursor;
 }
 
+async function processCancellations({ connection, db, options, state }) {
+  const markers = await fetchCancellationMarkers(connection, state.trackingStartSaleId);
+  const changedMarkers = findChangedCancellationMarkers(markers, state.cancellationMarkers);
+  if (!changedMarkers.length) return 0;
+
+  const entries = await fetchTicketSalesByIds(connection, changedMarkers.map((marker) => marker.saleId));
+  const result = await writeChangedTickets({ db, entries, options, state });
+  const rollupWrittenCount = await refreshDailyRollups({
+    connection,
+    db,
+    dates: result.affectedDates,
+    options,
+    state,
+  });
+
+  changedMarkers.forEach((marker) => {
+    state.cancellationMarkers[String(marker.saleId)] = marker.signature;
+  });
+  writeState(options.statePath, state);
+
+  if (result.writtenCount || rollupWrittenCount) {
+    console.log(`[${new Date().toISOString()}] ${result.writtenCount} ticket/s anulado/s actualizado/s y ${rollupWrittenCount} resumen/es recalculados.`);
+  }
+
+  return result.writtenCount;
+}
+
 async function runWatcherSession(options) {
   const connection = await mysql.createConnection(getMysqlConfig());
   const db = options.preview ? null : initFirebase();
@@ -233,6 +306,10 @@ async function runWatcherSession(options) {
     const state = normalizeState(readState(options.statePath));
     const backfill = await processBackfill({ connection, db, options, state });
     let lastSaleId = Number(state.lastSaleId || 0);
+
+    if (!state.trackingStartSaleId && backfill.minSaleId > 0) {
+      state.trackingStartSaleId = backfill.minSaleId;
+    }
 
     if (!lastSaleId) {
       lastSaleId = Math.max(backfill.maxSaleId, await getCurrentMaxSaleId(connection));
@@ -249,6 +326,7 @@ async function runWatcherSession(options) {
 
     do {
       lastSaleId = await processNewSales({ connection, db, lastSaleId, options, state });
+      await processCancellations({ connection, db, options, state });
       if (options.once) break;
 
       if (Date.now() - lastRecentBackfillAt >= options.recentBackfillIntervalMs) {
@@ -295,17 +373,23 @@ async function main() {
   } while (true);
 }
 
-main().catch((error) => {
-  console.error(error);
-  process.exitCode = 1;
-});
+if (require.main === module) {
+  main().catch((error) => {
+    console.error(error);
+    process.exitCode = 1;
+  });
+}
 
 module.exports = {
+  buildCancellationMarker,
+  fetchCancellationMarkers,
   fetchNewSaleIds,
+  findChangedCancellationMarkers,
   getBackfillRange,
   normalizeState,
   parseArgs,
   processBackfill,
+  processCancellations,
   processNewSales,
   pruneState,
   refreshDailyRollups,
