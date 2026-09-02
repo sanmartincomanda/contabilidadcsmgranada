@@ -13,7 +13,6 @@ import {
     isPurchaseDiscountAdjustment,
     resolveIncomeEntries,
 } from '../services/incomeAggregation';
-import { syncSicarDailyIncome } from '../services/sicarIncomeSync';
 import { deleteExpenseTransaction, deletePurchaseTransaction, updateExpenseTransaction, updatePurchaseTransaction } from '../services/linkedTransactions';
 import {
     getProviderCode,
@@ -53,6 +52,7 @@ import { buildPettyCashMovementPayload, pettyCashMovementRef } from '../services
 import ProviderAutocomplete from './ProviderAutocomplete';
 import AccountingAccountSelect from './AccountingAccountSelect';
 import AgentAccountingAI from './AgentAccountingAI';
+import SicarTicketSalesPanel from './SicarTicketSalesPanel';
 
 // --- ICONOS SVG INLINE ---
 const Icons = {
@@ -1674,8 +1674,7 @@ const IncomeForm = ({ loading, setLoading, onSuccess, branchContext }) => {
     const [description, setDescription] = useState('VENTA DEL DIA');
     const [reference, setReference] = useState('');
     const [amount, setAmount] = useState('');
-    const [syncDate, setSyncDate] = useState(new Date().toISOString().substring(0, 10));
-    const [syncLoading, setSyncLoading] = useState(false);
+    const [ticketDate, setTicketDate] = useState(new Date().toISOString().substring(0, 10));
 
     const handleSubmit = async (e) => {
         e.preventDefault();
@@ -1721,43 +1720,14 @@ const IncomeForm = ({ loading, setLoading, onSuccess, branchContext }) => {
         }
     };
 
-    const handleSyncIncome = async () => {
-        setSyncLoading(true);
-        try {
-            const result = await syncSicarDailyIncome({ date: syncDate });
-            const syncedTotal = Number(result?.totalAmount || 0);
-            const syncedIva = Number(result?.totalIva || 0);
-            const syncedGrandTotal = Number(result?.grandTotal || syncedTotal);
-            const syncedCount = Number(result?.syncedCount || 0);
-            const syncedDate = result?.startDate || syncDate;
-            alert(`SICAR sincronizado para ${syncedDate}: ${syncedCount} registro(s). Subtotal ${fmt(syncedTotal)}, IVA ${fmt(syncedIva)}, total ${fmt(syncedGrandTotal)}.`);
-            onSuccess?.();
-        } catch (error) {
-            console.error('Error sincronizando SICAR:', error);
-            alert(error?.message || 'No se pudo sincronizar desde SICAR.');
-        } finally {
-            setSyncLoading(false);
-        }
-    };
-
     return (
         <div className="space-y-4">
             <div className="rounded-lg border border-[#f2c5c5] bg-[#fff8f8] px-4 py-2.5 text-xs font-semibold text-[#9f111a]">
                 Todo se registra en {branchPayload.branchName} · Serie {branchPayload.documentSeries}.
             </div>
 
-            <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4">
-                <div className="mb-3">
-                    <h4 className="text-xs font-bold uppercase tracking-wider text-emerald-800">Sincronizar desde SICAR</h4>
-                    <p className="text-xs text-emerald-700 mt-0.5">Sincroniza el total diario sin duplicar el ingreso manual del mismo dia.</p>
-                </div>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                    <Input label="Fecha SICAR" type="date" icon="calendar" value={syncDate} onChange={e => setSyncDate(e.target.value)} />
-                    <Button type="button" variant="success" disabled={syncLoading} className="self-end w-full" onClick={handleSyncIncome}>
-                        {syncLoading ? 'Sincronizando...' : 'Sincronizar SICAR'}
-                    </Button>
-                </div>
-            </div>
+            <Input label="Fecha de tickets SICAR" type="date" icon="calendar" value={ticketDate} onChange={e => setTicketDate(e.target.value)} />
+            <SicarTicketSalesPanel date={ticketDate} branchId={branchPayload.branchId} />
 
             <form onSubmit={handleSubmit} className="space-y-3 rounded-xl border border-stone-200 bg-white p-4">
                 <h4 className="text-xs font-bold uppercase tracking-wider text-stone-600">Ingreso manual</h4>
@@ -3098,7 +3068,7 @@ export function DataEntry({ categories, data, allowedTabs = null, branchContext 
                 total: Number(item.total ?? item.amount ?? item.monto ?? 0) || 0,
                 sourceLabel: isPurchaseDiscountAdjustment(item)
                     ? 'DESCUENTO SOBRE COMPRAS'
-                    : (item.source === 'sicar' ? 'SICAR' : 'MANUAL'),
+                    : (item.sourceType === 'ticket_sales_rollup' ? 'SICAR TICKETS' : (item.source === 'sicar' ? 'SICAR' : 'MANUAL')),
             }));
         }
 

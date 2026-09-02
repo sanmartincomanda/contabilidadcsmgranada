@@ -83,16 +83,20 @@ export const resolveReportIncomeEntries = (ingresos = []) => {
     const groupedByDate = new Map();
 
     resolveIncomeEntries(ingresos).forEach((income) => {
-        if (!groupedByDate.has(income.date)) {
-            groupedByDate.set(income.date, []);
+        const branchKey = income.branchId || income.branch || income.sucursal || 'general';
+        const groupKey = `${income.date}|${branchKey}`;
+        if (!groupedByDate.has(groupKey)) {
+            groupedByDate.set(groupKey, []);
         }
 
-        groupedByDate.get(income.date).push(income);
+        groupedByDate.get(groupKey).push(income);
     });
 
     return Array.from(groupedByDate.values()).flatMap((items) => {
         const sicarItems = items.filter((item) => item.source === 'sicar');
+        const ticketRollups = sicarItems.filter((item) => item.sourceType === 'ticket_sales_rollup');
         const adjustmentItems = items.filter(isPurchaseDiscountAdjustment);
+        if (ticketRollups.length > 0) return [...ticketRollups, ...adjustmentItems];
         return sicarItems.length > 0
             ? [...sicarItems, ...adjustmentItems]
             : items;

@@ -778,7 +778,7 @@ const buildTaxReport = (data, selectedMonth, branchScope = CONSOLIDATED_BRANCH_I
             sucursal: reportBranchLabel(item),
             type: 'IVA vendido',
             date: getDocDate(item),
-            source: item.source === 'sicar' ? 'SICAR venta diaria' : 'Ingreso manual',
+            source: item.sourceType === 'ticket_sales_rollup' ? 'SICAR tickets' : (item.source === 'sicar' ? 'SICAR venta diaria' : 'Ingreso manual'),
             document: item.dailySaleCode || item.reference || item.id || '',
             description: item.description || item.detalle || '',
             subtotal: accountingAmount(item),
