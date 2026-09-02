@@ -40,10 +40,26 @@ const escapeHtml = (value = '') => (
 
 const safeNumber = (value = 0) => {
     if (typeof value === 'number') return Number.isFinite(value) ? value : 0;
-    const normalized = String(value ?? '')
+    let normalized = String(value ?? '')
         .replace(/C\$/gi, '')
-        .replace(/,/g, '')
+        .replace(/\s/g, '')
+        .replace(/[^0-9,.-]/g, '')
         .trim();
+
+    const lastComma = normalized.lastIndexOf(',');
+    const lastDot = normalized.lastIndexOf('.');
+    if (lastComma >= 0 && lastDot >= 0) {
+        const decimalSeparator = lastComma > lastDot ? ',' : '.';
+        const thousandsSeparator = decimalSeparator === ',' ? /\./g : /,/g;
+        normalized = normalized.replace(thousandsSeparator, '');
+        if (decimalSeparator === ',') normalized = normalized.replace(',', '.');
+    } else if (lastComma >= 0) {
+        const decimalDigits = normalized.length - lastComma - 1;
+        normalized = decimalDigits > 0 && decimalDigits <= 2
+            ? normalized.replace(',', '.')
+            : normalized.replace(/,/g, '');
+    }
+
     const parsed = Number(normalized);
     return Number.isFinite(parsed) ? parsed : 0;
 };
@@ -666,6 +682,24 @@ export default function AccountsReceivable({ data = {}, branchContext }) {
         });
     };
 
+    const normalizeReceiptApplicationAmount = (invoiceId = '') => {
+        setReceiptForm((prev) => {
+            const applications = (prev.applications || []).map((application) => {
+                if (application.invoiceId !== invoiceId) return application;
+                const normalizedAmount = roundMoney(application.appliedAmount);
+                return {
+                    ...application,
+                    appliedAmount: normalizedAmount > 0 ? normalizedAmount.toFixed(2) : '',
+                };
+            });
+            return {
+                ...prev,
+                applications,
+                amount: String(getReceiptApplicationsTotal(applications) || ''),
+            };
+        });
+    };
+
     const receiptRetentionSuggestion = useMemo(() => (
         calculateReceiptRetentionSuggestion(receiptInvoices, receiptForm.applications)
     ), [receiptForm.applications, receiptInvoices]);
@@ -693,7 +727,7 @@ export default function AccountsReceivable({ data = {}, branchContext }) {
             const applications = (receiptForm.applications || [])
                 .map((application) => ({
                     ...application,
-                    appliedAmount: safeNumber(application.appliedAmount),
+                    appliedAmount: roundMoney(application.appliedAmount),
                 }))
                 .filter((application) => application.invoiceId && application.appliedAmount > 0);
             const amount = getReceiptApplicationsTotal(applications);
@@ -742,7 +776,7 @@ export default function AccountsReceivable({ data = {}, branchContext }) {
                     customerName: invoice.customerName || '',
                     appliedAmount: application.appliedAmount,
                     balanceBeforeApplication: safeNumber(invoice.balance),
-                    remainingBalance: safeNumber(Math.max(safeNumber(invoice.balance) - application.appliedAmount, 0)),
+                    remainingBalance: roundMoney(Math.max(safeNumber(invoice.balance) - application.appliedAmount, 0)),
                 };
             });
             const concept = String(receiptForm.concept || '').trim() || `Pago facturas ${invoiceApplications.map((application) => application.invoiceNumber).filter(Boolean).join(', ')}`.trim();
@@ -792,7 +826,7 @@ export default function AccountsReceivable({ data = {}, branchContext }) {
             batch.set(doc(db, 'recibos_caja_membretados', receiptId), receiptPayload, { merge: true });
             invoiceApplications.forEach((application) => {
                 const invoice = invoiceIndex.get(application.invoiceId);
-                const nextPaid = safeNumber(getCreditPaidAmount(invoice) + application.appliedAmount);
+                const nextPaid = roundMoney(getCreditPaidAmount(invoice) + application.appliedAmount);
                 const receiptIds = [...new Set([...getCreditReceiptIds(invoice), receiptId])];
                 batch.set(doc(db, 'facturas_membretadas_ventas', application.invoiceId), {
                     ...buildCreditSnapshot(invoice, nextPaid, receiptIds),
@@ -1054,10 +1088,41 @@ export default function AccountsReceivable({ data = {}, branchContext }) {
                                     {receiptPaymentMethods.map((method) => <option key={method} value={method}>{method}</option>)}
                                 </select>
                             </label>
-                            <label className="space-y-2">
-                                <span className={labelClass}>Total aplicado</span>
-                                <input className={inputClass} value={fmt(getReceiptApplicationsTotal(receiptForm.applications))} readOnly />
-                            </label>
+                            <div className="space-y-2">
+                                <span className={labelClass}>{receiptInvoices.length === 1 ? 'Monto del abono parcial' : 'Total aplicado'}</span>
+                                {receiptInvoices.length === 1 ? (
+                                    <div className="space-y-2">
+                                        <div className="flex gap-2">
+                                            <input
+                                                type="text"
+                                                inputMode="decimal"
+                                                className={`${inputClass} font-mono text-lg font-black text-emerald-700`}
+                                                value={receiptForm.applications?.[0]?.appliedAmount || ''}
+                                                onChange={(event) => updateReceiptApplicationAmount(receiptForm.applications?.[0]?.invoiceId, event.target.value)}
+                                                onBlur={() => normalizeReceiptApplicationAmount(receiptForm.applications?.[0]?.invoiceId)}
+                                                placeholder="0.00"
+                                                aria-label="Monto del abono parcial"
+                                                required
+                                            />
+                                            <button
+                                                type="button"
+                                                onClick={() => updateReceiptApplicationAmount(
+                                                    receiptForm.applications?.[0]?.invoiceId,
+                                                    String(roundMoney(receiptInvoices[0]?.balance || receiptForm.applications?.[0]?.balance) || '')
+                                                )}
+                                                className="shrink-0 rounded-2xl border border-emerald-200 bg-emerald-50 px-3 text-[10px] font-black uppercase tracking-[0.12em] text-emerald-700 transition hover:bg-emerald-100"
+                                            >
+                                                Saldo completo
+                                            </button>
+                                        </div>
+                                        <p className="text-xs font-semibold text-slate-500">
+                                            Puedes ingresar cualquier monto mayor que cero hasta {fmt(receiptInvoices[0]?.balance)}. El resto quedara pendiente.
+                                        </p>
+                                    </div>
+                                ) : (
+                                    <input className={inputClass} value={fmt(getReceiptApplicationsTotal(receiptForm.applications))} readOnly />
+                                )}
+                            </div>
                             <label className="space-y-2">
                                 <span className={labelClass}>Referencia</span>
                                 <input className={inputClass} value={receiptForm.reference} onChange={(event) => updateReceiptForm('reference', event.target.value)} placeholder="Transferencia, POS, cheque..." />
@@ -1133,13 +1198,13 @@ export default function AccountsReceivable({ data = {}, branchContext }) {
                                                         <td className="px-4 py-3 text-right font-mono font-black text-amber-700">{fmt(invoice.balance || application.balance)}</td>
                                                         <td className="px-4 py-3">
                                                             <input
-                                                                type="number"
-                                                                step="0.01"
-                                                                min="0"
-                                                                max={safeNumber(invoice.balance || application.balance)}
+                                                                type="text"
+                                                                inputMode="decimal"
                                                                 className={`${inputClass} text-right font-mono`}
                                                                 value={application.appliedAmount}
                                                                 onChange={(event) => updateReceiptApplicationAmount(application.invoiceId, event.target.value)}
+                                                                onBlur={() => normalizeReceiptApplicationAmount(application.invoiceId)}
+                                                                aria-label={`Monto aplicado a factura ${application.invoiceNumber || invoice.invoiceNumber || ''}`}
                                                                 required
                                                             />
                                                         </td>
