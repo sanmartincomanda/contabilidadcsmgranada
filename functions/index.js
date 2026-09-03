@@ -152,6 +152,7 @@ const USER_ACCESS_MODULES = [
   'categorias',
 ];
 const DEFAULT_BRANCH_ID = 'granada';
+const TICKET_INCOME_START_DATE = '2026-09-03';
 const USER_ACCESS_BRANCHES = ['granada', 'nindiri'];
 const PURCHASE_CATEGORY_PAYLOAD = {
   category: 'Costos de venta / compras',
@@ -803,6 +804,13 @@ async function executeIncomeSync({ startDate, endDate, preview, actorEmail }) {
 
   if (endDate < startDate) {
     throw new HttpsError('invalid-argument', 'endDate no puede ser menor que startDate.');
+  }
+
+  if (endDate >= TICKET_INCOME_START_DATE) {
+    throw new HttpsError(
+      'failed-precondition',
+      `La venta diaria quedo deshabilitada desde ${TICKET_INCOME_START_DATE}. Los ingresos de ventas provienen de los tickets SICAR.`
+    );
   }
 
   const entries = await fetchDailyIncomeRows({
@@ -2098,6 +2106,16 @@ async function processRawSale(rawId, options = {}) {
       errorAt: FieldValue.serverTimestamp(),
     }, { merge: true });
     throw new Error(message);
+  }
+
+  if (normalized.date >= TICKET_INCOME_START_DATE) {
+    await ignoreRawDocument(lock.ref, 'ticket_income_cutover', normalized.date);
+    return {
+      skipped: true,
+      reason: 'ticket_income_cutover',
+      rawDate: normalized.date,
+      ticketIncomeStartDate: TICKET_INCOME_START_DATE,
+    };
   }
 
   if (!isOnOrAfterCutover(normalized.date)) {

@@ -56,6 +56,29 @@ test('daily ticket rollup excludes cancelled sales and sums fiscal values', () =
   assert.deepEqual(rollup.paymentBreakdown, [{ method: 'Efectivo', total: 109 }]);
 });
 
+test('daily ticket rollup supports a remote branch and tickets without payment detail', () => {
+  const rollup = buildDailyRollup([{
+    id: 'nindiri-ticket-1',
+    saleId: 1454,
+    status: 'active',
+    isCancelled: false,
+    subtotal: 132,
+    subtotalExento: 132,
+    total: 132,
+    itemCount: 1,
+  }], '2026-09-03', {
+    branchId: 'nindiri',
+    branchName: 'CARNES SAN MARTIN NINDIRI',
+  });
+
+  assert.equal(rollup.id, 'sicar_ticket_sales_nindiri_20260903');
+  assert.equal(rollup.branchId, 'nindiri');
+  assert.equal(rollup.branchName, 'CARNES SAN MARTIN NINDIRI');
+  assert.equal(rollup.ticketCount, 1);
+  assert.equal(rollup.total, 132);
+  assert.deepEqual(rollup.paymentBreakdown, []);
+});
+
 test('fingerprints are stable when object key order changes', () => {
   const first = buildTicketFingerprint({
     saleId: 10,

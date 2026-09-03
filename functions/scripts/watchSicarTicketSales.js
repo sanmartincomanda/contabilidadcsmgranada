@@ -29,6 +29,7 @@ const DEFAULT_INTERVAL_MS = 10000;
 const DEFAULT_BATCH_SIZE = 100;
 const DEFAULT_STARTUP_BACKFILL_DAYS = 2;
 const DEFAULT_RECENT_BACKFILL_INTERVAL_MS = 60000;
+const TICKET_INCOME_START_DATE = '2026-09-03';
 
 function parseArgs(argv) {
   return argv.reduce((options, argument) => {
@@ -334,6 +335,75 @@ function pruneState(state, oldestDate) {
   });
 }
 
+function startRemoteBranchRollups({ db, options }) {
+  if (!db || options.preview) return () => {};
+
+  const localBranch = String(process.env.SICAR_BRANCH_ID || process.env.BRANCH_ID || 'granada').trim().toLowerCase();
+  const startDate = [getBackfillRange(options.startupBackfillDays).startDate, TICKET_INCOME_START_DATE].sort().at(-1);
+  const fingerprints = new Map();
+  let previousKeys = new Set();
+  let processing = Promise.resolve();
+
+  const processSnapshot = async (snapshot) => {
+    const groups = new Map();
+
+    snapshot.docs.forEach((ticketDoc) => {
+      const ticket = { id: ticketDoc.id, ...ticketDoc.data() };
+      const branchId = String(ticket.branchId || ticket.branch || '').trim().toLowerCase();
+      const date = toDateString(ticket.date || ticket.saleDate);
+      if (!branchId || branchId === localBranch || !date) return;
+
+      const key = `${branchId}|${date}`;
+      const group = groups.get(key) || {
+        branchId,
+        branchName: ticket.branchName || ticket.sourceBranch || branchId.toUpperCase(),
+        date,
+        entries: [],
+      };
+      group.entries.push(ticket);
+      groups.set(key, group);
+    });
+
+    const currentKeys = new Set(groups.keys());
+    const keysToRefresh = new Set([...previousKeys, ...currentKeys]);
+
+    for (const key of [...keysToRefresh].sort()) {
+      const [branchId, date] = key.split('|');
+      const group = groups.get(key) || {
+        branchId,
+        branchName: branchId.toUpperCase(),
+        date,
+        entries: [],
+      };
+      const rollup = buildDailyRollup(group.entries, date, {
+        branchId: group.branchId,
+        branchName: group.branchName,
+      });
+      const fingerprint = buildDailyRollupFingerprint(rollup);
+      if (fingerprints.get(rollup.id) === fingerprint) continue;
+
+      // eslint-disable-next-line no-await-in-loop
+      await writeDailyRollup(db, rollup, fingerprint);
+      fingerprints.set(rollup.id, fingerprint);
+      console.log(`[${new Date().toISOString()}] Resumen remoto ${group.branchId} ${date}: ${rollup.ticketCount} ticket/s, total ${rollup.total}.`);
+    }
+
+    previousKeys = currentKeys;
+  };
+
+  const unsubscribe = db.collection('sicar_ventas_tickets')
+    .where('date', '>=', startDate)
+    .onSnapshot((snapshot) => {
+      processing = processing
+        .then(() => processSnapshot(snapshot))
+        .catch((error) => console.error(`[${new Date().toISOString()}] No se pudo actualizar el resumen remoto de tickets:`, error.message || error));
+    }, (error) => {
+      console.error(`[${new Date().toISOString()}] Listener remoto de tickets interrumpido:`, error.message || error);
+    });
+
+  return unsubscribe;
+}
+
 async function processBackfill({ connection, db, options, state }) {
   const range = getBackfillRange(options.startupBackfillDays);
   const entries = await fetchTicketSales(connection, range.startDate, range.endExclusive);
@@ -421,6 +491,7 @@ async function processCancellations({ connection, db, options, state }) {
 async function runWatcherSession(options) {
   const connection = await mysql.createConnection(getMysqlConfig());
   const db = options.preview ? null : initFirebase();
+  const stopRemoteBranchRollups = startRemoteBranchRollups({ db, options });
 
   try {
     if (options.resetState && fs.existsSync(options.statePath)) fs.unlinkSync(options.statePath);
@@ -473,6 +544,7 @@ async function runWatcherSession(options) {
       await sleep(options.intervalMs);
     } while (true);
   } finally {
+    stopRemoteBranchRollups();
     await connection.end().catch(() => {});
   }
 }
@@ -534,5 +606,6 @@ module.exports = {
   processNewSales,
   pruneState,
   refreshDailyRollups,
+  startRemoteBranchRollups,
   writeChangedTickets,
 };

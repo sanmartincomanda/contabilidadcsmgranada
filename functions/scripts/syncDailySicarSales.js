@@ -11,6 +11,7 @@ const TIMEZONE = 'America/Managua';
 const DEFAULT_KEY_PATH = 'C:\\SICAR\\keys\\firebase-adminsdk.json';
 const DEFAULT_EXCLUDED_CLIENT_ID = 7878;
 const DEFAULT_EXCLUDED_CLIENT_NAME = 'CARNES AMPARITO';
+const TICKET_INCOME_START_DATE = '2026-09-03';
 
 function loadEnvFile(filePath) {
   if (!fs.existsSync(filePath)) return;
@@ -472,6 +473,10 @@ async function main() {
 
   if (endDate < startDate) {
     throw new Error('endDate no puede ser menor que startDate.');
+  }
+
+  if (endDate >= TICKET_INCOME_START_DATE) {
+    throw new Error(`La venta diaria quedo deshabilitada desde ${TICKET_INCOME_START_DATE}. Use el watcher de tickets SICAR.`);
   }
 
   const connection = await mysql.createConnection(getMysqlConfig());

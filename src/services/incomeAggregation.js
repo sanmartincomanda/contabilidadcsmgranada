@@ -17,6 +17,8 @@ const normalizeText = (value = '') => (
 );
 
 export const PURCHASE_DISCOUNT_ADJUSTMENT_TYPE = 'purchase_discount';
+export const OTHER_INCOME_ENTRY_TYPE = 'other_income';
+export const SICAR_TICKET_INCOME_START_DATE = '2026-09-03';
 
 export const isPurchaseDiscountAdjustment = (income = {}) => {
     const entryType = String(income?.entryType || '').trim();
@@ -37,6 +39,15 @@ export const isPurchaseDiscountAdjustment = (income = {}) => {
 
     return searchable.includes('DESCUENTO SOBRE COMPRAS');
 };
+
+export const isOtherIncome = (income = {}) => (
+    !isPurchaseDiscountAdjustment(income)
+    && (
+        income?.entryType === OTHER_INCOME_ENTRY_TYPE
+        || income?.accountingType === OTHER_INCOME_ENTRY_TYPE
+        || income?.source === 'manual'
+    )
+);
 
 export const getIncomeDate = (income) => normalizeDate(income?.date || income?.fecha || income?.timestamp);
 export const getIncomeAmount = (income) => {
@@ -63,13 +74,21 @@ const normalizeIncomeEntry = (income) => {
         subtotalExento: normalizeAmount(income?.subtotalExento ?? income?.subtotal0 ?? 0),
         iva: normalizeAmount(income?.iva ?? 0),
         total: normalizeAmount(income?.total ?? income?.amount ?? income?.monto ?? 0),
-        description: income?.description || income?.detalle || (source === 'sicar' ? 'Ingreso diario SICAR' : 'Ingreso manual'),
+        description: income?.description || income?.detalle || (source === 'sicar' ? 'Ingreso por tickets SICAR' : 'Otro ingreso'),
         reference: income?.reference || income?.referencia || '',
-        entryType: income?.entryType || (isPurchaseDiscount ? PURCHASE_DISCOUNT_ADJUSTMENT_TYPE : 'income'),
-        accountingType: income?.accountingType || (isPurchaseDiscount ? 'cost_adjustment' : 'income'),
+        entryType: income?.entryType || (
+            isPurchaseDiscount
+                ? PURCHASE_DISCOUNT_ADJUSTMENT_TYPE
+                : (source === 'manual' ? OTHER_INCOME_ENTRY_TYPE : 'income')
+        ),
+        accountingType: income?.accountingType || (
+            isPurchaseDiscount
+                ? 'cost_adjustment'
+                : (source === 'manual' ? OTHER_INCOME_ENTRY_TYPE : 'income')
+        ),
         costAdjustmentType: income?.costAdjustmentType || (isPurchaseDiscount ? PURCHASE_DISCOUNT_ADJUSTMENT_TYPE : ''),
         source,
-        sourceLabel: isPurchaseDiscount ? 'DESCUENTO SOBRE COMPRAS' : (source === 'sicar' ? 'SICAR' : 'MANUAL'),
+        sourceLabel: isPurchaseDiscount ? 'DESCUENTO SOBRE COMPRAS' : (source === 'sicar' ? 'SICAR' : 'OTRO INGRESO'),
     };
 };
 
@@ -96,10 +115,18 @@ export const resolveReportIncomeEntries = (ingresos = []) => {
         const sicarItems = items.filter((item) => item.source === 'sicar');
         const ticketRollups = sicarItems.filter((item) => item.sourceType === 'ticket_sales_rollup');
         const adjustmentItems = items.filter(isPurchaseDiscountAdjustment);
-        if (ticketRollups.length > 0) return [...ticketRollups, ...adjustmentItems];
-        return sicarItems.length > 0
-            ? [...sicarItems, ...adjustmentItems]
-            : items;
+        const otherIncomeItems = items.filter((item) => item.source !== 'sicar' && !isPurchaseDiscountAdjustment(item));
+        const legacySicarItems = sicarItems.filter((item) => item.sourceType !== 'ticket_sales_rollup');
+        const date = items[0]?.date || '';
+
+        // From the cutover onward, only the ticket rollup represents SICAR sales.
+        // Manual entries remain independent so extraordinary income is never hidden.
+        if (date >= SICAR_TICKET_INCOME_START_DATE) {
+            return [...ticketRollups, ...otherIncomeItems, ...adjustmentItems];
+        }
+
+        const historicalSicarItems = legacySicarItems.length > 0 ? legacySicarItems : ticketRollups;
+        return [...historicalSicarItems, ...otherIncomeItems, ...adjustmentItems];
     });
 };
 

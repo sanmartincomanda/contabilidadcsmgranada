@@ -2261,6 +2261,44 @@ const getSicarPaymentMethodForAccounting = (value = '') => {
     return PAYMENT_METHODS.find((method) => normalizeText(method) === normalized) || '';
 };
 
+const SICAR_ORIGIN_PAYMENT_FILTERS = [
+    { value: 'all', label: 'Todos los metodos' },
+    { value: 'card', label: 'Tarjeta' },
+    { value: 'cash', label: 'Efectivo' },
+    { value: 'transfer', label: 'Transferencia' },
+    { value: 'credit', label: 'Credito' },
+];
+
+const getSicarOriginPaymentTypes = (record = {}) => {
+    const types = new Set();
+    const methods = [
+        ...(record.paymentBreakdown || []).map((payment) => payment.method),
+        record.paymentMethod,
+    ].filter(Boolean);
+
+    methods.forEach((method) => {
+        const normalized = normalizeText(method);
+        if (normalized.includes('CREDITO')) types.add('credit');
+        if (normalized.includes('EFECTIVO')) types.add('cash');
+        if (normalized.includes('TRANSFER')) types.add('transfer');
+        if (normalized.includes('TARJETA') || normalized.includes('POS')) types.add('card');
+    });
+
+    if (
+        safeNumber(record.sicarCreditTotal || record.creditAmount) > 0
+        || (record.sicarCreditIds || []).length > 0
+        || normalizeText(record.saleType).includes('CREDITO')
+    ) {
+        types.add('credit');
+    }
+
+    return [...types];
+};
+
+const getSicarOriginPaymentLabel = (type) => (
+    SICAR_ORIGIN_PAYMENT_FILTERS.find((option) => option.value === type)?.label || type
+);
+
 const getSicarOriginStateMeta = (state = 'pending') => ({
     pending: { label: 'Pendiente', tone: 'amber' },
     linked: { label: 'Vinculado', tone: 'green' },
@@ -2281,19 +2319,23 @@ const SicarOriginBrowser = ({
 }) => {
     const [search, setSearch] = useState('');
     const [statusFilter, setStatusFilter] = useState('all');
+    const [paymentFilter, setPaymentFilter] = useState('all');
     const [page, setPage] = useState(1);
     const filtered = useMemo(() => {
         const byStatus = statusFilter === 'all'
             ? records
             : records.filter((record) => record.accountingState === statusFilter);
-        return filterRecords(byStatus, search, [
+        const byPayment = kind !== 'invoice' || paymentFilter === 'all'
+            ? byStatus
+            : byStatus.filter((record) => getSicarOriginPaymentTypes(record).includes(paymentFilter));
+        return filterRecords(byPayment, search, [
             'date', 'originCode', 'originTypeLabel', 'customerName', 'customerRfc',
             'cashboxName', 'linkedLabel', 'applicationLabel', 'total', 'amount',
         ]);
-    }, [records, search, statusFilter]);
+    }, [kind, paymentFilter, records, search, statusFilter]);
     const paged = useMemo(() => paginateRecords(filtered, page, 12), [filtered, page]);
 
-    useEffect(() => { setPage(1); }, [search, statusFilter]);
+    useEffect(() => { setPage(1); }, [paymentFilter, search, statusFilter]);
     useEffect(() => {
         if (page !== paged.page) setPage(paged.page);
     }, [page, paged.page]);
@@ -2404,6 +2446,23 @@ const SicarOriginBrowser = ({
                         </button>
                     ))}
                 </div>
+                {kind === 'invoice' && (
+                    <div className="rounded-3xl border border-emerald-200 bg-emerald-50/60 p-3">
+                        <div className="mb-2 text-[9px] font-black uppercase tracking-[0.2em] text-emerald-700">Metodo de pago de origen SICAR</div>
+                        <div className="flex flex-wrap gap-2">
+                            {SICAR_ORIGIN_PAYMENT_FILTERS.map((option) => (
+                                <button
+                                    key={option.value}
+                                    type="button"
+                                    onClick={() => setPaymentFilter(option.value)}
+                                    className={`rounded-full border px-4 py-2 text-[10px] font-black uppercase tracking-[0.16em] transition ${paymentFilter === option.value ? 'border-emerald-700 bg-emerald-700 text-white' : 'border-emerald-200 bg-white text-emerald-700 hover:border-emerald-500'}`}
+                                >
+                                    {option.label}
+                                </button>
+                            ))}
+                        </div>
+                    </div>
+                )}
             </div>
             <div className="mt-4 grid gap-3 lg:grid-cols-2">
                 {paged.records.map((record) => {
@@ -2426,6 +2485,15 @@ const SicarOriginBrowser = ({
                                     <div className="mt-1 text-xs font-bold text-slate-500">
                                         {record.date || '-'} · {record.cashboxName || 'Caja sin identificar'} · {kind === 'invoice' ? `${record.itemCount || 0} articulo(s)` : `${record.applicationCount || 0} factura(s) aplicada(s)`}
                                     </div>
+                                    {kind === 'invoice' && getSicarOriginPaymentTypes(record).length > 0 && (
+                                        <div className="mt-2 flex flex-wrap gap-1.5">
+                                            {getSicarOriginPaymentTypes(record).map((type) => (
+                                                <span key={type} className="rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-[9px] font-black uppercase tracking-[0.12em] text-emerald-700">
+                                                    {getSicarOriginPaymentLabel(type)}
+                                                </span>
+                                            ))}
+                                        </div>
+                                    )}
                                 </div>
                                 <div className="shrink-0 text-right font-mono text-base font-black text-slate-950">{fmt(record.total ?? record.amount)}</div>
                             </div>

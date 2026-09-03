@@ -407,13 +407,13 @@ function buildTicketFingerprint(entry = {}) {
   });
 }
 
-function buildDailyRollup(entries = [], date = '') {
+function buildDailyRollup(entries = [], date = '', branchConfig = getBranchConfig()) {
   const activeEntries = entries.filter((entry) => !entry.isCancelled && entry.status === 'active');
-  const { branchId, branchName } = getBranchConfig();
+  const { branchId, branchName } = branchConfig;
   const paymentMap = new Map();
 
   activeEntries.forEach((entry) => {
-    entry.paymentBreakdown.forEach((payment) => {
+    (entry.paymentBreakdown || []).forEach((payment) => {
       const key = String(payment.method || 'SIN METODO').trim();
       paymentMap.set(key, money((paymentMap.get(key) || 0) + money(payment.amount)));
     });
