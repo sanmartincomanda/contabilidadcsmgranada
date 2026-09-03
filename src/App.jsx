@@ -1266,10 +1266,12 @@ function AppContent() {
     const billingCollections = useMemo(() => [
         collectionConfig('sicar_cierres_caja', [where('date', '>=', `${billingStartMonth}-01`)]),
         collectionConfig('sicar_facturas_membretadas', [where('date', '>=', billingLiveInvoiceStartDate)]),
+        collectionConfig('sicar_ventas_tickets', [where('date', '>=', billingLiveInvoiceStartDate)]),
+        collectionConfig('sicar_recibos_caja', [where('date', '>=', billingLiveInvoiceStartDate)]),
         collectionConfig('cierres_caja', [where('date', '>=', `${billingStartMonth}-01`)]),
         collectionConfig('depositos_bancarios', [where('date', '>=', `${billingStartMonth}-01`)]),
         collectionConfig('diferencias_caja', [where('date', '>=', `${billingStartMonth}-01`)]),
-        collectionConfig('facturas_membretadas_ventas', [where('saleDate', '>=', billingLiveInvoiceStartDate)]),
+        collectionConfig('facturas_membretadas_ventas', [where('saleDate', '>=', `${billingStartMonth}-01`)]),
         collectionConfig('recibos_caja_membretados', [where('date', '>=', `${billingStartMonth}-01`)]),
         'clientes_facturacion',
         'cajeros',

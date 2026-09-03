@@ -72,11 +72,44 @@ function isCashMethod(value = '') {
 }
 
 function getSaleType(row = {}) {
-  if (row.tic_id) return 'ticket';
+  if (row.invoiceFacId) return 'factura';
   if (row.rem_id) return 'remision';
   if (row.creditClientId) return 'credito';
-  if (row.invoiceFacId) return 'factura';
+  if (row.tic_id) return 'ticket';
   return 'venta';
+}
+
+function getSourceDocument(row = {}) {
+  const invoiceNumbers = String(row.invoiceNumbers || '').split(',').map((value) => value.trim()).filter(Boolean);
+  if (row.invoiceFacId || invoiceNumbers.length) {
+    return {
+      sourceDocumentType: 'factura',
+      sourceDocumentId: row.invoiceFacId || null,
+      sourceDocumentNumber: invoiceNumbers[0] || String(row.invoiceFacId || ''),
+      sourceDocumentNumbers: invoiceNumbers,
+    };
+  }
+  if (row.tic_id) {
+    return {
+      sourceDocumentType: 'ticket',
+      sourceDocumentId: row.tic_id,
+      sourceDocumentNumber: String(row.tic_id),
+      sourceDocumentNumbers: [String(row.tic_id)],
+    };
+  }
+  return {
+    sourceDocumentType: row.creditClientId ? 'venta_credito' : 'venta',
+    sourceDocumentId: row.ven_id || null,
+    sourceDocumentNumber: String(row.ven_id || ''),
+    sourceDocumentNumbers: [String(row.ven_id || '')].filter(Boolean),
+  };
+}
+
+function parsePositiveIds(value) {
+  return String(value || '')
+    .split(',')
+    .map((item) => Number(String(item).trim()))
+    .filter((item) => Number.isFinite(item) && item > 0);
 }
 
 function buildTicketCode(row = {}) {
@@ -223,13 +256,21 @@ async function fetchSalesWithFilter(connection, filterSql, params = []) {
       cli.localidad,
       cli.ciudad,
       cc.cli_id AS creditClientId,
+      cc.creditIds,
+      cc.creditTotal,
+      cc.creditStatus,
       fi.fac_id AS invoiceFacId,
       fi.invoiceNumbers
     FROM venta v
     LEFT JOIN ticket t ON t.tic_id = v.tic_id
     LEFT JOIN remision r ON r.rem_id = v.rem_id
     LEFT JOIN (
-      SELECT ven_id, MIN(cli_id) AS cli_id
+      SELECT
+        ven_id,
+        MIN(cli_id) AS cli_id,
+        GROUP_CONCAT(ccl_id ORDER BY ccl_id SEPARATOR ',') AS creditIds,
+        SUM(total) AS creditTotal,
+        MAX(status) AS creditStatus
       FROM creditocliente
       GROUP BY ven_id
     ) cc ON cc.ven_id = v.ven_id
@@ -261,6 +302,7 @@ async function fetchSalesWithFilter(connection, filterSql, params = []) {
     const total = money(row.total);
     const saleType = getSaleType(row);
     const ticketCode = buildTicketCode(row);
+    const sourceDocument = getSourceDocument(row);
     const customerName = String(row.customerName || 'PUBLICO EN GENERAL').trim();
     const isCancelled = Number(row.status || 0) < 0 || row.can_caj_id !== null || row.can_rcc_id !== null;
 
@@ -282,6 +324,7 @@ async function fetchSalesWithFilter(connection, filterSql, params = []) {
       ticketNumber: row.tic_id ? String(row.tic_id) : String(saleId),
       ticketCode,
       saleType,
+      ...sourceDocument,
       customerId: row.customerId || null,
       customerName,
       customerRfc: String(row.customerRfc || '').trim(),
@@ -305,6 +348,9 @@ async function fetchSalesWithFilter(connection, filterSql, params = []) {
       comment: String(row.comentario || '').trim(),
       fiscalFolio: String(row.afFolio || '').trim(),
       linkedInvoiceNumbers: String(row.invoiceNumbers || '').split(',').map((value) => value.trim()).filter(Boolean),
+      sicarCreditIds: parsePositiveIds(row.creditIds),
+      sicarCreditTotal: money(row.creditTotal),
+      sicarCreditStatus: row.creditStatus === null || row.creditStatus === undefined ? null : Number(row.creditStatus),
       status: isCancelled ? 'cancelled' : 'active',
       isCancelled,
       cancellationCashboxId: row.can_caj_id || null,
@@ -349,6 +395,12 @@ function buildTicketFingerprint(entry = {}) {
     paymentBreakdown: entry.paymentBreakdown,
     saleDateTime: entry.saleDateTime,
     saleType: entry.saleType,
+    sourceDocumentId: entry.sourceDocumentId,
+    sourceDocumentNumber: entry.sourceDocumentNumber,
+    sourceDocumentType: entry.sourceDocumentType,
+    sicarCreditIds: entry.sicarCreditIds,
+    sicarCreditTotal: entry.sicarCreditTotal,
+    sicarCreditStatus: entry.sicarCreditStatus,
     subtotal: entry.subtotal,
     subtotalExento: entry.subtotalExento,
     total: entry.total,
@@ -461,8 +513,10 @@ module.exports = {
   fetchTicketSalesByIds,
   getBranchConfig,
   getExcludedClientId,
+  getSourceDocument,
   money,
   normalizeText,
+  parsePositiveIds,
   stableStringify,
   writeDailyRollup,
   writeTicketSale,

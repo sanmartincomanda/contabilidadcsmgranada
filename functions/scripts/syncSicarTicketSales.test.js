@@ -4,7 +4,13 @@ const {
   buildDailyRollup,
   buildDailyRollupFingerprint,
   buildTicketFingerprint,
+  getSourceDocument,
+  parsePositiveIds,
 } = require('./syncSicarTicketSales');
+const {
+  buildSicarCreditReceiptFingerprint,
+  getCreditReceiptGroupKey,
+} = require('./syncSicarCreditReceipts');
 const {
   buildCancellationMarker,
   findChangedCancellationMarkers,
@@ -90,4 +96,39 @@ test('detects only new or changed SICAR cancellation markers', () => {
     findChangedCancellationMarkers([first, updated], { 100: '-1|2|' }),
     [updated]
   );
+});
+
+test('identifies the real SICAR source document without losing its ticket', () => {
+  assert.deepEqual(getSourceDocument({
+    ven_id: 88,
+    tic_id: 77,
+    invoiceFacId: 15,
+    invoiceNumbers: 'A10788',
+  }), {
+    sourceDocumentType: 'factura',
+    sourceDocumentId: 15,
+    sourceDocumentNumber: 'A10788',
+    sourceDocumentNumbers: ['A10788'],
+  });
+  assert.equal(getCreditReceiptGroupKey({ acl_id: 20, acp_id: 8 }), 'p_8');
+  assert.equal(getCreditReceiptGroupKey({ acl_id: 20, acp_id: null }), 'a_20');
+});
+
+test('credit receipt fingerprints include applications and cancellation state', () => {
+  const active = buildSicarCreditReceiptFingerprint({
+    amount: 100,
+    status: 'active',
+    applications: [{ sicarCreditId: 1, appliedAmount: 100 }],
+  });
+  const cancelled = buildSicarCreditReceiptFingerprint({
+    amount: 0,
+    status: 'cancelled',
+    applications: [{ sicarCreditId: 1, appliedAmount: 100, isCancelled: true }],
+  });
+  assert.notEqual(active, cancelled);
+});
+
+test('empty SICAR credit identifiers never turn into a fake credit id zero', () => {
+  assert.deepEqual(parsePositiveIds(''), []);
+  assert.deepEqual(parsePositiveIds('0, 12, , 18'), [12, 18]);
 });

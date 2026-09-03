@@ -17,6 +17,12 @@ const {
   writeDailyRollup,
   writeTicketSale,
 } = require('./syncSicarTicketSales');
+const {
+  buildSicarCreditReceiptFingerprint,
+  fetchSicarCreditReceipts,
+  fetchSicarCreditReceiptsByPaymentIds,
+  writeSicarCreditReceipt,
+} = require('./syncSicarCreditReceipts');
 
 const DEFAULT_STATE_PATH = 'C:\\SICAR\\state\\sicar-ticket-sales-watch.json';
 const DEFAULT_INTERVAL_MS = 10000;
@@ -69,9 +75,124 @@ function normalizeState(state = {}) {
   return {
     ...state,
     cancellationMarkers: { ...(state.cancellationMarkers || {}) },
+    creditPaymentMarkers: { ...(state.creditPaymentMarkers || {}) },
+    creditReceiptFingerprints: { ...(state.creditReceiptFingerprints || {}) },
     ticketFingerprints: { ...(state.ticketFingerprints || {}) },
     rollupFingerprints: { ...(state.rollupFingerprints || {}) },
   };
+}
+
+async function getCurrentMaxCreditPaymentId(connection) {
+  const [rows] = await connection.execute('SELECT COALESCE(MAX(acl_id), 0) AS maxPaymentId FROM abonocliente');
+  return Number(rows?.[0]?.maxPaymentId || 0);
+}
+
+async function fetchNewCreditPaymentIds(connection, lastPaymentId, batchSize) {
+  const safeBatchSize = Math.max(1, Math.min(Number(batchSize || DEFAULT_BATCH_SIZE), 500));
+  const [rows] = await connection.execute(`
+    SELECT acl_id
+    FROM abonocliente
+    WHERE acl_id > ?
+    ORDER BY acl_id
+    LIMIT ${safeBatchSize}
+  `, [Number(lastPaymentId || 0)]);
+  return rows.map((row) => Number(row.acl_id)).filter(Number.isFinite);
+}
+
+function buildCreditPaymentMarker(row = {}) {
+  return {
+    paymentId: Number(row.acl_id || 0),
+    signature: [row.status, row.total, row.tpa_id, row.acp_id].map((value) => value ?? '').join('|'),
+  };
+}
+
+async function fetchCreditPaymentMarkers(connection, trackingStartPaymentId) {
+  const startPaymentId = Number(trackingStartPaymentId || 0);
+  if (startPaymentId <= 0) return [];
+  const [rows] = await connection.execute(`
+    SELECT acl_id, status, total, tpa_id, acp_id
+    FROM abonocliente
+    WHERE acl_id >= ?
+    ORDER BY acl_id
+  `, [startPaymentId]);
+  return rows.map(buildCreditPaymentMarker).filter((marker) => marker.paymentId > 0);
+}
+
+async function writeChangedCreditReceipts({ db, receipts, options, state }) {
+  let writtenCount = 0;
+  for (const receipt of receipts) {
+    const fingerprint = buildSicarCreditReceiptFingerprint(receipt);
+    if (state.creditReceiptFingerprints[receipt.id] === fingerprint) continue;
+    if (options.preview) {
+      console.log(JSON.stringify({
+        preview: true,
+        sicarReceiptCode: receipt.sicarReceiptCode,
+        customerName: receipt.customerName,
+        amount: receipt.amount,
+        status: receipt.status,
+      }));
+    } else {
+      // eslint-disable-next-line no-await-in-loop
+      await writeSicarCreditReceipt(db, receipt, fingerprint);
+    }
+    state.creditReceiptFingerprints[receipt.id] = fingerprint;
+    writtenCount += 1;
+  }
+  return writtenCount;
+}
+
+async function processCreditReceiptBackfill({ connection, db, options, state }) {
+  const range = getBackfillRange(options.startupBackfillDays);
+  const receipts = await fetchSicarCreditReceipts(connection, range.startDate, range.endExclusive);
+  const paymentIds = receipts.flatMap((receipt) => receipt.sicarPaymentIds || []).map(Number).filter(Number.isFinite);
+  const writtenCount = await writeChangedCreditReceipts({ db, receipts, options, state });
+  if (writtenCount) {
+    console.log(`[${new Date().toISOString()}] ${writtenCount} cobro/s SICAR actualizado/s entre ${range.startDate} y ${range.endDate}.`);
+  }
+  return {
+    maxPaymentId: paymentIds.length ? Math.max(...paymentIds) : 0,
+    minPaymentId: paymentIds.length ? Math.min(...paymentIds) : 0,
+    writtenCount,
+  };
+}
+
+async function processNewCreditReceipts({ connection, db, lastPaymentId, options, state }) {
+  let cursor = lastPaymentId;
+  let totalWritten = 0;
+  do {
+    // eslint-disable-next-line no-await-in-loop
+    const ids = await fetchNewCreditPaymentIds(connection, cursor, options.batchSize);
+    if (!ids.length) break;
+    const minimumId = Math.min(...ids);
+    if (!state.trackingStartPaymentId || minimumId < state.trackingStartPaymentId) {
+      state.trackingStartPaymentId = minimumId;
+    }
+    // eslint-disable-next-line no-await-in-loop
+    const receipts = await fetchSicarCreditReceiptsByPaymentIds(connection, ids);
+    // eslint-disable-next-line no-await-in-loop
+    totalWritten += await writeChangedCreditReceipts({ db, receipts, options, state });
+    cursor = Math.max(cursor, ...ids);
+    state.lastCreditPaymentId = cursor;
+    writeState(options.statePath, state);
+    if (ids.length < options.batchSize) break;
+  } while (true);
+  if (totalWritten) {
+    console.log(`[${new Date().toISOString()}] ${totalWritten} cobro/s SICAR nuevo/s sincronizado/s hasta acl_id ${cursor}.`);
+  }
+  return cursor;
+}
+
+async function processCreditReceiptChanges({ connection, db, options, state }) {
+  const markers = await fetchCreditPaymentMarkers(connection, state.trackingStartPaymentId);
+  const changed = markers.filter((marker) => state.creditPaymentMarkers[String(marker.paymentId)] !== marker.signature);
+  if (!changed.length) return 0;
+  const receipts = await fetchSicarCreditReceiptsByPaymentIds(connection, changed.map((marker) => marker.paymentId));
+  const writtenCount = await writeChangedCreditReceipts({ db, receipts, options, state });
+  changed.forEach((marker) => {
+    state.creditPaymentMarkers[String(marker.paymentId)] = marker.signature;
+  });
+  writeState(options.statePath, state);
+  return writtenCount;
 }
 
 function getBackfillRange(days = DEFAULT_STARTUP_BACKFILL_DAYS) {
@@ -305,7 +426,9 @@ async function runWatcherSession(options) {
     if (options.resetState && fs.existsSync(options.statePath)) fs.unlinkSync(options.statePath);
     const state = normalizeState(readState(options.statePath));
     const backfill = await processBackfill({ connection, db, options, state });
+    const creditBackfill = await processCreditReceiptBackfill({ connection, db, options, state });
     let lastSaleId = Number(state.lastSaleId || 0);
+    let lastCreditPaymentId = Number(state.lastCreditPaymentId || 0);
 
     if (!state.trackingStartSaleId && backfill.minSaleId > 0) {
       state.trackingStartSaleId = backfill.minSaleId;
@@ -319,18 +442,31 @@ async function runWatcherSession(options) {
       lastSaleId = backfill.maxSaleId;
       state.lastSaleId = lastSaleId;
     }
+    if (!state.trackingStartPaymentId && creditBackfill.minPaymentId > 0) {
+      state.trackingStartPaymentId = creditBackfill.minPaymentId;
+    }
+    if (!lastCreditPaymentId) {
+      lastCreditPaymentId = Math.max(creditBackfill.maxPaymentId, await getCurrentMaxCreditPaymentId(connection));
+      state.lastCreditPaymentId = lastCreditPaymentId;
+    } else if (creditBackfill.maxPaymentId > lastCreditPaymentId) {
+      lastCreditPaymentId = creditBackfill.maxPaymentId;
+      state.lastCreditPaymentId = lastCreditPaymentId;
+    }
     writeState(options.statePath, state);
 
-    console.log(`[${new Date().toISOString()}] Watcher de ventas por ticket iniciado cada ${options.intervalMs / 1000}s desde ven_id ${lastSaleId}.`);
+    console.log(`[${new Date().toISOString()}] Watcher SICAR iniciado cada ${options.intervalMs / 1000}s desde ven_id ${lastSaleId} y acl_id ${lastCreditPaymentId}.`);
     let lastRecentBackfillAt = Date.now();
 
     do {
       lastSaleId = await processNewSales({ connection, db, lastSaleId, options, state });
       await processCancellations({ connection, db, options, state });
+      lastCreditPaymentId = await processNewCreditReceipts({ connection, db, lastPaymentId: lastCreditPaymentId, options, state });
+      await processCreditReceiptChanges({ connection, db, options, state });
       if (options.once) break;
 
       if (Date.now() - lastRecentBackfillAt >= options.recentBackfillIntervalMs) {
         await processBackfill({ connection, db, options, state });
+        await processCreditReceiptBackfill({ connection, db, options, state });
         writeState(options.statePath, state);
         lastRecentBackfillAt = Date.now();
       }
@@ -382,14 +518,19 @@ if (require.main === module) {
 
 module.exports = {
   buildCancellationMarker,
+  buildCreditPaymentMarker,
   fetchCancellationMarkers,
   fetchNewSaleIds,
+  fetchNewCreditPaymentIds,
   findChangedCancellationMarkers,
   getBackfillRange,
   normalizeState,
   parseArgs,
   processBackfill,
   processCancellations,
+  processCreditReceiptBackfill,
+  processCreditReceiptChanges,
+  processNewCreditReceipts,
   processNewSales,
   pruneState,
   refreshDailyRollups,
