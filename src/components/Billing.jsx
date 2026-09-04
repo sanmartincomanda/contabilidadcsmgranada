@@ -568,6 +568,11 @@ const getSicarInvoiceKeys = (invoice = {}) => ([
     .map((value) => normalizeInvoiceMatchKey(value))
     .filter(Boolean);
 
+const isSicarStampedInvoice = (invoice = {}) => (
+    ['SICAR_FACTURA', 'SICAR_TICKET'].includes(normalizeText(invoice.source))
+    || Boolean(invoice.sourceSicarInvoiceId || invoice.sourceSicarDocumentId || invoice.sourceSicarTicketDocumentId)
+);
+
 const getAccountingInvoiceDocKeys = (invoice = {}) => ([
     invoice.accountingInvoiceId,
     invoice.contabilidadInvoiceId,
@@ -9929,7 +9934,7 @@ function StampedInvoiceHistory({ data, canEdit = true, branchContext }) {
                                         <div className="flex flex-wrap items-center gap-2">
                                             <div className={`truncate text-base font-black ${isAnnulled ? 'text-red-900' : 'text-slate-950'}`}>Factura {invoice.invoiceNumber || '-'}</div>
                                             <Badge tone="blue">{invoiceBranch.shortName} {invoiceSeries ? `· Serie ${invoiceSeries}` : ''}</Badge>
-                                            <Badge tone={invoice.source === 'sicar_factura' ? 'blue' : 'slate'}>{invoice.source === 'sicar_factura' ? 'SICAR' : 'Manual'}</Badge>
+                                            <Badge tone={isSicarStampedInvoice(invoice) ? 'blue' : 'slate'}>{isSicarStampedInvoice(invoice) ? 'SICAR' : 'Manual'}</Badge>
                                             <Badge tone={invoice.cashierName ? 'green' : 'amber'}>{invoice.cashierName || 'Sin cajero'}</Badge>
                                             <Badge tone={closureInfo.status === 'vinculada' ? 'green' : closureInfo.status === 'sin_cierre' ? 'amber' : 'slate'}>{closureInfo.status === 'vinculada' ? 'Con cierre' : closureInfo.status === 'sin_cierre' ? 'Sin cierre' : 'Pendiente'}</Badge>
                                             {isAnnulled && <Badge tone="red">ANULADA</Badge>}
