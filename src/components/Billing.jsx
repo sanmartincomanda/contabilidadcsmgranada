@@ -2261,6 +2261,61 @@ const getSicarPaymentMethodForAccounting = (value = '') => {
     return PAYMENT_METHODS.find((method) => normalizeText(method) === normalized) || '';
 };
 
+const normalizeSicarAccountingOrigin = (record = {}, sourceCollection = 'sicar_ventas_tickets') => {
+    const date = getRecordDate(record.date || record.saleDate || record.fecha || record.sourceDateTime);
+    const ticketId = record.ticketId ?? record.ticId ?? record.tic_id ?? record.invoiceNumber ?? record.numeroFactura ?? null;
+    const ticketNumber = String(record.ticketNumber || record.invoiceNumber || record.numeroFactura || ticketId || '').trim();
+    const saleId = Number(record.saleId ?? record.venId ?? record.ven_id) || null;
+    const numericStatus = Number(record.status);
+    const isCancelled = Boolean(
+        record.isCancelled
+        || (Number.isFinite(numericStatus) && numericStatus < 0)
+        || normalizeText(record.status).includes('CANCEL')
+        || normalizeText(record.status).includes('ANUL')
+    );
+    const branchId = getRecordBranchId(record);
+    const subtotal = safeNumber(record.subtotal ?? record.amount);
+    const iva = safeNumber(record.iva);
+    const total = safeNumber(record.total) || safeNumber(subtotal + iva);
+
+    return {
+        ...record,
+        ...getBranchPayload(branchId),
+        id: record.id || record.docId || `sicar_ticket_${branchId}_${saleId || ticketNumber}`,
+        date,
+        month: record.month || getMonth(date),
+        saleDate: record.saleDate || date,
+        saleId,
+        venId: saleId,
+        ticketId,
+        ticId: ticketId,
+        ticketNumber,
+        ticketCode: record.ticketCode || `T-${ticketNumber || saleId || ''}`,
+        saleType: record.saleType || (safeNumber(record.sicarCreditTotal) > 0 ? 'credito' : 'ticket'),
+        sourceDocumentType: record.sourceDocumentType || 'ticket',
+        sourceDocumentId: record.sourceDocumentId ?? ticketId,
+        sourceDocumentNumber: String(record.sourceDocumentNumber || ticketNumber || saleId || ''),
+        sourceDocumentNumbers: uniqueSicarIds(record.sourceDocumentNumbers || [], record.sourceDocumentNumber, ticketNumber).map(String),
+        sourceSicarCollection: sourceCollection,
+        sourceSystem: record.sourceSystem || 'SICAR',
+        sourceType: 'ticket_sale',
+        sourceMode: record.sourceMode || (sourceCollection === 'sicar_facturas_membretadas' ? 'legacy-ticket-adapter' : 'ticket-integration'),
+        customerName: record.customerName || record.cliente || 'PUBLICO EN GENERAL',
+        customerRfc: record.customerRfc || record.rfc || '',
+        customerAddress: record.customerAddress || record.address || '',
+        cashboxId: record.cashboxId ?? record.caj_id ?? null,
+        cashboxName: record.cashboxName || record.caja || '',
+        subtotal,
+        iva,
+        total,
+        paymentBreakdown: Array.isArray(record.paymentBreakdown) ? record.paymentBreakdown : [],
+        items: Array.isArray(record.items) ? record.items : [],
+        itemCount: Number(record.itemCount ?? record.items?.length ?? 0),
+        status: isCancelled ? 'cancelled' : 'active',
+        isCancelled,
+    };
+};
+
 const SICAR_ORIGIN_PAYMENT_FILTERS = [
     { value: 'all', label: 'Todos los metodos' },
     { value: 'card', label: 'Tarjeta' },
@@ -3523,9 +3578,20 @@ function CashClosure({ data, branchContext }) {
         stampedInvoices.filter((invoice) => String(invoice.date || '').substring(0, 10) === closureDate)
     ), [stampedInvoices, closureDate]);
 
+    const activeWaitingClosureInvoiceIds = useMemo(() => {
+        const activeWaitingClosure = waitingClosures.find((closure) => closure.id === activeClosureDocId);
+        return new Set(
+            (activeWaitingClosure?.stampedInvoiceDrafts || activeWaitingClosure?.stampedInvoices || [])
+                .map((draft) => draft.id || draft.docId)
+                .filter(Boolean)
+        );
+    }, [activeClosureDocId, waitingClosures]);
+
     const cashierStampedInvoices = useMemo(() => (
         cashierName
             ? dayStampedInvoices.filter((invoice) => {
+                if (activeWaitingClosureInvoiceIds.has(invoice.id || invoice.docId)) return true;
+
                 const sourceCashboxId = invoice.sourceSicarCashboxId ?? invoice.sicarCashboxId;
                 const closureCashboxId = selectedClosure?.cashboxId ?? selectedClosure?.caj_id;
                 if (sourceCashboxId !== null && sourceCashboxId !== undefined && closureCashboxId !== null && closureCashboxId !== undefined) {
@@ -3534,7 +3600,7 @@ function CashClosure({ data, branchContext }) {
                 return isSameCashier(invoice, cashierName);
             })
             : []
-    ), [cashierName, dayStampedInvoices, selectedClosure]);
+    ), [activeWaitingClosureInvoiceIds, cashierName, dayStampedInvoices, selectedClosure]);
 
     const dayStampedCashierNames = useMemo(() => (
         [...new Set(dayStampedInvoices.map((invoice) => invoice.cashierName || 'Sin cajero').filter(Boolean))]
@@ -7265,10 +7331,38 @@ function StampedInvoices({ data, branchContext }) {
         activeSicarOriginDateTo,
         shouldLoadSicarOriginArchive
     );
-    const sicarSaleRecords = useMemo(() => mergeRecordsByKey(
+    const legacySicarOriginArchive = useFirestoreDateRangeArchive(
+        'sicar_facturas_membretadas',
+        'date',
+        activeSicarOriginDateFrom,
+        activeSicarOriginDateTo,
+        shouldLoadSicarOriginArchive
+    );
+    const sicarSaleRecords = useMemo(() => {
+        const legacyNindiriTickets = mergeRecordsByKey(
+            legacySicarOriginArchive.records,
+            data.sicar_facturas_membretadas || []
+        )
+            .filter((record) => getRecordBranchId(record) === 'nindiri')
+            .filter((record) => (
+                String(record.id || '').startsWith('sicar_ticket_')
+                || normalizeText(record.sourceType) === 'TICKET_SALE'
+                || record.ticketId !== undefined
+            ))
+            .map((record) => normalizeSicarAccountingOrigin(record, 'sicar_facturas_membretadas'));
+        const currentTicketOrigins = mergeRecordsByKey(
+            sicarOriginArchive.records,
+            data.sicar_ventas_tickets || []
+        ).map((record) => normalizeSicarAccountingOrigin(record, 'sicar_ventas_tickets'));
+
+        // The current ticket collection wins when both integrations contain the same SICAR origin.
+        return mergeRecordsByKey(legacyNindiriTickets, currentTicketOrigins);
+    }, [
+        data.sicar_facturas_membretadas,
+        data.sicar_ventas_tickets,
+        legacySicarOriginArchive.records,
         sicarOriginArchive.records,
-        data.sicar_ventas_tickets || []
-    ), [data.sicar_ventas_tickets, sicarOriginArchive.records]);
+    ]);
     const savedInvoices = useMemo(() => (
         [...(data.facturas_membretadas_ventas || [])]
             .map(normalizeStampedInvoiceRecord)
@@ -7564,7 +7658,7 @@ function StampedInvoices({ data, branchContext }) {
             paymentNetTotal: sourcePaymentRows.length > 1 ? getPaymentBreakdownTotal(sourcePaymentRows) : 0,
             sourceSicarInvoiceId: invoice.id || '',
             sourceSicarInvoiceNumber: invoice.ticketNumber || invoice.sourceDocumentNumber || invoice.saleId || '',
-            sourceSicarCollection: 'sicar_ventas_tickets',
+            sourceSicarCollection: invoice.sourceSicarCollection || 'sicar_ventas_tickets',
             sourceSicarDocumentId: invoice.id || '',
             sourceSicarDocumentIds: [invoice.id].filter(Boolean),
             sourceSicarDocumentType: invoice.sourceDocumentType || 'ticket',
@@ -7611,7 +7705,7 @@ function StampedInvoices({ data, branchContext }) {
                 // eslint-disable-next-line no-await-in-loop
                 await syncLinkedClosureForStampedInvoice(invoiceId, annulledSnapshot);
             }
-            await setDoc(doc(db, 'sicar_ventas_tickets', source.id), {
+            await setDoc(doc(db, source.sourceSicarCollection || 'sicar_ventas_tickets', source.id), {
                 accountingCancellationStatus: 'confirmed',
                 accountingCancellationConfirmedAt: serverTimestamp(),
                 updatedAt: serverTimestamp(),
@@ -7800,14 +7894,21 @@ function StampedInvoices({ data, branchContext }) {
                 const sourceSnapshot = await getDoc(doc(db, form.sourceSicarCollection, form.sourceSicarDocumentId));
                 const sourceData = sourceSnapshot.data() || {};
                 const linkedIds = Array.isArray(sourceData.accountingInvoiceIds) ? sourceData.accountingInvoiceIds : [];
-                if (normalizeText(sourceData.accountingStatus) === 'LINKED' && (sourceData.accountingInvoiceId || linkedIds.length)) {
+                const sourceAccountingStatus = normalizeText(sourceData.accountingStatus);
+                if (
+                    ['LINKED', 'CONTABILIZADA', 'CONTABILIZADO'].includes(sourceAccountingStatus)
+                    && (sourceData.accountingInvoiceId || linkedIds.length)
+                ) {
                     throw new Error(`${sourceData.ticketCode || form.sourceSicarInvoiceNumber || 'Este origen SICAR'} ya esta vinculado a una factura membretada.`);
                 }
                 if (sourceData.isCancelled || normalizeText(sourceData.status).includes('CANCEL')) {
                     throw new Error(`${sourceData.ticketCode || form.sourceSicarInvoiceNumber || 'Este origen SICAR'} esta anulado en SICAR y no puede facturarse.`);
                 }
                 const sourceDate = getRecordDate(sourceData.date || sourceData.saleDate || sourceData.fecha);
-                if (form.sourceSicarCollection === 'sicar_ventas_tickets' && sourceDate && sourceDate < SICAR_ACCOUNTING_LINK_START_DATE) {
+                const isTicketOrigin = form.sourceSicarDocumentType === 'ticket'
+                    || form.sourceSicarCollection === 'sicar_ventas_tickets'
+                    || String(form.sourceSicarDocumentId || '').startsWith('sicar_ticket_');
+                if (isTicketOrigin && sourceDate && sourceDate < SICAR_ACCOUNTING_LINK_START_DATE) {
                     throw new Error(`La vinculacion por ticket comienza el ${SICAR_ACCOUNTING_LINK_START_DATE}. Este origen anterior es solo de consulta.`);
                 }
             }
@@ -7893,7 +7994,9 @@ function StampedInvoices({ data, branchContext }) {
                     paymentNetTotal: paymentBreakdown.length ? getPaymentBreakdownTotal(paymentBreakdown) : getInvoicePaymentTargetAmount({ ...invoice, ...invoiceFiscal }),
                     items: invoice.items || [],
                     ...invoiceFiscal,
-                    source: invoice.sourceSicarCollection === 'sicar_ventas_tickets' ? 'sicar_ticket' : invoice.sourceSicarInvoiceId ? 'sicar_factura' : 'manual',
+                    source: invoice.sourceSicarDocumentType === 'ticket' || invoice.sourceSicarCollection === 'sicar_ventas_tickets'
+                        ? 'sicar_ticket'
+                        : invoice.sourceSicarInvoiceId ? 'sicar_factura' : 'manual',
                     sourceType: 'stamped_sale_invoice',
                     sourceSicarInvoiceId: invoice.sourceSicarInvoiceId || '',
                     sourceSicarInvoiceNumber: invoice.sourceSicarInvoiceNumber || '',
@@ -7995,8 +8098,8 @@ function StampedInvoices({ data, branchContext }) {
                     to: sicarOriginDateTo,
                     maxDate: todaySicarInvoiceDate,
                     linkStartDate: SICAR_ACCOUNTING_LINK_START_DATE,
-                    loading: sicarOriginArchive.loading,
-                    error: sicarOriginArchive.error,
+                    loading: sicarOriginArchive.loading || legacySicarOriginArchive.loading,
+                    error: sicarOriginArchive.error || legacySicarOriginArchive.error,
                     onModeChange: setSicarOriginDateMode,
                     onDateChange: setSicarOriginDate,
                     onFromChange: (value) => {
@@ -9281,7 +9384,9 @@ function StampedInvoiceHistory({ data, canEdit = true, branchContext }) {
                     paymentNetTotal: paymentBreakdown.length ? getPaymentBreakdownTotal(paymentBreakdown) : getInvoicePaymentTargetAmount({ ...invoice, ...invoiceFiscal }),
                     items: invoice.items || [],
                     ...invoiceFiscal,
-                    source: invoice.sourceSicarCollection === 'sicar_ventas_tickets' ? 'sicar_ticket' : invoice.source || (invoice.sourceSicarInvoiceId ? 'sicar_factura' : 'manual'),
+                    source: invoice.sourceSicarDocumentType === 'ticket' || invoice.sourceSicarCollection === 'sicar_ventas_tickets'
+                        ? 'sicar_ticket'
+                        : invoice.source || (invoice.sourceSicarInvoiceId ? 'sicar_factura' : 'manual'),
                     sourceType: 'stamped_sale_invoice',
                     sourceSicarInvoiceId: invoice.sourceSicarInvoiceId || '',
                     sourceSicarInvoiceNumber: invoice.sourceSicarInvoiceNumber || '',
