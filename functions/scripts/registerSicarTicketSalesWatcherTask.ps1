@@ -10,9 +10,11 @@ param(
 $ErrorActionPreference = 'Stop'
 
 $scriptPath = Join-Path $PSScriptRoot 'runSicarTicketSalesWatcher.ps1'
+$supervisorScriptPath = Join-Path $PSScriptRoot 'superviseSicarTicketSalesWatcher.ps1'
 $hiddenRunnerPath = Join-Path $PSScriptRoot 'runSicarPowerShellHidden.vbs'
 
 if (-not (Test-Path -LiteralPath $scriptPath)) { throw "No se encontro $scriptPath" }
+if (-not (Test-Path -LiteralPath $supervisorScriptPath)) { throw "No se encontro $supervisorScriptPath" }
 if (-not (Test-Path -LiteralPath $hiddenRunnerPath)) { throw "No se encontro $hiddenRunnerPath" }
 
 $safeInterval = [Math]::Max(5000, [Math]::Min($IntervalMs, 300000))
@@ -21,6 +23,7 @@ $safeRecentBackfill = [Math]::Max($safeInterval, [Math]::Min($RecentBackfillInte
 $shouldStartNow = ([string]$StartNow).Trim().ToLowerInvariant() -notin @('false', '0', 'no', 'n')
 $nodePathArgument = if ($NodePath) { " -NodePath `"$NodePath`"" } else { '' }
 $watcherArguments = "`"$hiddenRunnerPath`" `"runSicarTicketSalesWatcher.ps1`" -IntervalMs $safeInterval -StartupBackfillDays $safeBackfillDays -RecentBackfillIntervalMs $safeRecentBackfill$nodePathArgument"
+$supervisorArguments = "`"$hiddenRunnerPath`" `"superviseSicarTicketSalesWatcher.ps1`" -IntervalMs $safeInterval -StartupBackfillDays $safeBackfillDays -RecentBackfillIntervalMs $safeRecentBackfill"
 
 function Install-StartupFallback {
     $startupDir = [Environment]::GetFolderPath('Startup')
@@ -28,23 +31,33 @@ function Install-StartupFallback {
     $shell = New-Object -ComObject WScript.Shell
     $shortcut = $shell.CreateShortcut($linkPath)
     $shortcut.TargetPath = 'wscript.exe'
-    $shortcut.Arguments = $watcherArguments
+    $shortcut.Arguments = $supervisorArguments
     $shortcut.WorkingDirectory = [string]$PSScriptRoot
     $shortcut.WindowStyle = 7
-    $shortcut.Description = 'Sincroniza ventas y articulos SICAR en segundo plano.'
+    $shortcut.Description = 'Supervisa y recupera la sincronizacion de ventas SICAR en segundo plano.'
     $shortcut.Save()
 
-    Write-Host "Task Scheduler no permitio registrar la tarea. Inicio automatico alternativo creado en: $linkPath"
+    # HKCU Run is an independent fallback for computers that skip Startup shortcuts.
+    $runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
+    New-Item -Path $runKey -Force | Out-Null
+    New-ItemProperty `
+        -Path $runKey `
+        -Name 'SICARTicketSalesWatcher' `
+        -Value "wscript.exe $supervisorArguments" `
+        -PropertyType String `
+        -Force | Out-Null
+
+    Write-Host "Task Scheduler no permitio registrar la tarea. Supervisor automatico creado en Inicio y HKCU Run."
     if ($shouldStartNow) {
-        $runningWatcher = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
-            $_.CommandLine -match 'watchSicarTicketSales\.js'
+        $runningSupervisor = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+            $_.CommandLine -match 'superviseSicarTicketSalesWatcher\.ps1'
         } | Select-Object -First 1
-        if ($runningWatcher) {
-            Write-Host "El watcher ya esta ejecutandose en el proceso $($runningWatcher.ProcessId); no se inicio un duplicado."
+        if ($runningSupervisor) {
+            Write-Host "El supervisor ya esta ejecutandose en el proceso $($runningSupervisor.ProcessId); no se inicio un duplicado."
         } else {
-            Start-Process -FilePath 'wscript.exe' -WindowStyle Hidden -ArgumentList $watcherArguments
+            Start-Process -FilePath 'wscript.exe' -WindowStyle Hidden -ArgumentList $supervisorArguments
             Start-Sleep -Seconds 3
-            Write-Host 'Watcher de ventas por ticket iniciado en segundo plano.'
+            Write-Host 'Supervisor de ventas por ticket iniciado en segundo plano.'
         }
     }
 }
