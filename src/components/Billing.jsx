@@ -25,6 +25,7 @@ import {
     createEmptyClientForm,
     normalizeClientRecord,
 } from '../services/clientCatalog';
+import SalesCRM from './SalesCRM';
 
 const TRANSFER_BANKS = [
     { key: 'bac', label: 'BAC' },
@@ -13008,6 +13009,7 @@ function RetentionHistory({ data, type, branchContext }) {
 function BillingHistory({ data, canEdit = true, branchContext }) {
     const [activeHistoryTab, setActiveHistoryTab] = useState('membretadas');
     const historyTabs = useMemo(() => [
+        { key: 'ventas', label: 'Ventas' },
         { key: 'membretadas', label: 'Facturas Membretadas' },
         { key: 'recibos', label: 'Recibos de Caja' },
         { key: 'cierres', label: 'Cierres de caja' },
@@ -13041,6 +13043,7 @@ function BillingHistory({ data, canEdit = true, branchContext }) {
                 </div>
             </Section>
 
+            {activeHistoryTab === 'ventas' && <SalesCRM data={data} branchContext={branchContext} />}
             {activeHistoryTab === 'membretadas' && <StampedInvoiceHistory data={data} canEdit={canEdit} branchContext={branchContext} />}
             {activeHistoryTab === 'recibos' && <CashReceiptHistory data={data} canEdit={canEdit} branchContext={branchContext} />}
             {activeHistoryTab === 'cierres' && <CashClosureHistory data={data} canEdit={canEdit} branchContext={branchContext} />}
