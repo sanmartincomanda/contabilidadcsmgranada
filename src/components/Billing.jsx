@@ -1860,6 +1860,7 @@ const createInvoiceDraft = (invoice = {}, fallbackDate = todayString()) => {
         retentionIr2: safeNumber(invoice.retentionIr2) ? String(safeNumber(invoice.retentionIr2)) : '',
         retentionMunicipal1: safeNumber(invoice.retentionMunicipal1) ? String(safeNumber(invoice.retentionMunicipal1)) : '',
         sourceSicarInvoiceId: invoice.sourceSicarInvoiceId || invoice.sourceSicarId || '',
+        manualClosureSelection: Boolean(invoice.manualClosureSelection),
         status: invoice.status || 'active',
         supportFiles: {},
     };
@@ -3727,6 +3728,7 @@ function CashClosure({ data, branchContext }) {
                 retentionTotal: safeNumber(item.retentionTotal ?? (safeNumber(item.retentionIr2) + safeNumber(item.retentionMunicipal1))),
             }))
             .filter((invoice) => isRecordInBillingBranch(invoice, selectedBranchId))
+            .filter((invoice) => isActiveStampedInvoice(invoice))
             .filter((invoice) => !isInvoiceExcludedFromCashClosureSelection(invoice))
             .sort((a, b) => String(b.date).localeCompare(String(a.date)))
     ), [data.facturas_membretadas_ventas, selectedBranchId]);
@@ -3932,12 +3934,17 @@ function CashClosure({ data, branchContext }) {
             const requiredDrafts = cashierStampedInvoices.map((invoice) => (
                 existingByDocId.get(invoice.id || invoice.docId) || createInvoiceDraft(invoice, closureDate)
             ));
+            const manuallySelectedExistingDrafts = prev.filter((invoice) => (
+                invoice.docId
+                && invoice.manualClosureSelection
+                && !requiredIds.has(invoice.docId)
+            ));
             const manualDrafts = prev.filter((invoice) => (
                 !invoice.docId
                 && hasInvoiceDraftContent(invoice)
                 && !requiredIds.has(invoice.id)
             ));
-            return [...requiredDrafts, ...manualDrafts];
+            return [...requiredDrafts, ...manuallySelectedExistingDrafts, ...manualDrafts];
         });
     }, [cashierName, cashierStampedInvoices, closureDate]);
 
@@ -4106,8 +4113,11 @@ function CashClosure({ data, branchContext }) {
         setMessage(`Cierre en espera cargado: ${closure.date || ''}.`);
     };
 
-    const addClosureInvoice = (invoice) => {
-        const draft = createInvoiceDraft(invoice, closureDate);
+    const addClosureInvoice = (invoice, options = {}) => {
+        const draft = createInvoiceDraft({
+            ...invoice,
+            manualClosureSelection: Boolean(options.manual || invoice.manualClosureSelection),
+        }, closureDate);
         const existing = draft.docId ? closureInvoices.find((item) => item.docId === draft.docId) : null;
         if (existing) {
             setActiveClosureInvoiceLocalId(existing.localId);
@@ -4177,14 +4187,15 @@ function CashClosure({ data, branchContext }) {
             return;
         }
         const normalizedQuery = normalizeText(query);
-        const invoice = cashierStampedInvoices.find((item) => normalizeText(item.invoiceNumber || item.numeroFactura || '') === normalizedQuery);
+        const invoice = stampedInvoices.find((item) => normalizeText(item.invoiceNumber || item.numeroFactura || '') === normalizedQuery);
         if (!invoice) {
-            setMessage(`No encontre la factura ${query} en las membretadas del dia ${closureDate} para ${cashierName}.`);
+            setMessage(`La factura ${query} no esta disponible. Debe estar activa, pertenecer a ${getBranchById(selectedBranchId).shortName} y no estar vinculada a otro cierre.`);
             return;
         }
-        addClosureInvoice(invoice);
+        addClosureInvoice(invoice, { manual: true });
         setQuickInvoiceNumber('');
-        setMessage(`Factura ${invoice.invoiceNumber || query} agregada al cierre.`);
+        const invoiceDate = String(invoice.date || '').substring(0, 10);
+        setMessage(`Factura ${invoice.invoiceNumber || query}${invoiceDate && invoiceDate !== closureDate ? ` del ${invoiceDate}` : ''} agregada manualmente al cierre.`);
     };
 
     const updateClosureInvoice = (localId, key, value) => {
@@ -5038,7 +5049,7 @@ function CashClosure({ data, branchContext }) {
                     <div className="mb-4 flex flex-col gap-3 rounded-3xl border border-slate-200 bg-slate-50/70 p-4 xl:flex-row xl:items-center xl:justify-between">
                         <div>
                             <div className="text-sm font-black text-slate-950">Facturas aplicadas al cierre</div>
-                            <div className="text-xs font-semibold text-slate-500">Se cargan automaticamente las facturas del dia {closureDate} registradas por el cajero seleccionado.</div>
+                            <div className="text-xs font-semibold text-slate-500">Las facturas del dia {closureDate} se cargan automaticamente. Con Numero factura + Enter podes agregar una factura pendiente de cualquier fecha.</div>
                         </div>
                         <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
                             <input
