@@ -25,6 +25,7 @@ import {
     createEmptyClientForm,
     normalizeClientRecord,
 } from '../services/clientCatalog';
+import { isExcludedSicarTicket } from '../services/salesCrmAnalytics';
 import SalesCRM from './SalesCRM';
 
 const TRANSFER_BANKS = [
@@ -7620,6 +7621,7 @@ function StampedInvoices({ data, branchContext }) {
             data.sicar_facturas_membretadas || []
         )
             .filter((record) => getRecordBranchId(record) === 'nindiri')
+            .filter((record) => !isExcludedSicarTicket(record))
             .filter((record) => (
                 String(record.id || '').startsWith('sicar_ticket_')
                 || normalizeText(record.sourceType) === 'TICKET_SALE'
@@ -7629,7 +7631,9 @@ function StampedInvoices({ data, branchContext }) {
         const currentTicketOrigins = mergeRecordsByKey(
             sicarOriginArchive.records,
             data.sicar_ventas_tickets || []
-        ).map((record) => normalizeSicarAccountingOrigin(record, 'sicar_ventas_tickets'));
+        )
+            .filter((record) => !isExcludedSicarTicket(record))
+            .map((record) => normalizeSicarAccountingOrigin(record, 'sicar_ventas_tickets'));
 
         // The current ticket collection wins when both integrations contain the same SICAR origin.
         return mergeRecordsByKey(legacyNindiriTickets, currentTicketOrigins);
@@ -7658,6 +7662,7 @@ function StampedInvoices({ data, branchContext }) {
                 ...getBranchPayload(getRecordBranchId(item)),
             }))
             .filter((invoice) => isRecordInBillingBranch(invoice, selectedBranchId))
+            .filter((invoice) => !isExcludedSicarTicket(invoice))
             .filter((invoice) => {
                 const numericStatus = Number(invoice.status);
                 return (!Number.isFinite(numericStatus) || numericStatus >= 0)
@@ -7674,9 +7679,12 @@ function StampedInvoices({ data, branchContext }) {
     const sicarSaleOrigins = useMemo(() => (
         [...sicarSaleRecords]
             .filter((source) => isRecordInBillingBranch(source, selectedBranchId))
+            .filter((source) => !isExcludedSicarTicket(source))
             .filter((source) => {
                 const sourceDate = String(source.date || '').substring(0, 10);
-                return sourceDate >= activeSicarOriginDateFrom && sourceDate <= activeSicarOriginDateTo;
+                return sourceDate >= SICAR_ACCOUNTING_LINK_START_DATE
+                    && sourceDate >= activeSicarOriginDateFrom
+                    && sourceDate <= activeSicarOriginDateTo;
             })
             .map((source) => {
                 const sourceDate = String(source.date || '').substring(0, 10);
@@ -8372,6 +8380,7 @@ function StampedInvoices({ data, branchContext }) {
                     date: sicarOriginDate,
                     from: sicarOriginDateFrom,
                     to: sicarOriginDateTo,
+                    minDate: SICAR_ACCOUNTING_LINK_START_DATE,
                     maxDate: todaySicarInvoiceDate,
                     linkStartDate: SICAR_ACCOUNTING_LINK_START_DATE,
                     loading: sicarOriginArchive.loading || legacySicarOriginArchive.loading,

@@ -14,6 +14,8 @@
     "replay-pending-purchases": "node scripts/processPendingSicarPurchases.js",
     "sync-daily-sales": "node scripts/syncDailySicarSales.js",
     "watch-ticket-sales": "node scripts/watchSicarTicketSales.js",
+    "backfill-ticket-history": "node scripts/backfillSicarTicketSalesHistory.js",
+    "sync-product-catalog": "node scripts/syncSicarProductCatalog.js",
     "sync-billing": "node scripts/syncSicarBilling.js",
     "sync-pedido-transfer": "node scripts/syncPedidoTransferToAccounting.js",
     "watch-cash-closures": "node scripts/watchSicarCashClosures.js",

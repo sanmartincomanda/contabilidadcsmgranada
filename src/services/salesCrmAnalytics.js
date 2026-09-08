@@ -9,6 +9,18 @@ export const normalizeCrmText = (value = '') => String(value || '')
     .replace(/[\u0300-\u036f]/g, '')
     .toUpperCase();
 
+const EXCLUDED_SICAR_CUSTOMER_ID = 7878;
+const EXCLUDED_SICAR_CUSTOMER_NAME = 'CARNES AMPARITO';
+
+export const isExcludedSicarTicket = (ticket = {}) => {
+    const customerId = Number(ticket.customerId ?? ticket.clientId ?? ticket.cli_id);
+    const customerName = normalizeCrmText(
+        ticket.customerName || ticket.clientName || ticket.cliente || ticket.razonSocial
+    );
+    return customerId === EXCLUDED_SICAR_CUSTOMER_ID
+        || customerName.includes(EXCLUDED_SICAR_CUSTOMER_NAME);
+};
+
 const unique = (values = []) => [...new Set(
     values
         .flat()
@@ -175,9 +187,20 @@ const buildCustomerSegment = (customer, averageCustomerSales) => {
     return 'Nuevo';
 };
 
-export const buildSalesCrmAnalytics = (tickets = [], linkIndex = buildStampedInvoiceLinkIndex()) => {
-    const activeTickets = (tickets || []).filter((ticket) => !isCancelledSicarTicket(ticket));
-    const cancelledCount = (tickets || []).length - activeTickets.length;
+const getCatalogArticle = (catalog = {}, ticket = {}, item = {}) => {
+    const articleId = String(item.articleId || '').trim();
+    const branchId = String(ticket.branchId || ticket.branch || '').trim().toLowerCase();
+    return catalog[`${branchId}:${articleId}`] || catalog[articleId] || {};
+};
+
+export const buildSalesCrmAnalytics = (
+    tickets = [],
+    linkIndex = buildStampedInvoiceLinkIndex(),
+    productCatalog = {}
+) => {
+    const includedTickets = (tickets || []).filter((ticket) => !isExcludedSicarTicket(ticket));
+    const activeTickets = includedTickets.filter((ticket) => !isCancelledSicarTicket(ticket));
+    const cancelledCount = includedTickets.length - activeTickets.length;
     const paymentTotals = new Map();
     const dailyMap = new Map();
     const customerMap = new Map();
@@ -228,6 +251,7 @@ export const buildSalesCrmAnalytics = (tickets = [], linkIndex = buildStampedInv
             linkedCount: 0,
             name: ticket.customerName || ticket.cliente || 'SIN CLIENTE',
             paymentTotals: new Map(),
+            purchaseDates: new Set(),
             products: new Map(),
             profit: 0,
             rfc: ticket.customerRfc || ticket.rfc || '',
@@ -242,6 +266,7 @@ export const buildSalesCrmAnalytics = (tickets = [], linkIndex = buildStampedInv
         customer.sales = money(customer.sales + total);
         customer.profit = money(customer.profit + ticketProfit);
         customer.ticketCount += 1;
+        if (date) customer.purchaseDates.add(date);
         if (link.linked) customer.linkedCount += 1;
         customer.tickets.push({ ...ticket, crmInvoiceLink: link });
 
@@ -251,11 +276,24 @@ export const buildSalesCrmAnalytics = (tickets = [], linkIndex = buildStampedInv
         });
 
         (ticket.items || []).forEach((item) => {
-            const productKey = String(item.articleId || item.code || normalizeCrmText(item.description)).trim();
-            if (!productKey) return;
+            const catalogArticle = getCatalogArticle(productCatalog, ticket, item);
+            const branchId = String(ticket.branchId || ticket.branch || '').trim().toLowerCase();
+            const rawProductKey = String(item.articleId || item.code || normalizeCrmText(item.description)).trim();
+            if (!rawProductKey) return;
+            const productKey = `${branchId || 'general'}:${rawProductKey}`;
+            const categoryId = item.categoryId ?? catalogArticle.categoryId ?? null;
+            const categoryName = item.categoryName || catalogArticle.categoryName || 'SIN CATEGORIA';
+            const departmentName = item.departmentName || catalogArticle.departmentName || 'SIN DEPARTAMENTO';
+            const categoryKey = item.categoryKey || catalogArticle.categoryKey
+                || `${branchId || 'general'}:${categoryId || 'uncategorized'}`;
             const product = customer.products.get(productKey) || {
-                code: item.code || '',
-                description: item.description || 'Articulo',
+                branchId,
+                categoryId,
+                categoryKey,
+                categoryName,
+                code: item.code || catalogArticle.code || '',
+                departmentName,
+                description: item.description || catalogArticle.description || 'Articulo',
                 quantity: 0,
                 sales: 0,
             };
@@ -263,9 +301,15 @@ export const buildSalesCrmAnalytics = (tickets = [], linkIndex = buildStampedInv
             product.sales = money(product.sales + money(item.totalWithTax ?? item.totalWithoutTax));
             customer.products.set(productKey, product);
 
-            const globalProduct = productMap.get(productKey) || { ...product, quantity: 0, sales: 0 };
+            const globalProduct = productMap.get(productKey) || {
+                ...product,
+                quantity: 0,
+                sales: 0,
+                ticketIds: new Set(),
+            };
             globalProduct.quantity = money(globalProduct.quantity + Number(item.quantity || 0));
             globalProduct.sales = money(globalProduct.sales + money(item.totalWithTax ?? item.totalWithoutTax));
+            globalProduct.ticketIds.add(String(ticket.id || ticket.saleId || ticket.ticketId || ''));
             productMap.set(productKey, globalProduct);
         });
         customerMap.set(customerKey, customer);
@@ -276,16 +320,20 @@ export const buildSalesCrmAnalytics = (tickets = [], linkIndex = buildStampedInv
         ? identifiedCustomers.reduce((sum, customer) => sum + customer.sales, 0) / identifiedCustomers.length
         : 0;
     const customers = [...customerMap.values()]
-        .map((customer) => ({
-            ...customer,
-            averageTicket: customer.ticketCount ? money(customer.sales / customer.ticketCount) : 0,
-            conversion: customer.ticketCount ? customer.linkedCount / customer.ticketCount : 0,
-            margin: customer.sales ? customer.profit / customer.sales : 0,
-            paymentTotals: [...customer.paymentTotals.entries()].map(([type, total]) => ({ type, total })),
-            products: [...customer.products.values()].sort((a, b) => b.sales - a.sales),
-            segment: buildCustomerSegment(customer, averageCustomerSales),
-            tickets: customer.tickets.sort((a, b) => Number(b.saleId || 0) - Number(a.saleId || 0)),
-        }))
+        .map((customer) => {
+            const { purchaseDates, ...customerData } = customer;
+            return {
+                ...customerData,
+                activeDays: purchaseDates.size,
+                averageTicket: customer.ticketCount ? money(customer.sales / customer.ticketCount) : 0,
+                conversion: customer.ticketCount ? customer.linkedCount / customer.ticketCount : 0,
+                margin: customer.sales ? customer.profit / customer.sales : 0,
+                paymentTotals: [...customer.paymentTotals.entries()].map(([type, total]) => ({ type, total })),
+                products: [...customer.products.values()].sort((a, b) => b.sales - a.sales),
+                segment: buildCustomerSegment(customer, averageCustomerSales),
+                tickets: customer.tickets.sort((a, b) => Number(b.saleId || 0) - Number(a.saleId || 0)),
+            };
+        })
         .sort((a, b) => b.sales - a.sales);
 
     return {
@@ -294,7 +342,13 @@ export const buildSalesCrmAnalytics = (tickets = [], linkIndex = buildStampedInv
         customers,
         daily: [...dailyMap.values()].filter((item) => item.date).sort((a, b) => a.date.localeCompare(b.date)),
         paymentTotals: [...paymentTotals.entries()].map(([type, total]) => ({ type, total })).sort((a, b) => b.total - a.total),
-        products: [...productMap.values()].sort((a, b) => b.sales - a.sales),
+        products: [...productMap.values()]
+            .map(({ ticketIds, ...product }) => ({
+                ...product,
+                averagePerTicket: ticketIds.size ? money(product.sales / ticketIds.size) : 0,
+                ticketCount: ticketIds.size,
+            }))
+            .sort((a, b) => b.sales - a.sales),
         summary: {
             averageTicket: activeTickets.length ? money(sales / activeTickets.length) : 0,
             cost,

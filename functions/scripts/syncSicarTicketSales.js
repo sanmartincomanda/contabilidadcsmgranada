@@ -60,6 +60,20 @@ function getExcludedClientId() {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_EXCLUDED_CLIENT_ID;
 }
 
+function getExcludedClientName() {
+  return normalizeText(process.env.SICAR_EXCLUDED_SALE_CLIENT_NAME || DEFAULT_EXCLUDED_CLIENT_NAME)
+    || DEFAULT_EXCLUDED_CLIENT_NAME;
+}
+
+function isExcludedTicketSale(entry = {}) {
+  const customerId = Number(entry.customerId ?? entry.clientId ?? entry.cli_id);
+  const customerName = normalizeText(
+    entry.customerName || entry.clientName || entry.cliente || entry.razonSocial
+  );
+  return customerId === getExcludedClientId()
+    || customerName.includes(getExcludedClientName());
+}
+
 function compactAddress(row = {}) {
   return [row.domicilio, row.noExt, row.noInt, row.colonia, row.localidad, row.ciudad]
     .map((value) => String(value || '').trim())
@@ -221,6 +235,7 @@ async function attachSalePayments(connection, entriesBySaleId) {
 
 async function fetchSalesWithFilter(connection, filterSql, params = []) {
   const excludedClientId = getExcludedClientId();
+  const excludedClientName = getExcludedClientName();
   const [rows] = await connection.execute(`
     SELECT
       v.ven_id,
@@ -288,8 +303,9 @@ async function fetchSalesWithFilter(connection, filterSql, params = []) {
     LEFT JOIN caja c ON c.caj_id = v.caj_id
     WHERE ${filterSql}
       AND COALESCE(t.cli_id, r.cli_id, cc.cli_id, fi.cli_id, NULLIF(v.afCliente, 0), 0) <> ?
+      AND UPPER(TRIM(COALESCE(cli.nombre, ''))) NOT LIKE ?
     ORDER BY v.ven_id
-  `, [...params, excludedClientId]);
+  `, [...params, excludedClientId, `%${excludedClientName}%`]);
 
   const entriesBySaleId = new Map();
   const { branchId, branchName } = getBranchConfig();
@@ -408,7 +424,8 @@ function buildTicketFingerprint(entry = {}) {
 }
 
 function buildDailyRollup(entries = [], date = '', branchConfig = getBranchConfig()) {
-  const activeEntries = entries.filter((entry) => !entry.isCancelled && entry.status === 'active');
+  const includedEntries = entries.filter((entry) => !isExcludedTicketSale(entry));
+  const activeEntries = includedEntries.filter((entry) => !entry.isCancelled && entry.status === 'active');
   const { branchId, branchName } = branchConfig;
   const paymentMap = new Map();
 
@@ -442,7 +459,7 @@ function buildDailyRollup(entries = [], date = '', branchConfig = getBranchConfi
     purchaseTotal: money(activeEntries.reduce((sum, entry) => sum + entry.purchaseTotal, 0)),
     grossProfitTotal: money(activeEntries.reduce((sum, entry) => sum + entry.grossProfitTotal, 0)),
     ticketCount: activeEntries.length,
-    cancelledTicketCount: entries.length - activeEntries.length,
+    cancelledTicketCount: includedEntries.length - activeEntries.length,
     itemCount: activeEntries.reduce((sum, entry) => sum + Number(entry.itemCount || 0), 0),
     sourceRecordIds: activeEntries.map((entry) => String(entry.saleId)),
     ticketDocumentIds: activeEntries.map((entry) => entry.id),
@@ -513,7 +530,9 @@ module.exports = {
   fetchTicketSalesByIds,
   getBranchConfig,
   getExcludedClientId,
+  getExcludedClientName,
   getSourceDocument,
+  isExcludedTicketSale,
   money,
   normalizeText,
   parsePositiveIds,

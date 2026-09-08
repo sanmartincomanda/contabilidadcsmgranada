@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { collection, onSnapshot, query, where } from 'firebase/firestore';
 import { db } from '../firebase';
 import { fmt, getRecordBranchId } from '../constants';
+import { isExcludedSicarTicket } from '../services/salesCrmAnalytics';
 
 const normalizeText = (value = '') => String(value || '')
     .trim()
@@ -45,6 +46,7 @@ export default function SicarTicketSalesPanel({ date, branchId }) {
             const rows = snapshot.docs
                 .map((ticketDoc) => ({ id: ticketDoc.id, ...ticketDoc.data() }))
                 .filter((ticket) => !branchId || getRecordBranchId(ticket) === branchId)
+                .filter((ticket) => !isExcludedSicarTicket(ticket))
                 .sort((a, b) => Number(b.saleId || 0) - Number(a.saleId || 0));
             setTickets(rows);
             setLoading(false);

@@ -5,6 +5,7 @@ const {
   buildDailyRollupFingerprint,
   buildTicketFingerprint,
   getSourceDocument,
+  isExcludedTicketSale,
   parsePositiveIds,
 } = require('./syncSicarTicketSales');
 const {
@@ -15,6 +16,15 @@ const {
   buildCancellationMarker,
   findChangedCancellationMarkers,
 } = require('./watchSicarTicketSales');
+const {
+  assertHistoricalRange,
+  buildHistoricalTicketPayload,
+  parseArgs: parseHistoryArgs,
+} = require('./backfillSicarTicketSalesHistory');
+const {
+  buildSicarProductCatalog,
+  buildSicarProductCatalogFingerprint,
+} = require('./syncSicarProductCatalog');
 
 test('daily ticket rollup excludes cancelled sales and sums fiscal values', () => {
   const rollup = buildDailyRollup([
@@ -77,6 +87,44 @@ test('daily ticket rollup supports a remote branch and tickets without payment d
   assert.equal(rollup.ticketCount, 1);
   assert.equal(rollup.total, 132);
   assert.deepEqual(rollup.paymentBreakdown, []);
+});
+
+test('daily ticket rollup excludes Carnes Amparito by id or name', () => {
+  const regular = {
+    id: 'ticket-regular',
+    saleId: 30,
+    customerId: 40,
+    customerName: 'CLIENTE REGULAR',
+    status: 'active',
+    isCancelled: false,
+    subtotal: 100,
+    total: 100,
+    itemCount: 1,
+  };
+  const excludedByName = {
+    ...regular,
+    id: 'ticket-amparito-name',
+    saleId: 31,
+    customerId: 999,
+    customerName: 'Carnes Amparito S.A.',
+    total: 500,
+  };
+  const excludedById = {
+    ...regular,
+    id: 'ticket-amparito-id',
+    saleId: 32,
+    customerId: 7878,
+    customerName: 'Cliente renombrado',
+    total: 600,
+  };
+  const rollup = buildDailyRollup([regular, excludedByName, excludedById], '2026-09-07');
+
+  assert.equal(isExcludedTicketSale(excludedByName), true);
+  assert.equal(isExcludedTicketSale(excludedById), true);
+  assert.equal(rollup.ticketCount, 1);
+  assert.equal(rollup.cancelledTicketCount, 0);
+  assert.equal(rollup.total, 100);
+  assert.deepEqual(rollup.sourceRecordIds, ['30']);
 });
 
 test('fingerprints are stable when object key order changes', () => {
@@ -154,4 +202,51 @@ test('credit receipt fingerprints include applications and cancellation state', 
 test('empty SICAR credit identifiers never turn into a fake credit id zero', () => {
   assert.deepEqual(parsePositiveIds(''), []);
   assert.deepEqual(parsePositiveIds('0, 12, , 18'), [12, 18]);
+});
+
+test('historical ticket backfill is analytics-only and cannot become linkable', () => {
+  const payload = buildHistoricalTicketPayload({
+    id: 'ticket-history-1',
+    customerName: 'CLIENTE HISTORICO',
+    date: '2026-04-15',
+    saleId: 55,
+    total: 250,
+  }, 'timestamp');
+
+  assert.equal(payload.accountingEligible, false);
+  assert.equal(payload.analyticsOnly, true);
+  assert.equal(payload.historyBackfill, true);
+  assert.equal(payload.sourceMode, 'history-backfill');
+  assert.equal(payload.updatedAt, 'timestamp');
+});
+
+test('historical backfill range cannot overlap accounting-link tickets', () => {
+  const options = parseHistoryArgs(['--startDate=2026-01-01', '--endDate=2026-09-02', '--preview']);
+  assert.equal(options.preview, true);
+  assert.doesNotThrow(() => assertHistoricalRange(options.startDate, options.endDate));
+  assert.throws(
+    () => assertHistoricalRange('2026-01-01', '2026-09-03'),
+    /debe terminar antes/
+  );
+});
+
+test('SICAR product catalog preserves category and department by branch', () => {
+  const catalog = buildSicarProductCatalog([{
+    art_id: 25,
+    clave: 'RES-25',
+    descripcion: 'Lomo de res',
+    cat_id: 14,
+    categoryName: 'PRODUCIDOS',
+    dep_id: 8,
+    departmentName: 'RES',
+  }], { branchId: 'granada', branchName: 'GRANADA' });
+
+  assert.equal(catalog.articleCount, 1);
+  assert.equal(catalog.categoryCount, 1);
+  assert.equal(catalog.articles['25'].categoryKey, 'granada:14');
+  assert.equal(catalog.articles['25'].departmentName, 'RES');
+  assert.equal(
+    buildSicarProductCatalogFingerprint(catalog),
+    buildSicarProductCatalogFingerprint({ ...catalog, articleCount: 999 })
+  );
 });

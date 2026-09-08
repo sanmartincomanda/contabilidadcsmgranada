@@ -23,12 +23,14 @@ const {
   fetchSicarCreditReceiptsByPaymentIds,
   writeSicarCreditReceipt,
 } = require('./syncSicarCreditReceipts');
+const { syncSicarProductCatalog } = require('./syncSicarProductCatalog');
 
 const DEFAULT_STATE_PATH = 'C:\\SICAR\\state\\sicar-ticket-sales-watch.json';
 const DEFAULT_INTERVAL_MS = 10000;
 const DEFAULT_BATCH_SIZE = 100;
 const DEFAULT_STARTUP_BACKFILL_DAYS = 2;
 const DEFAULT_RECENT_BACKFILL_INTERVAL_MS = 60000;
+const PRODUCT_CATALOG_SYNC_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const TICKET_INCOME_START_DATE = '2026-09-03';
 
 function parseArgs(argv) {
@@ -496,6 +498,13 @@ async function runWatcherSession(options) {
   try {
     if (options.resetState && fs.existsSync(options.statePath)) fs.unlinkSync(options.statePath);
     const state = normalizeState(readState(options.statePath));
+    const catalogResult = await syncSicarProductCatalog({
+      connection,
+      db,
+      previousFingerprint: state.productCatalogFingerprint || '',
+      preview: options.preview,
+    });
+    state.productCatalogFingerprint = catalogResult.fingerprint;
     const backfill = await processBackfill({ connection, db, options, state });
     const creditBackfill = await processCreditReceiptBackfill({ connection, db, options, state });
     let lastSaleId = Number(state.lastSaleId || 0);
@@ -527,6 +536,7 @@ async function runWatcherSession(options) {
 
     console.log(`[${new Date().toISOString()}] Watcher SICAR iniciado cada ${options.intervalMs / 1000}s desde ven_id ${lastSaleId} y acl_id ${lastCreditPaymentId}.`);
     let lastRecentBackfillAt = Date.now();
+    let lastProductCatalogSyncAt = Date.now();
 
     do {
       lastSaleId = await processNewSales({ connection, db, lastSaleId, options, state });
@@ -540,6 +550,17 @@ async function runWatcherSession(options) {
         await processCreditReceiptBackfill({ connection, db, options, state });
         writeState(options.statePath, state);
         lastRecentBackfillAt = Date.now();
+      }
+      if (Date.now() - lastProductCatalogSyncAt >= PRODUCT_CATALOG_SYNC_INTERVAL_MS) {
+        const refreshedCatalog = await syncSicarProductCatalog({
+          connection,
+          db,
+          previousFingerprint: state.productCatalogFingerprint || '',
+          preview: options.preview,
+        });
+        state.productCatalogFingerprint = refreshedCatalog.fingerprint;
+        writeState(options.statePath, state);
+        lastProductCatalogSyncAt = Date.now();
       }
       await sleep(options.intervalMs);
     } while (true);

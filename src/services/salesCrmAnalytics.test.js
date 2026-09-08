@@ -4,6 +4,7 @@ import {
     buildSalesCrmAnalytics,
     buildStampedInvoiceLinkIndex,
     getTicketStampedInvoiceInfo,
+    isExcludedSicarTicket,
 } from './salesCrmAnalytics.js';
 
 const tickets = [
@@ -96,4 +97,42 @@ test('does not count a known annulled linked invoice as conversion', () => {
     }, index);
 
     assert.equal(info.linked, false);
+});
+
+test('excludes Carnes Amparito from tickets and every sales KPI', () => {
+    const amparitoTicket = {
+        id: 'ticket-amparito',
+        customerId: 9000,
+        customerName: 'Carnes Amparito S.A.',
+        date: '2026-09-07',
+        status: 'active',
+        subtotal: 1000,
+        total: 1150,
+    };
+    const analytics = buildSalesCrmAnalytics([...tickets, amparitoTicket]);
+
+    assert.equal(isExcludedSicarTicket(amparitoTicket), true);
+    assert.equal(isExcludedSicarTicket({ customerId: 7878, customerName: 'Otro nombre' }), true);
+    assert.equal(analytics.summary.ticketCount, 2);
+    assert.equal(analytics.summary.sales, 315);
+    assert.equal(analytics.customers.some((customer) => customer.name.includes('Amparito')), false);
+});
+
+test('enriches article KPIs with the SICAR category catalog', () => {
+    const analytics = buildSalesCrmAnalytics(tickets, buildStampedInvoiceLinkIndex(), {
+        '1': {
+            articleId: 1,
+            categoryId: 14,
+            categoryKey: 'granada:14',
+            categoryName: 'PRODUCIDOS',
+            departmentName: 'RES',
+        },
+    });
+    const product = analytics.products.find((item) => item.description === 'Producto A');
+
+    assert.equal(product.categoryName, 'PRODUCIDOS');
+    assert.equal(product.departmentName, 'RES');
+    assert.equal(product.ticketCount, 1);
+    assert.equal(product.averagePerTicket, 115);
+    assert.equal(analytics.customers[0].activeDays, 1);
 });

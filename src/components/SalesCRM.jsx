@@ -1,7 +1,8 @@
 import React, { useDeferredValue, useEffect, useMemo, useState } from 'react';
-import { collection, getDocs, query, where } from 'firebase/firestore';
+import { collection, doc, getDoc, getDocs, query, where } from 'firebase/firestore';
 import { db } from '../firebase';
 import {
+    ALL_BRANCH_IDS,
     CONSOLIDATED_BRANCH_ID,
     fmt,
     getBranchById,
@@ -13,12 +14,20 @@ import {
     getTicketPaymentTypes,
     getTicketStampedInvoiceInfo,
     isCancelledSicarTicket,
+    isExcludedSicarTicket,
     normalizeCrmText,
 } from '../services/salesCrmAnalytics';
 
-const SICAR_SALES_START_DATE = '2026-09-03';
+const SICAR_SALES_START_DATE = '2026-01-01';
 const PAGE_SIZE = 20;
 const rangeCache = new Map();
+const productCatalogCache = new Map();
+const RANKING_LIMITS = [10, 20, 25, 100];
+const SALES_CRM_TABS = [
+    { id: 'general', label: 'General', caption: 'Tickets y comportamiento' },
+    { id: 'clientes', label: 'Clientes', caption: 'Valor y recurrencia' },
+    { id: 'articulos', label: 'Articulos', caption: 'Top, NonTop y categorias' },
+];
 
 const PAYMENT_META = {
     all: { label: 'Todos los metodos', short: 'Todos', color: 'bg-slate-700', text: 'text-slate-700' },
@@ -188,6 +197,63 @@ function useSicarTicketRange(fromDate, toDate, refreshToken, enabled = true) {
     return state;
 }
 
+function useSicarProductCatalog(selectedBranchId, refreshToken, enabled = true) {
+    const branchIds = selectedBranchId === CONSOLIDATED_BRANCH_ID ? ALL_BRANCH_IDS : [selectedBranchId];
+    const cacheKey = [...branchIds].sort().join(':');
+    const [state, setState] = useState({ articles: {}, categories: [], error: '', loading: enabled });
+
+    useEffect(() => {
+        if (!enabled) {
+            setState({ articles: {}, categories: [], error: '', loading: false });
+            return undefined;
+        }
+        const cached = productCatalogCache.get(cacheKey);
+        if (cached && refreshToken === 0) {
+            setState({ ...cached, error: '', loading: false });
+            return undefined;
+        }
+
+        let mounted = true;
+        setState((current) => ({ ...current, error: '', loading: true }));
+        Promise.all(branchIds.map((branchId) => getDoc(doc(db, 'sicar_catalogos_articulos', branchId))))
+            .then((snapshots) => {
+                if (!mounted) return;
+                const articles = {};
+                const categoryMap = new Map();
+                snapshots.forEach((snapshot, index) => {
+                    if (!snapshot.exists()) return;
+                    const payload = snapshot.data() || {};
+                    const branchId = payload.branchId || branchIds[index];
+                    Object.entries(payload.articles || {}).forEach(([articleId, article]) => {
+                        articles[`${branchId}:${articleId}`] = article;
+                        if (branchIds.length === 1) articles[articleId] = article;
+                    });
+                    (payload.categories || []).forEach((category) => {
+                        const key = category.categoryKey || `${branchId}:${category.categoryId || 'uncategorized'}`;
+                        categoryMap.set(key, { ...category, branchId, categoryKey: key });
+                    });
+                });
+                const result = {
+                    articles,
+                    categories: [...categoryMap.values()].sort((a, b) => (
+                        String(a.departmentName || '').localeCompare(String(b.departmentName || ''), 'es')
+                        || String(a.categoryName || '').localeCompare(String(b.categoryName || ''), 'es')
+                    )),
+                };
+                productCatalogCache.set(cacheKey, result);
+                setState({ ...result, error: '', loading: false });
+            })
+            .catch((error) => {
+                console.error('No se pudo cargar el catalogo de articulos SICAR', error);
+                if (mounted) setState((current) => ({ ...current, error: error.message || 'No se pudo cargar el catalogo.', loading: false }));
+            });
+
+        return () => { mounted = false; };
+    }, [cacheKey, enabled, refreshToken]);
+
+    return state;
+}
+
 function KpiCard({ eyebrow, value, caption, tone = 'slate', progress = null }) {
     const tones = {
         slate: 'border-slate-200 bg-white text-slate-950',
@@ -239,21 +305,51 @@ function ConversionRing({ value }) {
     );
 }
 
-function DailySalesChart({ daily = [] }) {
-    const maxSales = Math.max(1, ...daily.map((item) => item.sales));
-    if (!daily.length) return <EmptyState text="No hay ventas activas para graficar." />;
+const buildSalesChartPeriods = (daily = [], fromDate = '', toDate = '') => {
+    const rangeDays = Math.max(0, Math.round((new Date(`${toDate}T12:00:00`) - new Date(`${fromDate}T12:00:00`)) / 86400000));
+    if (rangeDays <= 45) {
+        return daily.map((item) => ({
+            ...item,
+            axisLabel: String(item.date).substring(8, 10),
+            titleLabel: formatDate(item.date),
+        }));
+    }
+
+    const months = new Map();
+    daily.forEach((item) => {
+        const key = String(item.date).substring(0, 7);
+        const current = months.get(key) || { date: key, linked: 0, sales: 0, tickets: 0 };
+        current.linked += Number(item.linked || 0);
+        current.sales += Number(item.sales || 0);
+        current.tickets += Number(item.tickets || 0);
+        months.set(key, current);
+    });
+    return [...months.values()].map((item) => {
+        const [year, month] = item.date.split('-').map(Number);
+        return {
+            ...item,
+            axisLabel: new Date(year, month - 1, 1).toLocaleDateString('es-NI', { month: 'short' }).replace('.', ''),
+            titleLabel: new Date(year, month - 1, 1).toLocaleDateString('es-NI', { month: 'long', year: 'numeric' }),
+        };
+    });
+};
+
+function DailySalesChart({ daily = [], fromDate = '', toDate = '' }) {
+    const periods = useMemo(() => buildSalesChartPeriods(daily, fromDate, toDate), [daily, fromDate, toDate]);
+    const maxSales = Math.max(1, ...periods.map((item) => item.sales));
+    if (!periods.length) return <EmptyState text="No hay ventas activas para graficar." />;
 
     return (
         <div className="overflow-x-auto pb-1">
             <div className="flex h-56 min-w-[680px] items-end gap-2 border-b border-slate-200 px-1 pt-6">
-                {daily.map((item) => {
+                {periods.map((item) => {
                     const height = Math.max(5, (item.sales / maxSales) * 100);
                     const conversion = item.tickets ? item.linked / item.tickets : 0;
                     return (
                         <button
                             key={item.date}
                             type="button"
-                            title={`${formatDate(item.date)}: ${fmt(item.sales)} · ${item.tickets} tickets · ${formatPercent(conversion)} a membretada`}
+                            title={`${item.titleLabel}: ${fmt(item.sales)} · ${item.tickets} tickets · ${formatPercent(conversion)} a membretada`}
                             className="group flex h-full min-w-[34px] flex-1 flex-col justify-end"
                         >
                             <div className="mb-2 hidden text-center font-mono text-[9px] font-black text-slate-500 group-hover:block">{fmt(item.sales)}</div>
@@ -263,7 +359,7 @@ function DailySalesChart({ daily = [] }) {
                             >
                                 <div className="absolute inset-x-0 bottom-0 bg-emerald-400/85" style={{ height: `${conversion * 100}%` }} />
                             </div>
-                            <div className="mt-2 text-center text-[9px] font-black uppercase text-slate-400">{String(item.date).substring(8, 10)}</div>
+                            <div className="mt-2 text-center text-[9px] font-black uppercase text-slate-400">{item.axisLabel}</div>
                         </button>
                     );
                 })}
@@ -315,12 +411,13 @@ function CustomerTable({ customers, totalSales, onOpen }) {
     if (!customers.length) return <EmptyState text="No hay clientes para los filtros seleccionados." />;
     return (
         <div className="overflow-x-auto rounded-3xl border border-slate-200">
-            <table className="min-w-[820px] w-full text-left text-sm">
+            <table className="min-w-[920px] w-full text-left text-sm">
                 <thead>
                     <tr className="border-b border-slate-200 bg-slate-50 text-[9px] font-black uppercase tracking-[0.18em] text-slate-400">
                         <th className="px-4 py-3">Cliente</th>
                         <th className="px-4 py-3">Segmento</th>
                         <th className="px-4 py-3 text-right">Tickets</th>
+                        <th className="px-4 py-3 text-right">Dias activos</th>
                         <th className="px-4 py-3 text-right">Venta</th>
                         <th className="px-4 py-3 text-right">Ticket prom.</th>
                         <th className="px-4 py-3 text-right">A membretada</th>
@@ -328,7 +425,7 @@ function CustomerTable({ customers, totalSales, onOpen }) {
                     </tr>
                 </thead>
                 <tbody>
-                    {customers.slice(0, 20).map((customer) => (
+                    {customers.map((customer, index) => (
                         <tr
                             key={customer.key}
                             onDoubleClick={() => onOpen(customer.key)}
@@ -336,12 +433,13 @@ function CustomerTable({ customers, totalSales, onOpen }) {
                         >
                             <td className="px-4 py-3">
                                 <button type="button" onClick={() => onOpen(customer.key)} className="text-left">
-                                    <div className="font-black text-slate-900">{customer.name}</div>
+                                    <div className="font-black text-slate-900"><span className="mr-2 font-mono text-[10px] text-slate-400">#{index + 1}</span>{customer.name}</div>
                                     <div className="mt-0.5 text-[10px] font-bold text-slate-400">{customer.rfc || 'Sin RUC'} · {formatPercent(totalSales ? customer.sales / totalSales : 0)} de la venta</div>
                                 </button>
                             </td>
                             <td className="px-4 py-3"><span className={`rounded-full px-2.5 py-1 text-[9px] font-black uppercase tracking-wider ${segmentClass(customer.segment)}`}>{customer.segment}</span></td>
                             <td className="px-4 py-3 text-right font-mono font-black text-slate-700">{customer.ticketCount}</td>
+                            <td className="px-4 py-3 text-right font-mono font-black text-sky-700">{customer.activeDays}</td>
                             <td className="px-4 py-3 text-right font-mono font-black text-emerald-700">{fmt(customer.sales)}</td>
                             <td className="px-4 py-3 text-right font-mono font-bold text-slate-600">{fmt(customer.averageTicket)}</td>
                             <td className="px-4 py-3 text-right font-mono font-black text-sky-700">{formatPercent(customer.conversion)}</td>
@@ -351,6 +449,50 @@ function CustomerTable({ customers, totalSales, onOpen }) {
                 </tbody>
             </table>
             <div className="border-t border-slate-100 bg-slate-50 px-4 py-3 text-[10px] font-bold text-slate-500">Clic o doble clic sobre un cliente para abrir su perfil CRM.</div>
+        </div>
+    );
+}
+
+function GeneratePrompt({ title, text }) {
+    return (
+        <div className="rounded-[2rem] border border-dashed border-slate-300 bg-gradient-to-br from-slate-50 to-white px-6 py-14 text-center">
+            <div className="mx-auto grid h-14 w-14 place-items-center rounded-2xl bg-slate-950 text-xl font-black text-white shadow-lg">↗</div>
+            <h4 className="mt-4 text-lg font-black text-slate-900">{title}</h4>
+            <p className="mx-auto mt-2 max-w-lg text-sm font-semibold leading-relaxed text-slate-500">{text}</p>
+        </div>
+    );
+}
+
+function ProductTable({ products = [], totalSales = 0, mode = 'top' }) {
+    if (!products.length) return <EmptyState text="No hay articulos vendidos para esta seleccion." />;
+    return (
+        <div className="overflow-x-auto rounded-3xl border border-slate-200">
+            <table className="min-w-[940px] w-full text-left text-sm">
+                <thead>
+                    <tr className="border-b border-slate-200 bg-slate-50 text-[9px] font-black uppercase tracking-[0.18em] text-slate-400">
+                        <th className="px-4 py-3">Posicion</th>
+                        <th className="px-4 py-3">Articulo</th>
+                        <th className="px-4 py-3">Categoria SICAR</th>
+                        <th className="px-4 py-3 text-right">Tickets</th>
+                        <th className="px-4 py-3 text-right">Cantidad</th>
+                        <th className="px-4 py-3 text-right">Prom. ticket</th>
+                        <th className="px-4 py-3 text-right">Venta</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {products.map((product, index) => (
+                        <tr key={`${product.branchId}-${product.code}-${product.description}`} className="border-b border-slate-100 last:border-b-0 hover:bg-sky-50/50">
+                            <td className="px-4 py-3"><span className={`grid h-8 w-8 place-items-center rounded-xl font-mono text-xs font-black ${mode === 'top' ? 'bg-slate-950 text-white' : 'bg-amber-100 text-amber-800'}`}>{index + 1}</span></td>
+                            <td className="px-4 py-3"><div className="font-black text-slate-900">{product.description}</div><div className="mt-0.5 text-[10px] font-bold text-slate-400">{product.code || 'Sin codigo'} · {product.branchId || 'SICAR'}</div></td>
+                            <td className="px-4 py-3"><div className="font-black text-slate-700">{product.categoryName}</div><div className="mt-0.5 text-[10px] font-bold text-slate-400">{product.departmentName}</div></td>
+                            <td className="px-4 py-3 text-right font-mono font-black text-slate-700">{formatInteger(product.ticketCount)}</td>
+                            <td className="px-4 py-3 text-right font-mono font-black text-sky-700">{Number(product.quantity || 0).toLocaleString('es-NI', { maximumFractionDigits: 2 })}</td>
+                            <td className="px-4 py-3 text-right font-mono font-bold text-slate-600">{fmt(product.averagePerTicket)}</td>
+                            <td className="px-4 py-3 text-right"><div className="font-mono font-black text-emerald-700">{fmt(product.sales)}</div><div className="mt-0.5 text-[9px] font-bold text-slate-400">{formatPercent(totalSales ? product.sales / totalSales : 0)}</div></td>
+                        </tr>
+                    ))}
+                </tbody>
+            </table>
         </div>
     );
 }
@@ -515,9 +657,12 @@ function CustomerDetailModal({ customer, onClose, onOpenTicket }) {
     );
 }
 
-export default function SalesCRM({ data = {}, branchContext = {}, ticketsOverride = null }) {
+export default function SalesCRM({ data = {}, branchContext = {}, ticketsOverride = null, productCatalogOverride = null }) {
     const today = localDateString();
-    const defaultFromDate = monthStart(today) < SICAR_SALES_START_DATE ? SICAR_SALES_START_DATE : monthStart(today);
+    const currentYearStart = `${today.substring(0, 4)}-01-01`;
+    const availableYearStart = currentYearStart < SICAR_SALES_START_DATE ? SICAR_SALES_START_DATE : currentYearStart;
+    const currentMonthStart = monthStart(today) < SICAR_SALES_START_DATE ? SICAR_SALES_START_DATE : monthStart(today);
+    const defaultFromDate = currentMonthStart;
     const selectedBranchId = branchContext.selectedBranchId || 'granada';
     const branch = selectedBranchId === CONSOLIDATED_BRANCH_ID ? { shortName: 'Consolidado' } : getBranchById(selectedBranchId);
     const [fromDate, setFromDate] = useState(defaultFromDate);
@@ -527,12 +672,19 @@ export default function SalesCRM({ data = {}, branchContext = {}, ticketsOverrid
     const [paymentFilter, setPaymentFilter] = useState('all');
     const [statusFilter, setStatusFilter] = useState('all');
     const [includePublic, setIncludePublic] = useState(false);
+    const [activeCrmTab, setActiveCrmTab] = useState('general');
+    const [customerLimitDraft, setCustomerLimitDraft] = useState('10');
+    const [customerReportLimit, setCustomerReportLimit] = useState(null);
+    const [productDraft, setProductDraft] = useState({ categoryKey: 'all', limit: '10', mode: 'top' });
+    const [productReport, setProductReport] = useState(null);
     const [page, setPage] = useState(1);
     const [refreshToken, setRefreshToken] = useState(0);
     const [selectedTicket, setSelectedTicket] = useState(null);
     const [selectedCustomerKey, setSelectedCustomerKey] = useState('');
     const hasTicketOverride = Array.isArray(ticketsOverride);
     const archive = useSicarTicketRange(fromDate, toDate, refreshToken, !hasTicketOverride);
+    const remoteProductCatalog = useSicarProductCatalog(selectedBranchId, refreshToken, !hasTicketOverride && !productCatalogOverride);
+    const productCatalog = productCatalogOverride || remoteProductCatalog;
 
     const linkIndex = useMemo(() => buildStampedInvoiceLinkIndex(data.facturas_membretadas_ventas || []), [data.facturas_membretadas_ventas]);
     const tickets = useMemo(() => mergeTicketRecords(
@@ -542,6 +694,7 @@ export default function SalesCRM({ data = {}, branchContext = {}, ticketsOverrid
         toDate
     )
         .filter((ticket) => isTicketInBranch(ticket, selectedBranchId))
+        .filter((ticket) => !isExcludedSicarTicket(ticket))
         .map((ticket) => ({ ...ticket, crmInvoiceLink: getTicketStampedInvoiceInfo(ticket, linkIndex) }))
         .sort((a, b) => Number(b.saleId || 0) - Number(a.saleId || 0)), [archive.records, data.sicar_ventas_tickets, fromDate, hasTicketOverride, linkIndex, selectedBranchId, ticketsOverride, toDate]);
 
@@ -557,19 +710,51 @@ export default function SalesCRM({ data = {}, branchContext = {}, ticketsOverrid
         return true;
     }), [normalizedSearch, paymentFilter, statusFilter, tickets]);
 
-    const analytics = useMemo(() => buildSalesCrmAnalytics(filteredTickets, linkIndex), [filteredTickets, linkIndex]);
+    const analytics = useMemo(() => buildSalesCrmAnalytics(
+        tickets,
+        linkIndex,
+        productCatalog.articles
+    ), [linkIndex, productCatalog.articles, tickets]);
     const visibleCustomers = useMemo(() => analytics.customers.filter((customer) => includePublic || !customer.isPublic), [analytics.customers, includePublic]);
+    const topCustomers = useMemo(() => customerReportLimit
+        ? [...visibleCustomers].sort((a, b) => b.sales - a.sales).slice(0, customerReportLimit)
+        : [], [customerReportLimit, visibleCustomers]);
+    const recurringCustomers = useMemo(() => customerReportLimit
+        ? [...visibleCustomers]
+            .sort((a, b) => b.ticketCount - a.ticketCount || b.activeDays - a.activeDays || b.sales - a.sales)
+            .slice(0, customerReportLimit)
+        : [], [customerReportLimit, visibleCustomers]);
+    const soldCategoryKeys = useMemo(() => new Set(analytics.products.map((product) => product.categoryKey)), [analytics.products]);
+    const categoryOptions = useMemo(() => productCatalog.categories.filter((category) => (
+        soldCategoryKeys.has(category.categoryKey)
+    )), [productCatalog.categories, soldCategoryKeys]);
+    const generatedProducts = useMemo(() => {
+        if (!productReport) return [];
+        const candidates = productReport.categoryKey === 'all'
+            ? analytics.products
+            : analytics.products.filter((product) => product.categoryKey === productReport.categoryKey);
+        return [...candidates]
+            .sort((a, b) => productReport.mode === 'nontop' ? a.sales - b.sales : b.sales - a.sales)
+            .slice(0, productReport.limit);
+    }, [analytics.products, productReport]);
     const selectedCustomer = useMemo(() => analytics.customers.find((customer) => customer.key === selectedCustomerKey) || null, [analytics.customers, selectedCustomerKey]);
     const rangeLabel = getRangeLabel(fromDate, toDate);
 
     useEffect(() => { setPage(1); }, [deferredSearch, fromDate, paymentFilter, selectedBranchId, statusFilter, toDate]);
+    useEffect(() => {
+        setCustomerReportLimit(null);
+        setProductReport(null);
+    }, [fromDate, selectedBranchId, toDate]);
+    useEffect(() => {
+        setProductDraft((current) => ({ ...current, categoryKey: 'all' }));
+    }, [selectedBranchId]);
 
     const applyPreset = (preset) => {
         if (preset === 'today') setFromDate(today);
         if (preset === 'week') setFromDate(shiftDate(today, -6));
-        if (preset === 'month') setFromDate(defaultFromDate);
+        if (preset === 'month') setFromDate(currentMonthStart);
         if (preset === '30') setFromDate(shiftDate(today, -29));
-        if (preset === 'all') setFromDate(SICAR_SALES_START_DATE);
+        if (preset === 'year') setFromDate(availableYearStart);
         setToDate(today);
     };
 
@@ -596,7 +781,7 @@ export default function SalesCRM({ data = {}, branchContext = {}, ticketsOverrid
                     <div className="flex-1">
                         <div className="mb-2 text-[9px] font-black uppercase tracking-[0.22em] text-slate-400">Rango rapido</div>
                         <div className="flex flex-wrap gap-2">{[
-                            ['today', 'Hoy'], ['week', '7 dias'], ['month', 'Este mes'], ['30', '30 dias'], ['all', 'Todo'],
+                            ['today', 'Hoy'], ['week', '7 dias'], ['month', 'Este mes'], ['30', '30 dias'], ['year', 'Este año'],
                         ].map(([value, label]) => <button key={value} type="button" onClick={() => applyPreset(value)} className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-[10px] font-black uppercase tracking-wider text-slate-600 transition hover:border-[#e30613] hover:bg-rose-50 hover:text-[#9f111a]">{label}</button>)}</div>
                     </div>
                     <label className="min-w-[165px]"><span className="mb-2 block text-[9px] font-black uppercase tracking-[0.22em] text-slate-400">Desde</span><input type="date" min={SICAR_SALES_START_DATE} max={toDate || today} value={fromDate} onChange={(event) => setFromDate(event.target.value)} className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-xs font-black text-slate-700 outline-none focus:border-sky-400" /></label>
@@ -608,42 +793,99 @@ export default function SalesCRM({ data = {}, branchContext = {}, ticketsOverrid
                 <div className="mt-4 flex flex-wrap items-center gap-3 border-t border-slate-100 pt-4 text-[10px] font-bold text-slate-500"><span className="rounded-full bg-sky-100 px-3 py-1 text-sky-800">{rangeLabel}</span><span>{tickets.length} registros SICAR cargados</span>{archive.updatedAt && <span>Actualizado {archive.updatedAt.toLocaleTimeString('es-NI', { hour: '2-digit', minute: '2-digit' })}</span>}<span className="ml-auto text-emerald-700">El filtro no genera lecturas por cada KPI</span></div>
             </section>
 
-            <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
-                <KpiCard eyebrow="Venta SICAR" value={fmt(analytics.summary.sales)} caption={`${formatInteger(analytics.summary.ticketCount)} tickets activos`} tone="green" />
-                <KpiCard eyebrow="Ticket promedio" value={fmt(analytics.summary.averageTicket)} caption={`${formatInteger(analytics.summary.customerCount)} clientes identificados`} tone="blue" />
-                <KpiCard eyebrow="Conversion membretada" value={formatPercent(analytics.summary.linkedConversion)} caption={`${analytics.summary.linkedCount} tickets · ${fmt(analytics.summary.linkedSales)}`} tone="amber" progress={analytics.summary.linkedConversion} />
-                <KpiCard eyebrow="Utilidad bruta" value={fmt(analytics.summary.profit)} caption={`Margen ${formatPercent(analytics.summary.margin)} · Costo ${fmt(analytics.summary.cost)}`} tone="slate" />
-                <KpiCard eyebrow="Clientes recurrentes" value={formatInteger(analytics.summary.recurringCustomers)} caption={`${analytics.cancelledCount} tickets anulados en el filtro`} tone="red" />
-            </section>
+            <nav className="grid gap-2 rounded-[2rem] border border-slate-200 bg-white p-2 shadow-sm sm:grid-cols-3" aria-label="Areas del CRM de ventas">
+                {SALES_CRM_TABS.map((tab) => (
+                    <button
+                        key={tab.id}
+                        type="button"
+                        onClick={() => setActiveCrmTab(tab.id)}
+                        className={`rounded-[1.4rem] px-4 py-3 text-left transition ${activeCrmTab === tab.id ? 'bg-slate-950 text-white shadow-lg' : 'text-slate-600 hover:bg-slate-50'}`}
+                    >
+                        <span className="block text-sm font-black">{tab.label}</span>
+                        <span className={`mt-0.5 block text-[9px] font-bold uppercase tracking-[0.16em] ${activeCrmTab === tab.id ? 'text-emerald-300' : 'text-slate-400'}`}>{tab.caption}</span>
+                    </button>
+                ))}
+            </nav>
 
-            <section className="grid gap-5 xl:grid-cols-[1.55fr_0.75fr]">
-                <div className="rounded-[2rem] border border-slate-200 bg-white p-5 shadow-sm">
-                    <div className="mb-4"><div className="text-[9px] font-black uppercase tracking-[0.24em] text-[#e30613]">Comportamiento diario</div><div className="mt-1 flex items-end justify-between gap-3"><h3 className="text-lg font-black text-slate-950">Ritmo de ventas</h3><span className="text-[10px] font-bold text-slate-400">La zona verde representa tickets membretados</span></div></div>
-                    <DailySalesChart daily={analytics.daily} />
-                </div>
-                <div className="rounded-[2rem] border border-slate-200 bg-white p-5 shadow-sm">
-                    <div className="mb-5"><div className="text-[9px] font-black uppercase tracking-[0.24em] text-sky-600">Cobranza</div><h3 className="mt-1 text-lg font-black text-slate-950">Mezcla de pago</h3></div>
-                    <PaymentMix rows={analytics.paymentTotals} total={analytics.summary.sales} />
-                </div>
-            </section>
+            {activeCrmTab === 'general' && (
+                <>
+                    <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+                        <KpiCard eyebrow="Venta SICAR" value={fmt(analytics.summary.sales)} caption={`${formatInteger(analytics.summary.ticketCount)} tickets activos`} tone="green" />
+                        <KpiCard eyebrow="Ticket promedio" value={fmt(analytics.summary.averageTicket)} caption={`${formatInteger(analytics.summary.customerCount)} clientes identificados`} tone="blue" />
+                        <KpiCard eyebrow="Conversion membretada" value={formatPercent(analytics.summary.linkedConversion)} caption={`${analytics.summary.linkedCount} tickets · ${fmt(analytics.summary.linkedSales)}`} tone="amber" progress={analytics.summary.linkedConversion} />
+                        <KpiCard eyebrow="Utilidad bruta" value={fmt(analytics.summary.profit)} caption={`Margen ${formatPercent(analytics.summary.margin)} · Costo ${fmt(analytics.summary.cost)}`} tone="slate" />
+                        <KpiCard eyebrow="Clientes recurrentes" value={formatInteger(analytics.summary.recurringCustomers)} caption={`${analytics.cancelledCount} tickets anulados en el periodo`} tone="red" />
+                    </section>
 
-            <section className="rounded-[2rem] border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
-                <div className="mb-5 flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
-                    <div><div className="text-[9px] font-black uppercase tracking-[0.24em] text-amber-600">Mini CRM</div><h3 className="mt-1 text-xl font-black text-slate-950">Clientes por valor y recurrencia</h3><p className="mt-1 text-xs font-semibold text-slate-500">Segmentacion automatica segun venta y frecuencia dentro del periodo seleccionado.</p></div>
-                    <label className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-xs font-black text-slate-600"><input type="checkbox" checked={includePublic} onChange={(event) => setIncludePublic(event.target.checked)} className="h-4 w-4 accent-[#e30613]" />Incluir Publico en General</label>
-                </div>
-                <CustomerTable customers={visibleCustomers} totalSales={analytics.summary.sales} onOpen={setSelectedCustomerKey} />
-            </section>
+                    <section className="grid gap-5 xl:grid-cols-[1.55fr_0.75fr]">
+                        <div className="rounded-[2rem] border border-slate-200 bg-white p-5 shadow-sm">
+                            <div className="mb-4"><div className="text-[9px] font-black uppercase tracking-[0.24em] text-[#e30613]">Comportamiento</div><div className="mt-1 flex items-end justify-between gap-3"><h3 className="text-lg font-black text-slate-950">Ritmo de ventas</h3><span className="text-[10px] font-bold text-slate-400">Verde: tickets convertidos a membretada</span></div></div>
+                            <DailySalesChart daily={analytics.daily} fromDate={fromDate} toDate={toDate} />
+                        </div>
+                        <div className="rounded-[2rem] border border-slate-200 bg-white p-5 shadow-sm">
+                            <div className="mb-5"><div className="text-[9px] font-black uppercase tracking-[0.24em] text-sky-600">Cobranza</div><h3 className="mt-1 text-lg font-black text-slate-950">Mezcla de pago</h3></div>
+                            <PaymentMix rows={analytics.paymentTotals} total={analytics.summary.sales} />
+                        </div>
+                    </section>
 
-            <section className="rounded-[2rem] border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
-                <div className="mb-5"><div className="text-[9px] font-black uppercase tracking-[0.24em] text-sky-600">Explorador SICAR</div><h3 className="mt-1 text-xl font-black text-slate-950">Todos los tickets</h3></div>
-                <div className="mb-4 grid gap-3 lg:grid-cols-[1fr_0.28fr_0.28fr]">
-                    <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Buscar ticket, cliente, RUC, factura o articulo..." className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-bold text-slate-800 outline-none transition focus:border-sky-400 focus:ring-4 focus:ring-sky-100" />
-                    <select value={paymentFilter} onChange={(event) => setPaymentFilter(event.target.value)} className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-xs font-black text-slate-700 outline-none focus:border-sky-400">{Object.entries(PAYMENT_META).map(([value, meta]) => <option key={value} value={value}>{meta.label}</option>)}</select>
-                    <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)} className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-xs font-black text-slate-700 outline-none focus:border-sky-400">{STATUS_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select>
-                </div>
-                <TicketTable tickets={filteredTickets} page={page} onPageChange={setPage} onOpen={setSelectedTicket} />
-            </section>
+                    <section className="rounded-[2rem] border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
+                        <div className="mb-5"><div className="text-[9px] font-black uppercase tracking-[0.24em] text-sky-600">Ventas por ticket</div><h3 className="mt-1 text-xl font-black text-slate-950">Explorador general SICAR</h3><p className="mt-1 text-xs font-semibold text-slate-500">Busca directamente por cliente, ticket, RUC, factura o articulo.</p></div>
+                        <div className="mb-4 grid gap-3 lg:grid-cols-[1fr_0.28fr_0.28fr]">
+                            <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Escribir nombre del cliente o buscar ticket..." className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-bold text-slate-800 outline-none transition focus:border-sky-400 focus:ring-4 focus:ring-sky-100" />
+                            <select value={paymentFilter} onChange={(event) => setPaymentFilter(event.target.value)} className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-xs font-black text-slate-700 outline-none focus:border-sky-400">{Object.entries(PAYMENT_META).map(([value, meta]) => <option key={value} value={value}>{meta.label}</option>)}</select>
+                            <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)} className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-xs font-black text-slate-700 outline-none focus:border-sky-400">{STATUS_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select>
+                        </div>
+                        <TicketTable tickets={filteredTickets} page={page} onPageChange={setPage} onOpen={setSelectedTicket} />
+                    </section>
+                </>
+            )}
+
+            {activeCrmTab === 'clientes' && (
+                <section className="rounded-[2rem] border border-slate-200 bg-white p-4 shadow-sm sm:p-6">
+                    <div className="flex flex-col gap-5 xl:flex-row xl:items-end xl:justify-between">
+                        <div className="max-w-2xl"><div className="text-[9px] font-black uppercase tracking-[0.26em] text-amber-600">CRM de clientes</div><h3 className="mt-1 text-2xl font-black text-slate-950">Valor comercial y recurrencia</h3><p className="mt-2 text-sm font-semibold text-slate-500">Genera dos lecturas: quienes aportan mayor venta y quienes compran con mayor frecuencia dentro del periodo.</p></div>
+                        <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
+                            <label><span className="mb-1.5 block text-[9px] font-black uppercase tracking-[0.18em] text-slate-400">Cantidad</span><select value={customerLimitDraft} onChange={(event) => setCustomerLimitDraft(event.target.value)} className="min-w-36 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-xs font-black text-slate-700">{RANKING_LIMITS.map((limit) => <option key={limit} value={limit}>Top {limit}</option>)}</select></label>
+                            <label className="flex h-[42px] items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-4 text-xs font-black text-slate-600"><input type="checkbox" checked={includePublic} onChange={(event) => setIncludePublic(event.target.checked)} className="h-4 w-4 accent-[#e30613]" />Incluir publico general</label>
+                            <button type="button" onClick={() => setCustomerReportLimit(Number(customerLimitDraft))} className="h-[42px] rounded-xl bg-[#e30613] px-6 text-[10px] font-black uppercase tracking-[0.18em] text-white shadow-lg transition hover:bg-[#b8050f]">Generar</button>
+                        </div>
+                    </div>
+
+                    <div className="mt-6">
+                        {!customerReportLimit ? (
+                            <GeneratePrompt title="Ranking listo para configurar" text="Selecciona Top 10, 20, 25 o 100 y pulsa Generar. La página mostrará solo el análisis solicitado." />
+                        ) : (
+                            <div className="space-y-7">
+                                <div><div className="mb-3 flex items-end justify-between"><div><div className="text-[9px] font-black uppercase tracking-[0.2em] text-emerald-600">Por facturacion</div><h4 className="mt-1 text-lg font-black text-slate-950">Top {customerReportLimit} clientes por venta</h4></div><span className="text-xs font-bold text-slate-400">Mayor aporte monetario</span></div><CustomerTable customers={topCustomers} totalSales={analytics.summary.sales} onOpen={setSelectedCustomerKey} /></div>
+                                <div><div className="mb-3 flex items-end justify-between"><div><div className="text-[9px] font-black uppercase tracking-[0.2em] text-sky-600">Por frecuencia</div><h4 className="mt-1 text-lg font-black text-slate-950">Top {customerReportLimit} clientes recurrentes</h4></div><span className="text-xs font-bold text-slate-400">Mas tickets y dias con compras</span></div><CustomerTable customers={recurringCustomers} totalSales={analytics.summary.sales} onOpen={setSelectedCustomerKey} /></div>
+                            </div>
+                        )}
+                    </div>
+                </section>
+            )}
+
+            {activeCrmTab === 'articulos' && (
+                <section className="rounded-[2rem] border border-slate-200 bg-white p-4 shadow-sm sm:p-6">
+                    <div className="flex flex-col gap-5">
+                        <div><div className="text-[9px] font-black uppercase tracking-[0.26em] text-sky-600">Inteligencia de producto</div><h3 className="mt-1 text-2xl font-black text-slate-950">Desempeño por articulo SICAR</h3><p className="mt-2 text-sm font-semibold text-slate-500">Compara los productos con mayor o menor venta usando las categorias y departamentos reales de SICAR.</p></div>
+                        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-[0.7fr_0.7fr_1.5fr_auto] xl:items-end">
+                            <label><span className="mb-1.5 block text-[9px] font-black uppercase tracking-[0.18em] text-slate-400">Ranking</span><select value={productDraft.mode} onChange={(event) => setProductDraft((current) => ({ ...current, mode: event.target.value }))} className="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-xs font-black text-slate-700"><option value="top">Top - Mas vendidos</option><option value="nontop">NonTop - Menos vendidos</option></select></label>
+                            <label><span className="mb-1.5 block text-[9px] font-black uppercase tracking-[0.18em] text-slate-400">Cantidad</span><select value={productDraft.limit} onChange={(event) => setProductDraft((current) => ({ ...current, limit: event.target.value }))} className="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-xs font-black text-slate-700">{RANKING_LIMITS.map((limit) => <option key={limit} value={limit}>{limit} articulos</option>)}</select></label>
+                            <label><span className="mb-1.5 block text-[9px] font-black uppercase tracking-[0.18em] text-slate-400">Categoria SICAR</span><select value={productDraft.categoryKey} onChange={(event) => setProductDraft((current) => ({ ...current, categoryKey: event.target.value }))} disabled={productCatalog.loading} className="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-xs font-black text-slate-700 disabled:opacity-50"><option value="all">Todas las categorias</option>{categoryOptions.map((category) => <option key={category.categoryKey} value={category.categoryKey}>{category.departmentName} / {category.categoryName}{selectedBranchId === CONSOLIDATED_BRANCH_ID ? ` · ${category.branchId}` : ''}</option>)}</select></label>
+                            <button type="button" onClick={() => setProductReport({ ...productDraft, limit: Number(productDraft.limit) })} disabled={productCatalog.loading} className="h-[42px] rounded-xl bg-[#e30613] px-6 text-[10px] font-black uppercase tracking-[0.18em] text-white shadow-lg transition hover:bg-[#b8050f] disabled:opacity-50">Generar</button>
+                        </div>
+                        {productCatalog.error && <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs font-bold text-amber-800">No se pudo actualizar el catalogo SICAR: {productCatalog.error}</div>}
+                    </div>
+
+                    <div className="mt-6">
+                        {!productReport ? (
+                            <GeneratePrompt title="Analisis de articulos bajo demanda" text="Elige categoria, Top o NonTop y la cantidad. Pulsa Generar para mostrar solamente el ranking que necesitas." />
+                        ) : (
+                            <div><div className="mb-4 flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between"><div><div className={`text-[9px] font-black uppercase tracking-[0.2em] ${productReport.mode === 'top' ? 'text-emerald-600' : 'text-amber-600'}`}>{productReport.mode === 'top' ? 'Mayor venta' : 'Menor venta'}</div><h4 className="mt-1 text-lg font-black text-slate-950">{productReport.mode === 'top' ? 'Top' : 'NonTop'} {productReport.limit} articulos</h4></div><span className="text-xs font-bold text-slate-400">{generatedProducts.length} resultados · {rangeLabel}</span></div><ProductTable products={generatedProducts} totalSales={analytics.summary.sales} mode={productReport.mode} /></div>
+                        )}
+                    </div>
+                </section>
+            )}
 
             <TicketDetailModal ticket={selectedTicket} onClose={() => setSelectedTicket(null)} />
             <CustomerDetailModal customer={selectedCustomer} onClose={() => setSelectedCustomerKey('')} onOpenTicket={(ticket) => { setSelectedCustomerKey(''); setSelectedTicket(ticket); }} />
