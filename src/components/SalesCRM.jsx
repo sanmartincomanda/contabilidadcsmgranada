@@ -1,6 +1,7 @@
 import React, { useDeferredValue, useEffect, useMemo, useState } from 'react';
-import { collection, doc, getDoc, getDocs, query, where } from 'firebase/firestore';
+import { collection, doc, getDoc, getDocs, query, serverTimestamp, setDoc, where } from 'firebase/firestore';
 import { db } from '../firebase';
+import { useAuth } from '../context/AuthContext';
 import {
     ALL_BRANCH_IDS,
     CONSOLIDATED_BRANCH_ID,
@@ -17,11 +18,15 @@ import {
     isExcludedSicarTicket,
     normalizeCrmText,
 } from '../services/salesCrmAnalytics';
+import { isMasterEmail } from '../services/userAccess';
 
 const SICAR_SALES_START_DATE = '2026-01-01';
 const PAGE_SIZE = 20;
+const CUSTOMER_EXCLUSIONS_DOC = 'ventas_crm_exclusiones';
+const MAX_CUSTOMER_EXCLUSIONS = 250;
 const rangeCache = new Map();
 const productCatalogCache = new Map();
+let customerExclusionsCache = null;
 const RANKING_LIMITS = [10, 20, 25, 100];
 const SALES_CRM_TABS = [
     { id: 'general', label: 'General', caption: 'Tickets y comportamiento' },
@@ -86,6 +91,31 @@ const getRangeLabel = (fromDate, toDate) => (
 const isTicketInBranch = (ticket, selectedBranchId) => (
     selectedBranchId === CONSOLIDATED_BRANCH_ID || getRecordBranchId(ticket) === selectedBranchId
 );
+
+const getCustomerExclusionKey = (ticket = {}) => {
+    const branchId = getRecordBranchId(ticket);
+    const customerId = String(ticket.customerId ?? ticket.clientId ?? ticket.cli_id ?? '').trim();
+    if (customerId) return `${branchId}:id:${customerId}`;
+    const rfc = normalizeCrmText(ticket.customerRfc || ticket.rfc).replace(/[^A-Z0-9]/g, '');
+    if (rfc) return `${branchId}:rfc:${rfc}`;
+    return `${branchId}:name:${normalizeCrmText(ticket.customerName || ticket.cliente || 'SIN CLIENTE')}`;
+};
+
+const normalizeCustomerExclusions = (records = []) => {
+    const unique = new Map();
+    (Array.isArray(records) ? records : []).forEach((record) => {
+        const key = String(record?.key || '').trim();
+        if (!key || unique.has(key)) return;
+        unique.set(key, {
+            branchId: String(record.branchId || '').trim(),
+            customerId: String(record.customerId || '').trim(),
+            key,
+            name: String(record.name || 'SIN CLIENTE').trim(),
+            rfc: String(record.rfc || '').trim(),
+        });
+    });
+    return [...unique.values()].slice(0, MAX_CUSTOMER_EXCLUSIONS);
+};
 
 const mergeTicketRecords = (archiveRecords = [], liveRecords = [], fromDate = '', toDate = '') => {
     const map = new Map();
@@ -252,6 +282,53 @@ function useSicarProductCatalog(selectedBranchId, refreshToken, enabled = true) 
     }, [cacheKey, enabled, refreshToken]);
 
     return state;
+}
+
+function useSalesCrmCustomerExclusions(userEmail = '') {
+    const [state, setState] = useState({
+        customers: customerExclusionsCache || [],
+        error: '',
+        loading: customerExclusionsCache === null,
+        saving: false,
+    });
+
+    useEffect(() => {
+        if (customerExclusionsCache !== null) return undefined;
+        let mounted = true;
+        getDoc(doc(db, 'configuracion', CUSTOMER_EXCLUSIONS_DOC))
+            .then((snapshot) => {
+                if (!mounted) return;
+                const customers = normalizeCustomerExclusions(snapshot.exists() ? snapshot.data()?.customers : []);
+                customerExclusionsCache = customers;
+                setState({ customers, error: '', loading: false, saving: false });
+            })
+            .catch((error) => {
+                console.error('No se pudo cargar la lista de clientes excluidos', error);
+                if (mounted) setState((current) => ({ ...current, error: error.message || 'No se pudo cargar la lista.', loading: false }));
+            });
+        return () => { mounted = false; };
+    }, []);
+
+    const save = async (records) => {
+        const customers = normalizeCustomerExclusions(records);
+        setState((current) => ({ ...current, error: '', saving: true }));
+        try {
+            await setDoc(doc(db, 'configuracion', CUSTOMER_EXCLUSIONS_DOC), {
+                customers,
+                updatedAt: serverTimestamp(),
+                updatedBy: String(userEmail || '').trim().toLowerCase(),
+            }, { merge: true });
+            customerExclusionsCache = customers;
+            setState({ customers, error: '', loading: false, saving: false });
+            return true;
+        } catch (error) {
+            console.error('No se pudo guardar la lista de clientes excluidos', error);
+            setState((current) => ({ ...current, error: error.message || 'No se pudo guardar la lista.', saving: false }));
+            return false;
+        }
+    };
+
+    return { ...state, save };
 }
 
 function KpiCard({ eyebrow, value, caption, tone = 'slate', progress = null }) {
@@ -576,6 +653,124 @@ function ModalShell({ eyebrow, title, subtitle, onClose, children }) {
     );
 }
 
+function CustomerExclusionModal({ customers = [], excludedCustomers = [], readOnly = false, saving = false, onClose, onSave }) {
+    const [search, setSearch] = useState('');
+    const [draftKeys, setDraftKeys] = useState(() => new Set(excludedCustomers.map((customer) => customer.key)));
+    const allCustomers = useMemo(() => {
+        const customerMap = new Map(excludedCustomers.map((customer) => [customer.key, customer]));
+        customers.forEach((customer) => customerMap.set(customer.key, { ...(customerMap.get(customer.key) || {}), ...customer }));
+        return [...customerMap.values()].sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''), 'es'));
+    }, [customers, excludedCustomers]);
+    const normalizedSearch = normalizeCrmText(search);
+    const visibleCustomers = useMemo(() => allCustomers.filter((customer) => (
+        (!readOnly || draftKeys.has(customer.key))
+        && (!normalizedSearch || normalizeCrmText([
+            customer.name,
+            customer.rfc,
+            customer.customerId,
+            getBranchById(customer.branchId).shortName,
+        ].join(' ')).includes(normalizedSearch))
+    )), [allCustomers, draftKeys, normalizedSearch, readOnly]);
+
+    const toggleCustomer = (key) => {
+        if (readOnly) return;
+        setDraftKeys((current) => {
+            const next = new Set(current);
+            if (next.has(key)) next.delete(key);
+            else if (next.size < MAX_CUSTOMER_EXCLUSIONS) next.add(key);
+            return next;
+        });
+    };
+
+    const updateVisible = (selected) => {
+        if (readOnly) return;
+        setDraftKeys((current) => {
+            const next = new Set(current);
+            visibleCustomers.forEach((customer) => {
+                if (selected && next.size < MAX_CUSTOMER_EXCLUSIONS) next.add(customer.key);
+                if (!selected) next.delete(customer.key);
+            });
+            return next;
+        });
+    };
+
+    const saveList = async () => {
+        const selected = allCustomers
+            .filter((customer) => draftKeys.has(customer.key))
+            .map((customer) => ({
+                branchId: customer.branchId,
+                customerId: customer.customerId,
+                key: customer.key,
+                name: customer.name,
+                rfc: customer.rfc,
+            }));
+        const saved = await onSave(selected);
+        if (saved) onClose();
+    };
+
+    return (
+        <ModalShell
+            eyebrow="Configuracion del CRM"
+            title="Clientes excluidos del analisis"
+            subtitle="Estos clientes no se incluiran en ventas, KPIs, rankings, articulos ni exportaciones."
+            onClose={onClose}
+        >
+            <div className="space-y-4">
+                <div className="grid gap-3 lg:grid-cols-[1fr_auto]">
+                    <input
+                        value={search}
+                        onChange={(event) => setSearch(event.target.value)}
+                        placeholder="Buscar cliente por nombre, RUC, codigo o sucursal..."
+                        className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-bold text-slate-800 outline-none transition focus:border-sky-400 focus:ring-4 focus:ring-sky-100"
+                        autoFocus
+                    />
+                    <div className="flex flex-wrap gap-2">
+                        {!readOnly && <button type="button" onClick={() => updateVisible(true)} className="rounded-xl border border-sky-200 bg-sky-50 px-4 py-2 text-[10px] font-black uppercase tracking-wider text-sky-800">Excluir visibles</button>}
+                        {!readOnly && <button type="button" onClick={() => updateVisible(false)} className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-[10px] font-black uppercase tracking-wider text-slate-600">Quitar visibles</button>}
+                    </div>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-3 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs font-bold text-amber-900">
+                    <span>{draftKeys.size} clientes seleccionados</span>
+                    <span className="text-amber-700/70">Maximo {MAX_CUSTOMER_EXCLUSIONS}</span>
+                    {readOnly && <span className="ml-auto rounded-full bg-white px-3 py-1 text-[9px] font-black uppercase tracking-wider text-slate-600">Solo lectura</span>}
+                </div>
+
+                <div className="max-h-[55vh] overflow-y-auto rounded-3xl border border-slate-200 bg-white">
+                    {visibleCustomers.map((customer) => {
+                        const selected = draftKeys.has(customer.key);
+                        return (
+                            <button
+                                key={customer.key}
+                                type="button"
+                                onClick={() => toggleCustomer(customer.key)}
+                                disabled={readOnly}
+                                className={`grid w-full grid-cols-[auto_1fr_auto] items-center gap-3 border-b border-slate-100 px-4 py-3 text-left transition last:border-b-0 ${selected ? 'bg-rose-50' : 'hover:bg-slate-50'} disabled:cursor-default`}
+                            >
+                                <span className={`grid h-6 w-6 place-items-center rounded-lg border text-xs font-black ${selected ? 'border-[#e30613] bg-[#e30613] text-white' : 'border-slate-300 bg-white text-transparent'}`}>✓</span>
+                                <span className="min-w-0">
+                                    <span className="block truncate text-sm font-black text-slate-900">{customer.name || 'SIN CLIENTE'}</span>
+                                    <span className="mt-0.5 block text-[10px] font-bold text-slate-400">{customer.rfc || 'Sin RUC'} · {getBranchById(customer.branchId).shortName}</span>
+                                </span>
+                                <span className="text-right">
+                                    <span className="block font-mono text-xs font-black text-emerald-700">{fmt(customer.sales)}</span>
+                                    <span className="mt-0.5 block text-[9px] font-bold text-slate-400">{customer.ticketCount || 0} tickets</span>
+                                </span>
+                            </button>
+                        );
+                    })}
+                    {!visibleCustomers.length && <div className="px-4 py-12 text-center text-sm font-bold text-slate-400">No hay clientes que coincidan con la busqueda.</div>}
+                </div>
+
+                <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+                    <button type="button" onClick={onClose} className="rounded-xl border border-slate-200 bg-white px-5 py-3 text-[10px] font-black uppercase tracking-wider text-slate-600">{readOnly ? 'Cerrar' : 'Cancelar'}</button>
+                    {!readOnly && <button type="button" onClick={saveList} disabled={saving} className="rounded-xl bg-[#e30613] px-6 py-3 text-[10px] font-black uppercase tracking-wider text-white shadow-lg transition hover:bg-[#b8050f] disabled:opacity-50">{saving ? 'Guardando...' : 'Aplicar lista'}</button>}
+                </div>
+            </div>
+        </ModalShell>
+    );
+}
+
 function TicketDetailModal({ ticket, onClose }) {
     if (!ticket) return null;
     const cancelled = isCancelledSicarTicket(ticket);
@@ -658,6 +853,7 @@ function CustomerDetailModal({ customer, onClose, onOpenTicket }) {
 }
 
 export default function SalesCRM({ data = {}, branchContext = {}, ticketsOverride = null, productCatalogOverride = null }) {
+    const { user } = useAuth();
     const today = localDateString();
     const currentYearStart = `${today.substring(0, 4)}-01-01`;
     const availableYearStart = currentYearStart < SICAR_SALES_START_DATE ? SICAR_SALES_START_DATE : currentYearStart;
@@ -681,10 +877,13 @@ export default function SalesCRM({ data = {}, branchContext = {}, ticketsOverrid
     const [refreshToken, setRefreshToken] = useState(0);
     const [selectedTicket, setSelectedTicket] = useState(null);
     const [selectedCustomerKey, setSelectedCustomerKey] = useState('');
+    const [customerExclusionsOpen, setCustomerExclusionsOpen] = useState(false);
     const hasTicketOverride = Array.isArray(ticketsOverride);
     const archive = useSicarTicketRange(fromDate, toDate, refreshToken, !hasTicketOverride);
     const remoteProductCatalog = useSicarProductCatalog(selectedBranchId, refreshToken, !hasTicketOverride && !productCatalogOverride);
     const productCatalog = productCatalogOverride || remoteProductCatalog;
+    const customerExclusions = useSalesCrmCustomerExclusions(user?.email);
+    const canManageCustomerExclusions = isMasterEmail(user?.email);
 
     const linkIndex = useMemo(() => buildStampedInvoiceLinkIndex(data.facturas_membretadas_ventas || []), [data.facturas_membretadas_ventas]);
     const tickets = useMemo(() => mergeTicketRecords(
@@ -698,8 +897,35 @@ export default function SalesCRM({ data = {}, branchContext = {}, ticketsOverrid
         .map((ticket) => ({ ...ticket, crmInvoiceLink: getTicketStampedInvoiceInfo(ticket, linkIndex) }))
         .sort((a, b) => Number(b.saleId || 0) - Number(a.saleId || 0)), [archive.records, data.sicar_ventas_tickets, fromDate, hasTicketOverride, linkIndex, selectedBranchId, ticketsOverride, toDate]);
 
+    const customerOptions = useMemo(() => {
+        const optionMap = new Map();
+        tickets.forEach((ticket) => {
+            const key = getCustomerExclusionKey(ticket);
+            const current = optionMap.get(key) || {
+                branchId: getRecordBranchId(ticket),
+                customerId: String(ticket.customerId ?? ticket.clientId ?? ticket.cli_id ?? '').trim(),
+                key,
+                name: ticket.customerName || ticket.cliente || 'PUBLICO EN GENERAL',
+                rfc: ticket.customerRfc || ticket.rfc || '',
+                sales: 0,
+                ticketCount: 0,
+            };
+            if (!isCancelledSicarTicket(ticket)) {
+                current.sales += Number(ticket.total || 0);
+                current.ticketCount += 1;
+            }
+            optionMap.set(key, current);
+        });
+        return [...optionMap.values()];
+    }, [tickets]);
+    const excludedCustomerKeySet = useMemo(() => new Set(customerExclusions.customers.map((customer) => customer.key)), [customerExclusions.customers]);
+    const applicableExclusionCount = useMemo(() => customerExclusions.customers.filter((customer) => (
+        selectedBranchId === CONSOLIDATED_BRANCH_ID || customer.branchId === selectedBranchId
+    )).length, [customerExclusions.customers, selectedBranchId]);
+    const analysisTickets = useMemo(() => tickets.filter((ticket) => !excludedCustomerKeySet.has(getCustomerExclusionKey(ticket))), [excludedCustomerKeySet, tickets]);
+
     const normalizedSearch = normalizeCrmText(deferredSearch);
-    const filteredTickets = useMemo(() => tickets.filter((ticket) => {
+    const filteredTickets = useMemo(() => analysisTickets.filter((ticket) => {
         const cancelled = isCancelledSicarTicket(ticket);
         if (paymentFilter !== 'all' && !getTicketPaymentTypes(ticket).includes(paymentFilter)) return false;
         if (statusFilter === 'active' && cancelled) return false;
@@ -708,13 +934,13 @@ export default function SalesCRM({ data = {}, branchContext = {}, ticketsOverrid
         if (statusFilter === 'unlinked' && (cancelled || ticket.crmInvoiceLink.linked)) return false;
         if (normalizedSearch && !buildSearchText(ticket).includes(normalizedSearch)) return false;
         return true;
-    }), [normalizedSearch, paymentFilter, statusFilter, tickets]);
+    }), [analysisTickets, normalizedSearch, paymentFilter, statusFilter]);
 
     const analytics = useMemo(() => buildSalesCrmAnalytics(
-        tickets,
+        analysisTickets,
         linkIndex,
         productCatalog.articles
-    ), [linkIndex, productCatalog.articles, tickets]);
+    ), [analysisTickets, linkIndex, productCatalog.articles]);
     const visibleCustomers = useMemo(() => analytics.customers.filter((customer) => includePublic || !customer.isPublic), [analytics.customers, includePublic]);
     const topCustomers = useMemo(() => customerReportLimit
         ? [...visibleCustomers].sort((a, b) => b.sales - a.sales).slice(0, customerReportLimit)
@@ -740,7 +966,7 @@ export default function SalesCRM({ data = {}, branchContext = {}, ticketsOverrid
     const selectedCustomer = useMemo(() => analytics.customers.find((customer) => customer.key === selectedCustomerKey) || null, [analytics.customers, selectedCustomerKey]);
     const rangeLabel = getRangeLabel(fromDate, toDate);
 
-    useEffect(() => { setPage(1); }, [deferredSearch, fromDate, paymentFilter, selectedBranchId, statusFilter, toDate]);
+    useEffect(() => { setPage(1); }, [deferredSearch, excludedCustomerKeySet, fromDate, paymentFilter, selectedBranchId, statusFilter, toDate]);
     useEffect(() => {
         setCustomerReportLimit(null);
         setProductReport(null);
@@ -788,9 +1014,20 @@ export default function SalesCRM({ data = {}, branchContext = {}, ticketsOverrid
                     <label className="min-w-[165px]"><span className="mb-2 block text-[9px] font-black uppercase tracking-[0.22em] text-slate-400">Hasta</span><input type="date" min={fromDate || SICAR_SALES_START_DATE} max={today} value={toDate} onChange={(event) => setToDate(event.target.value)} className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-xs font-black text-slate-700 outline-none focus:border-sky-400" /></label>
                     <button type="button" onClick={() => setRefreshToken((value) => value + 1)} disabled={archive.loading} className="rounded-xl bg-slate-950 px-4 py-3 text-[10px] font-black uppercase tracking-wider text-white transition hover:bg-[#e30613] disabled:opacity-50">{archive.loading ? 'Actualizando...' : 'Actualizar'}</button>
                     <button type="button" onClick={() => downloadCsv(filteredTickets, `${fromDate}-${toDate}`)} disabled={!filteredTickets.length} className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-[10px] font-black uppercase tracking-wider text-emerald-800 transition hover:bg-emerald-100 disabled:opacity-40">Exportar CSV</button>
+                    {(canManageCustomerExclusions || applicableExclusionCount > 0) && (
+                        <button
+                            type="button"
+                            onClick={() => setCustomerExclusionsOpen(true)}
+                            disabled={customerExclusions.loading}
+                            className={`rounded-xl border px-4 py-3 text-[10px] font-black uppercase tracking-wider transition disabled:opacity-50 ${applicableExclusionCount > 0 ? 'border-rose-200 bg-rose-50 text-rose-800 hover:bg-rose-100' : 'border-slate-200 bg-white text-slate-600 hover:border-rose-300 hover:text-rose-700'}`}
+                        >
+                            {customerExclusions.loading ? 'Cargando lista...' : `Excluir clientes${applicableExclusionCount ? ` (${applicableExclusionCount})` : ''}`}
+                        </button>
+                    )}
                 </div>
                 {archive.error && <div className="mt-4 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-bold text-rose-700">{archive.error}</div>}
-                <div className="mt-4 flex flex-wrap items-center gap-3 border-t border-slate-100 pt-4 text-[10px] font-bold text-slate-500"><span className="rounded-full bg-sky-100 px-3 py-1 text-sky-800">{rangeLabel}</span><span>{tickets.length} registros SICAR cargados</span>{archive.updatedAt && <span>Actualizado {archive.updatedAt.toLocaleTimeString('es-NI', { hour: '2-digit', minute: '2-digit' })}</span>}<span className="ml-auto text-emerald-700">El filtro no genera lecturas por cada KPI</span></div>
+                {customerExclusions.error && <div className="mt-4 rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm font-bold text-rose-700">Lista de exclusiones: {customerExclusions.error}</div>}
+                <div className="mt-4 flex flex-wrap items-center gap-3 border-t border-slate-100 pt-4 text-[10px] font-bold text-slate-500"><span className="rounded-full bg-sky-100 px-3 py-1 text-sky-800">{rangeLabel}</span><span>{tickets.length} registros SICAR cargados</span>{applicableExclusionCount > 0 && <span className="rounded-full bg-rose-100 px-3 py-1 text-rose-800">{analysisTickets.length} considerados · {applicableExclusionCount} clientes excluidos</span>}{archive.updatedAt && <span>Actualizado {archive.updatedAt.toLocaleTimeString('es-NI', { hour: '2-digit', minute: '2-digit' })}</span>}<span className="ml-auto text-emerald-700">El filtro no genera lecturas por cada KPI</span></div>
             </section>
 
             <nav className="grid gap-2 rounded-[2rem] border border-slate-200 bg-white p-2 shadow-sm sm:grid-cols-3" aria-label="Areas del CRM de ventas">
@@ -889,6 +1126,16 @@ export default function SalesCRM({ data = {}, branchContext = {}, ticketsOverrid
 
             <TicketDetailModal ticket={selectedTicket} onClose={() => setSelectedTicket(null)} />
             <CustomerDetailModal customer={selectedCustomer} onClose={() => setSelectedCustomerKey('')} onOpenTicket={(ticket) => { setSelectedCustomerKey(''); setSelectedTicket(ticket); }} />
+            {customerExclusionsOpen && (
+                <CustomerExclusionModal
+                    customers={customerOptions}
+                    excludedCustomers={customerExclusions.customers}
+                    readOnly={!canManageCustomerExclusions}
+                    saving={customerExclusions.saving}
+                    onClose={() => setCustomerExclusionsOpen(false)}
+                    onSave={customerExclusions.save}
+                />
+            )}
         </div>
     );
 }

@@ -95,6 +95,11 @@ service cloud.firestore {
       allow write: if isMaster();
     }
 
+    match /configuracion/ventas_crm_exclusiones {
+      allow read: if signedIn();
+      allow write: if isMaster();
+    }
+
     match /{collection}/{document=**} {
       allow read, write: if signedIn()
         && collection != 'integraciones_privadas'
@@ -109,7 +114,8 @@ service cloud.firestore {
         && collection != 'agente_ia_registros_claves'
         && collection != 'agente_ia_sesiones'
         && collection != 'agente_ia_usuarios'
-        && collection != 'agente_ia_reglas';
+        && collection != 'agente_ia_reglas'
+        && !(collection == 'configuracion' && document == 'ventas_crm_exclusiones');
     }
   }
 }
