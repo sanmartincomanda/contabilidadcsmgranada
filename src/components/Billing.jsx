@@ -554,27 +554,47 @@ const ensureUniqueStampedInvoiceNumbers = async (drafts = [], existingInvoices =
     if (!drafts.length) return;
     assertUniqueStampedInvoiceNumbers(drafts, existingInvoices);
 
-    const persistedGroups = await Promise.all(drafts.map((draft) => (
+    const reservationDrafts = drafts.flatMap((draft) => {
+        const currentNumber = String(draft.invoiceNumber || draft.numeroFactura || '').trim();
+        const originalNumber = String(draft.originalInvoiceNumber || '').trim();
+        if (!originalNumber || normalizeInvoiceMatchKey(originalNumber) === normalizeInvoiceMatchKey(currentNumber)) {
+            return [draft];
+        }
+        return [
+            draft,
+            {
+                ...draft,
+                invoiceNumber: originalNumber,
+                numeroFactura: originalNumber,
+                wasExistingDoc: true,
+            },
+        ];
+    });
+    assertUniqueStampedInvoiceNumbers(reservationDrafts, existingInvoices);
+
+    const persistedGroups = await Promise.all(reservationDrafts.map((draft) => (
         loadPersistedStampedInvoicesByNumber(draft.invoiceNumber || draft.numeroFactura)
     )));
     const persistedById = new Map();
     persistedGroups.flat().forEach((invoice) => persistedById.set(invoice.id || invoice.docId, invoice));
-    assertUniqueStampedInvoiceNumbers(drafts, [...existingInvoices, ...persistedById.values()]);
+    assertUniqueStampedInvoiceNumbers(reservationDrafts, [...existingInvoices, ...persistedById.values()]);
     if (!reserve) return;
 
-    const reservations = drafts.map((draft) => {
+    const reservationsByKey = new Map();
+    reservationDrafts.forEach((draft) => {
         const matchKey = getFiscalDocumentMatchKey(draft, 'invoice');
         const ownerDocumentId = draft.id || draft.docId || '';
         if (!matchKey || !ownerDocumentId) {
             throw new Error('No se pudo reservar el numero de factura antes de guardar.');
         }
-        return {
+        reservationsByKey.set(matchKey, {
             draft,
             matchKey,
             ownerDocumentId,
             ref: doc(db, STAMPED_INVOICE_NUMBER_REGISTRY, matchKey.toLowerCase()),
-        };
+        });
     });
+    const reservations = [...reservationsByKey.values()];
 
     await runTransaction(db, async (transaction) => {
         const reservationSnapshots = await Promise.all(
@@ -1955,6 +1975,7 @@ const createInvoiceDraft = (invoice = {}, fallbackDate = todayString()) => {
         wasExistingDoc,
         date,
         invoiceNumber,
+        originalInvoiceNumber: invoice.originalInvoiceNumber || invoiceNumber,
         customerName: invoice.customerName || invoice.cliente || '',
         cashierName: getCashierName(invoice),
         cashierCode: getRecordCashierCode(invoice),
@@ -5630,6 +5651,7 @@ const createStampedInvoiceEditForm = (invoice = {}) => ({
     docId: invoice.docId || invoice.id || '',
     date: invoice.date || invoice.saleDate || todayString(),
     invoiceNumber: invoice.invoiceNumber || invoice.numeroFactura || '',
+    originalInvoiceNumber: invoice.originalInvoiceNumber || invoice.invoiceNumber || invoice.numeroFactura || '',
     customerName: invoice.customerName || invoice.cliente || '',
     customerAddress: invoice.customerAddress || invoice.address || '',
     customerRfc: invoice.customerRfc || invoice.rfc || '',
@@ -9677,6 +9699,7 @@ function StampedInvoiceHistory({ data, canEdit = true, branchContext }) {
             id: '',
             docId: '',
             invoiceNumber: String(secondInvoiceNumber).trim(),
+            originalInvoiceNumber: '',
             items: secondItems,
             subtotal: String(secondTotals.subtotal),
             iva: String(secondTotals.iva),
