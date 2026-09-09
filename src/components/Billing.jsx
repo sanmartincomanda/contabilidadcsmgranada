@@ -595,11 +595,19 @@ const ensureUniqueStampedInvoiceNumbers = async (drafts = [], existingInvoices =
         });
     });
     const reservations = [...reservationsByKey.values()];
+    const newDocumentTargets = [...new Map(
+        reservations
+            .filter(({ draft }) => draft.wasExistingDoc === false)
+            .map((reservation) => [normalizeInvoiceMatchKey(reservation.ownerDocumentId), reservation])
+    ).values()];
 
     await runTransaction(db, async (transaction) => {
-        const reservationSnapshots = await Promise.all(
-            reservations.map((reservation) => transaction.get(reservation.ref))
-        );
+        const [reservationSnapshots, targetSnapshots] = await Promise.all([
+            Promise.all(reservations.map((reservation) => transaction.get(reservation.ref))),
+            Promise.all(newDocumentTargets.map((reservation) => (
+                transaction.get(doc(db, 'facturas_membretadas_ventas', reservation.ownerDocumentId))
+            ))),
+        ]);
         reservationSnapshots.forEach((snapshot, index) => {
             if (!snapshot.exists()) return;
             const reservation = reservations[index];
@@ -612,6 +620,16 @@ const ensureUniqueStampedInvoiceNumbers = async (drafts = [], existingInvoices =
                     snapshot.data()
                 ));
             }
+        });
+        targetSnapshots.forEach((snapshot, index) => {
+            if (!snapshot.exists()) return;
+            const reservation = newDocumentTargets[index];
+            const existingInvoice = snapshot.data() || {};
+            throw new Error(
+                `No se puede guardar la factura ${reservation.draft.invoiceNumber || reservation.draft.numeroFactura || ''}: `
+                + `el registro interno ya pertenece a la factura ${existingInvoice.invoiceNumber || existingInvoice.numeroFactura || snapshot.id}. `
+                + 'Recarga la pantalla antes de continuar.'
+            );
         });
         reservations.forEach(({ draft, matchKey, ownerDocumentId, ref }) => {
             transaction.set(ref, {
@@ -4630,6 +4648,14 @@ function CashClosure({ data, branchContext }) {
                     month: getMonth(invoice.date),
                     numeroFactura: String(invoice.invoiceNumber || '').trim(),
                     invoiceNumber: String(invoice.invoiceNumber || '').trim(),
+                    originalInvoiceNumber: String(existingInvoice.originalInvoiceNumber || invoice.originalInvoiceNumber || invoice.invoiceNumber || '').trim(),
+                    invoiceNumberHistory: uniqueSicarIds(
+                        existingInvoice.invoiceNumberHistory || [],
+                        existingInvoice.originalInvoiceNumber,
+                        existingInvoice.invoiceNumber || existingInvoice.numeroFactura,
+                        invoice.invoiceNumber
+                    ).map(String),
+                    fiscalDocumentId: invoiceDocId,
                     customerName: String(invoice.customerName || '').trim(),
                     cashierName: invoice.cashierName || safeCashierName,
                     cashierCode: invoice.cashierCode || getCashierCode(invoice.cashierName || safeCashierName),
@@ -8384,6 +8410,7 @@ function StampedInvoices({ data, branchContext }) {
             );
 
             const savedInvoicesForPrint = [];
+            const invoiceLinkBatch = writeBatch(db);
             for (const { invoice, docId } of invoiceMeta) {
                 const cashierName = String(invoice.cashierName || '').trim();
                 const cashierCode = getCashierCode(cashierName);
@@ -8416,6 +8443,9 @@ function StampedInvoices({ data, branchContext }) {
                     month: getMonth(invoice.date),
                     numeroFactura: String(invoice.invoiceNumber || '').trim(),
                     invoiceNumber: String(invoice.invoiceNumber || '').trim(),
+                    originalInvoiceNumber: String(invoice.originalInvoiceNumber || invoice.invoiceNumber || '').trim(),
+                    invoiceNumberHistory: uniqueSicarIds(invoice.invoiceNumberHistory || [], invoice.originalInvoiceNumber, invoice.invoiceNumber).map(String),
+                    fiscalDocumentId: docId,
                     customerName: String(invoice.customerName || '').trim(),
                     customerAddress: String(invoice.customerAddress || '').trim(),
                     customerRfc: String(invoice.customerRfc || '').trim(),
@@ -8461,7 +8491,7 @@ function StampedInvoices({ data, branchContext }) {
                     updatedAt: serverTimestamp(),
                     createdAt: serverTimestamp(),
                 };
-                await setDoc(doc(db, 'facturas_membretadas_ventas', docId), invoicePayload, { merge: true });
+                invoiceLinkBatch.set(doc(db, 'facturas_membretadas_ventas', docId), invoicePayload, { merge: true });
                 savedInvoicesForPrint.push(normalizeStampedInvoiceRecord({ ...invoicePayload, id: docId, docId }));
             }
 
@@ -8486,8 +8516,8 @@ function StampedInvoices({ data, branchContext }) {
                 });
             });
 
-            for (const accountingGroup of sicarAccountingGroups.values()) {
-                await setDoc(doc(db, accountingGroup.sourceCollection, accountingGroup.sourceId), {
+            sicarAccountingGroups.forEach((accountingGroup) => {
+                invoiceLinkBatch.set(doc(db, accountingGroup.sourceCollection, accountingGroup.sourceId), {
                     accountingStatus: accountingGroup.sourceCollection === 'sicar_facturas_membretadas' ? 'contabilizada' : 'linked',
                     accountingInvoiceId: accountingGroup.docIds[0] || '',
                     accountingInvoiceIds: accountingGroup.docIds,
@@ -8498,7 +8528,9 @@ function StampedInvoices({ data, branchContext }) {
                     accountingLoadedAt: serverTimestamp(),
                     updatedAt: serverTimestamp(),
                 }, { merge: true });
-            }
+            });
+
+            await invoiceLinkBatch.commit();
 
             setMessage(invoiceMeta.length > 1 ? 'Facturas membretadas divididas guardadas e integradas al reporte tributario.' : 'Factura membretada guardada e integrada al reporte tributario.');
             setPrintTarget(savedInvoicesForPrint[0] || null);
@@ -9811,6 +9843,14 @@ function StampedInvoiceHistory({ data, canEdit = true, branchContext }) {
                     month: getMonth(invoice.date || todayString()),
                     numeroFactura: String(invoice.invoiceNumber || '').trim(),
                     invoiceNumber: String(invoice.invoiceNumber || '').trim(),
+                    originalInvoiceNumber: String(existingSavedInvoice.originalInvoiceNumber || invoice.originalInvoiceNumber || invoice.invoiceNumber || '').trim(),
+                    invoiceNumberHistory: uniqueSicarIds(
+                        existingSavedInvoice.invoiceNumberHistory || [],
+                        existingSavedInvoice.originalInvoiceNumber,
+                        existingSavedInvoice.invoiceNumber || existingSavedInvoice.numeroFactura,
+                        invoice.invoiceNumber
+                    ).map(String),
+                    fiscalDocumentId: docId,
                     customerName: String(invoice.customerName || '').trim(),
                     customerAddress: String(invoice.customerAddress || '').trim(),
                     customerRfc: String(invoice.customerRfc || '').trim(),
