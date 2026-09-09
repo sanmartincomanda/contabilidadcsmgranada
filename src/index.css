@@ -280,6 +280,15 @@ input[type="number"]::-webkit-inner-spin-button {
   isolation: isolate;
 }
 
+html.app-modal-open {
+  overscroll-behavior: none;
+}
+
+/* Legacy dialogs also lock the page while they are migrated to ModalPortal. */
+body:has(.fixed.inset-0[class*="z-"]) {
+  overflow: hidden;
+}
+
 .app-modal-panel,
 .app-modal-panel:hover {
   transform: none !important;

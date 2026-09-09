@@ -1,6 +1,5 @@
 // src/components/DataEntry.jsx
 import React, { useState, useMemo, useCallback, useEffect } from 'react';
-import { createPortal } from 'react-dom';
 import { useSearchParams } from 'react-router-dom';
 import { db } from '../firebase';
 import {
@@ -15,6 +14,7 @@ import {
     resolveIncomeEntries,
 } from '../services/incomeAggregation';
 import { deleteExpenseTransaction, deletePurchaseTransaction, updateExpenseTransaction, updatePurchaseTransaction } from '../services/linkedTransactions';
+import ModalPortal from './ModalPortal';
 import {
     getProviderCode,
     getProviderDisplayName,
@@ -457,11 +457,6 @@ const getRecordTitle = (item, fields) => {
 
 const isPdfSupport = (item) => isPdfSupportRecord(item);
 
-const ModalPortal = ({ children }) => {
-    if (typeof document === 'undefined') return children;
-    return createPortal(children, document.body);
-};
-
 const RecordDetailModal = ({ item, collectionName, fields, onClose, onEdit }) => {
     if (!item) return null;
 
@@ -482,7 +477,7 @@ const RecordDetailModal = ({ item, collectionName, fields, onClose, onEdit }) =>
     ].filter(([, value]) => value);
 
     return (
-        <ModalPortal>
+        <ModalPortal onClose={onClose}>
         <div className="app-modal-root fixed inset-0 z-50 flex items-center justify-center p-4">
             <button className="absolute inset-0 bg-[#111827]/55 backdrop-blur-sm" onClick={onClose} aria-label="Cerrar" />
             <div className="app-modal-panel relative grid max-h-[92vh] w-full max-w-6xl overflow-hidden rounded-3xl border border-[#d9e1e8] bg-white shadow-2xl lg:grid-cols-[1.15fr_0.85fr]">
@@ -790,7 +785,7 @@ const EditRecordModal = ({ item, collectionName, fields, onClose, onSaved, provi
     };
 
     return (
-        <ModalPortal>
+        <ModalPortal onClose={onClose}>
         <div className="app-modal-root fixed inset-0 z-50 flex items-center justify-center p-4">
             <button className="absolute inset-0 bg-[#111827]/50 backdrop-blur-sm" onClick={onClose} aria-label="Cerrar" />
             <div className="app-modal-panel relative max-h-[90vh] w-full max-w-4xl overflow-hidden rounded-2xl border border-[#d9e1e8] bg-white shadow-2xl">

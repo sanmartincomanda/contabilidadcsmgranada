@@ -19,6 +19,7 @@ import {
     normalizeCrmText,
 } from '../services/salesCrmAnalytics';
 import { isMasterEmail } from '../services/userAccess';
+import ModalPortal from './ModalPortal';
 
 const SICAR_SALES_START_DATE = '2026-01-01';
 const PAGE_SIZE = 20;
@@ -748,8 +749,9 @@ function TicketTable({ tickets, page, onPageChange, onOpen }) {
 
 function ModalShell({ eyebrow, title, subtitle, onClose, children }) {
     return (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/70 p-2 backdrop-blur-sm sm:p-5" onMouseDown={onClose}>
-            <div className="max-h-[96vh] w-full max-w-6xl overflow-y-auto rounded-[2rem] bg-[#f8fafc] shadow-2xl" onMouseDown={(event) => event.stopPropagation()}>
+        <ModalPortal onClose={onClose}>
+        <div className="app-modal-root fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/70 p-2 backdrop-blur-sm sm:p-5" onMouseDown={onClose}>
+            <div className="app-modal-panel max-h-[96dvh] w-full max-w-6xl overflow-y-auto rounded-[2rem] bg-[#f8fafc] shadow-2xl" onMouseDown={(event) => event.stopPropagation()}>
                 <header className="sticky top-0 z-10 flex items-start justify-between gap-4 border-b border-white/10 bg-slate-950 px-5 py-4 text-white">
                     <div>
                         <div className="text-[9px] font-black uppercase tracking-[0.28em] text-emerald-300">{eyebrow}</div>
@@ -761,6 +763,7 @@ function ModalShell({ eyebrow, title, subtitle, onClose, children }) {
                 <div className="p-4 sm:p-6">{children}</div>
             </div>
         </div>
+        </ModalPortal>
     );
 }
 

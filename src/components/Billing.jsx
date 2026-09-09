@@ -27,6 +27,7 @@ import {
 } from '../services/clientCatalog';
 import { isExcludedSicarTicket } from '../services/salesCrmAnalytics';
 import SalesCRM from './SalesCRM';
+import ModalPortal from './ModalPortal';
 
 const TRANSFER_BANKS = [
     { key: 'bac', label: 'BAC' },
@@ -5884,8 +5885,9 @@ const StampedInvoicePrintModal = ({
     };
 
     return (
-        <div className="fixed inset-0 z-[80] flex items-start justify-center overflow-y-auto bg-slate-950/70 p-4 backdrop-blur-sm">
-            <div className="w-full max-w-7xl rounded-[2rem] border border-white/10 bg-slate-50 shadow-2xl">
+        <ModalPortal onClose={onClose}>
+        <div className="app-modal-root fixed inset-0 z-[80] flex items-center justify-center overflow-y-auto bg-slate-950/70 p-4 backdrop-blur-sm">
+            <div className="app-modal-panel max-h-[calc(100dvh-2rem)] w-full max-w-7xl overflow-y-auto rounded-[2rem] border border-white/10 bg-slate-50 shadow-2xl">
                 <div className="no-print flex flex-col gap-3 border-b border-slate-200 bg-slate-950 px-5 py-4 text-white sm:flex-row sm:items-center sm:justify-between">
                     <div>
                         <div className="text-[10px] font-black uppercase tracking-[0.28em] text-red-300">Formato preimpreso {paperLabel}</div>
@@ -6020,6 +6022,7 @@ const StampedInvoicePrintModal = ({
                 `}</style>
             </div>
         </div>
+        </ModalPortal>
     );
 };
 
@@ -6141,8 +6144,9 @@ const CashReceiptPrintModal = ({
     };
 
     return (
-        <div className="fixed inset-0 z-[80] flex items-start justify-center overflow-y-auto bg-slate-950/70 p-4 backdrop-blur-sm">
-            <div className="w-full max-w-7xl rounded-[2rem] border border-white/10 bg-slate-50 shadow-2xl">
+        <ModalPortal onClose={onClose}>
+        <div className="app-modal-root fixed inset-0 z-[80] flex items-center justify-center overflow-y-auto bg-slate-950/70 p-4 backdrop-blur-sm">
+            <div className="app-modal-panel max-h-[calc(100dvh-2rem)] w-full max-w-7xl overflow-y-auto rounded-[2rem] border border-white/10 bg-slate-50 shadow-2xl">
                 <div className="no-print flex flex-col gap-3 border-b border-slate-200 bg-slate-950 px-5 py-4 text-white sm:flex-row sm:items-center sm:justify-between">
                     <div>
                         <div className="text-[10px] font-black uppercase tracking-[0.28em] text-red-300">Recibo oficial de caja preimpreso</div>
@@ -6263,6 +6267,7 @@ const CashReceiptPrintModal = ({
                 `}</style>
             </div>
         </div>
+        </ModalPortal>
     );
 };
 
@@ -6395,8 +6400,9 @@ const CashReceiptEditModal = ({
     const netAmount = safeNumber(safeNumber(form.amount) - safeNumber(form.retentionIr2) - safeNumber(form.retentionMunicipal1));
 
     return (
-        <div className="fixed inset-0 z-[85] flex items-start justify-center overflow-y-auto bg-slate-950/70 p-4 backdrop-blur-sm">
-            <div className="w-full max-w-4xl overflow-hidden rounded-[2rem] border border-white/10 bg-white shadow-2xl">
+        <ModalPortal onClose={onClose}>
+        <div className="app-modal-root fixed inset-0 z-[85] flex items-center justify-center overflow-y-auto bg-slate-950/70 p-4 backdrop-blur-sm">
+            <div className="app-modal-panel max-h-[calc(100dvh-2rem)] w-full max-w-4xl overflow-y-auto rounded-[2rem] border border-white/10 bg-white shadow-2xl">
                 <div className="flex flex-col gap-3 border-b border-slate-200 bg-slate-950 px-5 py-4 text-white sm:flex-row sm:items-center sm:justify-between">
                     <div>
                         <div className="text-[10px] font-black uppercase tracking-[0.28em] text-red-300">Edicion master</div>
@@ -6472,6 +6478,7 @@ const CashReceiptEditModal = ({
                 </form>
             </div>
         </div>
+        </ModalPortal>
     );
 };
 
@@ -9007,8 +9014,9 @@ const StampedInvoiceDetailModal = ({
     const hasPendingSupportFiles = Object.values(supportUploadFiles || {}).some(Boolean);
 
     return (
-        <div className="fixed inset-0 z-[70] flex items-start justify-center overflow-y-auto bg-slate-950/70 p-4 backdrop-blur-sm">
-            <div className="w-full max-w-6xl overflow-hidden rounded-[2rem] border border-white/10 bg-white shadow-2xl">
+        <ModalPortal onClose={onClose}>
+        <div className="app-modal-root fixed inset-0 z-[70] flex items-center justify-center overflow-y-auto bg-slate-950/70 p-4 backdrop-blur-sm">
+            <div className="app-modal-panel max-h-[calc(100dvh-2rem)] w-full max-w-6xl overflow-y-auto rounded-[2rem] border border-white/10 bg-white shadow-2xl">
                 <div className="flex flex-col gap-3 border-b border-slate-200 bg-slate-950 px-5 py-4 text-white sm:flex-row sm:items-center sm:justify-between">
                     <div>
                         <div className="text-[10px] font-black uppercase tracking-[0.28em] text-red-300">Detalle fiscal</div>
@@ -9162,6 +9170,7 @@ const StampedInvoiceDetailModal = ({
                 </div>
             </div>
         </div>
+        </ModalPortal>
     );
 };
 
@@ -9191,8 +9200,9 @@ const StampedInvoiceEditModal = ({
     const canSplit = (form.items || []).length > 10 && !splitInvoice;
 
     return (
-        <div className="fixed inset-0 z-[80] flex items-start justify-center overflow-y-auto bg-slate-950/75 p-4 backdrop-blur-sm">
-            <div className="w-full max-w-7xl overflow-hidden rounded-[2rem] border border-white/10 bg-white shadow-2xl">
+        <ModalPortal onClose={onClose}>
+        <div className="app-modal-root fixed inset-0 z-[80] flex items-center justify-center overflow-y-auto bg-slate-950/75 p-4 backdrop-blur-sm">
+            <div className="app-modal-panel max-h-[calc(100dvh-2rem)] w-full max-w-7xl overflow-y-auto rounded-[2rem] border border-white/10 bg-white shadow-2xl">
                 <div className="flex flex-col gap-3 border-b border-slate-200 bg-slate-950 px-5 py-4 text-white sm:flex-row sm:items-center sm:justify-between">
                     <div>
                         <div className="text-[10px] font-black uppercase tracking-[0.28em] text-red-300">Edicion fiscal</div>
@@ -9330,6 +9340,7 @@ const StampedInvoiceEditModal = ({
                 </div>
             </div>
         </div>
+        </ModalPortal>
     );
 };
 
@@ -11565,7 +11576,8 @@ const CashClosureTicketPreviewModal = ({ closure, onClose, onPrint }) => {
     const ticket = buildCashClosureTicketData(closure);
 
     return (
-        <div className="fixed inset-0 z-[135] flex items-center justify-center p-4">
+        <ModalPortal onClose={onClose}>
+        <div className="app-modal-root fixed inset-0 z-[135] flex items-center justify-center p-4">
             <button type="button" aria-label="Cerrar vista previa" className="absolute inset-0 bg-slate-950/65 backdrop-blur-sm" onClick={onClose} />
             <div className="relative flex max-h-[92vh] w-full max-w-xl flex-col overflow-hidden rounded-[2rem] bg-slate-50 shadow-2xl">
                 <div className="flex items-center justify-between gap-3 border-b border-slate-200 bg-slate-950 px-5 py-4 text-white">
@@ -11587,6 +11599,7 @@ const CashClosureTicketPreviewModal = ({ closure, onClose, onPrint }) => {
                 </div>
             </div>
         </div>
+        </ModalPortal>
     );
 };
 
@@ -11671,8 +11684,9 @@ const CashClosureDailyReportModal = ({ closures = [], date = '', onClose }) => {
     const sections = buildCashClosureTicketSections(report);
 
     return (
+        <ModalPortal onClose={onClose}>
         <>
-            <div className="no-print fixed inset-0 z-[134] flex items-center justify-center p-3 sm:p-6">
+            <div className="app-modal-root no-print fixed inset-0 z-[134] flex items-center justify-center p-3 sm:p-6">
                 <button type="button" aria-label="Cerrar reporte diario" className="absolute inset-0 bg-slate-950/65 backdrop-blur-sm" onClick={onClose} />
                 <div className="relative flex max-h-[92vh] w-full max-w-5xl flex-col overflow-hidden rounded-[2rem] bg-white shadow-2xl">
                     <div className="no-print flex flex-col gap-3 border-b border-slate-200 bg-slate-950 px-5 py-4 text-white sm:flex-row sm:items-center sm:justify-between">
@@ -11733,6 +11747,7 @@ const CashClosureDailyReportModal = ({ closures = [], date = '', onClose }) => {
                 }
             `}</style>
         </>
+        </ModalPortal>
     );
 };
 
@@ -11833,8 +11848,9 @@ const CashClosureEditModal = ({
     const totals = calculateClosureEditTotals(form);
 
     return (
-        <div className="fixed inset-0 z-[130] flex items-start justify-center overflow-y-auto bg-slate-950/75 p-4 backdrop-blur-sm">
-            <div className="w-full max-w-7xl overflow-hidden rounded-[2rem] border border-white/10 bg-white shadow-2xl">
+        <ModalPortal onClose={onClose}>
+        <div className="app-modal-root fixed inset-0 z-[130] flex items-center justify-center overflow-y-auto bg-slate-950/75 p-4 backdrop-blur-sm">
+            <div className="app-modal-panel max-h-[calc(100dvh-2rem)] w-full max-w-7xl overflow-y-auto rounded-[2rem] border border-white/10 bg-white shadow-2xl">
                 <div className="flex flex-col gap-3 border-b border-slate-200 bg-slate-950 px-5 py-4 text-white lg:flex-row lg:items-center lg:justify-between">
                     <div>
                         <div className="text-[10px] font-black uppercase tracking-[0.28em] text-[#ffc400]">Edicion protegida con PIN</div>
@@ -11977,6 +11993,7 @@ const CashClosureEditModal = ({
                 </div>
             </div>
         </div>
+        </ModalPortal>
     );
 };
 
@@ -12005,7 +12022,8 @@ const CashClosureDetailModal = ({ closure, onClose, onEdit, onExport, onPrintTic
     const detailAccountingSummary = context.detailAccountingSummary;
 
     return (
-        <div className="fixed inset-0 z-[120] flex items-center justify-center p-3 sm:p-6">
+        <ModalPortal onClose={onClose}>
+        <div className="app-modal-root fixed inset-0 z-[120] flex items-center justify-center p-3 sm:p-6">
             <button
                 type="button"
                 aria-label="Cerrar detalle"
@@ -12310,6 +12328,7 @@ const CashClosureDetailModal = ({ closure, onClose, onEdit, onExport, onPrintTic
                 </div>
             </div>
         </div>
+        </ModalPortal>
     );
 };
 
@@ -13634,7 +13653,8 @@ const BankDepositHistoryModal = ({ deposit, onClose, onPrint }) => {
     const details = deposit.depositDetails || [];
 
     return (
-        <div className="fixed inset-0 z-[130] flex items-center justify-center p-3 sm:p-6">
+        <ModalPortal onClose={onClose}>
+        <div className="app-modal-root fixed inset-0 z-[130] flex items-center justify-center p-3 sm:p-6">
             <button
                 type="button"
                 aria-label="Cerrar historial de deposito"
@@ -13731,6 +13751,7 @@ const BankDepositHistoryModal = ({ deposit, onClose, onPrint }) => {
                 </div>
             </div>
         </div>
+        </ModalPortal>
     );
 };
 
