@@ -30,8 +30,16 @@ let customerExclusionsCache = null;
 const RANKING_LIMITS = [10, 20, 25, 100];
 const SALES_CRM_TABS = [
     { id: 'general', label: 'General', caption: 'Tickets y comportamiento' },
+    { id: 'departamentos', label: 'Departamentos', caption: 'Venta C$ y participacion' },
     { id: 'clientes', label: 'Clientes', caption: 'Valor y recurrencia' },
     { id: 'articulos', label: 'Articulos', caption: 'Top, NonTop y categorias' },
+];
+
+const SALES_DEPARTMENT_META = [
+    { key: 'RES', label: 'RES', card: 'border-rose-200 bg-rose-50/80 text-rose-950', bar: 'bg-[#b4232f]', dot: 'bg-[#b4232f]' },
+    { key: 'POLLO', label: 'POLLO', card: 'border-amber-200 bg-amber-50/80 text-amber-950', bar: 'bg-[#e4a11b]', dot: 'bg-[#e4a11b]' },
+    { key: 'CERDO', label: 'CERDO', card: 'border-orange-200 bg-orange-50/80 text-orange-950', bar: 'bg-[#d76532]', dot: 'bg-[#d76532]' },
+    { key: 'ABARROTERIA', label: 'ABARROTERIA', card: 'border-emerald-200 bg-emerald-50/80 text-emerald-950', bar: 'bg-[#198754]', dot: 'bg-[#198754]' },
 ];
 
 const PAYMENT_META = {
@@ -469,6 +477,109 @@ function PaymentMix({ rows = [], total = 0 }) {
                 );
             })}
         </div>
+    );
+}
+
+function DepartmentSalesPanel({ rows = [], total = 0, rangeLabel = '' }) {
+    const salesByDepartment = new Map(rows.map((row) => [normalizeCrmText(row.departmentName), Number(row.sales || 0)]));
+    const primaryKeys = new Set(SALES_DEPARTMENT_META.map((department) => department.key));
+    const primaryRows = SALES_DEPARTMENT_META.map((department) => {
+        const sales = salesByDepartment.get(department.key) || 0;
+        return { ...department, percentage: total ? sales / total : 0, sales };
+    });
+    const otherRows = rows.filter((row) => !primaryKeys.has(normalizeCrmText(row.departmentName)));
+    const otherSales = otherRows.reduce((sum, row) => sum + Number(row.sales || 0), 0);
+    const otherPercentage = total ? otherSales / total : 0;
+    const primarySales = primaryRows.reduce((sum, row) => sum + row.sales, 0);
+
+    if (!total) return <EmptyState text="No hay venta de articulos clasificada para este rango." />;
+
+    return (
+        <section className="overflow-hidden rounded-[2rem] border border-slate-200 bg-white shadow-sm">
+            <div className="border-b border-slate-200 bg-[radial-gradient(circle_at_top_right,rgba(14,165,233,0.12),transparent_36%),linear-gradient(135deg,#fff_0%,#f8fafc_100%)] p-5 sm:p-6">
+                <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+                    <div>
+                        <div className="text-[9px] font-black uppercase tracking-[0.26em] text-[#e30613]">Mezcla comercial</div>
+                        <h3 className="mt-1 text-2xl font-black text-slate-950">Venta por departamentos</h3>
+                        <p className="mt-2 text-sm font-semibold text-slate-500">Monto vendido y participacion porcentual de los articulos SICAR activos.</p>
+                    </div>
+                    <div className="rounded-2xl border border-slate-200 bg-white/90 px-5 py-3 text-right shadow-sm">
+                        <div className="text-[9px] font-black uppercase tracking-[0.2em] text-slate-400">Venta analizada · {rangeLabel}</div>
+                        <div className="mt-1 font-mono text-2xl font-black text-slate-950">{fmt(total)}</div>
+                    </div>
+                </div>
+
+                <div className="mt-6 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                    {primaryRows.map((department) => (
+                        <article key={department.key} className={`relative overflow-hidden rounded-[1.5rem] border p-4 ${department.card}`}>
+                            <div className="absolute -right-6 -top-6 h-20 w-20 rounded-full border-[14px] border-current opacity-[0.05]" />
+                            <div className="relative flex items-start justify-between gap-3">
+                                <div>
+                                    <div className="text-[9px] font-black uppercase tracking-[0.24em] opacity-60">Departamento</div>
+                                    <div className="mt-1 text-lg font-black tracking-tight">{department.label}</div>
+                                </div>
+                                <span className="rounded-full bg-white/80 px-2.5 py-1 font-mono text-xs font-black shadow-sm">{formatPercent(department.percentage)}</span>
+                            </div>
+                            <div className="relative mt-5 font-mono text-2xl font-black">{fmt(department.sales)}</div>
+                            <div className="relative mt-3 h-1.5 overflow-hidden rounded-full bg-white/80">
+                                <div className={`h-full rounded-full ${department.bar}`} style={{ width: `${clampPercent(department.percentage) * 100}%` }} />
+                            </div>
+                        </article>
+                    ))}
+                </div>
+
+                <div className="mt-5 overflow-hidden rounded-full bg-slate-200" title="Distribucion porcentual de la venta">
+                    <div className="flex h-3 w-full">
+                        {primaryRows.map((department) => (
+                            <div key={department.key} className={`${department.bar} transition-all duration-700`} style={{ width: `${clampPercent(department.percentage) * 100}%` }} />
+                        ))}
+                        <div className="bg-slate-500 transition-all duration-700" style={{ width: `${clampPercent(otherPercentage) * 100}%` }} />
+                    </div>
+                </div>
+                <div className="mt-2 flex flex-wrap gap-x-4 gap-y-2 text-[9px] font-black uppercase tracking-wider text-slate-500">
+                    {primaryRows.map((department) => <span key={department.key} className="flex items-center gap-1.5"><i className={`h-2 w-2 rounded-full ${department.dot}`} />{department.label}</span>)}
+                    <span className="flex items-center gap-1.5"><i className="h-2 w-2 rounded-full bg-slate-500" />Otros</span>
+                </div>
+            </div>
+
+            <div className="grid gap-6 p-5 sm:p-6 xl:grid-cols-[1.45fr_0.75fr]">
+                <div>
+                    <div className="mb-3 text-[9px] font-black uppercase tracking-[0.22em] text-slate-400">Comparativo principal</div>
+                    <div className="space-y-4">
+                        {primaryRows.map((department) => (
+                            <div key={department.key}>
+                                <div className="mb-1.5 flex items-center justify-between gap-3 text-xs">
+                                    <span className="flex items-center gap-2 font-black text-slate-700"><i className={`h-2.5 w-2.5 rounded-full ${department.dot}`} />{department.label}</span>
+                                    <span className="font-mono font-black text-slate-900">{fmt(department.sales)} <small className="ml-1 text-[9px] text-slate-400">{formatPercent(department.percentage)}</small></span>
+                                </div>
+                                <div className="h-2 overflow-hidden rounded-full bg-slate-100"><div className={`h-full rounded-full ${department.bar}`} style={{ width: `${clampPercent(department.percentage) * 100}%` }} /></div>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+
+                <aside className="rounded-3xl border border-slate-200 bg-slate-50 p-4">
+                    <div className="text-[9px] font-black uppercase tracking-[0.22em] text-slate-400">Control del 100%</div>
+                    <div className="mt-3 flex items-end justify-between gap-3 border-b border-slate-200 pb-3">
+                        <div><div className="text-xs font-black text-slate-700">Cuatro departamentos</div><div className="mt-1 text-[10px] font-bold text-slate-400">RES + POLLO + CERDO + ABARROTERIA</div></div>
+                        <div className="text-right"><div className="font-mono text-sm font-black text-slate-950">{fmt(primarySales)}</div><div className="text-[10px] font-black text-emerald-700">{formatPercent(total ? primarySales / total : 0)}</div></div>
+                    </div>
+                    <div className="mt-3 flex items-end justify-between gap-3">
+                        <div><div className="text-xs font-black text-slate-700">Otros departamentos SICAR</div><div className="mt-1 text-[10px] font-bold text-slate-400">Se muestran para completar la venta</div></div>
+                        <div className="text-right"><div className="font-mono text-sm font-black text-slate-950">{fmt(otherSales)}</div><div className="text-[10px] font-black text-slate-600">{formatPercent(otherPercentage)}</div></div>
+                    </div>
+                    <div className="mt-4 space-y-2 border-t border-slate-200 pt-3">
+                        {otherRows.map((department) => (
+                            <div key={department.departmentName} className="flex items-center justify-between gap-3 text-[10px]">
+                                <span className="font-bold text-slate-500">{department.departmentName}</span>
+                                <span className="font-mono font-black text-slate-700">{fmt(department.sales)} · {formatPercent(department.percentage)}</span>
+                            </div>
+                        ))}
+                        {!otherRows.length && <div className="text-[10px] font-bold text-slate-400">Toda la venta pertenece a los cuatro departamentos principales.</div>}
+                    </div>
+                </aside>
+            </div>
+        </section>
     );
 }
 
@@ -1030,7 +1141,7 @@ export default function SalesCRM({ data = {}, branchContext = {}, ticketsOverrid
                 <div className="mt-4 flex flex-wrap items-center gap-3 border-t border-slate-100 pt-4 text-[10px] font-bold text-slate-500"><span className="rounded-full bg-sky-100 px-3 py-1 text-sky-800">{rangeLabel}</span><span>{tickets.length} registros SICAR cargados</span>{applicableExclusionCount > 0 && <span className="rounded-full bg-rose-100 px-3 py-1 text-rose-800">{analysisTickets.length} considerados · {applicableExclusionCount} clientes excluidos</span>}{archive.updatedAt && <span>Actualizado {archive.updatedAt.toLocaleTimeString('es-NI', { hour: '2-digit', minute: '2-digit' })}</span>}<span className="ml-auto text-emerald-700">El filtro no genera lecturas por cada KPI</span></div>
             </section>
 
-            <nav className="grid gap-2 rounded-[2rem] border border-slate-200 bg-white p-2 shadow-sm sm:grid-cols-3" aria-label="Areas del CRM de ventas">
+            <nav className="grid gap-2 rounded-[2rem] border border-slate-200 bg-white p-2 shadow-sm sm:grid-cols-2 xl:grid-cols-4" aria-label="Areas del CRM de ventas">
                 {SALES_CRM_TABS.map((tab) => (
                     <button
                         key={tab.id}
@@ -1075,6 +1186,14 @@ export default function SalesCRM({ data = {}, branchContext = {}, ticketsOverrid
                         <TicketTable tickets={filteredTickets} page={page} onPageChange={setPage} onOpen={setSelectedTicket} />
                     </section>
                 </>
+            )}
+
+            {activeCrmTab === 'departamentos' && (
+                <DepartmentSalesPanel
+                    rows={analytics.departments}
+                    total={analytics.summary.productSales}
+                    rangeLabel={rangeLabel}
+                />
             )}
 
             {activeCrmTab === 'clientes' && (

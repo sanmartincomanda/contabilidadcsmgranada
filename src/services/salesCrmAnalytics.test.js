@@ -127,12 +127,26 @@ test('enriches article KPIs with the SICAR category catalog', () => {
             categoryName: 'PRODUCIDOS',
             departmentName: 'RES',
         },
+        '2': {
+            articleId: 2,
+            categoryId: 22,
+            categoryKey: 'granada:22',
+            categoryName: 'CERDO CORTES ESPECIALES',
+            departmentName: 'CERDO',
+        },
     });
     const product = analytics.products.find((item) => item.description === 'Producto A');
+    const resDepartment = analytics.departments.find((item) => item.departmentName === 'RES');
+    const porkDepartment = analytics.departments.find((item) => item.departmentName === 'CERDO');
 
     assert.equal(product.categoryName, 'PRODUCIDOS');
     assert.equal(product.departmentName, 'RES');
     assert.equal(product.ticketCount, 1);
     assert.equal(product.averagePerTicket, 115);
     assert.equal(analytics.customers[0].activeDays, 1);
+    assert.equal(analytics.summary.productSales, 315);
+    assert.equal(resDepartment.sales, 115);
+    assert.equal(resDepartment.percentage, 115 / 315);
+    assert.equal(porkDepartment.sales, 200);
+    assert.equal(porkDepartment.percentage, 200 / 315);
 });

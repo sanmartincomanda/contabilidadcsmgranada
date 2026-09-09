@@ -205,6 +205,7 @@ export const buildSalesCrmAnalytics = (
     const dailyMap = new Map();
     const customerMap = new Map();
     const productMap = new Map();
+    const departmentMap = new Map();
     let sales = 0;
     let subtotal = 0;
     let iva = 0;
@@ -286,6 +287,8 @@ export const buildSalesCrmAnalytics = (
             const departmentName = item.departmentName || catalogArticle.departmentName || 'SIN DEPARTAMENTO';
             const categoryKey = item.categoryKey || catalogArticle.categoryKey
                 || `${branchId || 'general'}:${categoryId || 'uncategorized'}`;
+            const itemSales = money(item.totalWithTax ?? item.totalWithoutTax);
+            addAmount(departmentMap, normalizeCrmText(departmentName) || 'SIN DEPARTAMENTO', itemSales);
             const product = customer.products.get(productKey) || {
                 branchId,
                 categoryId,
@@ -298,7 +301,7 @@ export const buildSalesCrmAnalytics = (
                 sales: 0,
             };
             product.quantity = money(product.quantity + Number(item.quantity || 0));
-            product.sales = money(product.sales + money(item.totalWithTax ?? item.totalWithoutTax));
+            product.sales = money(product.sales + itemSales);
             customer.products.set(productKey, product);
 
             const globalProduct = productMap.get(productKey) || {
@@ -308,7 +311,7 @@ export const buildSalesCrmAnalytics = (
                 ticketIds: new Set(),
             };
             globalProduct.quantity = money(globalProduct.quantity + Number(item.quantity || 0));
-            globalProduct.sales = money(globalProduct.sales + money(item.totalWithTax ?? item.totalWithoutTax));
+            globalProduct.sales = money(globalProduct.sales + itemSales);
             globalProduct.ticketIds.add(String(ticket.id || ticket.saleId || ticket.ticketId || ''));
             productMap.set(productKey, globalProduct);
         });
@@ -335,12 +338,20 @@ export const buildSalesCrmAnalytics = (
             };
         })
         .sort((a, b) => b.sales - a.sales);
+    const productSales = money([...departmentMap.values()].reduce((sum, value) => sum + value, 0));
 
     return {
         activeTickets,
         cancelledCount,
         customers,
         daily: [...dailyMap.values()].filter((item) => item.date).sort((a, b) => a.date.localeCompare(b.date)),
+        departments: [...departmentMap.entries()]
+            .map(([departmentName, departmentSales]) => ({
+                departmentName,
+                percentage: productSales ? departmentSales / productSales : 0,
+                sales: departmentSales,
+            }))
+            .sort((a, b) => b.sales - a.sales),
         paymentTotals: [...paymentTotals.entries()].map(([type, total]) => ({ type, total })).sort((a, b) => b.total - a.total),
         products: [...productMap.values()]
             .map(({ ticketIds, ...product }) => ({
@@ -359,6 +370,7 @@ export const buildSalesCrmAnalytics = (
             linkedSales,
             linkedSalesConversion: sales ? linkedSales / sales : 0,
             margin: sales ? profit / sales : 0,
+            productSales,
             profit,
             recurringCustomers: identifiedCustomers.filter((customer) => customer.ticketCount > 1).length,
             sales,
