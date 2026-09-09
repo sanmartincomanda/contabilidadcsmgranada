@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useLocation, useNavigate } from 'react-router-dom';
-import { collection, deleteDoc, doc, getDoc, getDocs, query, serverTimestamp, setDoc, where, writeBatch } from 'firebase/firestore';
+import { collection, deleteDoc, doc, getDoc, getDocs, query, runTransaction, serverTimestamp, setDoc, where, writeBatch } from 'firebase/firestore';
 import { db } from '../firebase';
 import { useAuth } from '../context/AuthContext';
 import {
@@ -469,6 +469,7 @@ const buildReceiptDocumentFields = (receipt = {}, branchPayload = {}) => ({
 });
 
 const INACTIVE_STAMPED_INVOICE_STATUSES = ['ANULADA', 'ANULADO', 'CANCELADA', 'CANCELADO', 'DELETED'];
+const STAMPED_INVOICE_NUMBER_REGISTRY = 'facturas_membretadas_numeros';
 
 const isActiveStampedInvoice = (invoice = {}) => (
     !INACTIVE_STAMPED_INVOICE_STATUSES.includes(normalizeText(invoice.status))
@@ -489,8 +490,7 @@ const findStampedInvoiceNumberDuplicate = (invoices = [], invoiceNumber = '', ig
     if (!target) return null;
     const ignored = new Set(ignoredIds.map((value) => normalizeInvoiceMatchKey(value)).filter(Boolean));
     return invoices.find((invoice) => (
-        isActiveStampedInvoice(invoice)
-        && getFiscalDocumentMatchKey(invoice, 'invoice') === target
+        getFiscalDocumentMatchKey(invoice, 'invoice') === target
         && !getInvoiceRecordIdentityKeys(invoice).some((key) => ignored.has(key))
     )) || null;
 };
@@ -521,6 +521,91 @@ const assertUniqueStampedInvoiceNumbers = (drafts = [], existingInvoices = []) =
         if (duplicate) {
             throw new Error(buildDuplicateInvoiceNumberMessage(invoiceNumber, duplicate));
         }
+    });
+};
+
+const getInvoiceNumberLookupValues = (invoiceNumber = '') => {
+    const text = String(invoiceNumber || '').trim();
+    if (!text) return [];
+    const values = [text];
+    const numeric = Number(text);
+    if (Number.isFinite(numeric)) values.push(numeric);
+    return [...new Set(values)];
+};
+
+const loadPersistedStampedInvoicesByNumber = async (invoiceNumber = '') => {
+    const values = getInvoiceNumberLookupValues(invoiceNumber);
+    if (!values.length) return [];
+    const buildNumberConstraint = (field) => (
+        values.length > 1 ? where(field, 'in', values) : where(field, '==', values[0])
+    );
+    const snapshots = await Promise.all([
+        getDocs(query(collection(db, 'facturas_membretadas_ventas'), buildNumberConstraint('numeroFactura'))),
+        getDocs(query(collection(db, 'facturas_membretadas_ventas'), buildNumberConstraint('invoiceNumber'))),
+    ]);
+    const recordsById = new Map();
+    snapshots.forEach((snapshot) => snapshot.docs.forEach((invoiceDoc) => {
+        recordsById.set(invoiceDoc.id, { id: invoiceDoc.id, docId: invoiceDoc.id, ...invoiceDoc.data() });
+    }));
+    return [...recordsById.values()];
+};
+
+const ensureUniqueStampedInvoiceNumbers = async (drafts = [], existingInvoices = [], { reserve = true } = {}) => {
+    if (!drafts.length) return;
+    assertUniqueStampedInvoiceNumbers(drafts, existingInvoices);
+
+    const persistedGroups = await Promise.all(drafts.map((draft) => (
+        loadPersistedStampedInvoicesByNumber(draft.invoiceNumber || draft.numeroFactura)
+    )));
+    const persistedById = new Map();
+    persistedGroups.flat().forEach((invoice) => persistedById.set(invoice.id || invoice.docId, invoice));
+    assertUniqueStampedInvoiceNumbers(drafts, [...existingInvoices, ...persistedById.values()]);
+    if (!reserve) return;
+
+    const reservations = drafts.map((draft) => {
+        const matchKey = getFiscalDocumentMatchKey(draft, 'invoice');
+        const ownerDocumentId = draft.id || draft.docId || '';
+        if (!matchKey || !ownerDocumentId) {
+            throw new Error('No se pudo reservar el numero de factura antes de guardar.');
+        }
+        return {
+            draft,
+            matchKey,
+            ownerDocumentId,
+            ref: doc(db, STAMPED_INVOICE_NUMBER_REGISTRY, matchKey.toLowerCase()),
+        };
+    });
+
+    await runTransaction(db, async (transaction) => {
+        const reservationSnapshots = await Promise.all(
+            reservations.map((reservation) => transaction.get(reservation.ref))
+        );
+        reservationSnapshots.forEach((snapshot, index) => {
+            if (!snapshot.exists()) return;
+            const reservation = reservations[index];
+            const ownerDocumentId = snapshot.data()?.ownerDocumentId || '';
+            const belongsToExistingDraft = reservation.draft.wasExistingDoc !== false
+                && normalizeInvoiceMatchKey(ownerDocumentId) === normalizeInvoiceMatchKey(reservation.ownerDocumentId);
+            if (!belongsToExistingDraft) {
+                throw new Error(buildDuplicateInvoiceNumberMessage(
+                    reservation.draft.invoiceNumber || reservation.draft.numeroFactura,
+                    snapshot.data()
+                ));
+            }
+        });
+        reservations.forEach(({ draft, matchKey, ownerDocumentId, ref }) => {
+            transaction.set(ref, {
+                matchKey,
+                ownerDocumentId,
+                invoiceNumber: String(draft.invoiceNumber || draft.numeroFactura || '').trim(),
+                branchId: getRecordBranchId(draft),
+                invoiceSeries: getInvoiceSeriesForMatch(draft),
+                customerName: draft.customerName || draft.cliente || '',
+                total: safeNumber(draft.total),
+                updatedAt: serverTimestamp(),
+                createdAt: serverTimestamp(),
+            }, { merge: true });
+        });
     });
 };
 
@@ -1262,9 +1347,30 @@ const SICAR_UNRESOLVED_PAYMENT_METHODS = [SICAR_CARD_PAYMENT_METHOD, SICAR_TRANS
 const isCreditPaymentMethod = (method = '') => normalizeText(method).includes('CREDITO');
 const isUnresolvedSicarPaymentMethod = (method = '') => SICAR_UNRESOLVED_PAYMENT_METHODS.includes(String(method || '').trim());
 
+const getStoredInvoicePaymentMethod = (invoice = {}) => (
+    invoice.paymentMethod
+    || invoice.metodoPago
+    || invoice.paymentDisplayMethod
+    || invoice.salePaymentMethod
+    || ''
+);
+
+const getInvoiceRetentionBreakdown = (invoice = {}) => {
+    const retentionIr2 = safeNumber(invoice.retentionIr2 ?? invoice.retencionIr2);
+    const retentionMunicipal1 = safeNumber(invoice.retentionMunicipal1 ?? invoice.retencionMunicipal1);
+    const detailedTotal = safeNumber(retentionIr2 + retentionMunicipal1);
+    const storedTotal = safeNumber(invoice.retentionTotal ?? invoice.retencionTotal);
+
+    return {
+        retentionIr2,
+        retentionMunicipal1,
+        retentionTotal: detailedTotal > 0 ? detailedTotal : storedTotal,
+    };
+};
+
 const getInvoicePaymentTargetAmount = (invoice = {}) => {
     const total = safeNumber(invoice.total || safeNumber(invoice.subtotal) + safeNumber(invoice.iva));
-    const retentions = safeNumber(invoice.retentionTotal ?? (safeNumber(invoice.retentionIr2) + safeNumber(invoice.retentionMunicipal1)));
+    const retentions = getInvoiceRetentionBreakdown(invoice).retentionTotal;
     const net = safeNumber(total - retentions);
     return net > 0 ? net : total;
 };
@@ -1273,9 +1379,9 @@ const normalizePaymentBreakdownRows = (rows = []) => (
     (Array.isArray(rows) ? rows : [])
         .map((row) => ({
             id: row.id || row.localId || createLineId('payment'),
-            method: String(row.method || row.paymentMethod || '').trim(),
-            amount: safeNumber(row.amount),
-            reference: String(row.reference || '').trim(),
+            method: String(row.method || row.paymentMethod || row.metodoPago || '').trim(),
+            amount: safeNumber(row.amount ?? row.monto ?? row.total),
+            reference: String(row.reference || row.referencia || '').trim(),
         }))
         .filter((row) => row.method && row.amount > 0)
 );
@@ -1289,8 +1395,7 @@ function getInvoiceCreditBreakdownAmount(invoice = {}) {
 }
 
 function invoiceHasCreditPayment(invoice = {}) {
-    return isCreditPaymentMethod(invoice.paymentMethod)
-        || isCreditPaymentMethod(invoice.metodoPago)
+    return isCreditPaymentMethod(getStoredInvoicePaymentMethod(invoice))
         || getInvoiceCreditBreakdownAmount(invoice) > 0.01;
 }
 
@@ -1340,13 +1445,13 @@ const getPaymentBreakdownLabel = (invoice = {}) => {
 const getInvoicePaymentMethodLabel = (invoice = {}) => (
     normalizePaymentBreakdownRows(invoice.paymentBreakdown).length > 1
         ? MIXED_PAYMENT_METHOD
-        : (getPaymentMethodFromBreakdown(invoice.paymentBreakdown, invoice.paymentMethod) || invoice.paymentMethod || '')
+        : getPaymentMethodFromBreakdown(invoice.paymentBreakdown, getStoredInvoicePaymentMethod(invoice))
 );
 
 const getInvoicePaymentRows = (invoice = {}) => {
     const rows = normalizePaymentBreakdownRows(invoice.paymentBreakdown);
     if (rows.length) return rows;
-    const method = String(invoice.paymentMethod || '').trim();
+    const method = String(getStoredInvoicePaymentMethod(invoice)).trim();
     if (!method) return [];
     return [{ id: `${method}-${invoice.id || invoice.docId || ''}`, method, amount: getInvoicePaymentTargetAmount(invoice), reference: '' }];
 };
@@ -1584,7 +1689,7 @@ const buildClosureAccountingSummary = ({
         ), 0)
     ), 0));
     const stampedInvoiceRetentionTotal = safeNumber(stampedInvoices.reduce((sum, invoice) => (
-        sum + safeNumber(invoice.retentionTotal ?? (safeNumber(invoice.retentionIr2) + safeNumber(invoice.retentionMunicipal1)))
+        sum + getInvoiceRetentionBreakdown(invoice).retentionTotal
     ), 0));
     const cashReceiptGrossTotal = safeNumber(cashReceipts.reduce((sum, receipt) => sum + safeNumber(receipt.amount), 0));
     const cashReceiptRetentionTotal = safeNumber(cashReceipts.reduce((sum, receipt) => sum + getCashReceiptRetentionTotal(receipt), 0));
@@ -1836,6 +1941,8 @@ const createInvoiceDraft = (invoice = {}, fallbackDate = todayString()) => {
     const subtotal = safeNumber(invoice.subtotal ?? invoice.amount);
     const iva = safeNumber(invoice.iva);
     const total = safeNumber(invoice.total || subtotal + iva);
+    const paymentBreakdown = normalizePaymentBreakdownRows(invoice.paymentBreakdown);
+    const retention = getInvoiceRetentionBreakdown(invoice);
     const invoiceBranchPayload = getBranchPayload(getRecordBranchId(invoice), 'invoice');
     const wasExistingDoc = invoice.wasExistingDoc !== undefined
         ? Boolean(invoice.wasExistingDoc)
@@ -1851,14 +1958,15 @@ const createInvoiceDraft = (invoice = {}, fallbackDate = todayString()) => {
         customerName: invoice.customerName || invoice.cliente || '',
         cashierName: getCashierName(invoice),
         cashierCode: getRecordCashierCode(invoice),
-        paymentMethod: getInvoicePaymentMethodLabel(invoice),
-        paymentBreakdown: normalizePaymentBreakdownRows(invoice.paymentBreakdown),
-        paymentNetTotal: safeNumber(invoice.paymentNetTotal || getPaymentBreakdownTotal(invoice.paymentBreakdown) || getInvoicePaymentTargetAmount(invoice)),
+        paymentMethod: getInvoicePaymentMethodLabel({ ...invoice, paymentBreakdown }),
+        paymentBreakdown,
+        paymentNetTotal: safeNumber(invoice.paymentNetTotal || getPaymentBreakdownTotal(paymentBreakdown) || getInvoicePaymentTargetAmount(invoice)),
         subtotal: subtotal ? String(subtotal) : '',
         iva: iva ? String(iva) : '',
         total: total ? String(total) : '',
-        retentionIr2: safeNumber(invoice.retentionIr2) ? String(safeNumber(invoice.retentionIr2)) : '',
-        retentionMunicipal1: safeNumber(invoice.retentionMunicipal1) ? String(safeNumber(invoice.retentionMunicipal1)) : '',
+        retentionIr2: retention.retentionIr2 ? String(retention.retentionIr2) : '',
+        retentionMunicipal1: retention.retentionMunicipal1 ? String(retention.retentionMunicipal1) : '',
+        retentionTotal: retention.retentionTotal,
         sourceSicarInvoiceId: invoice.sourceSicarInvoiceId || invoice.sourceSicarId || '',
         manualClosureSelection: Boolean(invoice.manualClosureSelection),
         status: invoice.status || 'active',
@@ -4020,7 +4128,7 @@ function CashClosure({ data, branchContext }) {
         + houseDiscountTotal
     );
     const invoiceRetentionTotal = safeNumber(closureInvoices.reduce((sum, invoice) => (
-        sum + safeNumber(invoice.retentionIr2) + safeNumber(invoice.retentionMunicipal1)
+        sum + getInvoiceRetentionBreakdown(invoice).retentionTotal
     ), 0));
     const cashReceiptRetentionTotal = safeNumber(closureCashReceipts.reduce((sum, receipt) => (
         sum + getCashReceiptRetentionTotal(receipt)
@@ -4434,11 +4542,6 @@ function CashClosure({ data, branchContext }) {
             const savedInvoices = [];
             const savedCashReceipts = [];
 
-            assertUniqueStampedInvoiceNumbers(
-                validInvoiceDrafts.map((invoice) => ({ ...invoiceBranchPayload, ...invoice })),
-                stampedInvoices
-            );
-
             const preparedInvoiceDrafts = validInvoiceDrafts.map((invoice) => {
                 if (!String(invoice.invoiceNumber || '').trim()) {
                     throw new Error('Cada factura membretada del cierre necesita numero de factura.');
@@ -4479,6 +4582,12 @@ function CashClosure({ data, branchContext }) {
                     supportFiles: invoice.supportFiles || {},
                 };
             });
+
+            await ensureUniqueStampedInvoiceNumbers(
+                preparedInvoiceDrafts,
+                data.facturas_membretadas_ventas || [],
+                { reserve: !isWaiting }
+            );
 
             if (!isWaiting) {
             for (const invoice of preparedInvoiceDrafts) {
@@ -8233,7 +8342,15 @@ function StampedInvoices({ data, branchContext }) {
                 docId: buildBranchScopedFiscalDocId('membretada', invoiceBranchPayload, invoice.invoiceNumber, invoice.date),
             }));
 
-            assertUniqueStampedInvoiceNumbers(invoicesToSave, savedInvoices);
+            await ensureUniqueStampedInvoiceNumbers(
+                invoiceMeta.map(({ invoice, docId }) => ({
+                    ...invoice,
+                    id: docId,
+                    docId,
+                    wasExistingDoc: false,
+                })),
+                savedInvoices
+            );
 
             const primaryDocId = invoiceMeta[0].docId;
             const existingInvoice = savedInvoices.find((item) => item.id === primaryDocId) || {};
@@ -9625,10 +9742,13 @@ function StampedInvoiceHistory({ data, canEdit = true, branchContext }) {
                 if (!docId) throw new Error('No se pudo generar el identificador de la factura.');
             }
 
-            assertUniqueStampedInvoiceNumbers(
-                invoiceMeta.map(({ invoice }, index) => (
-                    index === 0 ? { ...invoice, id: originalDocId, docId: originalDocId } : invoice
-                )),
+            await ensureUniqueStampedInvoiceNumbers(
+                invoiceMeta.map(({ invoice, docId }, index) => ({
+                    ...invoice,
+                    id: docId,
+                    docId,
+                    wasExistingDoc: index === 0,
+                })),
                 savedInvoices
             );
 
