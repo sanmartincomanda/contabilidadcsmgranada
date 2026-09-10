@@ -26,6 +26,7 @@ const PAGE_SIZE = 20;
 const CUSTOMER_EXCLUSIONS_DOC = 'ventas_crm_exclusiones';
 const MAX_CUSTOMER_EXCLUSIONS = 250;
 const rangeCache = new Map();
+const invoiceRangeCache = new Map();
 const productCatalogCache = new Map();
 let customerExclusionsCache = null;
 const RANKING_LIMITS = [10, 20, 25, 100];
@@ -232,6 +233,46 @@ function useSicarTicketRange(fromDate, toDate, refreshToken, enabled = true) {
 
         return () => { mounted = false; };
     }, [enabled, fromDate, refreshToken, toDate]);
+
+    return state;
+}
+
+function useStampedInvoiceRange(fromDate, toDate, refreshToken) {
+    const [state, setState] = useState({ loading: true, error: '', records: [] });
+
+    useEffect(() => {
+        if (!fromDate || !toDate || fromDate > toDate) {
+            setState({ loading: false, error: 'El rango de fechas no es valido.', records: [] });
+            return undefined;
+        }
+
+        const cacheKey = `${fromDate}:${toDate}`;
+        const cached = invoiceRangeCache.get(cacheKey);
+        if (cached && refreshToken === 0) {
+            setState({ loading: false, error: '', records: cached });
+            return undefined;
+        }
+
+        let mounted = true;
+        setState((current) => ({ ...current, loading: true, error: '' }));
+        getDocs(query(
+            collection(db, 'facturas_membretadas_ventas'),
+            where('saleDate', '>=', fromDate),
+            where('saleDate', '<', shiftDate(toDate, 1))
+        ))
+            .then((snapshot) => {
+                if (!mounted) return;
+                const records = snapshot.docs.map((invoiceDoc) => ({ id: invoiceDoc.id, ...invoiceDoc.data() }));
+                invoiceRangeCache.set(cacheKey, records);
+                setState({ loading: false, error: '', records });
+            })
+            .catch((error) => {
+                console.error('No se pudieron cargar los vinculos de facturas del CRM', error);
+                if (mounted) setState({ loading: false, error: error.message || 'No se pudieron cargar los vinculos.', records: [] });
+            });
+
+        return () => { mounted = false; };
+    }, [fromDate, refreshToken, toDate]);
 
     return state;
 }
@@ -994,12 +1035,20 @@ export default function SalesCRM({ data = {}, branchContext = {}, ticketsOverrid
     const [customerExclusionsOpen, setCustomerExclusionsOpen] = useState(false);
     const hasTicketOverride = Array.isArray(ticketsOverride);
     const archive = useSicarTicketRange(fromDate, toDate, refreshToken, !hasTicketOverride);
+    const invoiceArchive = useStampedInvoiceRange(fromDate, toDate, refreshToken);
     const remoteProductCatalog = useSicarProductCatalog(selectedBranchId, refreshToken, !hasTicketOverride && !productCatalogOverride);
     const productCatalog = productCatalogOverride || remoteProductCatalog;
     const customerExclusions = useSalesCrmCustomerExclusions(user?.email);
     const canManageCustomerExclusions = isMasterEmail(user?.email);
 
-    const linkIndex = useMemo(() => buildStampedInvoiceLinkIndex(data.facturas_membretadas_ventas || []), [data.facturas_membretadas_ventas]);
+    const linkIndex = useMemo(() => {
+        const invoicesById = new Map();
+        [...invoiceArchive.records, ...(data.facturas_membretadas_ventas || [])].forEach((invoice) => {
+            const key = invoice.id || invoice.docId || `${invoice.saleDate || invoice.date}:${invoice.invoiceNumber || invoice.numeroFactura}`;
+            invoicesById.set(key, invoice);
+        });
+        return buildStampedInvoiceLinkIndex([...invoicesById.values()]);
+    }, [data.facturas_membretadas_ventas, invoiceArchive.records]);
     const tickets = useMemo(() => mergeTicketRecords(
         archive.records,
         hasTicketOverride ? ticketsOverride : data.sicar_ventas_tickets || [],

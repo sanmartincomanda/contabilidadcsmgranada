@@ -741,11 +741,25 @@ async function fetchRecentCandidates(db, collectionName, recentLimit) {
     .filter(({ transfer }) => String(transfer.sourceType || '').trim() === 'branch_transfer_sicar');
 }
 
-async function processCandidates({ db, collectionName, connection, localMeta, localBranchId, mysqlConfig, settings, options, state, startup = false }) {
-  const candidates = startup && !options.skipStartupBackfill
-    ? await fetchStartupCandidates(db, collectionName, options.startupLimit)
-    : await fetchRecentCandidates(db, collectionName, options.recentLimit);
+function roleNeedsProcessing(transfer, role, staleMinutes) {
+  const roleData = transfer?.[role] || {};
+  const status = String(roleData.status || 'pending').trim().toLowerCase();
+  if (status === 'completed') return false;
+  if (status === 'processing') {
+    return isStale(roleData.startedAt || roleData.lastHeartbeatAt, staleMinutes);
+  }
+  return true;
+}
 
+function candidateNeedsLocalProcessing(transfer, localBranchId, staleMinutes) {
+  if (String(transfer?.status || 'activo').trim().toLowerCase() === 'anulado') return false;
+  const fromBranchId = getTransferBranchId(transfer, 'from');
+  const toBranchId = getTransferBranchId(transfer, 'to');
+  return (fromBranchId === localBranchId && roleNeedsProcessing(transfer, 'sicarOrigin', staleMinutes))
+    || (toBranchId === localBranchId && roleNeedsProcessing(transfer, 'sicarDestination', staleMinutes));
+}
+
+async function processCandidateList({ candidates, connection, localMeta, localBranchId, mysqlConfig, settings, options, state }) {
   for (const { ref, transfer } of candidates) {
     if (String(transfer.status || 'activo').trim().toLowerCase() === 'anulado') {
       continue;
@@ -756,7 +770,7 @@ async function processCandidates({ db, collectionName, connection, localMeta, lo
     const involvesLocalBranch = fromBranchId === localBranchId || toBranchId === localBranchId;
     if (!involvesLocalBranch) continue;
 
-    if (fromBranchId === localBranchId) {
+    if (fromBranchId === localBranchId && roleNeedsProcessing(transfer, 'sicarOrigin', options.staleMinutes)) {
       // eslint-disable-next-line no-await-in-loop
       await processOriginTransfer({
         docRef: ref,
@@ -769,7 +783,7 @@ async function processCandidates({ db, collectionName, connection, localMeta, lo
       });
     }
 
-    if (toBranchId === localBranchId) {
+    if (toBranchId === localBranchId && roleNeedsProcessing(transfer, 'sicarDestination', options.staleMinutes)) {
       // eslint-disable-next-line no-await-in-loop
       await processDestinationTransfer({
         docRef: ref,
@@ -783,6 +797,87 @@ async function processCandidates({ db, collectionName, connection, localMeta, lo
       });
     }
   }
+}
+
+async function processCandidates({ db, collectionName, connection, localMeta, localBranchId, mysqlConfig, settings, options, state, startup = false }) {
+  const candidates = startup && !options.skipStartupBackfill
+    ? await fetchStartupCandidates(db, collectionName, options.startupLimit)
+    : await fetchRecentCandidates(db, collectionName, options.recentLimit);
+
+  await processCandidateList({
+    candidates,
+    connection,
+    localMeta,
+    localBranchId,
+    mysqlConfig,
+    settings,
+    options,
+    state,
+  });
+}
+
+function startCandidateListener({ db, collectionName, connection, localMeta, localBranchId, mysqlConfig, settings, options, state }) {
+  const candidateCache = new Map();
+  let processing = Promise.resolve();
+
+  const enqueue = (candidates) => {
+    if (!candidates.length) return processing;
+    processing = processing
+      .then(() => processCandidateList({
+        candidates,
+        connection,
+        localMeta,
+        localBranchId,
+        mysqlConfig,
+        settings,
+        options,
+        state,
+      }))
+      .then(() => writeJson(options.statePath, state))
+      .catch((error) => {
+        log('ERROR', 'Error procesando cambio de traspaso SICAR', { error: error.message });
+      });
+    return processing;
+  };
+
+  const handleSnapshot = (snapshot) => {
+    const changedCandidates = [];
+    snapshot.docChanges().forEach((change) => {
+      if (change.type === 'removed') {
+        candidateCache.delete(change.doc.id);
+        return;
+      }
+      const candidate = { ref: change.doc.ref, transfer: toTransferSnapshot(change.doc) };
+      candidateCache.set(change.doc.id, candidate);
+      if (candidateNeedsLocalProcessing(candidate.transfer, localBranchId, options.staleMinutes)) {
+        changedCandidates.push(candidate);
+      }
+    });
+    enqueue(changedCandidates);
+  };
+
+  const handleError = (error) => {
+    log('ERROR', 'Listener de traspasos SICAR interrumpido', { error: error.message });
+  };
+
+  // New transfers always store both branch fields. Two narrow listeners avoid polling
+  // the latest documents repeatedly when Firestore has not changed.
+  const collectionRef = db.collection(collectionName);
+  const unsubscribes = [
+    collectionRef.where('fromBranchId', '==', localBranchId).onSnapshot(handleSnapshot, handleError),
+    collectionRef.where('toBranchId', '==', localBranchId).onSnapshot(handleSnapshot, handleError),
+  ];
+
+  return {
+    enqueueRetries() {
+      const candidates = [...candidateCache.values()].filter(({ transfer }) => (
+        candidateNeedsLocalProcessing(transfer, localBranchId, options.staleMinutes)
+      ));
+      return enqueue(candidates);
+    },
+    flush: () => processing,
+    stop: () => unsubscribes.forEach((unsubscribe) => unsubscribe()),
+  };
 }
 
 async function main() {
@@ -830,9 +925,8 @@ async function main() {
       });
     }
 
-    do {
-      try {
-        state.lastLoopAt = nowIso();
+    if (options.once) {
+      if (options.skipStartupBackfill) {
         await processCandidates({
           db,
           collectionName: options.collection,
@@ -845,17 +939,37 @@ async function main() {
           state,
           startup: false,
         });
-      } catch (error) {
-        log('ERROR', 'Error en loop del watcher de traspasos SICAR', {
-          error: error.message,
-        });
       }
-
+      state.lastLoopAt = nowIso();
       writeJson(options.statePath, state);
-      if (options.once) break;
-      // eslint-disable-next-line no-await-in-loop
-      await sleep(options.intervalMs);
-    } while (true);
+      return;
+    }
+
+    const candidateListener = startCandidateListener({
+      db,
+      collectionName: options.collection,
+      connection,
+      localMeta,
+      localBranchId,
+      mysqlConfig,
+      settings,
+      options,
+      state,
+    });
+
+    try {
+      do {
+        // Retry only the in-memory pending records. This preserves stale-lock recovery
+        // without issuing another Firestore query on every watcher cycle.
+        await sleep(options.intervalMs);
+        state.lastLoopAt = nowIso();
+        await candidateListener.enqueueRetries();
+        writeJson(options.statePath, state);
+      } while (true);
+    } finally {
+      candidateListener.stop();
+      await candidateListener.flush();
+    }
   } finally {
     writeJson(options.statePath, state);
     await connection.end();

@@ -92,12 +92,12 @@ const getDateOffset = (daysBack = 0) => {
     return date.toISOString().substring(0, 10);
 };
 
-const collectionConfig = (name, constraints = []) => ({ name, constraints });
+const collectionConfig = (name, constraints = [], options = {}) => ({ name, constraints, ...options });
 
 const normalizeCollectionConfig = (config) => (
     typeof config === 'string'
-        ? { name: config, constraints: [] }
-        : { name: config.name, constraints: config.constraints || [] }
+        ? { name: config, constraints: [], live: undefined, reuse: false }
+        : { name: config.name, constraints: config.constraints || [], live: config.live, reuse: Boolean(config.reuse) }
 );
 
 const getCollectionName = (config) => normalizeCollectionConfig(config).name;
@@ -965,7 +965,12 @@ const useFirestoreCollections = (collections = [], enabled = true, live = true) 
 
         configs.forEach((config) => {
             const { name, constraints } = config;
-            if (!live) { loadOnce(name); return; }
+            const shouldListen = config.live ?? live;
+            if (!shouldListen && config.reuse && Array.isArray(dataRef.current?.[name])) {
+                markLoaded(name);
+                return;
+            }
+            if (!shouldListen) { loadOnce(name); return; }
 
             const q = query(collection(db, name), ...constraints);
             unsubscribes.push(
@@ -1204,6 +1209,13 @@ function AppContent() {
     const canEdit = useCallback((moduleId) => effectiveIsMaster || canEditModule(moduleModes, moduleId), [effectiveIsMaster, moduleModes]);
     const defaultAllowedPath = useMemo(() => (effectiveIsMaster ? '/' : getDefaultAllowedPath(moduleAccess)), [effectiveIsMaster, moduleAccess]);
     const currentPath = location.pathname;
+    const billingRoute = useMemo(() => {
+        const params = new URLSearchParams(location.search);
+        return {
+            section: params.get('section') === 'recibos' ? 'recibos' : 'membretadas',
+            tab: params.get('tab') || 'cierre',
+        };
+    }, [location.search]);
     const needsCategories = (
         (currentPath === '/ingresar' && canAccess('ingresar'))
         || (currentPath === '/gastos-diarios' && canAccess('caja_chica'))
@@ -1216,6 +1228,7 @@ function AppContent() {
     const accountStartMonth = useMemo(() => getMonthOffset(ACCOUNT_HISTORY_MONTHS), []);
     const billingStartMonth = useMemo(() => getMonthOffset(BILLING_HISTORY_MONTHS), []);
     const billingLiveInvoiceStartDate = useMemo(() => getDateOffset(BILLING_LIVE_INVOICE_DAYS), []);
+    const billingClosureDocumentStartDate = useMemo(() => getDateOffset(14), []);
     const declarationStartMonth = useMemo(() => getMonthOffset(DECLARATION_HISTORY_MONTHS), []);
     const currentMonthStart = `${currentMonth}-01`;
     const nextMonthStart = getNextMonthStart(currentMonth);
@@ -1265,19 +1278,50 @@ function AppContent() {
         collectionConfig('traspasos_costos_sucursal', [where('month', '>=', accountStartMonth)]),
     ], [accountStartMonth]);
 
-    const billingCollections = useMemo(() => [
-        collectionConfig('sicar_cierres_caja', [where('date', '>=', `${billingStartMonth}-01`)]),
-        collectionConfig('sicar_facturas_membretadas', [where('date', '>=', billingLiveInvoiceStartDate)]),
-        collectionConfig('sicar_ventas_tickets', [where('date', '>=', billingLiveInvoiceStartDate)]),
-        collectionConfig('sicar_recibos_caja', [where('date', '>=', billingLiveInvoiceStartDate)]),
-        collectionConfig('cierres_caja', [where('date', '>=', `${billingStartMonth}-01`)]),
-        collectionConfig('depositos_bancarios', [where('date', '>=', `${billingStartMonth}-01`)]),
-        collectionConfig('diferencias_caja', [where('date', '>=', `${billingStartMonth}-01`)]),
-        collectionConfig('facturas_membretadas_ventas', [where('saleDate', '>=', `${billingStartMonth}-01`)]),
-        collectionConfig('recibos_caja_membretados', [where('date', '>=', `${billingStartMonth}-01`)]),
-        'clientes_facturacion',
-        'cajeros',
-    ], [billingLiveInvoiceStartDate, billingStartMonth]);
+    const billingCollections = useMemo(() => {
+        const catalogs = [
+            collectionConfig('clientes_facturacion', [], { live: false, reuse: true }),
+            collectionConfig('cajeros', [], { live: false, reuse: true }),
+        ];
+
+        if (billingRoute.tab === 'registro') {
+            if (billingRoute.section === 'recibos') {
+                return [
+                    collectionConfig('sicar_recibos_caja', [where('date', '>=', billingLiveInvoiceStartDate)]),
+                    collectionConfig('facturas_membretadas_ventas', [where('paymentMethod', 'in', ['CREDITO', 'MIXTO'])]),
+                    collectionConfig('recibos_caja_membretados', [where('date', '>=', `${billingStartMonth}-01`)]),
+                    ...catalogs,
+                ];
+            }
+            return [
+                collectionConfig('sicar_facturas_membretadas', [where('date', '>=', billingLiveInvoiceStartDate)]),
+                collectionConfig('sicar_ventas_tickets', [where('date', '>=', billingLiveInvoiceStartDate)]),
+                collectionConfig('facturas_membretadas_ventas', [where('saleDate', '>=', billingLiveInvoiceStartDate)]),
+                ...catalogs,
+            ];
+        }
+
+        if (billingRoute.tab === 'depositos') {
+            return [
+                collectionConfig('cierres_caja', [where('date', '>=', `${billingStartMonth}-01`)]),
+                collectionConfig('depositos_bancarios', [where('date', '>=', `${billingStartMonth}-01`)]),
+            ];
+        }
+
+        if (billingRoute.tab === 'historial') {
+            // Each history submodule owns one date-scoped query. Only small catalogs
+            // remain here, instead of keeping every billing collection live.
+            return catalogs;
+        }
+
+        return [
+            collectionConfig('sicar_cierres_caja', [where('date', '>=', `${billingStartMonth}-01`)]),
+            collectionConfig('cierres_caja', [where('date', '>=', `${billingStartMonth}-01`)]),
+            collectionConfig('facturas_membretadas_ventas', [where('saleDate', '>=', billingClosureDocumentStartDate)]),
+            collectionConfig('recibos_caja_membretados', [where('date', '>=', billingClosureDocumentStartDate)]),
+            ...catalogs,
+        ];
+    }, [billingClosureDocumentStartDate, billingLiveInvoiceStartDate, billingRoute, billingStartMonth]);
 
     const declarationCollections = useMemo(() => [
         collectionConfig('facturas_membretadas_ventas', [where('saleDate', '>=', `${declarationStartMonth}-01`)]),

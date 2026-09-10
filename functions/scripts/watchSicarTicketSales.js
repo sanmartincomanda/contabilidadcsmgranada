@@ -43,6 +43,7 @@ function parseArgs(argv) {
     else if (argument.startsWith('--statePath=')) options.statePath = argument.slice('--statePath='.length);
     else if (argument.startsWith('--startupBackfillDays=')) options.startupBackfillDays = Number(argument.slice('--startupBackfillDays='.length));
     else if (argument.startsWith('--recentBackfillIntervalMs=')) options.recentBackfillIntervalMs = Number(argument.slice('--recentBackfillIntervalMs='.length));
+    else if (argument === '--remoteBranchRollups') options.remoteBranchRollups = true;
     return options;
   }, {
     batchSize: DEFAULT_BATCH_SIZE,
@@ -50,6 +51,7 @@ function parseArgs(argv) {
     once: false,
     preview: false,
     recentBackfillIntervalMs: Number(process.env.SICAR_TICKET_SALES_RECENT_BACKFILL_INTERVAL_MS || DEFAULT_RECENT_BACKFILL_INTERVAL_MS),
+    remoteBranchRollups: String(process.env.SICAR_REMOTE_BRANCH_ROLLUPS_ENABLED || '').trim().toLowerCase() === 'true',
     resetState: false,
     startupBackfillDays: Number(process.env.SICAR_TICKET_SALES_WATCH_BACKFILL_DAYS || DEFAULT_STARTUP_BACKFILL_DAYS),
     statePath: process.env.SICAR_TICKET_SALES_WATCH_STATE_PATH || DEFAULT_STATE_PATH,
@@ -338,7 +340,7 @@ function pruneState(state, oldestDate) {
 }
 
 function startRemoteBranchRollups({ db, options }) {
-  if (!db || options.preview) return () => {};
+  if (!db || options.preview || !options.remoteBranchRollups) return () => {};
 
   const localBranch = String(process.env.SICAR_BRANCH_ID || process.env.BRANCH_ID || 'granada').trim().toLowerCase();
   const startDate = [getBackfillRange(options.startupBackfillDays).startDate, TICKET_INCOME_START_DATE].sort().at(-1);

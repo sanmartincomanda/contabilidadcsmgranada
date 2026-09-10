@@ -1,7 +1,7 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useLocation, useNavigate } from 'react-router-dom';
-import { collection, deleteDoc, doc, getDoc, getDocs, query, runTransaction, serverTimestamp, setDoc, where, writeBatch } from 'firebase/firestore';
+import { collection, deleteDoc, doc, getDoc, getDocs, onSnapshot, query, runTransaction, serverTimestamp, setDoc, where, writeBatch } from 'firebase/firestore';
 import { db } from '../firebase';
 import { useAuth } from '../context/AuthContext';
 import {
@@ -52,6 +52,7 @@ const BILLING_TABS = [
 ];
 const BILLING_TAB_KEYS = new Set(BILLING_TABS.map((tab) => tab.key));
 const BILLING_READ_ONLY_TABS = BILLING_TABS.filter((tab) => tab.key === 'historial');
+const ACCOUNTING_REGISTER_TAB_KEYS = new Set(['membretadas', 'recibos']);
 
 function getBillingTabFromSearch(search = '') {
     const tabFromUrl = new URLSearchParams(search).get('tab');
@@ -1231,39 +1232,44 @@ function useFirestoreDateArchive(collectionName, dateField, selectedMonth, selec
     const [cache, setCache] = useState({});
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState(null);
+    const cacheRef = useRef(cache);
+    const activeCacheKey = `${collectionName}:${dateField}:${range.cacheKey}`;
+
+    useEffect(() => {
+        cacheRef.current = cache;
+    }, [cache]);
 
     useEffect(() => {
         if (!enabled || !collectionName || !dateField || !range.start || !range.endExclusive) return undefined;
-        const cacheKey = `${collectionName}:${dateField}:${range.cacheKey}`;
-        if (cache[cacheKey]) return undefined;
-
-        let mounted = true;
-        setLoading(true);
+        setLoading(!cacheRef.current[activeCacheKey]);
         setError(null);
 
-        getDocs(query(
+        const unsubscribe = onSnapshot(query(
             collection(db, collectionName),
             where(dateField, '>=', range.start),
             where(dateField, '<', range.endExclusive)
-        ))
-            .then((snapshot) => {
-                if (!mounted) return;
+        ),
+            (snapshot) => {
                 const records = snapshot.docs.map((recordDoc) => ({ id: recordDoc.id, ...recordDoc.data() }));
-                setCache((current) => ({ ...current, [cacheKey]: records }));
-            })
-            .catch((archiveError) => {
+                setCache((current) => ({ ...current, [activeCacheKey]: records }));
+                setLoading(false);
+            },
+            (archiveError) => {
                 console.error(`Error cargando archivo ${collectionName}:`, archiveError);
-                if (mounted) setError(archiveError);
-            })
-            .finally(() => {
-                if (mounted) setLoading(false);
+                setError(archiveError);
+                setLoading(false);
             });
 
-        return () => { mounted = false; };
-    }, [cache, collectionName, dateField, enabled, range.cacheKey, range.endExclusive, range.start]);
+        return unsubscribe;
+    }, [activeCacheKey, collectionName, dateField, enabled, range.endExclusive, range.start]);
 
-    const records = useMemo(() => Object.values(cache).flat(), [cache]);
+    const records = cache[activeCacheKey] || [];
     return { records, loading, error, range };
+}
+
+function getAccountingRegisterTabFromSearch(search = '') {
+    const tabFromUrl = new URLSearchParams(search).get('section');
+    return ACCOUNTING_REGISTER_TAB_KEYS.has(tabFromUrl) ? tabFromUrl : 'membretadas';
 }
 
 function useFirestoreDateRangeArchive(collectionName, dateField, startDate, endDate, enabled = true) {
@@ -4327,23 +4333,47 @@ function CashClosure({ data, branchContext }) {
         }
     };
 
-    const addQuickClosureInvoice = () => {
-        const query = String(quickInvoiceNumber || '').trim();
-        if (!query) return;
+    const addQuickClosureInvoice = async () => {
+        const invoiceNumberQuery = String(quickInvoiceNumber || '').trim();
+        if (!invoiceNumberQuery) return;
         if (!cashierName) {
             setMessage('Selecciona cajero antes de agregar facturas al cierre.');
             return;
         }
-        const normalizedQuery = normalizeText(query);
-        const invoice = stampedInvoices.find((item) => normalizeText(item.invoiceNumber || item.numeroFactura || '') === normalizedQuery);
+        const normalizedQuery = normalizeText(invoiceNumberQuery);
+        let invoice = stampedInvoices.find((item) => normalizeText(item.invoiceNumber || item.numeroFactura || '') === normalizedQuery);
         if (!invoice) {
-            setMessage(`La factura ${query} no esta disponible. Debe estar activa, pertenecer a ${getBranchById(selectedBranchId).shortName} y no estar vinculada a otro cierre.`);
+            try {
+                const persistedInvoices = await loadPersistedStampedInvoicesByNumber(invoiceNumberQuery);
+                invoice = persistedInvoices
+                    .map((item) => ({
+                        ...item,
+                        ...getBranchPayload(getRecordBranchId(item), 'invoice'),
+                        date: item.saleDate || item.date || '',
+                        invoiceNumber: item.numeroFactura || item.invoiceNumber || '',
+                        cashierName: getCashierName(item),
+                        cashierCode: getRecordCashierCode(item),
+                        retentionTotal: safeNumber(item.retentionTotal ?? (safeNumber(item.retentionIr2) + safeNumber(item.retentionMunicipal1))),
+                    }))
+                    .find((item) => (
+                        isRecordInBillingBranch(item, selectedBranchId)
+                        && isActiveStampedInvoice(item)
+                        && !isInvoiceExcludedFromCashClosureSelection(item)
+                    ));
+            } catch (error) {
+                console.error('No se pudo buscar la factura para el cierre:', error);
+                setMessage(`No se pudo buscar la factura ${invoiceNumberQuery}. Intenta nuevamente.`);
+                return;
+            }
+        }
+        if (!invoice) {
+            setMessage(`La factura ${invoiceNumberQuery} no esta disponible. Debe estar activa, pertenecer a ${getBranchById(selectedBranchId).shortName} y no estar vinculada a otro cierre.`);
             return;
         }
         addClosureInvoice(invoice, { manual: true });
         setQuickInvoiceNumber('');
         const invoiceDate = String(invoice.date || '').substring(0, 10);
-        setMessage(`Factura ${invoice.invoiceNumber || query}${invoiceDate && invoiceDate !== closureDate ? ` del ${invoiceDate}` : ''} agregada manualmente al cierre.`);
+        setMessage(`Factura ${invoice.invoiceNumber || invoiceNumberQuery}${invoiceDate && invoiceDate !== closureDate ? ` del ${invoiceDate}` : ''} agregada manualmente al cierre.`);
     };
 
     const updateClosureInvoice = (localId, key, value) => {
@@ -13276,8 +13306,7 @@ function BillingHistory({ data, canEdit = true, branchContext }) {
     );
 }
 
-function AccountingRegister({ data, branchContext }) {
-    const [activeRegisterTab, setActiveRegisterTab] = useState('membretadas');
+function AccountingRegister({ data, branchContext, activeRegisterTab = 'membretadas', onRegisterTabChange }) {
     const registerTabs = [
         { key: 'membretadas', label: 'Facturas membretadas' },
         { key: 'recibos', label: 'Recibo de Caja' },
@@ -13291,7 +13320,7 @@ function AccountingRegister({ data, branchContext }) {
                         <button
                             key={tab.key}
                             type="button"
-                            onClick={() => setActiveRegisterTab(tab.key)}
+                            onClick={() => onRegisterTabChange?.(tab.key)}
                             className={`rounded-2xl px-4 py-3 text-xs font-black uppercase tracking-[0.16em] transition ${activeRegisterTab === tab.key
                                 ? 'bg-[#e30613] text-white shadow-lg shadow-red-900/15'
                                 : 'border border-slate-200 bg-white text-slate-600 hover:border-[#e30613] hover:text-[#e30613]'}`}
@@ -14334,6 +14363,7 @@ export default function Billing({ data = {}, canEdit = true, branchContext }) {
             : BILLING_READ_ONLY_TABS
     ), [canEdit, canUseBankDeposits]);
     const [activeTab, setActiveTab] = useState(() => (canEdit ? getBillingTabFromSearch(location.search) : 'historial'));
+    const activeRegisterTab = getAccountingRegisterTabFromSearch(location.search);
 
     useEffect(() => {
         const requestedTab = getBillingTabFromSearch(location.search);
@@ -14353,6 +14383,14 @@ export default function Billing({ data = {}, canEdit = true, branchContext }) {
         setActiveTab(tabKey);
         navigate(`/facturacion?tab=${tabKey}`, { replace: false });
     }, [availableTabs, navigate]);
+
+    const handleRegisterTabChange = useCallback((section) => {
+        if (!ACCOUNTING_REGISTER_TAB_KEYS.has(section)) return;
+        const params = new URLSearchParams(location.search);
+        params.set('tab', 'registro');
+        params.set('section', section);
+        navigate(`/facturacion?${params.toString()}`, { replace: false });
+    }, [location.search, navigate]);
 
     return (
         <div className="space-y-5">
@@ -14404,7 +14442,7 @@ export default function Billing({ data = {}, canEdit = true, branchContext }) {
             )}
 
             {canEdit && activeTab === 'cierre' && <CashClosure data={data} branchContext={branchContext} />}
-            {canEdit && activeTab === 'registro' && <AccountingRegister data={data} branchContext={branchContext} />}
+            {canEdit && activeTab === 'registro' && <AccountingRegister data={data} branchContext={branchContext} activeRegisterTab={activeRegisterTab} onRegisterTabChange={handleRegisterTabChange} />}
             {activeTab === 'historial' && <BillingHistory data={data} canEdit={canEdit} branchContext={branchContext} />}
             {canUseBankDeposits && activeTab === 'depositos' && <BankDeposits data={data} branchContext={branchContext} />}
         </div>
