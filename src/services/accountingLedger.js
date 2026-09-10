@@ -200,6 +200,8 @@ const finalizeEntry = ({
             paymentType: record.paymentType || record.paymentMethod || '',
             accountingAccountCode: record.accountingAccountCode || '',
             accountingAccountName: record.accountingAccountName || '',
+            fixedQuota: record.fixedQuota === true,
+            ivaTreatment: record.ivaTreatment || '',
         },
         updatedAt: serverTimestamp(),
         createdAt: serverTimestamp(),

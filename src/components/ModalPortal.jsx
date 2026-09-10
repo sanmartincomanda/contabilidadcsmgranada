@@ -40,7 +40,8 @@ export default function ModalPortal({ children, onClose }) {
             if (!modal.hasAttribute('role')) modal.setAttribute('role', 'dialog');
             if (!modal.hasAttribute('aria-modal')) modal.setAttribute('aria-modal', 'true');
             if (!modal.hasAttribute('tabindex')) modal.setAttribute('tabindex', '-1');
-            modal.focus({ preventScroll: true });
+            const preferredFocus = modal.querySelector('[autofocus], [data-autofocus]');
+            (preferredFocus || modal).focus({ preventScroll: true });
         }, 0);
 
         const handleKeyDown = (event) => {

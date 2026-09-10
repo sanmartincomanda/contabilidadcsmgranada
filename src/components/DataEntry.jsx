@@ -14,6 +14,12 @@ import {
     resolveIncomeEntries,
 } from '../services/incomeAggregation';
 import { deleteExpenseTransaction, deletePurchaseTransaction, updateExpenseTransaction, updatePurchaseTransaction } from '../services/linkedTransactions';
+import {
+    buildFixedQuotaPurchaseAdjustment,
+    FIXED_QUOTA_CONFIRMATION_CODE,
+    getPurchaseFinancials,
+    isFixedQuotaPurchase,
+} from '../services/fixedQuotaPurchases';
 import ModalPortal from './ModalPortal';
 import {
     getProviderCode,
@@ -457,6 +463,102 @@ const getRecordTitle = (item, fields) => {
 
 const isPdfSupport = (item) => isPdfSupportRecord(item);
 
+const FixedQuotaPurchaseModal = ({ item, onClose, onApplied }) => {
+    const [confirmationCode, setConfirmationCode] = useState('');
+    const [error, setError] = useState('');
+    const [saving, setSaving] = useState(false);
+    const current = getPurchaseFinancials(item);
+    const adjusted = buildFixedQuotaPurchaseAdjustment(item, Timestamp.now());
+
+    const handleSubmit = async (event) => {
+        event.preventDefault();
+        if (confirmationCode.trim() !== FIXED_QUOTA_CONFIRMATION_CODE) {
+            setError('Codigo incorrecto. No se realizo ningun cambio.');
+            return;
+        }
+
+        setSaving(true);
+        setError('');
+        try {
+            const result = await updatePurchaseTransaction(item.id, adjusted, { previousData: item });
+            if (!result?.updated) throw new Error('No se encontro la compra que deseas ajustar.');
+            onApplied(item.id, adjusted);
+            onClose();
+        } catch (updateError) {
+            console.error('Error al aplicar cuota fija:', updateError);
+            setError(updateError.message || 'No se pudo quitar el IVA de esta compra.');
+        } finally {
+            setSaving(false);
+        }
+    };
+
+    return (
+        <ModalPortal onClose={saving ? undefined : onClose}>
+            <div className="app-modal-root fixed inset-0 z-[80] flex items-center justify-center p-3 sm:p-6">
+                <button type="button" aria-label="Cerrar ajuste de cuota fija" className="absolute inset-0 bg-slate-950/70 backdrop-blur-sm" onClick={saving ? undefined : onClose} />
+                <form onSubmit={handleSubmit} className="app-modal-panel relative w-full max-w-lg overflow-hidden rounded-[2rem] border border-white/20 bg-white shadow-2xl">
+                    <div className="bg-slate-950 px-5 py-5 text-white">
+                        <div className="text-[10px] font-black uppercase tracking-[0.28em] text-amber-300">Ajuste protegido</div>
+                        <h2 className="mt-1 text-xl font-black">Compra de cuota fija</h2>
+                        <p className="mt-1 text-sm font-semibold text-slate-300">
+                            Se quitara el IVA calculado por SICAR solamente en el sistema contable.
+                        </p>
+                    </div>
+
+                    <div className="space-y-4 p-5">
+                        <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                            <div className="text-xs font-black uppercase tracking-[0.18em] text-slate-500">
+                                {item.supplier || item.proveedor || 'Proveedor'} / Factura {item.invoiceNumber || item.factura || item.numero || '-'}
+                            </div>
+                            <div className="mt-3 grid grid-cols-3 gap-2 text-center">
+                                <div className="rounded-xl bg-white p-3">
+                                    <div className="text-[9px] font-black uppercase tracking-wider text-slate-400">Total actual</div>
+                                    <div className="mt-1 font-mono text-sm font-black text-slate-800">{fmt(current.total)}</div>
+                                </div>
+                                <div className="rounded-xl bg-amber-50 p-3">
+                                    <div className="text-[9px] font-black uppercase tracking-wider text-amber-700">IVA a quitar</div>
+                                    <div className="mt-1 font-mono text-sm font-black text-amber-800">{fmt(current.iva)}</div>
+                                </div>
+                                <div className="rounded-xl bg-emerald-50 p-3">
+                                    <div className="text-[9px] font-black uppercase tracking-wider text-emerald-700">Nuevo total</div>
+                                    <div className="mt-1 font-mono text-sm font-black text-emerald-800">{fmt(adjusted.total)}</div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <label className="block">
+                            <span className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-500">Codigo de confirmacion</span>
+                            <input
+                                autoFocus
+                                type="password"
+                                inputMode="numeric"
+                                maxLength={4}
+                                value={confirmationCode}
+                                onChange={(event) => {
+                                    setConfirmationCode(event.target.value.replace(/\D/g, '').slice(0, 4));
+                                    setError('');
+                                }}
+                                className="mt-2 w-full rounded-2xl border border-slate-300 px-4 py-3 text-center font-mono text-xl font-black tracking-[0.5em] outline-none transition focus:border-amber-500 focus:ring-4 focus:ring-amber-100"
+                                placeholder="----"
+                                disabled={saving}
+                            />
+                        </label>
+
+                        {error && <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-bold text-red-700">{error}</div>}
+
+                        <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+                            <Button type="button" variant="ghost" onClick={onClose} disabled={saving}>Cancelar</Button>
+                            <Button type="submit" variant="warning" disabled={saving || confirmationCode.length !== 4}>
+                                {saving ? 'Aplicando...' : 'Confirmar cuota fija'}
+                            </Button>
+                        </div>
+                    </div>
+                </form>
+            </div>
+        </ModalPortal>
+    );
+};
+
 const RecordDetailModal = ({ item, collectionName, fields, onClose, onEdit }) => {
     if (!item) return null;
 
@@ -473,6 +575,7 @@ const RecordDetailModal = ({ item, collectionName, fields, onClose, onEdit }) =>
         ['ID', item.id],
         ['Origen', item.sourceLabel || item.source || item.sourceSystem],
         ['Referencia SICAR', item.sourceRecordId || item.sourceRawId || item.dailySaleCode],
+        ['Tratamiento IVA', isFixedQuotaPurchase(item) ? 'CUOTA FIJA - IVA NO ACREDITABLE' : ''],
         ['Rutas soporte', supportFiles.map((file) => `${file.label}: ${file.path}`).join(' | ') || getSupportPath(item)],
     ].filter(([, value]) => value);
 
@@ -864,6 +967,7 @@ const EditableRow = ({ item, collectionName, fields, providers = [], onUpdate, o
     const [isEditing, setIsEditing] = useState(false);
     const [showViewModal, setShowViewModal] = useState(false);
     const [showEditModal, setShowEditModal] = useState(false);
+    const [showFixedQuotaModal, setShowFixedQuotaModal] = useState(false);
     const [editData, setEditData] = useState(item);
     const [loading, setLoading] = useState(false);
 
@@ -1067,13 +1171,25 @@ const EditableRow = ({ item, collectionName, fields, providers = [], onUpdate, o
                     </div>
                 ) : (
                     <>
-                        <div className='flex gap-1'>
+                        <div className='flex flex-wrap gap-1'>
                             <Button onClick={() => setShowViewModal(true)} disabled={!item.id} variant="ghost" size="sm" className="flex items-center gap-1">
                                 <Icon path={Icons.eye} className="w-3 h-3" /> Ver
                             </Button>
                             <Button onClick={() => setShowEditModal(true)} disabled={!item.id} variant="warning" size="sm" className="flex items-center gap-1">
                                 <Icon path={Icons.edit} className="w-3 h-3" /> Editar
                             </Button>
+                            {collectionName === 'compras' && (
+                                <Button
+                                    onClick={() => setShowFixedQuotaModal(true)}
+                                    disabled={!item.id || loading || isFixedQuotaPurchase(item) || getPurchaseFinancials(item).iva <= 0}
+                                    variant="warning"
+                                    size="sm"
+                                    className="flex items-center gap-1"
+                                    title={isFixedQuotaPurchase(item) ? 'Esta compra ya fue ajustada como cuota fija.' : 'Quitar el IVA calculado por SICAR en el registro contable.'}
+                                >
+                                    {isFixedQuotaPurchase(item) ? 'Cuota fija aplicada' : 'Cuota fija'}
+                                </Button>
+                            )}
                             <Button onClick={handleDelete} disabled={loading || !item.id} variant="danger" size="sm" className="flex items-center gap-1">
                                 <Icon path={Icons.trash} className="w-3 h-3" /> Eliminar
                             </Button>
@@ -1100,6 +1216,13 @@ const EditableRow = ({ item, collectionName, fields, providers = [], onUpdate, o
                                 }}
                             />
                         )}
+                        {showFixedQuotaModal && (
+                            <FixedQuotaPurchaseModal
+                                item={item}
+                                onClose={() => setShowFixedQuotaModal(false)}
+                                onApplied={onUpdate}
+                            />
+                        )}
                     </>
                 )}
             </td>
@@ -1110,6 +1233,7 @@ const EditableRow = ({ item, collectionName, fields, providers = [], onUpdate, o
 const EditableMobileCard = ({ item, collectionName, fields, providers = [], onUpdate, onDelete }) => {
     const [showEditModal, setShowEditModal] = useState(false);
     const [showViewModal, setShowViewModal] = useState(false);
+    const [showFixedQuotaModal, setShowFixedQuotaModal] = useState(false);
     const [loading, setLoading] = useState(false);
 
     const fieldEntries = Object.entries(fields).slice(0, 5);
@@ -1200,13 +1324,24 @@ const EditableMobileCard = ({ item, collectionName, fields, providers = [], onUp
                 ))}
             </div>
 
-            <div className="mt-4 grid grid-cols-3 gap-2">
+            <div className="mt-4 grid grid-cols-2 gap-2">
                 <Button onClick={() => setShowViewModal(true)} disabled={!item.id} variant="ghost" size="sm" className="w-full">
                     Ver
                 </Button>
                 <Button onClick={() => setShowEditModal(true)} disabled={!item.id} variant="warning" size="sm" className="w-full">
                     Editar
                 </Button>
+                {collectionName === 'compras' && (
+                    <Button
+                        onClick={() => setShowFixedQuotaModal(true)}
+                        disabled={!item.id || loading || isFixedQuotaPurchase(item) || getPurchaseFinancials(item).iva <= 0}
+                        variant="warning"
+                        size="sm"
+                        className="w-full"
+                    >
+                        {isFixedQuotaPurchase(item) ? 'Cuota fija aplicada' : 'Cuota fija'}
+                    </Button>
+                )}
                 <Button onClick={handleDelete} disabled={loading || !item.id} variant="danger" size="sm" className="w-full">
                     Eliminar
                 </Button>
@@ -1232,6 +1367,13 @@ const EditableMobileCard = ({ item, collectionName, fields, providers = [], onUp
                         setShowViewModal(false);
                         setShowEditModal(true);
                     }}
+                />
+            )}
+            {showFixedQuotaModal && (
+                <FixedQuotaPurchaseModal
+                    item={item}
+                    onClose={() => setShowFixedQuotaModal(false)}
+                    onApplied={onUpdate}
                 />
             )}
         </div>
