@@ -2004,6 +2004,7 @@ const createInvoiceDraft = (invoice = {}, fallbackDate = todayString()) => {
         customerName: invoice.customerName || invoice.cliente || '',
         cashierName: getCashierName(invoice),
         cashierCode: getRecordCashierCode(invoice),
+        cashierAssignmentOverride: Boolean(invoice.cashierAssignmentOverride),
         paymentMethod: getInvoicePaymentMethodLabel({ ...invoice, paymentBreakdown }),
         paymentBreakdown,
         paymentNetTotal: safeNumber(invoice.paymentNetTotal || getPaymentBreakdownTotal(paymentBreakdown) || getInvoicePaymentTargetAmount(invoice)),
@@ -3968,6 +3969,12 @@ function CashClosure({ data, branchContext }) {
         stampedInvoices.filter((invoice) => String(invoice.date || '').substring(0, 10) === closureDate)
     ), [stampedInvoices, closureDate]);
 
+    const dayStampedInvoicesById = useMemo(() => new Map(
+        dayStampedInvoices
+            .map((invoice) => [invoice.id || invoice.docId, invoice])
+            .filter(([invoiceId]) => Boolean(invoiceId))
+    ), [dayStampedInvoices]);
+
     const activeWaitingClosureInvoiceIds = useMemo(() => {
         const activeWaitingClosure = waitingClosures.find((closure) => closure.id === activeClosureDocId);
         return new Set(
@@ -3980,6 +3987,8 @@ function CashClosure({ data, branchContext }) {
     const cashierStampedInvoices = useMemo(() => (
         cashierName
             ? dayStampedInvoices.filter((invoice) => {
+                // A manual cashier correction must override the immutable SICAR cashbox.
+                if (invoice.cashierAssignmentOverride) return isSameCashier(invoice, cashierName);
                 if (activeWaitingClosureInvoiceIds.has(invoice.id || invoice.docId)) return true;
 
                 const sourceCashboxId = invoice.sourceSicarCashboxId ?? invoice.sicarCashboxId;
@@ -4088,11 +4097,11 @@ function CashClosure({ data, branchContext }) {
             const requiredDrafts = cashierStampedInvoices.map((invoice) => (
                 existingByDocId.get(invoice.id || invoice.docId) || createInvoiceDraft(invoice, closureDate)
             ));
-            const manuallySelectedExistingDrafts = prev.filter((invoice) => (
-                invoice.docId
-                && invoice.manualClosureSelection
-                && !requiredIds.has(invoice.docId)
-            ));
+            const manuallySelectedExistingDrafts = prev.filter((invoice) => {
+                if (!invoice.docId || !invoice.manualClosureSelection || requiredIds.has(invoice.docId)) return false;
+                const persistedInvoice = dayStampedInvoicesById.get(invoice.docId);
+                return !persistedInvoice?.cashierAssignmentOverride || isSameCashier(persistedInvoice, cashierName);
+            });
             const manualDrafts = prev.filter((invoice) => (
                 !invoice.docId
                 && hasInvoiceDraftContent(invoice)
@@ -4100,7 +4109,7 @@ function CashClosure({ data, branchContext }) {
             ));
             return [...requiredDrafts, ...manuallySelectedExistingDrafts, ...manualDrafts];
         });
-    }, [cashierName, cashierStampedInvoices, closureDate]);
+    }, [cashierName, cashierStampedInvoices, closureDate, dayStampedInvoicesById]);
 
     const selectedInvoiceIds = useMemo(() => (
         closureInvoices.map((invoice) => invoice.docId).filter(Boolean)
@@ -5672,6 +5681,7 @@ const createStampedInvoiceForm = () => ({
     customerAddress: '',
     customerRfc: '',
     cashierName: '',
+    cashierAssignmentOverride: false,
     subtotal: '',
     iva: '',
     total: '',
@@ -5714,6 +5724,7 @@ const createStampedInvoiceEditForm = (invoice = {}) => ({
     customerRfc: invoice.customerRfc || invoice.rfc || '',
     cashierName: getCashierName(invoice),
     cashierCode: getRecordCashierCode(invoice),
+    cashierAssignmentOverride: Boolean(invoice.cashierAssignmentOverride),
     subtotal: String(safeNumber(invoice.subtotal)),
     iva: String(safeNumber(invoice.iva)),
     total: String(safeNumber(invoice.total) || safeNumber(invoice.subtotal) + safeNumber(invoice.iva)),
@@ -8488,6 +8499,7 @@ function StampedInvoices({ data, branchContext }) {
                     customerRfc: String(invoice.customerRfc || '').trim(),
                     cashierName,
                     cashierCode,
+                    cashierAssignmentOverride: Boolean(invoice.cashierAssignmentOverride),
                     paymentMethod: String(storedPaymentMethod || '').trim(),
                     metodoPago: String(storedPaymentMethod || '').trim(),
                     paymentDisplayMethod: String(paymentMethod || '').trim(),
@@ -9855,6 +9867,9 @@ function StampedInvoiceHistory({ data, canEdit = true, branchContext }) {
                 const existingSavedInvoice = savedInvoices.find((item) => getInvoiceDocId(item) === docId) || {};
                 const cashierName = String(invoice.cashierName || '').trim();
                 const cashierCode = getCashierCode(cashierName);
+                const cashierChanged = Boolean(getCashierName(existingSavedInvoice))
+                    && !isSameCashier(existingSavedInvoice, cashierName);
+                const cashierAssignmentOverride = Boolean(invoice.cashierAssignmentOverride || cashierChanged);
                 const paymentBreakdown = validatePaymentBreakdownForInvoice(invoice);
                 const paymentMethod = getPaymentMethodFromBreakdown(paymentBreakdown, invoice.paymentMethod);
                 const storedPaymentMethod = getReceivableCompatiblePaymentMethod(paymentBreakdown, paymentMethod);
@@ -9897,6 +9912,8 @@ function StampedInvoiceHistory({ data, canEdit = true, branchContext }) {
                     customerRfc: String(invoice.customerRfc || '').trim(),
                     cashierName,
                     cashierCode,
+                    cashierAssignmentOverride,
+                    ...(cashierChanged ? { cashierAssignmentOverrideAt: serverTimestamp() } : {}),
                     paymentMethod: String(storedPaymentMethod || '').trim(),
                     metodoPago: String(storedPaymentMethod || '').trim(),
                     paymentDisplayMethod: String(paymentMethod || '').trim(),
