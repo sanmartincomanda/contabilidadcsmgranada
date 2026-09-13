@@ -26,6 +26,10 @@ import {
     normalizeClientRecord,
 } from '../services/clientCatalog';
 import { isExcludedSicarTicket } from '../services/salesCrmAnalytics';
+import {
+    getCanonicalInvoiceNumberDrafts,
+    getInvoiceNumberTransitions,
+} from '../services/invoiceNumberLifecycle';
 import SalesCRM from './SalesCRM';
 import ModalPortal from './ModalPortal';
 
@@ -450,6 +454,20 @@ const buildBranchScopedFiscalDocId = (prefix = 'doc', branchPayload = {}, number
     `${prefix}_${branchPayload.branchId || DEFAULT_BRANCH_ID}_${branchPayload.documentSeries || branchPayload.invoiceSeries || branchPayload.receiptSeries || 'A'}_${slugify(number)}_${String(date || todayString()).replace(/-/g, '')}`
 );
 
+const buildNewStampedInvoiceDocId = (invoice = {}, branchPayload = {}) => {
+    const baseId = buildBranchScopedFiscalDocId(
+        'membretada',
+        branchPayload,
+        invoice.invoiceNumber || invoice.numeroFactura,
+        invoice.date || invoice.saleDate || todayString()
+    );
+    const identitySeed = invoice.sourceSicarDocumentId
+        || invoice.sourceSicarInvoiceId
+        || invoice.localId
+        || createLineId('invoice_record');
+    return `${baseId}_${slugify(identitySeed)}`;
+};
+
 const buildInvoiceDocumentFields = (invoice = {}, branchPayload = {}) => ({
     ...branchPayload,
     invoiceSeries: branchPayload.invoiceSeries || branchPayload.documentSeries || 'A',
@@ -556,23 +574,8 @@ const ensureUniqueStampedInvoiceNumbers = async (drafts = [], existingInvoices =
     if (!drafts.length) return;
     assertUniqueStampedInvoiceNumbers(drafts, existingInvoices);
 
-    const reservationDrafts = drafts.flatMap((draft) => {
-        const currentNumber = String(draft.invoiceNumber || draft.numeroFactura || '').trim();
-        const originalNumber = String(draft.originalInvoiceNumber || '').trim();
-        if (!originalNumber || normalizeInvoiceMatchKey(originalNumber) === normalizeInvoiceMatchKey(currentNumber)) {
-            return [draft];
-        }
-        return [
-            draft,
-            {
-                ...draft,
-                invoiceNumber: originalNumber,
-                numeroFactura: originalNumber,
-                wasExistingDoc: true,
-            },
-        ];
-    });
-    assertUniqueStampedInvoiceNumbers(reservationDrafts, existingInvoices);
+    // Historical numbers are audit data. Only the current physical folio is reserved.
+    const reservationDrafts = getCanonicalInvoiceNumberDrafts(drafts);
 
     const persistedGroups = await Promise.all(reservationDrafts.map((draft) => (
         loadPersistedStampedInvoicesByNumber(draft.invoiceNumber || draft.numeroFactura)
@@ -645,6 +648,56 @@ const ensureUniqueStampedInvoiceNumbers = async (drafts = [], existingInvoices =
                 updatedAt: serverTimestamp(),
                 createdAt: serverTimestamp(),
             }, { merge: true });
+        });
+    });
+};
+
+const releaseSupersededStampedInvoiceNumbers = async (drafts = []) => {
+    const candidates = getInvoiceNumberTransitions(drafts).map((transition) => {
+        const previousMatchKey = getFiscalDocumentMatchKey({
+            ...transition.draft,
+            invoiceNumber: transition.previousInvoiceNumber,
+            numeroFactura: transition.previousInvoiceNumber,
+        }, 'invoice');
+        const currentMatchKey = getFiscalDocumentMatchKey({
+            ...transition.draft,
+            invoiceNumber: transition.invoiceNumber,
+            numeroFactura: transition.invoiceNumber,
+        }, 'invoice');
+
+        return {
+            ...transition,
+            previousMatchKey,
+            currentMatchKey,
+            registryRef: previousMatchKey
+                ? doc(db, STAMPED_INVOICE_NUMBER_REGISTRY, previousMatchKey.toLowerCase())
+                : null,
+            invoiceRef: doc(db, 'facturas_membretadas_ventas', transition.ownerDocumentId),
+        };
+    }).filter((candidate) => candidate.registryRef && candidate.currentMatchKey);
+
+    if (!candidates.length) return;
+
+    await runTransaction(db, async (transaction) => {
+        const snapshots = await Promise.all(candidates.flatMap((candidate) => ([
+            transaction.get(candidate.registryRef),
+            transaction.get(candidate.invoiceRef),
+        ])));
+
+        candidates.forEach((candidate, index) => {
+            const registrySnapshot = snapshots[index * 2];
+            const invoiceSnapshot = snapshots[(index * 2) + 1];
+            if (!registrySnapshot.exists() || !invoiceSnapshot.exists()) return;
+
+            const registryOwnerId = registrySnapshot.data()?.ownerDocumentId || '';
+            const persistedInvoice = { id: invoiceSnapshot.id, ...invoiceSnapshot.data() };
+            const persistedMatchKey = getFiscalDocumentMatchKey(persistedInvoice, 'invoice');
+            if (
+                normalizeInvoiceMatchKey(registryOwnerId) === normalizeInvoiceMatchKey(candidate.ownerDocumentId)
+                && persistedMatchKey === candidate.currentMatchKey
+            ) {
+                transaction.delete(candidate.registryRef);
+            }
         });
     });
 };
@@ -2000,6 +2053,7 @@ const createInvoiceDraft = (invoice = {}, fallbackDate = todayString()) => {
         wasExistingDoc,
         date,
         invoiceNumber,
+        previousInvoiceNumber: invoice.previousInvoiceNumber || invoiceNumber,
         originalInvoiceNumber: invoice.originalInvoiceNumber || invoiceNumber,
         customerName: invoice.customerName || invoice.cliente || '',
         cashierName: getCashierName(invoice),
@@ -4629,7 +4683,7 @@ function CashClosure({ data, branchContext }) {
                 const invoiceDate = invoice.date || closureDate;
                 const invoiceCashierName = String(invoice.cashierName || safeCashierName).trim();
                 const invoiceCashierCode = getCashierCode(invoiceCashierName);
-                const invoiceDocId = invoice.docId || buildBranchScopedFiscalDocId('membretada', invoiceBranchPayload, invoice.invoiceNumber, invoiceDate);
+                const invoiceDocId = invoice.docId || buildNewStampedInvoiceDocId({ ...invoice, date: invoiceDate }, invoiceBranchPayload);
                 const fiscal = buildFiscalPayload({
                     subtotal: safeNumber(invoice.subtotal),
                     iva: safeNumber(invoice.iva),
@@ -4736,6 +4790,7 @@ function CashClosure({ data, branchContext }) {
                     retentionTotal: safeNumber(invoice.retentionTotal),
                 });
             }
+            await releaseSupersededStampedInvoiceNumbers(preparedInvoiceDrafts);
             }
 
             const preparedCashReceiptDrafts = validCashReceiptDrafts.map((receipt) => createCashReceiptDraft(receipt, closureDate));
@@ -5675,6 +5730,7 @@ const ManualInvoiceItemsEditor = ({ items = [], onAdd, onChange, onRemove }) => 
 );
 
 const createStampedInvoiceForm = () => ({
+    localId: createLineId('invoice'),
     date: todayString(),
     invoiceNumber: '',
     customerName: '',
@@ -5714,10 +5770,12 @@ const createStampedInvoiceForm = () => ({
 });
 
 const createStampedInvoiceEditForm = (invoice = {}) => ({
+    localId: invoice.localId || createLineId('invoice_edit'),
     id: invoice.id || invoice.docId || '',
     docId: invoice.docId || invoice.id || '',
     date: invoice.date || invoice.saleDate || todayString(),
     invoiceNumber: invoice.invoiceNumber || invoice.numeroFactura || '',
+    previousInvoiceNumber: invoice.invoiceNumber || invoice.numeroFactura || '',
     originalInvoiceNumber: invoice.originalInvoiceNumber || invoice.invoiceNumber || invoice.numeroFactura || '',
     customerName: invoice.customerName || invoice.cliente || '',
     customerAddress: invoice.customerAddress || invoice.address || '',
@@ -8435,7 +8493,7 @@ function StampedInvoices({ data, branchContext }) {
 
             const invoiceMeta = invoicesToSave.map((invoice) => ({
                 invoice,
-                docId: buildBranchScopedFiscalDocId('membretada', invoiceBranchPayload, invoice.invoiceNumber, invoice.date),
+                docId: buildNewStampedInvoiceDocId(invoice, invoiceBranchPayload),
             }));
 
             await ensureUniqueStampedInvoiceNumbers(
@@ -9842,7 +9900,7 @@ function StampedInvoiceHistory({ data, canEdit = true, branchContext }) {
 
             const invoiceMeta = invoicesToSave.map((invoice, index) => ({
                 invoice,
-                docId: index === 0 ? originalDocId : buildBranchScopedFiscalDocId('membretada', invoiceBranchPayload, invoice.invoiceNumber, invoice.date || todayString()),
+                docId: index === 0 ? originalDocId : buildNewStampedInvoiceDocId(invoice, invoiceBranchPayload),
             }));
             const docIdsBeingSaved = new Set(invoiceMeta.map(({ docId }) => normalizeInvoiceMatchKey(docId)));
 
@@ -10035,6 +10093,11 @@ function StampedInvoiceHistory({ data, canEdit = true, branchContext }) {
             }
 
             await batch.commit();
+            await releaseSupersededStampedInvoiceNumbers(invoiceMeta.map(({ invoice, docId }) => ({
+                ...invoice,
+                id: docId,
+                docId,
+            })));
             setMessage(invoiceMeta.length > 1 ? 'Factura actualizada y dividida correctamente desde historial.' : 'Factura actualizada correctamente desde historial.');
             closeInvoiceEdit();
         } catch (error) {

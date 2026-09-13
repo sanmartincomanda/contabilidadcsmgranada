@@ -15,6 +15,7 @@
     "sync-daily-sales": "node scripts/syncDailySicarSales.js",
     "watch-ticket-sales": "node scripts/watchSicarTicketSales.js",
     "backfill-ticket-history": "node scripts/backfillSicarTicketSalesHistory.js",
+    "audit-invoice-integrity": "node scripts/auditStampedInvoiceIntegrity.js",
     "sync-product-catalog": "node scripts/syncSicarProductCatalog.js",
     "sync-billing": "node scripts/syncSicarBilling.js",
     "sync-pedido-transfer": "node scripts/syncPedidoTransferToAccounting.js",
