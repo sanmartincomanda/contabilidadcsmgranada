@@ -30,6 +30,7 @@ import {
     getCanonicalInvoiceNumberDrafts,
     getInvoiceNumberTransitions,
 } from '../services/invoiceNumberLifecycle';
+import { mergeClosureInvoiceDraftWithPersisted } from '../services/cashClosureInvoiceSync';
 import SalesCRM from './SalesCRM';
 import ModalPortal from './ModalPortal';
 
@@ -4149,7 +4150,13 @@ function CashClosure({ data, branchContext }) {
                     .map((invoice) => [invoice.docId, invoice])
             );
             const requiredDrafts = cashierStampedInvoices.map((invoice) => (
-                existingByDocId.get(invoice.id || invoice.docId) || createInvoiceDraft(invoice, closureDate)
+                createInvoiceDraft(
+                    mergeClosureInvoiceDraftWithPersisted(
+                        existingByDocId.get(invoice.id || invoice.docId) || {},
+                        invoice
+                    ),
+                    closureDate
+                )
             ));
             const manuallySelectedExistingDrafts = prev.filter((invoice) => {
                 if (!invoice.docId || !invoice.manualClosureSelection || requiredIds.has(invoice.docId)) return false;
@@ -4316,7 +4323,20 @@ function CashClosure({ data, branchContext }) {
         setTransfers({ bac: [], bac2: [], banpro: [], lafise: [], bacUsd: [], lafiseUsd: [], ...(closure.transferDetails || {}) });
         setPosDetails(closure.posDetails || { bac: [], banpro: [], lafise: [] });
         setHouseDiscountDetails(normalizeHouseDiscountDetails(closure.houseDiscountDetails || closure.discountDetails));
-        const loadedInvoices = (closure.stampedInvoiceDrafts || closure.stampedInvoices || []).map((invoice) => createInvoiceDraft(invoice, closure.date || todayString()));
+        const latestInvoicesById = new Map(
+            stampedInvoices
+                .map((invoice) => [invoice.id || invoice.docId, invoice])
+                .filter(([invoiceId]) => Boolean(invoiceId))
+        );
+        const loadedInvoices = (closure.stampedInvoiceDrafts || closure.stampedInvoices || []).map((invoice) => (
+            createInvoiceDraft(
+                mergeClosureInvoiceDraftWithPersisted(
+                    invoice,
+                    latestInvoicesById.get(invoice.id || invoice.docId)
+                ),
+                closure.date || todayString()
+            )
+        ));
         setClosureInvoices(loadedInvoices);
         const latestReceiptById = new Map(cashReceipts.map((receipt) => [receipt.docId || receipt.id, receipt]));
         const loadedReceipts = (closure.cashReceiptDrafts || closure.cashReceipts || []).map((receipt) => {
