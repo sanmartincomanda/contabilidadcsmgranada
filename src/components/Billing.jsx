@@ -5088,7 +5088,7 @@ function CashClosure({ data, branchContext }) {
                     </p>
                     <button
                         type="button"
-                        onClick={printCashClosureTicket}
+                        onClick={() => printCashClosureTicket(lastSavedClosure?.id)}
                         disabled={!lastSavedClosure}
                         className="mt-6 w-full rounded-2xl border border-slate-200 bg-white px-5 py-4 text-sm font-black uppercase tracking-[0.2em] text-slate-800 transition hover:-translate-y-0.5 hover:border-emerald-300 hover:bg-emerald-50 disabled:cursor-not-allowed disabled:opacity-50"
                     >
@@ -11571,10 +11571,19 @@ const buildDailyCashClosureTicketData = (closures = [], date = '') => {
     };
 };
 
-const printCashClosureTicket = () => {
+const printCashClosureTicket = (closureId) => {
+    const printHosts = Array.from(document.querySelectorAll('.cash-closure-ticket-print-host'));
+    const targetId = String(closureId || '');
+    const printHost = printHosts.find((host) => host.dataset.closureId === targetId)
+        || (printHosts.length === 1 ? printHosts[0] : null);
+    if (!printHost || document.body.classList.contains('print-cash-closure-ticket')) return;
+
+    printHosts.forEach((host) => host.classList.remove('is-printing'));
+    printHost.classList.add('is-printing');
     document.body.classList.add('print-cash-closure-ticket');
     const cleanup = () => {
         document.body.classList.remove('print-cash-closure-ticket');
+        printHost.classList.remove('is-printing');
         window.removeEventListener('afterprint', cleanup);
     };
     window.addEventListener('afterprint', cleanup);
@@ -11585,12 +11594,13 @@ const printCashClosureTicket = () => {
 };
 
 const CashClosureTicketPrint = ({ closure }) => {
-    if (!closure) return null;
+    if (!closure || typeof document === 'undefined') return null;
     const ticket = buildCashClosureTicketData(closure);
     const sections = buildCashClosureTicketSections(ticket);
+    const closureId = String(closure.id || ticket.code || '');
 
-    return (
-        <>
+    return createPortal(
+        <div className="cash-closure-ticket-print-host" data-closure-id={closureId}>
             <div className="cash-closure-ticket-print-area">
                 <div className="cash-closure-ticket">
                     <div className="ticket-title">Cierre de Caja {ticket.code}</div>
@@ -11660,20 +11670,34 @@ const CashClosureTicketPrint = ({ closure }) => {
                 </div>
             </div>
             <style>{`
-                .cash-closure-ticket-print-area { display: none; }
+                .cash-closure-ticket-print-host { display: none; }
                 @media print {
-                    @page { size: 80mm 220mm; margin: 3mm; }
-                    body.print-cash-closure-ticket * { visibility: hidden !important; }
-                    body.print-cash-closure-ticket .cash-closure-ticket-print-area,
-                    body.print-cash-closure-ticket .cash-closure-ticket-print-area * { visibility: visible !important; }
+                    @page { size: 80mm auto; margin: 3mm; }
+                    body.print-cash-closure-ticket {
+                        margin: 0 !important;
+                        min-width: 0 !important;
+                        width: 80mm !important;
+                        background: #fff !important;
+                    }
+                    body.print-cash-closure-ticket > *:not(.cash-closure-ticket-print-host) {
+                        display: none !important;
+                    }
+                    body.print-cash-closure-ticket > .cash-closure-ticket-print-host {
+                        display: none !important;
+                    }
+                    body.print-cash-closure-ticket > .cash-closure-ticket-print-host.is-printing {
+                        display: block !important;
+                        position: static !important;
+                        width: 74mm !important;
+                    }
                     body.print-cash-closure-ticket .cash-closure-ticket-print-area {
                         display: block !important;
-                        position: fixed;
-                        inset: 0 auto auto 0;
+                        position: static !important;
                         width: 74mm;
                         background: #fff;
                         color: #000;
                         font-family: "Arial", sans-serif;
+                        overflow: visible !important;
                     }
                     body.print-cash-closure-ticket .cash-closure-ticket {
                         width: 74mm;
@@ -11682,6 +11706,7 @@ const CashClosureTicketPrint = ({ closure }) => {
                         font-size: 12px;
                         font-weight: 400;
                         line-height: 1.36;
+                        overflow: visible !important;
                     }
                     body.print-cash-closure-ticket .ticket-title {
                         border-bottom: 1px dashed #000;
@@ -11707,9 +11732,11 @@ const CashClosureTicketPrint = ({ closure }) => {
                     }
                     body.print-cash-closure-ticket .ticket-row {
                         align-items: flex-start;
+                        break-inside: avoid;
                         display: flex;
                         gap: 6px;
                         justify-content: space-between;
+                        page-break-inside: avoid;
                         padding: 1px 0;
                     }
                     body.print-cash-closure-ticket .ticket-total-row {
@@ -11743,9 +11770,11 @@ const CashClosureTicketPrint = ({ closure }) => {
                         white-space: nowrap;
                     }
                     body.print-cash-closure-ticket .ticket-subtitle {
+                        break-after: avoid;
                         font-size: 12px;
                         font-weight: 400;
                         margin: 5px 0 3px;
+                        page-break-after: avoid;
                         text-align: center;
                         text-transform: uppercase;
                     }
@@ -11757,7 +11786,8 @@ const CashClosureTicketPrint = ({ closure }) => {
                     }
                 }
             `}</style>
-        </>
+        </div>,
+        document.body,
     );
 };
 
@@ -12794,7 +12824,7 @@ function CashClosureHistory({ data, canEdit = true, branchContext }) {
     const reprintClosureTicket = (closure) => {
         if (!closure?.id) return;
         setTicketClosure(closure);
-        window.setTimeout(printCashClosureTicket, 80);
+        window.setTimeout(() => printCashClosureTicket(closure.id), 80);
     };
 
     const editAccountingSummary = useMemo(() => {
@@ -13870,10 +13900,19 @@ const isBankDepositSupportImage = (detail = {}) => {
     return contentType.startsWith('image/') || /\.(png|jpe?g|webp|gif)(\?|$)/.test(url);
 };
 
-const printBankDepositDetails = () => {
+const printBankDepositDetails = (depositId) => {
+    const printHosts = Array.from(document.querySelectorAll('.bank-deposit-print-host'));
+    const targetId = String(depositId || '');
+    const printHost = printHosts.find((host) => host.dataset.depositId === targetId)
+        || (printHosts.length === 1 ? printHosts[0] : null);
+    if (!printHost || document.body.classList.contains('print-bank-deposit-details')) return;
+
+    printHosts.forEach((host) => host.classList.remove('is-printing'));
+    printHost.classList.add('is-printing');
     document.body.classList.add('print-bank-deposit-details');
     const cleanup = () => {
         document.body.classList.remove('print-bank-deposit-details');
+        printHost.classList.remove('is-printing');
         window.removeEventListener('afterprint', cleanup);
     };
     window.addEventListener('afterprint', cleanup);
@@ -13897,11 +13936,12 @@ const printDailyCashClosureReport = () => {
 };
 
 const BankDepositPrintArea = ({ deposit }) => {
-    if (!deposit) return null;
+    if (!deposit || typeof document === 'undefined') return null;
     const details = deposit.depositDetails || [];
+    const depositId = String(deposit.id || '');
 
-    return (
-        <>
+    return createPortal(
+        <div className="bank-deposit-print-host" data-deposit-id={depositId}>
             <div className="bank-deposit-print-area">
                 {details.map((detail) => (
                     <div className="bank-deposit-ticket" key={detail.id}>
@@ -13923,19 +13963,34 @@ const BankDepositPrintArea = ({ deposit }) => {
                 ))}
             </div>
             <style>{`
-                .bank-deposit-print-area { display: none; }
+                .bank-deposit-print-host { display: none; }
                 @media print {
-                    body.print-bank-deposit-details * { visibility: hidden !important; }
-                    body.print-bank-deposit-details .bank-deposit-print-area,
-                    body.print-bank-deposit-details .bank-deposit-print-area * { visibility: visible !important; }
+                    @page { size: 80mm auto; margin: 0; }
+                    body.print-bank-deposit-details {
+                        margin: 0 !important;
+                        min-width: 0 !important;
+                        width: 80mm !important;
+                        background: #fff !important;
+                    }
+                    body.print-bank-deposit-details > *:not(.bank-deposit-print-host) {
+                        display: none !important;
+                    }
+                    body.print-bank-deposit-details > .bank-deposit-print-host {
+                        display: none !important;
+                    }
+                    body.print-bank-deposit-details > .bank-deposit-print-host.is-printing {
+                        display: block !important;
+                        position: static !important;
+                        width: 80mm !important;
+                    }
                     body.print-bank-deposit-details .bank-deposit-print-area {
                         display: block !important;
-                        position: fixed;
-                        inset: 0 auto auto 0;
+                        position: static !important;
                         width: 80mm;
                         background: #fff;
                         color: #000;
                         font-family: Arial, Helvetica, sans-serif;
+                        overflow: visible !important;
                     }
                     body.print-bank-deposit-details .bank-deposit-ticket {
                         width: 74mm;
@@ -13944,6 +13999,9 @@ const BankDepositPrintArea = ({ deposit }) => {
                         page-break-after: always;
                         font-size: 12px;
                         line-height: 1.35;
+                    }
+                    body.print-bank-deposit-details .bank-deposit-ticket:last-child {
+                        page-break-after: auto;
                     }
                     body.print-bank-deposit-details .ticket-title {
                         border-bottom: 1px dashed #000;
@@ -13977,7 +14035,8 @@ const BankDepositPrintArea = ({ deposit }) => {
                     }
                 }
             `}</style>
-        </>
+        </div>,
+        document.body,
     );
 };
 
@@ -14270,7 +14329,7 @@ function BankDeposits({ data, branchContext }) {
             setPrintDeposit({ ...depositPayload, createdAt: null, updatedAt: null });
             setSelectedClosureIds([]);
             setMessage('Deposito creado. Se movio a Confirmacion de depositos.');
-            window.setTimeout(printBankDepositDetails, 80);
+            window.setTimeout(() => printBankDepositDetails(depositId), 80);
             setActiveDepositTab('confirmacion');
         } catch (error) {
             console.error(error);
@@ -14534,7 +14593,7 @@ function BankDeposits({ data, branchContext }) {
                                                 type="button"
                                                 onClick={() => {
                                                     setPrintDeposit(deposit);
-                                                    window.setTimeout(printBankDepositDetails, 80);
+                                                    window.setTimeout(() => printBankDepositDetails(deposit.id), 80);
                                                 }}
                                                 className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-xs font-black uppercase tracking-[0.16em] text-slate-700 transition hover:border-[#e30613] hover:text-[#e30613]"
                                             >
@@ -14647,7 +14706,7 @@ function BankDeposits({ data, branchContext }) {
                 onClose={() => setHistoryDeposit(null)}
                 onPrint={(deposit) => {
                     setPrintDeposit(deposit);
-                    window.setTimeout(printBankDepositDetails, 80);
+                    window.setTimeout(() => printBankDepositDetails(deposit.id), 80);
                 }}
             />
         </div>
