@@ -17,7 +17,7 @@ import {
     getBranchPayload,
     getRecordBranchId,
 } from '../constants';
-import { PAYMENT_METHODS, buildFiscalPayload, getSupportFiles, uploadFiscalSupportFiles, uploadSupportFile } from '../services/fiscalUtils';
+import { PAYMENT_METHODS, PAYROLL_MEAL_PAYMENT_METHOD, buildFiscalPayload, getSupportFiles, uploadFiscalSupportFiles, uploadSupportFile } from '../services/fiscalUtils';
 import { isMasterEmail, isNicolUser, normalizeUserEmail } from '../services/userAccess';
 import {
     buildClientPayload,
@@ -31,6 +31,7 @@ import {
     getInvoiceNumberTransitions,
 } from '../services/invoiceNumberLifecycle';
 import { mergeClosureInvoiceDraftWithPersisted } from '../services/cashClosureInvoiceSync';
+import { calculateCashClosureInternalRatio } from '../services/cashClosureAdjustments';
 import SalesCRM from './SalesCRM';
 import ModalPortal from './ModalPortal';
 
@@ -190,6 +191,8 @@ const getBankRowsTotal = (rows = [], bank = {}) => safeNumber(
 const getHouseDiscountTotal = (rows = []) => safeNumber(
     (Array.isArray(rows) ? rows : []).reduce((sum, row) => sum + safeNumber(row.amount ?? row.total ?? row.value), 0)
 );
+
+const getPayrollMealTotal = (rows = []) => getHouseDiscountTotal(rows);
 
 const requestCashClosureEditPin = (action = 'editar cierre') => {
     const pin = window.prompt(`PIN secreto para ${action}:`);
@@ -1559,6 +1562,9 @@ const getClosurePaymentRoute = (method = '') => {
     const normalized = normalizeText(method);
     const compact = normalized.replace(/[^A-Z0-9]/g, '');
 
+    if (normalized.includes('ALIMENTACION') && normalized.includes('PLANILLA')) {
+        return { type: 'payrollMeal', key: 'payrollMeal' };
+    }
     if (normalized.includes('DESCUENTO') && normalized.includes('CASA')) {
         return { type: 'discount', key: 'house' };
     }
@@ -1590,6 +1596,7 @@ const buildClosureDocumentPaymentAutomation = ({
     const transferDetails = Object.fromEntries(TRANSFER_BANKS.map(({ key }) => [key, []]));
     const posExpectedTotals = Object.fromEntries(POS_BANKS.map(({ key }) => [key, 0]));
     const houseDiscountDetails = [];
+    const payrollMealDetails = [];
     let sourcePaymentCount = 0;
 
     const appendDocumentPayments = ({
@@ -1633,6 +1640,14 @@ const buildClosureDocumentPaymentAutomation = ({
             sourcePaymentCount += 1;
             if (route.type === 'pos') {
                 posExpectedTotals[route.key] = safeNumber(posExpectedTotals[route.key] + amountCordobas);
+                return;
+            }
+            if (route.type === 'payrollMeal') {
+                payrollMealDetails.push({
+                    ...commonFields,
+                    description: `${documentReference} - ${customerName || 'Cliente sin nombre'}`,
+                    amount: amountCordobas,
+                });
                 return;
             }
             if (route.type === 'discount') {
@@ -1681,6 +1696,7 @@ const buildClosureDocumentPaymentAutomation = ({
         transferDetails,
         posExpectedTotals,
         houseDiscountDetails,
+        payrollMealDetails,
         sourcePaymentCount,
     };
 };
@@ -1776,6 +1792,7 @@ const buildClosureAccountingSummary = ({
     dollarCashTotalCordobas = 0,
     preCloseDepositTotal = 0,
     houseDiscountTotal = 0,
+    payrollMealTotal = 0,
 } = {}) => {
     const stampedCashTotal = safeNumber(stampedInvoices.reduce((sum, invoice) => (
         sum + getInvoicePaymentRows(invoice).reduce((paymentSum, row) => (
@@ -1810,8 +1827,14 @@ const buildClosureAccountingSummary = ({
     const rcEligibleTransferTotal = getRcEligibleTransferTotal(transferTotals);
     const cashTotal = safeNumber(cashCordobasTotal + dollarCashTotalCordobas + preCloseDepositTotal);
     const houseDiscount = safeNumber(houseDiscountTotal);
-    const rc = safeNumber(cardTotal + rcEligibleTransferTotal + houseDiscount - cashIncomeNetTotal);
-    const cashResidual = safeNumber(cashIncomeNetTotal - cardTotal - rcEligibleTransferTotal - houseDiscount);
+    const payrollMeal = safeNumber(payrollMealTotal);
+    const { rc, cashResidual } = calculateCashClosureInternalRatio({
+        cardTotal,
+        transferTotal: rcEligibleTransferTotal,
+        houseDiscountTotal: houseDiscount,
+        payrollMealTotal: payrollMeal,
+        cashIncomeNetTotal,
+    });
 
     return {
         general: {
@@ -1849,6 +1872,7 @@ const buildClosureAccountingSummary = ({
             transferLafiseUsd: safeNumber(transferTotals.lafiseUsd),
             rcEligibleTransferTotal,
             houseDiscountTotal: houseDiscount,
+            payrollMealTotal: payrollMeal,
             cashTotal,
             cashCordobas: safeNumber(cashCordobasTotal),
             cashDollarsConverted: safeNumber(dollarCashTotalCordobas),
@@ -1857,7 +1881,7 @@ const buildClosureAccountingSummary = ({
         internalRatio: {
             rc,
             cashResidual,
-            formula: 'Tarjeta + todas las transferencias + descuentos casa - flujo de caja',
+            formula: 'Tarjeta + todas las transferencias + descuentos casa + alimentacion planilla - flujo de caja',
         },
     };
 };
@@ -1896,8 +1920,14 @@ const normalizeClosureAccountingSummarySales = (summary = {}, netSalesTotals = {
         );
     const rcEligibleTransferTotal = getRcEligibleTransferTotalFromPayment(payment);
     const houseDiscountTotal = safeNumber(payment.houseDiscountTotal ?? closure.houseDiscountTotal ?? getHouseDiscountTotal(closure.houseDiscountDetails));
-    const rc = safeNumber(cardTotal + rcEligibleTransferTotal + houseDiscountTotal - cashIncomeNetTotal);
-    const cashResidual = safeNumber(cashIncomeNetTotal - cardTotal - rcEligibleTransferTotal - houseDiscountTotal);
+    const payrollMealTotal = safeNumber(payment.payrollMealTotal ?? closure.payrollMealTotal ?? getPayrollMealTotal(closure.payrollMealDetails));
+    const { rc, cashResidual } = calculateCashClosureInternalRatio({
+        cardTotal,
+        transferTotal: rcEligibleTransferTotal,
+        houseDiscountTotal,
+        payrollMealTotal,
+        cashIncomeNetTotal,
+    });
     const ratioFormula = normalizeText(summary.internalRatio?.formula || '');
     const shouldUseRecalculatedRc = ratioFormula.includes('TOTAL INGRESO DE CAJA')
         || ratioFormula.includes('CON RETENCIONES')
@@ -1932,6 +1962,7 @@ const normalizeClosureAccountingSummarySales = (summary = {}, netSalesTotals = {
             transferTotal,
             rcEligibleTransferTotal,
             houseDiscountTotal,
+            payrollMealTotal,
             cashTotal: safeNumber(cashCordobas + cashDollarsConverted + preCloseDepositTotal),
             cashCordobas,
             cashDollarsConverted,
@@ -1941,7 +1972,7 @@ const normalizeClosureAccountingSummarySales = (summary = {}, netSalesTotals = {
             ...(summary.internalRatio || {}),
             rc,
             cashResidual,
-            formula: 'Tarjeta + todas las transferencias + descuentos casa - flujo de caja',
+            formula: 'Tarjeta + todas las transferencias + descuentos casa + alimentacion planilla - flujo de caja',
         },
     };
 };
@@ -2024,11 +2055,21 @@ const isSicarClosureHiddenFromCashClosure = (closure = {}) => {
 const emptyTransfer = () => ({ localId: createLineId('transfer'), clientName: '', amount: '', reference: '' });
 const emptyPos = () => ({ localId: createLineId('pos'), amount: '', reference: '' });
 const emptyHouseDiscount = () => ({ localId: createLineId('house_discount'), description: '', amount: '' });
+const emptyPayrollMeal = () => ({ localId: createLineId('payroll_meal'), description: '', amount: '' });
 
 const normalizeHouseDiscountDetails = (details = []) => (
     (Array.isArray(details) ? details : []).map((row, index) => ({
         ...row,
         localId: row.localId || row.id || `house_discount_${index}`,
+        description: row.description || row.descripcion || row.concept || row.concepto || '',
+        amount: row.amount ?? row.total ?? row.value ?? '',
+    }))
+);
+
+const normalizePayrollMealDetails = (details = []) => (
+    (Array.isArray(details) ? details : []).map((row, index) => ({
+        ...row,
+        localId: row.localId || row.id || `payroll_meal_${index}`,
         description: row.description || row.descripcion || row.concept || row.concepto || '',
         amount: row.amount ?? row.total ?? row.value ?? '',
     }))
@@ -2148,8 +2189,14 @@ const syncLinkedClosureForCashReceipt = async (receiptId = '', receiptPayload = 
     const cashIncomeNetTotal = safeNumber(safeNumber(stamped.stampedCashInvoices) + cashReceiptNetTotal);
     const rcEligibleTransferTotal = getRcEligibleTransferTotalFromPayment(payment);
     const houseDiscountTotal = safeNumber(payment.houseDiscountTotal ?? closure.houseDiscountTotal ?? getHouseDiscountTotal(closure.houseDiscountDetails));
-    const rc = safeNumber(safeNumber(payment.cardTotal) + rcEligibleTransferTotal + houseDiscountTotal - cashIncomeNetTotal);
-    const cashResidual = safeNumber(cashIncomeNetTotal - safeNumber(payment.cardTotal) - rcEligibleTransferTotal - houseDiscountTotal);
+    const payrollMealTotal = safeNumber(payment.payrollMealTotal ?? closure.payrollMealTotal ?? getPayrollMealTotal(closure.payrollMealDetails));
+    const { rc, cashResidual } = calculateCashClosureInternalRatio({
+        cardTotal: safeNumber(payment.cardTotal),
+        transferTotal: rcEligibleTransferTotal,
+        houseDiscountTotal,
+        payrollMealTotal,
+        cashIncomeNetTotal,
+    });
     const accountingSummary = closure.accountingSummary ? {
         ...closure.accountingSummary,
         stampedDocuments: {
@@ -2173,12 +2220,13 @@ const syncLinkedClosureForCashReceipt = async (receiptId = '', receiptPayload = 
         paymentBreakdown: {
             ...(closure.accountingSummary.paymentBreakdown || {}),
             houseDiscountTotal,
+            payrollMealTotal,
         },
         internalRatio: {
             ...(closure.accountingSummary.internalRatio || {}),
             rc,
             cashResidual,
-            formula: 'Tarjeta + todas las transferencias + descuentos casa - flujo de caja',
+            formula: 'Tarjeta + todas las transferencias + descuentos casa + alimentacion planilla - flujo de caja',
         },
     } : null;
 
@@ -2229,6 +2277,7 @@ const syncLinkedClosureForStampedInvoice = async (invoiceId = '', invoicePayload
         transferTotals: closure.transferTotals || {},
         posTotals: closure.posTotals || {},
         houseDiscountTotal: closure.houseDiscountTotal ?? getHouseDiscountTotal(closure.houseDiscountDetails),
+        payrollMealTotal: closure.payrollMealTotal ?? getPayrollMealTotal(closure.payrollMealDetails),
         cashCordobasTotal: closure.cashCordobasTotal,
         dollarCashTotalCordobas: closure.dollarCashTotalCordobas,
         preCloseDepositTotal: closure.preCloseDepositTotal || closure.preCloseDeposit?.totalCordobas,
@@ -2645,6 +2694,7 @@ const getSicarPaymentMethodForAccounting = (value = '') => {
     const compact = normalized.replace(/[^A-Z0-9]/g, '');
     if (normalized.includes('EFECTIVO')) return 'EFECTIVO';
     if (normalized.includes('CREDITO')) return 'CREDITO';
+    if (normalized.includes('ALIMENTACION') && normalized.includes('PLANILLA')) return PAYROLL_MEAL_PAYMENT_METHOD;
     if (normalized.includes('DESCUENTO') && normalized.includes('CASA')) return 'DESCUENTO DE LA CASA';
     if (normalized.includes('TARJETA') || normalized.includes('POS')) {
         if (normalized.includes('BAC')) return 'POS BAC';
@@ -3612,8 +3662,10 @@ const DetailRows = ({ title, rows, onChange, onAdd, onRemove, type, clients = []
             <div>
                 <div className="text-sm font-black text-slate-950">{title}</div>
                 <div className="text-xs font-semibold text-slate-500">
-                    {type === 'discount'
-                        ? 'Detalle de descuentos autorizados por la casa.'
+                    {type === 'discount' || type === 'payrollMeal'
+                        ? type === 'payrollMeal'
+                            ? 'Detalle de alimentacion aplicada a planilla.'
+                            : 'Detalle de descuentos autorizados por la casa.'
                         : type === 'transfer' ? 'Detalle por cliente y referencia bancaria.' : 'Detalle por cierre POS y referencia.'}
                 </div>
             </div>
@@ -3627,13 +3679,13 @@ const DetailRows = ({ title, rows, onChange, onAdd, onRemove, type, clients = []
                 const isUsd = currency === 'USD';
                 const convertedAmount = safeNumber(safeNumber(row.amount) * safeNumber(exchangeRate || 1));
 
-                if (type === 'discount') {
+                if (type === 'discount' || type === 'payrollMeal') {
                     return (
                         <div key={row.localId || index} className="grid gap-2 rounded-2xl border border-slate-200 bg-white p-3 md:grid-cols-[1.7fr_0.8fr_auto]">
                             <div>
                                 <input
                                     className={inputClass}
-                                    placeholder="Descripcion del descuento"
+                                    placeholder={type === 'payrollMeal' ? 'Descripcion de alimentacion' : 'Descripcion del descuento'}
                                     value={row.description || ''}
                                     onChange={(event) => onChange(index, 'description', event.target.value)}
                                 />
@@ -3879,6 +3931,7 @@ const ClosureAccountingSummaryPanel = ({ summary = {} }) => {
                     <div className="text-xs font-black text-slate-600">BAC USD {fmt(payment.transferBacUsd)}</div>
                     <div className="text-xs font-black text-slate-600">Lafise USD {fmt(payment.transferLafiseUsd)}</div>
                     <div className="mt-3"><SummaryCard label="Descuentos casa" value={fmt(payment.houseDiscountTotal)} tone="amber" /></div>
+                    <div className="mt-3"><SummaryCard label="Alimentacion - Planilla" value={fmt(payment.payrollMealTotal)} tone="amber" /></div>
                 </div>
                 <div className="rounded-3xl border border-slate-200 bg-slate-50 p-4">
                     <div className="mb-3 text-[10px] font-black uppercase tracking-[0.22em] text-slate-500">1.5 Calculo interno</div>
@@ -3981,6 +4034,7 @@ function CashClosure({ data, branchContext }) {
     const [transfers, setTransfers] = useState({ bac: [], bac2: [], banpro: [], lafise: [], bacUsd: [], lafiseUsd: [] });
     const [posDetails, setPosDetails] = useState({ bac: [], banpro: [], lafise: [] });
     const [houseDiscountDetails, setHouseDiscountDetails] = useState([]);
+    const [payrollMealDetails, setPayrollMealDetails] = useState([]);
     const [closureInvoices, setClosureInvoices] = useState([]);
     const [closureCashReceipts, setClosureCashReceipts] = useState([]);
     const [notes, setNotes] = useState('');
@@ -4201,6 +4255,10 @@ function CashClosure({ data, branchContext }) {
             current,
             selectedClosureId ? closurePaymentAutomation.houseDiscountDetails : []
         ));
+        setPayrollMealDetails((current) => mergeAutomaticDetailRows(
+            current,
+            selectedClosureId ? closurePaymentAutomation.payrollMealDetails : []
+        ));
     }, [closurePaymentAutomation, selectedClosureId]);
 
     const cashTotal = useMemo(() => (
@@ -4227,6 +4285,7 @@ function CashClosure({ data, branchContext }) {
         safeNumber((posDetails[key] || []).reduce((sum, item) => sum + safeNumber(item.amount), 0)),
     ])), [posDetails]);
     const houseDiscountTotal = useMemo(() => getHouseDiscountTotal(houseDiscountDetails), [houseDiscountDetails]);
+    const payrollMealTotal = useMemo(() => getPayrollMealTotal(payrollMealDetails), [payrollMealDetails]);
     const documentPaymentExpected = useMemo(() => ({
         posTotals: closurePaymentAutomation.posExpectedTotals,
         transferTotals: Object.fromEntries(TRANSFER_BANKS.map((bank) => [
@@ -4234,6 +4293,7 @@ function CashClosure({ data, branchContext }) {
             getBankRowsTotal(closurePaymentAutomation.transferDetails[bank.key] || [], bank),
         ])),
         houseDiscountTotal: getHouseDiscountTotal(closurePaymentAutomation.houseDiscountDetails),
+        payrollMealTotal: getPayrollMealTotal(closurePaymentAutomation.payrollMealDetails),
         sourcePaymentCount: closurePaymentAutomation.sourcePaymentCount,
     }), [closurePaymentAutomation]);
 
@@ -4242,6 +4302,7 @@ function CashClosure({ data, branchContext }) {
         + Object.values(transferTotals).reduce((sum, value) => sum + value, 0)
         + Object.values(posTotals).reduce((sum, value) => sum + value, 0)
         + houseDiscountTotal
+        + payrollMealTotal
     );
     const invoiceRetentionTotal = safeNumber(closureInvoices.reduce((sum, invoice) => (
         sum + getInvoiceRetentionBreakdown(invoice).retentionTotal
@@ -4266,10 +4327,11 @@ function CashClosure({ data, branchContext }) {
         transferTotals,
         posTotals,
         houseDiscountTotal,
+        payrollMealTotal,
         cashCordobasTotal: cashTotal,
         dollarCashTotalCordobas,
         preCloseDepositTotal,
-    }), [sicarCashSalesTotal, sicarCreditSalesTotal, sicarCreditRecoveryTotal, closureInvoices, closureCashReceipts, transferTotals, posTotals, houseDiscountTotal, cashTotal, dollarCashTotalCordobas, preCloseDepositTotal]);
+    }), [sicarCashSalesTotal, sicarCreditSalesTotal, sicarCreditRecoveryTotal, closureInvoices, closureCashReceipts, transferTotals, posTotals, houseDiscountTotal, payrollMealTotal, cashTotal, dollarCashTotalCordobas, preCloseDepositTotal]);
     const closureRc = getCashClosureRcValue(closureAccountingSummary);
     const isClosureRcPositive = isPositiveCashClosureRc(closureRc);
     const comparisonExpectedTotal = getCashClosureComparableExpectedTotal(sicarExpected, externalCreditRecoveryTotal);
@@ -4289,6 +4351,7 @@ function CashClosure({ data, branchContext }) {
         setTransfers({ bac: [], bac2: [], banpro: [], lafise: [], bacUsd: [], lafiseUsd: [] });
         setPosDetails({ bac: [], banpro: [], lafise: [] });
         setHouseDiscountDetails([]);
+        setPayrollMealDetails([]);
         setClosureInvoices([]);
         setClosureCashReceipts([]);
         setNotes('');
@@ -4323,6 +4386,7 @@ function CashClosure({ data, branchContext }) {
         setTransfers({ bac: [], bac2: [], banpro: [], lafise: [], bacUsd: [], lafiseUsd: [], ...(closure.transferDetails || {}) });
         setPosDetails(closure.posDetails || { bac: [], banpro: [], lafise: [] });
         setHouseDiscountDetails(normalizeHouseDiscountDetails(closure.houseDiscountDetails || closure.discountDetails));
+        setPayrollMealDetails(normalizePayrollMealDetails(closure.payrollMealDetails));
         const latestInvoicesById = new Map(
             stampedInvoices
                 .map((invoice) => [invoice.id || invoice.docId, invoice])
@@ -4571,6 +4635,16 @@ function CashClosure({ data, branchContext }) {
 
     const updateHouseDiscount = (index, field, value) => {
         setHouseDiscountDetails((prev) => (
+            prev.map((row, rowIndex) => (rowIndex === index ? {
+                ...row,
+                [field]: value,
+                ...(row.autoGenerated ? { autoEdited: true } : {}),
+            } : row))
+        ));
+    };
+
+    const updatePayrollMeal = (index, field, value) => {
+        setPayrollMealDetails((prev) => (
             prev.map((row, rowIndex) => (rowIndex === index ? {
                 ...row,
                 [field]: value,
@@ -4891,6 +4965,8 @@ function CashClosure({ data, branchContext }) {
                 documentPaymentExpected,
                 houseDiscountDetails: normalizeHouseDiscountDetails(houseDiscountDetails),
                 houseDiscountTotal,
+                payrollMealDetails: normalizePayrollMealDetails(payrollMealDetails),
+                payrollMealTotal,
                 manualTotal,
                 difference,
                 stampedInvoiceIds: isWaiting ? [] : savedInvoices.map((invoice) => invoice.id),
@@ -5184,6 +5260,17 @@ function CashClosure({ data, branchContext }) {
                         onAdd={() => setHouseDiscountDetails((prev) => [...prev, emptyHouseDiscount()])}
                         onRemove={(index) => setHouseDiscountDetails((prev) => prev.filter((_, rowIndex) => rowIndex !== index))}
                         onChange={updateHouseDiscount}
+                    />
+                </Section>
+
+                <Section title="Alimentacion - Planilla" eyebrow="Autocarga desde facturas y recibos">
+                    <DetailRows
+                        title={`Alimentacion - Planilla - ${fmt(payrollMealTotal)}`}
+                        rows={payrollMealDetails}
+                        type="payrollMeal"
+                        onAdd={() => setPayrollMealDetails((prev) => [...prev, emptyPayrollMeal()])}
+                        onRemove={(index) => setPayrollMealDetails((prev) => prev.filter((_, rowIndex) => rowIndex !== index))}
+                        onChange={updatePayrollMeal}
                     />
                 </Section>
 
@@ -10759,11 +10846,13 @@ const calculateClosureEditTotals = (form = {}) => {
         safeNumber((form.posDetails?.[key] || []).reduce((sum, row) => sum + safeNumber(row.amount), 0)),
     ]));
     const houseDiscountTotal = getHouseDiscountTotal(form.houseDiscountDetails);
+    const payrollMealTotal = getPayrollMealTotal(form.payrollMealDetails);
     const manualTotal = safeNumber(
         cashTotal
         + Object.values(transferTotals).reduce((sum, value) => safeNumber(sum + value), 0)
         + Object.values(posTotals).reduce((sum, value) => safeNumber(sum + value), 0)
         + houseDiscountTotal
+        + payrollMealTotal
     );
     const retentionAdjustment = safeNumber(form.retentionAdjustment);
     const sicarExpected = safeNumber(form.sicarExpected);
@@ -10784,6 +10873,7 @@ const calculateClosureEditTotals = (form = {}) => {
         transferTotals,
         posTotals,
         houseDiscountTotal,
+        payrollMealTotal,
         manualTotal,
         manualTotalWithRetentions,
         retentionAdjustment,
@@ -10813,6 +10903,7 @@ const createCashClosureEditForm = (closure = {}) => {
         transferDetails: normalizeClosureBankDetails(closure.transferDetails, 'transfer'),
         posDetails: normalizeClosureBankDetails(closure.posDetails, 'pos'),
         houseDiscountDetails: normalizeHouseDiscountDetails(closure.houseDiscountDetails || closure.discountDetails),
+        payrollMealDetails: normalizePayrollMealDetails(closure.payrollMealDetails),
         sicarExpected: String(safeNumber(closure.sicarExpected)),
         externalCreditRecoveryTotal: String(safeNumber(
             closure.externalCreditRecoveryTotal ?? getExternalCashReceiptTotal(getCashClosureReceipts(closure))
@@ -10980,9 +11071,16 @@ const buildCashClosureReportContext = (closure = {}) => {
             id: row.localId || row.id || `house-discount-${index}`,
             amountCordobas: safeNumber(row.amount ?? row.total ?? row.value),
         }));
+    const payrollMealRows = normalizePayrollMealDetails(closure.payrollMealDetails)
+        .map((row, index) => ({
+            ...row,
+            id: row.localId || row.id || `payroll-meal-${index}`,
+            amountCordobas: safeNumber(row.amount ?? row.total ?? row.value),
+        }));
     const transferTotal = getClosureRowsTotal(transferRows);
     const posTotal = getClosureRowsTotal(posRows);
     const houseDiscountTotal = getHouseDiscountTotal(houseDiscountRows);
+    const payrollMealTotal = getPayrollMealTotal(payrollMealRows);
     const status = closure.status || 'cerrado';
     const sicar = closure.sicar || {};
     const code = closure.code || closure.linkedSicarCorId || sicar.corId || sicar.cor_id || closure.id;
@@ -11000,6 +11098,7 @@ const buildCashClosureReportContext = (closure = {}) => {
             transferTotals: closure.transferTotals || {},
             posTotals: closure.posTotals || {},
             houseDiscountTotal: closure.houseDiscountTotal ?? houseDiscountTotal,
+            payrollMealTotal: closure.payrollMealTotal ?? payrollMealTotal,
             cashCordobasTotal: closure.cashCordobasTotal,
             dollarCashTotalCordobas: closure.dollarCashTotalCordobas,
             preCloseDepositTotal: closure.preCloseDepositTotal || closure.preCloseDeposit?.totalCordobas,
@@ -11012,9 +11111,11 @@ const buildCashClosureReportContext = (closure = {}) => {
         transferRows,
         posRows,
         houseDiscountRows,
+        payrollMealRows,
         transferTotal,
         posTotal,
         houseDiscountTotal,
+        payrollMealTotal,
         status,
         sicar,
         code,
@@ -11131,6 +11232,7 @@ const getTicketPaymentDetailLabel = (row = {}, type = 'transfer') => {
     const description = String(row.description || row.descripcion || row.concept || row.concepto || '').trim();
 
     if (type === 'discount') return description || 'Descuento de la casa';
+    if (type === 'payrollMeal') return description || 'Alimentacion - Planilla';
     if (type === 'pos') return reference || clientName || 'Sin referencia';
     if (clientName && reference) return `${clientName} - ${reference}`;
     return clientName || reference || 'Sin referencia';
@@ -11196,6 +11298,7 @@ const buildCashClosureTicketData = (closure = {}) => {
     const transferLafiseUsdTotal = safeNumber(payment.transferLafiseUsd ?? closure.transferTotals?.lafiseUsd);
     const transferBanproTotal = safeNumber(payment.transferBanpro ?? closure.transferTotals?.banpro);
     const houseDiscountTotal = safeNumber(payment.houseDiscountTotal ?? closure.houseDiscountTotal ?? context.houseDiscountTotal);
+    const payrollMealTotal = safeNumber(payment.payrollMealTotal ?? closure.payrollMealTotal ?? context.payrollMealTotal);
     const visibleCardTotal = safeNumber(posBacTotal + posBanproTotal + posLafiseTotal);
     const visibleTransferTotal = safeNumber(
         transferBacTotal
@@ -11205,7 +11308,13 @@ const buildCashClosureTicketData = (closure = {}) => {
         + transferLafiseUsdTotal
         + transferBanproTotal
     );
-    const efectivoResidual = safeNumber(cashIncomeTotal - visibleCardTotal - visibleTransferTotal - houseDiscountTotal);
+    const { cashResidual: efectivoResidual } = calculateCashClosureInternalRatio({
+        cardTotal: visibleCardTotal,
+        transferTotal: visibleTransferTotal,
+        houseDiscountTotal,
+        payrollMealTotal,
+        cashIncomeNetTotal: cashIncomeTotal,
+    });
     const paymentMethods = [
         buildTicketPaymentMethod({
             label: 'POS BAC TOTAL:',
@@ -11270,6 +11379,12 @@ const buildCashClosureTicketData = (closure = {}) => {
             rows: context.houseDiscountRows || [],
             type: 'discount',
         }),
+        buildTicketPaymentMethod({
+            label: 'ALIMENTACION - PLANILLA:',
+            total: payrollMealTotal,
+            rows: context.payrollMealRows || [],
+            type: 'payrollMeal',
+        }),
     ].filter((method) => method.alwaysShow || method.total > 0 || method.details.length);
 
     return {
@@ -11300,6 +11415,7 @@ const buildCashClosureTicketData = (closure = {}) => {
         transferLafise: safeNumber(transferLafiseTotal + transferLafiseUsdTotal),
         transferBanpro: transferBanproTotal,
         houseDiscountTotal,
+        payrollMealTotal,
         rc: efectivoResidual,
         paymentMethods,
         invoices: invoices.map((invoice) => ({
@@ -11404,6 +11520,7 @@ const buildDailyCashClosureTicketData = (closures = [], date = '') => {
         transferLafise: safeNumber(acc.transferLafise + ticket.transferLafise),
         transferBanpro: safeNumber(acc.transferBanpro + ticket.transferBanpro),
         houseDiscountTotal: safeNumber(acc.houseDiscountTotal + ticket.houseDiscountTotal),
+        payrollMealTotal: safeNumber(acc.payrollMealTotal + ticket.payrollMealTotal),
         rc: safeNumber(acc.rc + ticket.rc),
     }), {
         salesCashTotal: 0,
@@ -11430,6 +11547,7 @@ const buildDailyCashClosureTicketData = (closures = [], date = '') => {
         transferLafise: 0,
         transferBanpro: 0,
         houseDiscountTotal: 0,
+        payrollMealTotal: 0,
         rc: 0,
     });
 
@@ -11920,6 +12038,7 @@ const buildCashClosureRcReportSheets = (closure = {}) => {
         { Seccion: '1.4 Metodos de pago', Concepto: 'BAC USD', Detalle: '', Total: safeNumber(payment.transferBacUsd) },
         { Seccion: '1.4 Metodos de pago', Concepto: 'Lafise USD', Detalle: '', Total: safeNumber(payment.transferLafiseUsd) },
         { Seccion: '1.4 Metodos de pago', Concepto: 'Descuentos de la casa', Detalle: '', Total: safeNumber(payment.houseDiscountTotal) },
+        { Seccion: '1.4 Metodos de pago', Concepto: 'Alimentacion - Planilla', Detalle: '', Total: safeNumber(payment.payrollMealTotal) },
         { Seccion: '1.5 Calculo interno', Concepto: 'RC EFECTIVO', Detalle: '', Total: getCashClosureRcDisplayValue(context.detailAccountingSummary) },
     ];
 
@@ -11930,6 +12049,14 @@ const buildCashClosureRcReportSheets = (closure = {}) => {
             rows: context.houseDiscountRows.map((row, index) => ({
                 Linea: index + 1,
                 Descripcion: row.description || row.descripcion || 'Descuento de la casa',
+                Total: safeNumber(row.amount || row.total),
+            })),
+        }] : []),
+        ...(context.payrollMealRows.length ? [{
+            name: 'Alimentacion planilla',
+            rows: context.payrollMealRows.map((row, index) => ({
+                Linea: index + 1,
+                Descripcion: row.description || row.descripcion || 'Alimentacion - Planilla',
                 Total: safeNumber(row.amount || row.total),
             })),
         }] : []),
@@ -11984,6 +12111,9 @@ const CashClosureEditModal = ({
     onHouseDiscountAdd,
     onHouseDiscountRemove,
     onHouseDiscountChange,
+    onPayrollMealAdd,
+    onPayrollMealRemove,
+    onPayrollMealChange,
 }) => {
     if (!form) return null;
     const totals = calculateClosureEditTotals(form);
@@ -12128,6 +12258,17 @@ const CashClosureEditModal = ({
                         />
                     </Section>
 
+                    <Section title="Alimentacion - Planilla" eyebrow="Ajustes autorizados">
+                        <DetailRows
+                            title={`Alimentacion - Planilla - ${fmt(totals.payrollMealTotal)}`}
+                            rows={form.payrollMealDetails || []}
+                            type="payrollMeal"
+                            onAdd={onPayrollMealAdd}
+                            onRemove={onPayrollMealRemove}
+                            onChange={onPayrollMealChange}
+                        />
+                    </Section>
+
                     <Field label="Notas">
                         <textarea className={`${inputClass} min-h-[120px]`} value={form.notes || ''} onChange={(event) => onFieldChange('notes', event.target.value)} />
                     </Field>
@@ -12150,9 +12291,11 @@ const CashClosureDetailModal = ({ closure, onClose, onEdit, onExport, onPrintTic
     const transferRows = context.transferRows;
     const posRows = context.posRows;
     const houseDiscountRows = context.houseDiscountRows;
+    const payrollMealRows = context.payrollMealRows;
     const transferTotal = context.transferTotal;
     const posTotal = context.posTotal;
     const houseDiscountTotal = context.houseDiscountTotal;
+    const payrollMealTotal = context.payrollMealTotal;
     const dollarTotal = dollarRows.reduce((sum, row) => safeNumber(sum + safeNumber(row.denomination * row.quantity)), 0);
     const status = context.status;
     const statusTone = status === 'con_diferencia' ? 'red' : status === 'en_espera' ? 'amber' : 'green';
@@ -12364,6 +12507,26 @@ const CashClosureDetailModal = ({ closure, onClose, onEdit, onExport, onPrintTic
                                 </div>
                             )) : (
                                 <div className="rounded-2xl border border-dashed border-amber-300 p-6 text-center text-sm font-bold text-amber-500">Sin descuentos de la casa registrados.</div>
+                            )}
+                        </div>
+                    </div>
+
+                    <div className="mt-5 rounded-3xl border border-orange-200 bg-orange-50/40 p-4">
+                        <div className="mb-3 flex items-center justify-between gap-3">
+                            <div>
+                                <div className="text-[10px] font-black uppercase tracking-[0.24em] text-orange-700">Alimentacion - Planilla</div>
+                                <div className="text-lg font-black text-slate-950">Detalle aplicado</div>
+                            </div>
+                            <Badge tone="amber">{fmt(payrollMealTotal)}</Badge>
+                        </div>
+                        <div className="space-y-2">
+                            {payrollMealRows.length ? payrollMealRows.map((row) => (
+                                <div key={row.id || row.localId} className="grid gap-2 rounded-2xl border border-orange-200 bg-white px-4 py-3 text-sm sm:grid-cols-[1.4fr_0.6fr]">
+                                    <span className="font-bold text-slate-600">{row.description || row.descripcion || 'Alimentacion - Planilla'}</span>
+                                    <span className="text-right font-mono font-black text-orange-700">{fmt(row.amount || row.total)}</span>
+                                </div>
+                            )) : (
+                                <div className="rounded-2xl border border-dashed border-orange-300 p-6 text-center text-sm font-bold text-orange-500">Sin alimentacion de planilla registrada.</div>
                             )}
                         </div>
                     </div>
@@ -12646,6 +12809,7 @@ function CashClosureHistory({ data, canEdit = true, branchContext }) {
             transferTotals: totals.transferTotals,
             posTotals: totals.posTotals,
             houseDiscountTotal: totals.houseDiscountTotal,
+            payrollMealTotal: totals.payrollMealTotal,
             cashCordobasTotal: totals.cashCordobasTotal,
             dollarCashTotalCordobas: totals.dollarCashTotalCordobas,
             preCloseDepositTotal: totals.preCloseDepositTotal,
@@ -12746,6 +12910,29 @@ function CashClosureHistory({ data, canEdit = true, branchContext }) {
         });
     };
 
+    const addEditPayrollMeal = () => {
+        setEditForm((prev) => prev ? ({
+            ...prev,
+            payrollMealDetails: [...(prev.payrollMealDetails || []), emptyPayrollMeal()],
+        }) : prev);
+    };
+
+    const removeEditPayrollMeal = (index) => {
+        setEditForm((prev) => prev ? ({
+            ...prev,
+            payrollMealDetails: (prev.payrollMealDetails || []).filter((_, rowIndex) => rowIndex !== index),
+        }) : prev);
+    };
+
+    const updateEditPayrollMeal = (index, field, value) => {
+        setEditForm((prev) => {
+            if (!prev) return prev;
+            const rows = [...(prev.payrollMealDetails || [])];
+            rows[index] = { ...(rows[index] || {}), [field]: value };
+            return { ...prev, payrollMealDetails: rows };
+        });
+    };
+
     const markClosureDifferencesVoided = (batch, closureId, reason = 'Edicion de cierre', skipIds = new Set()) => {
         (differencesByClosureId.get(closureId) || []).forEach((item) => {
             if (!item.id) return;
@@ -12779,6 +12966,7 @@ function CashClosureHistory({ data, canEdit = true, branchContext }) {
             transferTotals: totals.transferTotals,
             posTotals: totals.posTotals,
             houseDiscountTotal: totals.houseDiscountTotal,
+            payrollMealTotal: totals.payrollMealTotal,
             cashCordobasTotal: totals.cashCordobasTotal,
             dollarCashTotalCordobas: totals.dollarCashTotalCordobas,
             preCloseDepositTotal: totals.preCloseDepositTotal,
@@ -12839,6 +13027,8 @@ function CashClosureHistory({ data, canEdit = true, branchContext }) {
                 posTotals: totals.posTotals,
                 houseDiscountDetails: normalizeHouseDiscountDetails(editForm.houseDiscountDetails),
                 houseDiscountTotal: totals.houseDiscountTotal,
+                payrollMealDetails: normalizePayrollMealDetails(editForm.payrollMealDetails),
+                payrollMealTotal: totals.payrollMealTotal,
                 manualTotal: totals.manualTotal,
                 manualTotalWithRetentions: totals.manualTotalWithRetentions,
                 difference: totals.difference,
@@ -13202,6 +13392,9 @@ function CashClosureHistory({ data, canEdit = true, branchContext }) {
                     onHouseDiscountAdd={addEditHouseDiscount}
                     onHouseDiscountRemove={removeEditHouseDiscount}
                     onHouseDiscountChange={updateEditHouseDiscount}
+                    onPayrollMealAdd={addEditPayrollMeal}
+                    onPayrollMealRemove={removeEditPayrollMeal}
+                    onPayrollMealChange={updateEditPayrollMeal}
                 />
             )}
         </div>

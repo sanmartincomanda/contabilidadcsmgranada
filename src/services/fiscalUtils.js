@@ -10,6 +10,8 @@ export const SUPPORT_FILE_TYPES = [
     { key: 'retentionMunicipal1', label: 'Retencion municipal 1%' },
 ];
 
+export const PAYROLL_MEAL_PAYMENT_METHOD = 'ALIMENTACION - PLANILLA';
+
 const SUPPORT_FILE_LABELS = SUPPORT_FILE_TYPES.reduce((acc, item) => {
     acc[item.key] = item.label;
     return acc;
@@ -27,6 +29,7 @@ export const PAYMENT_METHODS = [
     'TRANSFERENCIA BAC USD',
     'TRANSFERENCIA LAFISE USD',
     'DESCUENTO DE LA CASA',
+    PAYROLL_MEAL_PAYMENT_METHOD,
     'CREDITO',
 ];
 
