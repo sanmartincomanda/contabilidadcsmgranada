@@ -9611,6 +9611,7 @@ function StampedInvoiceHistory({ data, canEdit = true, branchContext }) {
         }
         try {
             assertInvoiceCreditMethodChangeAllowed(invoice, paymentMethod);
+            const paymentNetTotal = getInvoicePaymentTargetAmount({ ...invoice, paymentMethod });
             const creditSnapshot = buildCreditInvoiceSnapshot(
                 { ...invoice, paymentMethod },
                 isCreditPaymentMethod(paymentMethod)
@@ -9623,14 +9624,24 @@ function StampedInvoiceHistory({ data, canEdit = true, branchContext }) {
             );
             await setDoc(doc(db, 'facturas_membretadas_ventas', invoiceId), {
                 paymentMethod,
+                metodoPago: paymentMethod,
+                paymentDisplayMethod: paymentMethod,
                 paymentBreakdown: [],
-                paymentNetTotal: 0,
+                paymentNetTotal,
                 ...creditSnapshot,
                 updatedAt: serverTimestamp(),
             }, { merge: true });
             setDetailTarget((current) => (
                 current && (current.id || current.docId) === invoiceId
-                    ? { ...current, paymentMethod, paymentBreakdown: [], paymentNetTotal: 0, ...creditSnapshot }
+                    ? {
+                        ...current,
+                        paymentMethod,
+                        metodoPago: paymentMethod,
+                        paymentDisplayMethod: paymentMethod,
+                        paymentBreakdown: [],
+                        paymentNetTotal,
+                        ...creditSnapshot,
+                    }
                     : current
             ));
             setMessage(`Metodo de pago actualizado para factura ${invoice.invoiceNumber || invoice.numeroFactura || invoiceId}.`);
