@@ -37,6 +37,7 @@ import {
     isMasterEmail,
     userProfileDocId,
 } from './services/userAccess';
+import { APP_BUILD_ID, fetchPublishedBuildId } from './services/appVersion';
 
 const BRAND_LOGO = APP_BRAND_LOGO;
 
@@ -49,6 +50,7 @@ const BILLING_LIVE_INVOICE_DAYS = 3;
 const DECLARATION_HISTORY_MONTHS = 7;
 const MAX_ROUTE_BLOCKING_MS = 900;
 const INACTIVITY_TIMEOUT_MS = 3 * 60 * 60 * 1000;
+const APP_VERSION_CHECK_INTERVAL_MS = 5 * 60 * 1000;
 
 const DEFAULT_REMINDERS = [
     { id: 'r1', texto: 'DGI CUOTA FIJA', diaDelMes: 7, activo: true },
@@ -63,6 +65,46 @@ const DEFAULT_REMINDERS = [
 ];
 
 const CONFIG_DOC_PATH = 'configuracion/dashboard';
+
+const usePublishedVersionRefresh = () => {
+    useEffect(() => {
+        if (import.meta.env.DEV) return undefined;
+
+        let mounted = true;
+        let checking = false;
+        const checkPublishedVersion = async () => {
+            if (!mounted || checking || document.visibilityState !== 'visible') return;
+            checking = true;
+            try {
+                const publishedBuildId = await fetchPublishedBuildId();
+                if (!mounted || !publishedBuildId || publishedBuildId === APP_BUILD_ID) return;
+                const shouldReload = window.confirm(
+                    'Hay una actualizacion disponible. Recarga ahora para usar los calculos y reglas mas recientes.'
+                );
+                if (shouldReload) window.location.reload();
+            } catch (error) {
+                console.warn('No se pudo verificar la version publicada.', error);
+            } finally {
+                checking = false;
+            }
+        };
+        const handleVisibilityChange = () => {
+            if (document.visibilityState === 'visible') checkPublishedVersion();
+        };
+        const initialCheck = window.setTimeout(checkPublishedVersion, 15000);
+        const interval = window.setInterval(checkPublishedVersion, APP_VERSION_CHECK_INTERVAL_MS);
+        window.addEventListener('focus', checkPublishedVersion);
+        document.addEventListener('visibilitychange', handleVisibilityChange);
+
+        return () => {
+            mounted = false;
+            window.clearTimeout(initialCheck);
+            window.clearInterval(interval);
+            window.removeEventListener('focus', checkPublishedVersion);
+            document.removeEventListener('visibilitychange', handleVisibilityChange);
+        };
+    }, []);
+};
 
 const pageMotion = {
     // Transform/filter on this route wrapper makes fixed dialogs follow the page
@@ -1149,6 +1191,7 @@ function AppContent() {
     const effectiveIsMaster = isMaster || isMasterEmail(user?.email);
     useInactivityLogout(user, logout);
     useDisableNumberInputStepping();
+    usePublishedVersionRefresh();
     const allowedBranchIds = useMemo(() => (
         Array.isArray(branchAccess) && branchAccess.length ? branchAccess : [DEFAULT_BRANCH_ID]
     ), [branchAccess]);

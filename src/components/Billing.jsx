@@ -33,6 +33,7 @@ import {
 } from '../services/invoiceNumberLifecycle';
 import { mergeClosureInvoiceDraftWithPersisted } from '../services/cashClosureInvoiceSync';
 import { calculateCashClosureInternalRatio } from '../services/cashClosureAdjustments';
+import { APP_BUILD_ID } from '../services/appVersion';
 import SalesCRM from './SalesCRM';
 import ModalPortal from './ModalPortal';
 
@@ -4989,6 +4990,8 @@ function CashClosure({ data, branchContext }) {
                 date: closureDate,
                 month: getMonth(closureDate),
                 status: isWaiting ? 'en_espera' : (shouldTrackDifference ? 'con_diferencia' : 'cuadrado'),
+                appBuildId: APP_BUILD_ID,
+                cashClosureCalculationVersion: 'rc-v3-payroll-meal',
                 cashierName: safeCashierName,
                 cashierCode,
                 linkedSicarClosureId: selectedClosure?.id || '',
