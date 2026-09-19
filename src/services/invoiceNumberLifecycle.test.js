@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+    canRecoverOwnedInvoiceNumberReservation,
     getCanonicalInvoiceNumberDrafts,
     getInvoiceNumberTransitions,
 } from './invoiceNumberLifecycle.js';
@@ -47,3 +48,26 @@ test('ignores new drafts because they have no previous persisted number', () => 
     }]), []);
 });
 
+test('recovers an orphan reservation created by the same deterministic invoice', () => {
+    assert.equal(canRecoverOwnedInvoiceNumberReservation({
+        reservationOwnerId: 'membretada_nindiri_B_1959_20260919_sicar-ticket-nindiri-1959',
+        targetOwnerId: 'MEMBRETADA_NINDIRI_B_1959_20260919_SICAR-TICKET-NINDIRI-1959',
+        targetExists: false,
+        wasExistingDoc: false,
+    }), true);
+});
+
+test('never recovers another ticket reservation or an existing invoice', () => {
+    assert.equal(canRecoverOwnedInvoiceNumberReservation({
+        reservationOwnerId: 'ticket-1958',
+        targetOwnerId: 'ticket-1959',
+        targetExists: false,
+        wasExistingDoc: false,
+    }), false);
+    assert.equal(canRecoverOwnedInvoiceNumberReservation({
+        reservationOwnerId: 'ticket-1959',
+        targetOwnerId: 'ticket-1959',
+        targetExists: true,
+        wasExistingDoc: false,
+    }), false);
+});

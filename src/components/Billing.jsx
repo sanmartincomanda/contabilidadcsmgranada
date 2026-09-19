@@ -27,6 +27,7 @@ import {
 } from '../services/clientCatalog';
 import { isExcludedSicarTicket } from '../services/salesCrmAnalytics';
 import {
+    canRecoverOwnedInvoiceNumberReservation,
     getCanonicalInvoiceNumberDrafts,
     getInvoiceNumberTransitions,
 } from '../services/invoiceNumberLifecycle';
@@ -617,13 +618,24 @@ const ensureUniqueStampedInvoiceNumbers = async (drafts = [], existingInvoices =
                 transaction.get(doc(db, 'facturas_membretadas_ventas', reservation.ownerDocumentId))
             ))),
         ]);
+        const targetSnapshotsByOwner = new Map(newDocumentTargets.map((reservation, index) => ([
+            normalizeInvoiceMatchKey(reservation.ownerDocumentId),
+            targetSnapshots[index],
+        ])));
         reservationSnapshots.forEach((snapshot, index) => {
             if (!snapshot.exists()) return;
             const reservation = reservations[index];
             const ownerDocumentId = snapshot.data()?.ownerDocumentId || '';
             const belongsToExistingDraft = reservation.draft.wasExistingDoc !== false
                 && normalizeInvoiceMatchKey(ownerDocumentId) === normalizeInvoiceMatchKey(reservation.ownerDocumentId);
-            if (!belongsToExistingDraft) {
+            const targetSnapshot = targetSnapshotsByOwner.get(normalizeInvoiceMatchKey(reservation.ownerDocumentId));
+            const recoversOwnedOrphan = canRecoverOwnedInvoiceNumberReservation({
+                reservationOwnerId: ownerDocumentId,
+                targetOwnerId: reservation.ownerDocumentId,
+                targetExists: Boolean(targetSnapshot?.exists()),
+                wasExistingDoc: reservation.draft.wasExistingDoc !== false,
+            });
+            if (!belongsToExistingDraft && !recoversOwnedOrphan) {
                 throw new Error(buildDuplicateInvoiceNumberMessage(
                     reservation.draft.invoiceNumber || reservation.draft.numeroFactura,
                     snapshot.data()
@@ -652,6 +664,59 @@ const ensureUniqueStampedInvoiceNumbers = async (drafts = [], existingInvoices =
                 updatedAt: serverTimestamp(),
                 createdAt: serverTimestamp(),
             }, { merge: true });
+        });
+    });
+};
+
+const releaseFailedStampedInvoiceNumberReservations = async (drafts = []) => {
+    const candidates = getCanonicalInvoiceNumberDrafts(drafts).map((draft) => {
+        const matchKey = getFiscalDocumentMatchKey(draft, 'invoice');
+        const ownerDocumentId = draft.id || draft.docId || '';
+        return {
+            draft,
+            matchKey,
+            ownerDocumentId,
+            registryRef: matchKey
+                ? doc(db, STAMPED_INVOICE_NUMBER_REGISTRY, matchKey.toLowerCase())
+                : null,
+            invoiceRef: ownerDocumentId
+                ? doc(db, 'facturas_membretadas_ventas', ownerDocumentId)
+                : null,
+        };
+    }).filter((candidate) => candidate.registryRef && candidate.invoiceRef);
+
+    if (!candidates.length) return;
+
+    await runTransaction(db, async (transaction) => {
+        const snapshots = await Promise.all(candidates.flatMap((candidate) => ([
+            transaction.get(candidate.registryRef),
+            transaction.get(candidate.invoiceRef),
+        ])));
+
+        candidates.forEach((candidate, index) => {
+            const registrySnapshot = snapshots[index * 2];
+            const invoiceSnapshot = snapshots[(index * 2) + 1];
+            if (!registrySnapshot.exists()) return;
+
+            const registryOwnerId = registrySnapshot.data()?.ownerDocumentId || '';
+            const sameOwner = normalizeInvoiceMatchKey(registryOwnerId)
+                === normalizeInvoiceMatchKey(candidate.ownerDocumentId);
+            const persistedMatchKey = invoiceSnapshot.exists()
+                ? getFiscalDocumentMatchKey({ id: invoiceSnapshot.id, ...invoiceSnapshot.data() }, 'invoice')
+                : '';
+            const failedNewInvoice = canRecoverOwnedInvoiceNumberReservation({
+                reservationOwnerId: registryOwnerId,
+                targetOwnerId: candidate.ownerDocumentId,
+                targetExists: invoiceSnapshot.exists(),
+                wasExistingDoc: candidate.draft.wasExistingDoc !== false,
+            });
+            const failedNumberEdit = candidate.draft.wasExistingDoc !== false
+                && sameOwner
+                && invoiceSnapshot.exists()
+                && persistedMatchKey !== candidate.matchKey;
+            if (failedNewInvoice || failedNumberEdit) {
+                transaction.delete(candidate.registryRef);
+            }
         });
     });
 };
@@ -4757,6 +4822,8 @@ function CashClosure({ data, branchContext }) {
             }
         }
         setSaving(true);
+        let reservedInvoiceDrafts = [];
+        let shouldReleaseFailedReservations = false;
         try {
             await ensurePeopleRecords();
             const cashierCode = getCashierCode(safeCashierName);
@@ -4810,11 +4877,13 @@ function CashClosure({ data, branchContext }) {
                 };
             });
 
+            reservedInvoiceDrafts = preparedInvoiceDrafts;
             await ensureUniqueStampedInvoiceNumbers(
-                preparedInvoiceDrafts,
+                reservedInvoiceDrafts,
                 data.facturas_membretadas_ventas || [],
                 { reserve: !isWaiting }
             );
+            shouldReleaseFailedReservations = !isWaiting;
 
             if (!isWaiting) {
             for (const invoice of preparedInvoiceDrafts) {
@@ -5058,6 +5127,13 @@ function CashClosure({ data, branchContext }) {
             }
         } catch (error) {
             console.error(error);
+            if (shouldReleaseFailedReservations) {
+                try {
+                    await releaseFailedStampedInvoiceNumberReservations(reservedInvoiceDrafts);
+                } catch (cleanupError) {
+                    console.error('No se pudo liberar una reserva de factura fallida.', cleanupError);
+                }
+            }
             setMessage(error?.message || 'No se pudo guardar el cierre.');
         } finally {
             setSaving(false);
@@ -8554,6 +8630,8 @@ function StampedInvoices({ data, branchContext }) {
         event.preventDefault();
         setSaving(true);
         setMessage('');
+        let reservedInvoiceDrafts = [];
+        let shouldReleaseFailedReservations = false;
         try {
             if (form.sourceSicarCollection && form.sourceSicarDocumentId) {
                 const sourceSnapshot = await getDoc(doc(db, form.sourceSicarCollection, form.sourceSicarDocumentId));
@@ -8603,15 +8681,17 @@ function StampedInvoices({ data, branchContext }) {
                 docId: buildNewStampedInvoiceDocId(invoice, invoiceBranchPayload),
             }));
 
-            await ensureUniqueStampedInvoiceNumbers(
-                invoiceMeta.map(({ invoice, docId }) => ({
+            reservedInvoiceDrafts = invoiceMeta.map(({ invoice, docId }) => ({
                     ...invoice,
                     id: docId,
                     docId,
                     wasExistingDoc: false,
-                })),
+                }));
+            await ensureUniqueStampedInvoiceNumbers(
+                reservedInvoiceDrafts,
                 savedInvoices
             );
+            shouldReleaseFailedReservations = true;
 
             const primaryDocId = invoiceMeta[0].docId;
             const existingInvoice = savedInvoices.find((item) => item.id === primaryDocId) || {};
@@ -8754,6 +8834,13 @@ function StampedInvoices({ data, branchContext }) {
             setEntryMode('sicar');
         } catch (error) {
             console.error(error);
+            if (shouldReleaseFailedReservations) {
+                try {
+                    await releaseFailedStampedInvoiceNumberReservations(reservedInvoiceDrafts);
+                } catch (cleanupError) {
+                    console.error('No se pudo liberar una reserva de factura fallida.', cleanupError);
+                }
+            }
             setMessage(error?.message || 'No se pudo guardar la factura membretada.');
         } finally {
             setSaving(false);
@@ -9995,6 +10082,8 @@ function StampedInvoiceHistory({ data, canEdit = true, branchContext }) {
         }
 
         setEditSaving(true);
+        let reservedInvoiceDrafts = [];
+        let shouldReleaseFailedReservations = false;
         try {
             const invoicesToSave = [editForm, splitEditInvoice].filter(Boolean).map((invoice, index, list) => ({
                 ...invoiceBranchPayload,
@@ -10026,15 +10115,17 @@ function StampedInvoiceHistory({ data, canEdit = true, branchContext }) {
                 if (!docId) throw new Error('No se pudo generar el identificador de la factura.');
             }
 
-            await ensureUniqueStampedInvoiceNumbers(
-                invoiceMeta.map(({ invoice, docId }, index) => ({
+            reservedInvoiceDrafts = invoiceMeta.map(({ invoice, docId }, index) => ({
                     ...invoice,
                     id: docId,
                     docId,
                     wasExistingDoc: index === 0,
-                })),
+                }));
+            await ensureUniqueStampedInvoiceNumbers(
+                reservedInvoiceDrafts,
                 savedInvoices
             );
+            shouldReleaseFailedReservations = true;
 
             const splitGroupId = invoiceMeta.length > 1 ? originalDocId : editForm.splitGroupId || '';
             const batch = writeBatch(db);
@@ -10220,6 +10311,13 @@ function StampedInvoiceHistory({ data, canEdit = true, branchContext }) {
             closeInvoiceEdit();
         } catch (error) {
             console.error(error);
+            if (shouldReleaseFailedReservations) {
+                try {
+                    await releaseFailedStampedInvoiceNumberReservations(reservedInvoiceDrafts);
+                } catch (cleanupError) {
+                    console.error('No se pudo liberar una reserva de factura fallida.', cleanupError);
+                }
+            }
             setMessage(error?.message || 'No se pudo guardar la edicion de la factura.');
         } finally {
             setEditSaving(false);

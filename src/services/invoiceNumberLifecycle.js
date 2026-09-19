@@ -8,6 +8,18 @@ export const getCanonicalInvoiceNumberDrafts = (drafts = []) => (
     ))
 );
 
+export const canRecoverOwnedInvoiceNumberReservation = ({
+    reservationOwnerId = '',
+    targetOwnerId = '',
+    targetExists = false,
+    wasExistingDoc = false,
+} = {}) => (
+    !wasExistingDoc
+    && !targetExists
+    && Boolean(cleanInvoiceNumber(reservationOwnerId))
+    && normalizeInvoiceNumber(reservationOwnerId) === normalizeInvoiceNumber(targetOwnerId)
+);
+
 export const getInvoiceNumberTransitions = (drafts = []) => {
     const transitions = new Map();
 
@@ -34,4 +46,3 @@ export const getInvoiceNumberTransitions = (drafts = []) => {
 
     return [...transitions.values()];
 };
-
