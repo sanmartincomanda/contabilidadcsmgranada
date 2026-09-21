@@ -17,8 +17,6 @@ export const calculateCashClosureInternalRatio = ({
     payrollMealTotal = 0,
     cashTotal = 0,
     cashIncomeNetTotal = 0,
-    reconciliationTargetTotal,
-    retentionAdjustment = 0,
 } = {}) => {
     const nonCashTotal = money(money(cardTotal)
         + money(transferTotal)
@@ -26,19 +24,13 @@ export const calculateCashClosureInternalRatio = ({
         + money(payrollMealTotal));
     const enteredCashTotal = money(cashTotal);
     const incomeTotal = money(cashIncomeNetTotal);
-    const targetTotal = reconciliationTargetTotal === undefined || reconciliationTargetTotal === null
-        ? incomeTotal
-        : money(reconciliationTargetTotal);
-    const retentionTotal = money(retentionAdjustment);
-    const reconciledPaymentTotal = money(nonCashTotal + enteredCashTotal + retentionTotal);
+    const reconciledPaymentTotal = money(nonCashTotal + enteredCashTotal);
 
     return {
         nonCashTotal,
         enteredCashTotal,
-        retentionTotal,
-        reconciliationTargetTotal: targetTotal,
         reconciledPaymentTotal,
-        rc: money(reconciledPaymentTotal - targetTotal),
-        cashResidual: money(targetTotal - nonCashTotal - retentionTotal),
+        rc: money(reconciledPaymentTotal - incomeTotal),
+        cashResidual: money(incomeTotal - nonCashTotal),
     };
 };
