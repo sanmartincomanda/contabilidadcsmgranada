@@ -32,7 +32,11 @@ import {
     getInvoiceNumberTransitions,
 } from '../services/invoiceNumberLifecycle';
 import { mergeClosureInvoiceDraftWithPersisted } from '../services/cashClosureInvoiceSync';
-import { calculateCashClosureInternalRatio } from '../services/cashClosureAdjustments';
+import {
+    CASH_CLOSURE_RC_TOLERANCE,
+    calculateCashClosureInternalRatio,
+    isCashClosureRcWithinTolerance,
+} from '../services/cashClosureAdjustments';
 import { APP_BUILD_ID } from '../services/appVersion';
 import SalesCRM from './SalesCRM';
 import ModalPortal from './ModalPortal';
@@ -76,8 +80,7 @@ const CASH_CLOSURE_EDIT_PIN = '210397';
 const SICAR_CASH_CLOSURE_AVAILABLE_FROM_DATE = '2026-06-14';
 const SICAR_PENDING_INVOICE_LOOKBACK_DAYS = 3;
 const SICAR_ACCOUNTING_LINK_START_DATE = '2026-09-03';
-const CASH_CLOSURE_POSITIVE_RC_THRESHOLD = 0.009;
-const CASH_CLOSURE_POSITIVE_RC_MESSAGE = 'NO SE PUEDE REALIZAR CONCILIACION Y CIERRE DE CAJA PORQUE RC ES POSITIVO.';
+const CASH_CLOSURE_RC_BLOCKED_MESSAGE = `NO SE PUEDE REALIZAR EL CIERRE PORQUE EL RC SUPERA LA TOLERANCIA DE +/- C$ ${CASH_CLOSURE_RC_TOLERANCE.toFixed(2)}.`;
 
 const CASHIER_OPTIONS = [
     'Dania Espinoza',
@@ -163,14 +166,14 @@ const getRcEligibleTransferTotalFromPayment = (payment = {}) => {
         : safeNumber(payment.transferTotal ?? payment.rcEligibleTransferTotal);
 };
 
-const isPositiveCashClosureRc = (value = 0) => safeNumber(value) > CASH_CLOSURE_POSITIVE_RC_THRESHOLD;
+const isCashClosureRcBlocked = (value = 0) => !isCashClosureRcWithinTolerance(safeNumber(value));
 
-const buildPositiveCashClosureRcMessage = (rc = 0) => `${CASH_CLOSURE_POSITIVE_RC_MESSAGE} RC ACTUAL: ${fmt(rc)}.`;
+const buildCashClosureRcBlockedMessage = (rc = 0) => `${CASH_CLOSURE_RC_BLOCKED_MESSAGE} RC ACTUAL: ${fmt(rc)}.`;
 
 const assertCashClosureRcAllowed = (summary = {}, { shouldAlert = true } = {}) => {
     const rc = getCashClosureRcValue(summary);
-    if (!isPositiveCashClosureRc(rc)) return rc;
-    const message = buildPositiveCashClosureRcMessage(rc);
+    if (!isCashClosureRcBlocked(rc)) return rc;
+    const message = buildCashClosureRcBlockedMessage(rc);
     if (shouldAlert) window.alert(message);
     throw new Error(message);
 };
@@ -1899,6 +1902,7 @@ const buildClosureAccountingSummary = ({
         transferTotal: rcEligibleTransferTotal,
         houseDiscountTotal: houseDiscount,
         payrollMealTotal: payrollMeal,
+        cashTotal,
         cashIncomeNetTotal,
     });
 
@@ -1947,7 +1951,7 @@ const buildClosureAccountingSummary = ({
         internalRatio: {
             rc,
             cashResidual,
-            formula: 'Tarjeta + todas las transferencias + descuentos casa + alimentacion planilla - flujo de caja',
+            formula: 'Efectivo + tarjeta + todas las transferencias + descuentos casa + alimentacion planilla - flujo de caja',
         },
     };
 };
@@ -1987,21 +1991,22 @@ const normalizeClosureAccountingSummarySales = (summary = {}, netSalesTotals = {
     const rcEligibleTransferTotal = getRcEligibleTransferTotalFromPayment(payment);
     const houseDiscountTotal = safeNumber(payment.houseDiscountTotal ?? closure.houseDiscountTotal ?? getHouseDiscountTotal(closure.houseDiscountDetails));
     const payrollMealTotal = safeNumber(payment.payrollMealTotal ?? closure.payrollMealTotal ?? getPayrollMealTotal(closure.payrollMealDetails));
+    const cashCordobas = safeNumber(payment.cashCordobas ?? closure.cashCordobasTotal);
+    const cashDollarsConverted = safeNumber(payment.cashDollarsConverted ?? closure.dollarCashTotalCordobas);
+    const preCloseDepositTotal = safeNumber(payment.preCloseDepositTotal ?? closure.preCloseDepositTotal ?? closure.preCloseDeposit?.totalCordobas);
+    const cashTotal = safeNumber(cashCordobas + cashDollarsConverted + preCloseDepositTotal);
     const { rc, cashResidual } = calculateCashClosureInternalRatio({
         cardTotal,
         transferTotal: rcEligibleTransferTotal,
         houseDiscountTotal,
         payrollMealTotal,
+        cashTotal,
         cashIncomeNetTotal,
     });
     const ratioFormula = normalizeText(summary.internalRatio?.formula || '');
     const shouldUseRecalculatedRc = ratioFormula.includes('TOTAL INGRESO DE CAJA')
         || ratioFormula.includes('CON RETENCIONES')
         || isDaniaClosure7102(closure);
-    const cashCordobas = safeNumber(payment.cashCordobas ?? closure.cashCordobasTotal);
-    const cashDollarsConverted = safeNumber(payment.cashDollarsConverted ?? closure.dollarCashTotalCordobas);
-    const preCloseDepositTotal = safeNumber(payment.preCloseDepositTotal ?? closure.preCloseDepositTotal ?? closure.preCloseDeposit?.totalCordobas);
-
     return {
         ...summary,
         general: {
@@ -2029,7 +2034,7 @@ const normalizeClosureAccountingSummarySales = (summary = {}, netSalesTotals = {
             rcEligibleTransferTotal,
             houseDiscountTotal,
             payrollMealTotal,
-            cashTotal: safeNumber(cashCordobas + cashDollarsConverted + preCloseDepositTotal),
+            cashTotal,
             cashCordobas,
             cashDollarsConverted,
             preCloseDepositTotal,
@@ -2038,7 +2043,7 @@ const normalizeClosureAccountingSummarySales = (summary = {}, netSalesTotals = {
             ...(summary.internalRatio || {}),
             rc,
             cashResidual,
-            formula: 'Tarjeta + todas las transferencias + descuentos casa + alimentacion planilla - flujo de caja',
+            formula: 'Efectivo + tarjeta + todas las transferencias + descuentos casa + alimentacion planilla - flujo de caja',
         },
     };
 };
@@ -2261,6 +2266,7 @@ const syncLinkedClosureForCashReceipt = async (receiptId = '', receiptPayload = 
         transferTotal: rcEligibleTransferTotal,
         houseDiscountTotal,
         payrollMealTotal,
+        cashTotal: safeNumber(payment.cashTotal ?? closure.cashTotal),
         cashIncomeNetTotal,
     });
     const accountingSummary = closure.accountingSummary ? {
@@ -2292,7 +2298,7 @@ const syncLinkedClosureForCashReceipt = async (receiptId = '', receiptPayload = 
             ...(closure.accountingSummary.internalRatio || {}),
             rc,
             cashResidual,
-            formula: 'Tarjeta + todas las transferencias + descuentos casa + alimentacion planilla - flujo de caja',
+            formula: 'Efectivo + tarjeta + todas las transferencias + descuentos casa + alimentacion planilla - flujo de caja',
         },
     } : null;
 
@@ -3711,12 +3717,12 @@ const SummaryCard = ({ label, value, tone = 'slate' }) => {
 };
 
 const CashClosureRcAlarm = ({ rc = 0 }) => {
-    if (!isPositiveCashClosureRc(rc)) return null;
+    if (!isCashClosureRcBlocked(rc)) return null;
 
     return (
         <div className="rounded-3xl border border-red-300 bg-red-50 px-4 py-4 text-red-900 shadow-sm">
             <div className="text-[10px] font-black uppercase tracking-[0.24em] text-red-700">Alarma de conciliacion</div>
-            <div className="mt-2 text-sm font-black">{CASH_CLOSURE_POSITIVE_RC_MESSAGE}</div>
+            <div className="mt-2 text-sm font-black">{CASH_CLOSURE_RC_BLOCKED_MESSAGE}</div>
             <div className="mt-1 text-xs font-bold text-red-700">RC actual: {fmt(rc)}</div>
         </div>
     );
@@ -3953,8 +3959,6 @@ const ClosureAccountingSummaryPanel = ({ summary = {} }) => {
     const tickets = summary.sicarTickets || {};
     const payment = summary.paymentBreakdown || {};
     const ratio = summary.internalRatio || {};
-    const rcDisplay = getCashClosureRcDisplayValue(summary);
-
     return (
         <div className="rounded-[1.8rem] border border-slate-200 bg-white p-4 shadow-sm">
             <div className="mb-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
@@ -3962,7 +3966,7 @@ const ClosureAccountingSummaryPanel = ({ summary = {} }) => {
                     <div className="text-[10px] font-black uppercase tracking-[0.28em] text-[#e30613]">Resumen final del cierre</div>
                     <div className="text-lg font-black text-slate-950">Cuadre contable y ratio RC</div>
                 </div>
-                <Badge tone={isPositiveCashClosureRc(ratio.rc) ? 'red' : 'green'}>RC {fmt(rcDisplay)}</Badge>
+                <Badge tone={isCashClosureRcBlocked(ratio.rc) ? 'red' : 'green'}>RC {fmt(ratio.rc)}</Badge>
             </div>
             <div className="grid gap-4 xl:grid-cols-5">
                 <div className="rounded-3xl border border-slate-200 bg-slate-50 p-4">
@@ -4005,7 +4009,7 @@ const ClosureAccountingSummaryPanel = ({ summary = {} }) => {
                     <div className="mt-2 text-xs font-black text-slate-600">Cordobas {fmt(payment.cashCordobas)}</div>
                     <div className="text-xs font-black text-slate-600">Dolares {fmt(payment.cashDollarsConverted)}</div>
                     <div className="text-xs font-black text-slate-600">Pre-cierre {fmt(payment.preCloseDepositTotal)}</div>
-                    <div className="mt-3"><SummaryCard label="RC" value={fmt(rcDisplay)} tone={isPositiveCashClosureRc(ratio.rc) ? 'red' : 'green'} /></div>
+                    <div className="mt-3"><SummaryCard label="RC" value={fmt(ratio.rc)} tone={isCashClosureRcBlocked(ratio.rc) ? 'red' : 'green'} /></div>
                     <div className="mt-2 text-[11px] font-bold text-slate-500">{ratio.formula}</div>
                 </div>
             </div>
@@ -4399,7 +4403,7 @@ function CashClosure({ data, branchContext }) {
         preCloseDepositTotal,
     }), [sicarCashSalesTotal, sicarCreditSalesTotal, sicarCreditRecoveryTotal, closureInvoices, closureCashReceipts, transferTotals, posTotals, houseDiscountTotal, payrollMealTotal, cashTotal, dollarCashTotalCordobas, preCloseDepositTotal]);
     const closureRc = getCashClosureRcValue(closureAccountingSummary);
-    const isClosureRcPositive = isPositiveCashClosureRc(closureRc);
+    const isClosureRcBlocked = isCashClosureRcBlocked(closureRc);
     const comparisonExpectedTotal = getCashClosureComparableExpectedTotal(sicarExpected, externalCreditRecoveryTotal);
     const expectedAfterRetentions = comparisonExpectedTotal;
     const manualTotalWithRetentions = getCashClosureManualTotalWithRetentions(manualTotal, retentionTotal);
@@ -4818,7 +4822,7 @@ function CashClosure({ data, branchContext }) {
             try {
                 assertCashClosureRcAllowed(closureAccountingSummary);
             } catch (error) {
-                setMessage(error?.message || CASH_CLOSURE_POSITIVE_RC_MESSAGE);
+                setMessage(error?.message || CASH_CLOSURE_RC_BLOCKED_MESSAGE);
                 return;
             }
         }
@@ -4991,7 +4995,7 @@ function CashClosure({ data, branchContext }) {
                 month: getMonth(closureDate),
                 status: isWaiting ? 'en_espera' : (shouldTrackDifference ? 'con_diferencia' : 'cuadrado'),
                 appBuildId: APP_BUILD_ID,
-                cashClosureCalculationVersion: 'rc-v3-payroll-meal',
+                cashClosureCalculationVersion: 'rc-v4-balanced-payments',
                 cashierName: safeCashierName,
                 cashierCode,
                 linkedSicarClosureId: selectedClosure?.id || '',
@@ -5398,7 +5402,7 @@ function CashClosure({ data, branchContext }) {
                         </div>
                     )}
 
-                    {isClosureRcPositive && (
+                    {isClosureRcBlocked && (
                         <div className="mt-5">
                             <CashClosureRcAlarm rc={closureRc} />
                         </div>
@@ -5766,8 +5770,8 @@ function CashClosure({ data, branchContext }) {
                             type="button"
                             onClick={() => saveClosure('closed')}
                             disabled={saving}
-                            title={isClosureRcPositive ? buildPositiveCashClosureRcMessage(closureRc) : undefined}
-                            className={`rounded-2xl px-5 py-4 text-sm font-black uppercase tracking-[0.2em] transition disabled:cursor-not-allowed disabled:opacity-60 ${isClosureRcPositive ? 'border border-red-300 bg-red-50 text-red-800 hover:bg-red-100' : 'bg-[#e30613] text-white shadow-lg shadow-red-950/20 hover:bg-[#9f111a]'}`}
+                            title={isClosureRcBlocked ? buildCashClosureRcBlockedMessage(closureRc) : undefined}
+                            className={`rounded-2xl px-5 py-4 text-sm font-black uppercase tracking-[0.2em] transition disabled:cursor-not-allowed disabled:opacity-60 ${isClosureRcBlocked ? 'border border-red-300 bg-red-50 text-red-800 hover:bg-red-100' : 'bg-[#e30613] text-white shadow-lg shadow-red-950/20 hover:bg-[#9f111a]'}`}
                         >
                             {saving ? 'Cerrando...' : 'Cerrar caja y conciliar'}
                         </button>
@@ -12269,7 +12273,7 @@ const CashClosureEditModal = ({
                             type="button"
                             onClick={onSave}
                             disabled={saving}
-                            title={rcBlocked ? buildPositiveCashClosureRcMessage(rcValue) : undefined}
+                            title={rcBlocked ? buildCashClosureRcBlockedMessage(rcValue) : undefined}
                             className={`rounded-2xl px-4 py-2 text-xs font-black uppercase tracking-[0.16em] transition disabled:opacity-60 ${rcBlocked ? 'border border-red-300 bg-red-50 text-red-800 hover:bg-red-100' : 'bg-[#e30613] text-white hover:bg-red-700'}`}
                         >
                             {saving ? 'Guardando...' : 'Guardar edicion'}
@@ -12306,7 +12310,7 @@ const CashClosureEditModal = ({
                         <SummaryCard label="Diferencia" value={fmt(totals.difference)} tone={Math.abs(totals.difference) > 0.01 ? 'red' : 'green'} />
                         <SummaryCard label="Efectivo total" value={fmt(totals.cashTotal)} />
                         <SummaryCard label="Estado sugerido" value={form.status === 'en_espera' ? 'En espera' : totals.shouldTrackDifference ? 'Con diferencia' : 'Cuadrado'} tone={form.status === 'en_espera' ? 'amber' : totals.shouldTrackDifference ? 'red' : 'green'} />
-                        <SummaryCard label="RC" value={fmt(Math.abs(safeNumber(rcValue)))} tone={rcBlocked ? 'red' : 'green'} />
+                        <SummaryCard label="RC" value={fmt(rcValue)} tone={rcBlocked ? 'red' : 'green'} />
                     </div>
 
                     {rcBlocked && <CashClosureRcAlarm rc={rcValue} />}
@@ -12947,7 +12951,7 @@ function CashClosureHistory({ data, canEdit = true, branchContext }) {
         });
     }, [editForm, editClosure]);
     const editClosureRc = getCashClosureRcValue(editAccountingSummary);
-    const isEditClosureRcPositive = editForm?.status !== 'en_espera' && isPositiveCashClosureRc(editClosureRc);
+    const isEditClosureRcBlocked = editForm?.status !== 'en_espera' && isCashClosureRcBlocked(editClosureRc);
 
     const updateEditField = (key, value) => {
         setEditForm((prev) => {
@@ -13107,7 +13111,7 @@ function CashClosureHistory({ data, canEdit = true, branchContext }) {
             try {
                 assertCashClosureRcAllowed(accountingSummary);
             } catch (error) {
-                setMessage(error?.message || CASH_CLOSURE_POSITIVE_RC_MESSAGE);
+                setMessage(error?.message || CASH_CLOSURE_RC_BLOCKED_MESSAGE);
                 return;
             }
         }
@@ -13509,7 +13513,7 @@ function CashClosureHistory({ data, canEdit = true, branchContext }) {
                     cashierOptions={cashierOptions}
                     saving={editSaving}
                     rcValue={editClosureRc}
-                    rcBlocked={isEditClosureRcPositive}
+                    rcBlocked={isEditClosureRcBlocked}
                     onClose={closeEditClosure}
                     onSave={saveEditedClosure}
                     onUndoConciliation={undoClosureConciliation}
