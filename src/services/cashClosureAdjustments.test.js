@@ -4,7 +4,7 @@ import test from 'node:test';
 import {
     calculateCashClosureInternalRatio,
     getDocumentLinkedPayrollMealTotal,
-    isCashClosureRcWithinTolerance,
+    isCashClosureRcAllowed,
 } from './cashClosureAdjustments.js';
 
 test('alimentacion planilla affects RC exactly like descuento de la casa', () => {
@@ -12,23 +12,19 @@ test('alimentacion planilla affects RC exactly like descuento de la casa', () =>
         cardTotal: 100,
         transferTotal: 200,
         houseDiscountTotal: 50,
-        cashTotal: 150,
         cashIncomeNetTotal: 500,
     });
     const withPayrollMeal = calculateCashClosureInternalRatio({
         cardTotal: 100,
         transferTotal: 200,
         payrollMealTotal: 50,
-        cashTotal: 150,
         cashIncomeNetTotal: 500,
     });
 
     assert.deepEqual(withPayrollMeal, withHouseDiscount);
     assert.deepEqual(withPayrollMeal, {
         nonCashTotal: 350,
-        enteredCashTotal: 150,
-        reconciledPaymentTotal: 500,
-        rc: 0,
+        rc: -150,
         cashResidual: 150,
     });
 });
@@ -42,19 +38,16 @@ test('combines both non-cash adjustments without changing their signs', () => {
         cashIncomeNetTotal: 240,
     }), {
         nonCashTotal: 240,
-        enteredCashTotal: 0,
-        reconciledPaymentTotal: 240,
         rc: 0,
         cashResidual: 0,
     });
 });
 
-test('allows a final RC difference from minus ten through plus ten cordobas', () => {
-    assert.equal(isCashClosureRcWithinTolerance(-10), true);
-    assert.equal(isCashClosureRcWithinTolerance(0), true);
-    assert.equal(isCashClosureRcWithinTolerance(10), true);
-    assert.equal(isCashClosureRcWithinTolerance(-10.01), false);
-    assert.equal(isCashClosureRcWithinTolerance(10.01), false);
+test('allows the cash residual and up to ten cordobas over stamped documents', () => {
+    assert.equal(isCashClosureRcAllowed(-29504.50), true);
+    assert.equal(isCashClosureRcAllowed(0), true);
+    assert.equal(isCashClosureRcAllowed(10), true);
+    assert.equal(isCashClosureRcAllowed(10.01), false);
 });
 
 test('only document-linked payroll meals participate in the stamped-document RC', () => {

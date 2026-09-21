@@ -5,10 +5,10 @@ const money = (value = 0) => {
 
 export const CASH_CLOSURE_RC_TOLERANCE = 10;
 
-export const isCashClosureRcWithinTolerance = (
+export const isCashClosureRcAllowed = (
     value = 0,
     tolerance = CASH_CLOSURE_RC_TOLERANCE
-) => Math.abs(money(value)) <= Math.abs(money(tolerance));
+) => money(value) <= Math.abs(money(tolerance));
 
 export const getDocumentLinkedPayrollMealTotal = (rows = []) => money(
     (Array.isArray(rows) ? rows : []).reduce((total, row = {}) => {
@@ -28,22 +28,17 @@ export const calculateCashClosureInternalRatio = ({
     transferTotal = 0,
     houseDiscountTotal = 0,
     payrollMealTotal = 0,
-    cashTotal = 0,
     cashIncomeNetTotal = 0,
 } = {}) => {
     const nonCashTotal = money(money(cardTotal)
         + money(transferTotal)
         + money(houseDiscountTotal)
         + money(payrollMealTotal));
-    const enteredCashTotal = money(cashTotal);
     const incomeTotal = money(cashIncomeNetTotal);
-    const reconciledPaymentTotal = money(nonCashTotal + enteredCashTotal);
 
     return {
         nonCashTotal,
-        enteredCashTotal,
-        reconciledPaymentTotal,
-        rc: money(reconciledPaymentTotal - incomeTotal),
+        rc: money(nonCashTotal - incomeTotal),
         cashResidual: money(incomeTotal - nonCashTotal),
     };
 };

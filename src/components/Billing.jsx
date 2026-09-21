@@ -36,7 +36,7 @@ import {
     CASH_CLOSURE_RC_TOLERANCE,
     calculateCashClosureInternalRatio,
     getDocumentLinkedPayrollMealTotal,
-    isCashClosureRcWithinTolerance,
+    isCashClosureRcAllowed,
 } from '../services/cashClosureAdjustments';
 import { APP_BUILD_ID } from '../services/appVersion';
 import SalesCRM from './SalesCRM';
@@ -81,7 +81,7 @@ const CASH_CLOSURE_EDIT_PIN = '210397';
 const SICAR_CASH_CLOSURE_AVAILABLE_FROM_DATE = '2026-06-14';
 const SICAR_PENDING_INVOICE_LOOKBACK_DAYS = 3;
 const SICAR_ACCOUNTING_LINK_START_DATE = '2026-09-03';
-const CASH_CLOSURE_RC_BLOCKED_MESSAGE = `NO SE PUEDE REALIZAR EL CIERRE PORQUE EL RC SUPERA LA TOLERANCIA DE +/- C$ ${CASH_CLOSURE_RC_TOLERANCE.toFixed(2)}.`;
+const CASH_CLOSURE_RC_BLOCKED_MESSAGE = `NO SE PUEDE REALIZAR EL CIERRE PORQUE LOS PAGOS NO EFECTIVOS SUPERAN LOS DOCUMENTOS MEMBRETADOS POR MAS DE C$ ${CASH_CLOSURE_RC_TOLERANCE.toFixed(2)}.`;
 
 const CASHIER_OPTIONS = [
     'Dania Espinoza',
@@ -167,7 +167,7 @@ const getRcEligibleTransferTotalFromPayment = (payment = {}) => {
         : safeNumber(payment.transferTotal ?? payment.rcEligibleTransferTotal);
 };
 
-const isCashClosureRcBlocked = (value = 0) => !isCashClosureRcWithinTolerance(safeNumber(value));
+const isCashClosureRcBlocked = (value = 0) => !isCashClosureRcAllowed(safeNumber(value));
 
 const buildCashClosureRcBlockedMessage = (rc = 0) => `${CASH_CLOSURE_RC_BLOCKED_MESSAGE} RC ACTUAL: ${fmt(rc)}.`;
 
@@ -1955,7 +1955,7 @@ const buildClosureAccountingSummary = ({
         internalRatio: {
             rc,
             cashResidual,
-            formula: 'Efectivo + tarjeta + todas las transferencias + descuentos casa + alimentacion planilla de documentos membretados - flujo de caja',
+            formula: 'Tarjeta + todas las transferencias + descuentos casa + alimentacion planilla de documentos membretados - flujo membretado',
         },
     };
 };
@@ -2054,7 +2054,7 @@ const normalizeClosureAccountingSummarySales = (summary = {}, netSalesTotals = {
             ...(summary.internalRatio || {}),
             rc,
             cashResidual,
-            formula: 'Efectivo + tarjeta + todas las transferencias + descuentos casa + alimentacion planilla de documentos membretados - flujo de caja',
+            formula: 'Tarjeta + todas las transferencias + descuentos casa + alimentacion planilla de documentos membretados - flujo membretado',
         },
     };
 };
@@ -2311,7 +2311,7 @@ const syncLinkedClosureForCashReceipt = async (receiptId = '', receiptPayload = 
             ...(closure.accountingSummary.internalRatio || {}),
             rc,
             cashResidual,
-            formula: 'Efectivo + tarjeta + todas las transferencias + descuentos casa + alimentacion planilla de documentos membretados - flujo de caja',
+            formula: 'Tarjeta + todas las transferencias + descuentos casa + alimentacion planilla de documentos membretados - flujo membretado',
         },
     } : null;
 
@@ -3973,6 +3973,7 @@ const ClosureAccountingSummaryPanel = ({ summary = {} }) => {
     const tickets = summary.sicarTickets || {};
     const payment = summary.paymentBreakdown || {};
     const ratio = summary.internalRatio || {};
+    const rcDisplay = getCashClosureRcDisplayValue(summary);
     return (
         <div className="rounded-[1.8rem] border border-slate-200 bg-white p-4 shadow-sm">
             <div className="mb-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
@@ -3980,7 +3981,7 @@ const ClosureAccountingSummaryPanel = ({ summary = {} }) => {
                     <div className="text-[10px] font-black uppercase tracking-[0.28em] text-[#e30613]">Resumen final del cierre</div>
                     <div className="text-lg font-black text-slate-950">Cuadre contable y ratio RC</div>
                 </div>
-                <Badge tone={isCashClosureRcBlocked(ratio.rc) ? 'red' : 'green'}>RC {fmt(ratio.rc)}</Badge>
+                <Badge tone={isCashClosureRcBlocked(ratio.rc) ? 'red' : 'green'}>RC {fmt(rcDisplay)}</Badge>
             </div>
             <div className="grid gap-4 xl:grid-cols-5">
                 <div className="rounded-3xl border border-slate-200 bg-slate-50 p-4">
@@ -4023,7 +4024,7 @@ const ClosureAccountingSummaryPanel = ({ summary = {} }) => {
                     <div className="mt-2 text-xs font-black text-slate-600">Cordobas {fmt(payment.cashCordobas)}</div>
                     <div className="text-xs font-black text-slate-600">Dolares {fmt(payment.cashDollarsConverted)}</div>
                     <div className="text-xs font-black text-slate-600">Pre-cierre {fmt(payment.preCloseDepositTotal)}</div>
-                    <div className="mt-3"><SummaryCard label="RC" value={fmt(ratio.rc)} tone={isCashClosureRcBlocked(ratio.rc) ? 'red' : 'green'} /></div>
+                    <div className="mt-3"><SummaryCard label="RC efectivo" value={fmt(rcDisplay)} tone={isCashClosureRcBlocked(ratio.rc) ? 'red' : 'green'} /></div>
                     <div className="mt-2 text-[11px] font-bold text-slate-500">{ratio.formula}</div>
                 </div>
             </div>
@@ -5014,7 +5015,7 @@ function CashClosure({ data, branchContext }) {
                 month: getMonth(closureDate),
                 status: isWaiting ? 'en_espera' : (shouldTrackDifference ? 'con_diferencia' : 'cuadrado'),
                 appBuildId: APP_BUILD_ID,
-                cashClosureCalculationVersion: 'rc-v5-stamped-document-payments',
+                cashClosureCalculationVersion: 'rc-v6-stamped-document-residual',
                 cashierName: safeCashierName,
                 cashierCode,
                 linkedSicarClosureId: selectedClosure?.id || '',
@@ -12257,6 +12258,7 @@ const CashClosureEditModal = ({
     cashierOptions = CASHIER_OPTIONS,
     saving = false,
     rcValue = 0,
+    rcDisplayValue = Math.abs(safeNumber(rcValue)),
     rcBlocked = false,
     onClose,
     onSave,
@@ -12335,7 +12337,7 @@ const CashClosureEditModal = ({
                         <SummaryCard label="Diferencia" value={fmt(totals.difference)} tone={Math.abs(totals.difference) > 0.01 ? 'red' : 'green'} />
                         <SummaryCard label="Efectivo total" value={fmt(totals.cashTotal)} />
                         <SummaryCard label="Estado sugerido" value={form.status === 'en_espera' ? 'En espera' : totals.shouldTrackDifference ? 'Con diferencia' : 'Cuadrado'} tone={form.status === 'en_espera' ? 'amber' : totals.shouldTrackDifference ? 'red' : 'green'} />
-                        <SummaryCard label="RC" value={fmt(rcValue)} tone={rcBlocked ? 'red' : 'green'} />
+                        <SummaryCard label="RC efectivo" value={fmt(rcDisplayValue)} tone={rcBlocked ? 'red' : 'green'} />
                     </div>
 
                     {rcBlocked && <CashClosureRcAlarm rc={rcValue} />}
@@ -12977,6 +12979,7 @@ function CashClosureHistory({ data, canEdit = true, branchContext }) {
         });
     }, [editForm, editClosure]);
     const editClosureRc = getCashClosureRcValue(editAccountingSummary);
+    const editClosureRcDisplay = getCashClosureRcDisplayValue(editAccountingSummary);
     const isEditClosureRcBlocked = editForm?.status !== 'en_espera' && isCashClosureRcBlocked(editClosureRc);
 
     const updateEditField = (key, value) => {
@@ -13155,7 +13158,7 @@ function CashClosureHistory({ data, canEdit = true, branchContext }) {
                 month: getMonth(editedClosureDate),
                 status: nextStatus,
                 appBuildId: APP_BUILD_ID,
-                cashClosureCalculationVersion: 'rc-v5-stamped-document-payments',
+                cashClosureCalculationVersion: 'rc-v6-stamped-document-residual',
                 cashierName: editForm.cashierName || '',
                 cashierCode,
                 linkedSicarClosureId: editForm.linkedSicarClosureId || '',
@@ -13543,6 +13546,7 @@ function CashClosureHistory({ data, canEdit = true, branchContext }) {
                     cashierOptions={cashierOptions}
                     saving={editSaving}
                     rcValue={editClosureRc}
+                    rcDisplayValue={editClosureRcDisplay}
                     rcBlocked={isEditClosureRcBlocked}
                     onClose={closeEditClosure}
                     onSave={saveEditedClosure}
