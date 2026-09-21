@@ -35,6 +35,7 @@ import { mergeClosureInvoiceDraftWithPersisted } from '../services/cashClosureIn
 import {
     CASH_CLOSURE_RC_TOLERANCE,
     calculateCashClosureInternalRatio,
+    getDocumentLinkedPayrollMealTotal,
     isCashClosureRcWithinTolerance,
 } from '../services/cashClosureAdjustments';
 import { APP_BUILD_ID } from '../services/appVersion';
@@ -1862,6 +1863,7 @@ const buildClosureAccountingSummary = ({
     preCloseDepositTotal = 0,
     houseDiscountTotal = 0,
     payrollMealTotal = 0,
+    documentPayrollMealTotal = payrollMealTotal,
 } = {}) => {
     const stampedCashTotal = safeNumber(stampedInvoices.reduce((sum, invoice) => (
         sum + getInvoicePaymentRows(invoice).reduce((paymentSum, row) => (
@@ -1897,11 +1899,12 @@ const buildClosureAccountingSummary = ({
     const cashTotal = safeNumber(cashCordobasTotal + dollarCashTotalCordobas + preCloseDepositTotal);
     const houseDiscount = safeNumber(houseDiscountTotal);
     const payrollMeal = safeNumber(payrollMealTotal);
+    const documentPayrollMeal = safeNumber(documentPayrollMealTotal);
     const { rc, cashResidual } = calculateCashClosureInternalRatio({
         cardTotal,
         transferTotal: rcEligibleTransferTotal,
         houseDiscountTotal: houseDiscount,
-        payrollMealTotal: payrollMeal,
+        payrollMealTotal: documentPayrollMeal,
         cashTotal,
         cashIncomeNetTotal,
     });
@@ -1943,6 +1946,7 @@ const buildClosureAccountingSummary = ({
             rcEligibleTransferTotal,
             houseDiscountTotal: houseDiscount,
             payrollMealTotal: payrollMeal,
+            documentPayrollMealTotal: documentPayrollMeal,
             cashTotal,
             cashCordobas: safeNumber(cashCordobasTotal),
             cashDollarsConverted: safeNumber(dollarCashTotalCordobas),
@@ -1951,7 +1955,7 @@ const buildClosureAccountingSummary = ({
         internalRatio: {
             rc,
             cashResidual,
-            formula: 'Efectivo + tarjeta + todas las transferencias + descuentos casa + alimentacion planilla - flujo de caja',
+            formula: 'Efectivo + tarjeta + todas las transferencias + descuentos casa + alimentacion planilla de documentos membretados - flujo de caja',
         },
     };
 };
@@ -1991,6 +1995,12 @@ const normalizeClosureAccountingSummarySales = (summary = {}, netSalesTotals = {
     const rcEligibleTransferTotal = getRcEligibleTransferTotalFromPayment(payment);
     const houseDiscountTotal = safeNumber(payment.houseDiscountTotal ?? closure.houseDiscountTotal ?? getHouseDiscountTotal(closure.houseDiscountDetails));
     const payrollMealTotal = safeNumber(payment.payrollMealTotal ?? closure.payrollMealTotal ?? getPayrollMealTotal(closure.payrollMealDetails));
+    const documentPayrollMealTotal = safeNumber(
+        payment.documentPayrollMealTotal
+        ?? closure.documentPayrollMealTotal
+        ?? closure.documentPaymentExpected?.payrollMealTotal
+        ?? getDocumentLinkedPayrollMealTotal(closure.payrollMealDetails)
+    );
     const cashCordobas = safeNumber(payment.cashCordobas ?? closure.cashCordobasTotal);
     const cashDollarsConverted = safeNumber(payment.cashDollarsConverted ?? closure.dollarCashTotalCordobas);
     const preCloseDepositTotal = safeNumber(payment.preCloseDepositTotal ?? closure.preCloseDepositTotal ?? closure.preCloseDeposit?.totalCordobas);
@@ -1999,7 +2009,7 @@ const normalizeClosureAccountingSummarySales = (summary = {}, netSalesTotals = {
         cardTotal,
         transferTotal: rcEligibleTransferTotal,
         houseDiscountTotal,
-        payrollMealTotal,
+        payrollMealTotal: documentPayrollMealTotal,
         cashTotal,
         cashIncomeNetTotal,
     });
@@ -2034,6 +2044,7 @@ const normalizeClosureAccountingSummarySales = (summary = {}, netSalesTotals = {
             rcEligibleTransferTotal,
             houseDiscountTotal,
             payrollMealTotal,
+            documentPayrollMealTotal,
             cashTotal,
             cashCordobas,
             cashDollarsConverted,
@@ -2043,7 +2054,7 @@ const normalizeClosureAccountingSummarySales = (summary = {}, netSalesTotals = {
             ...(summary.internalRatio || {}),
             rc,
             cashResidual,
-            formula: 'Efectivo + tarjeta + todas las transferencias + descuentos casa + alimentacion planilla - flujo de caja',
+            formula: 'Efectivo + tarjeta + todas las transferencias + descuentos casa + alimentacion planilla de documentos membretados - flujo de caja',
         },
     };
 };
@@ -2261,11 +2272,12 @@ const syncLinkedClosureForCashReceipt = async (receiptId = '', receiptPayload = 
     const rcEligibleTransferTotal = getRcEligibleTransferTotalFromPayment(payment);
     const houseDiscountTotal = safeNumber(payment.houseDiscountTotal ?? closure.houseDiscountTotal ?? getHouseDiscountTotal(closure.houseDiscountDetails));
     const payrollMealTotal = safeNumber(payment.payrollMealTotal ?? closure.payrollMealTotal ?? getPayrollMealTotal(closure.payrollMealDetails));
+    const documentPayrollMealTotal = getDocumentLinkedPayrollMealTotal(closure.payrollMealDetails);
     const { rc, cashResidual } = calculateCashClosureInternalRatio({
         cardTotal: safeNumber(payment.cardTotal),
         transferTotal: rcEligibleTransferTotal,
         houseDiscountTotal,
-        payrollMealTotal,
+        payrollMealTotal: documentPayrollMealTotal,
         cashTotal: safeNumber(payment.cashTotal ?? closure.cashTotal),
         cashIncomeNetTotal,
     });
@@ -2293,12 +2305,13 @@ const syncLinkedClosureForCashReceipt = async (receiptId = '', receiptPayload = 
             ...(closure.accountingSummary.paymentBreakdown || {}),
             houseDiscountTotal,
             payrollMealTotal,
+            documentPayrollMealTotal,
         },
         internalRatio: {
             ...(closure.accountingSummary.internalRatio || {}),
             rc,
             cashResidual,
-            formula: 'Efectivo + tarjeta + todas las transferencias + descuentos casa + alimentacion planilla - flujo de caja',
+            formula: 'Efectivo + tarjeta + todas las transferencias + descuentos casa + alimentacion planilla de documentos membretados - flujo de caja',
         },
     } : null;
 
@@ -2350,6 +2363,7 @@ const syncLinkedClosureForStampedInvoice = async (invoiceId = '', invoicePayload
         posTotals: closure.posTotals || {},
         houseDiscountTotal: closure.houseDiscountTotal ?? getHouseDiscountTotal(closure.houseDiscountDetails),
         payrollMealTotal: closure.payrollMealTotal ?? getPayrollMealTotal(closure.payrollMealDetails),
+        documentPayrollMealTotal: getDocumentLinkedPayrollMealTotal(closure.payrollMealDetails),
         cashCordobasTotal: closure.cashCordobasTotal,
         dollarCashTotalCordobas: closure.dollarCashTotalCordobas,
         preCloseDepositTotal: closure.preCloseDepositTotal || closure.preCloseDeposit?.totalCordobas,
@@ -4356,6 +4370,10 @@ function CashClosure({ data, branchContext }) {
     ])), [posDetails]);
     const houseDiscountTotal = useMemo(() => getHouseDiscountTotal(houseDiscountDetails), [houseDiscountDetails]);
     const payrollMealTotal = useMemo(() => getPayrollMealTotal(payrollMealDetails), [payrollMealDetails]);
+    const documentPayrollMealTotal = useMemo(
+        () => getDocumentLinkedPayrollMealTotal(payrollMealDetails),
+        [payrollMealDetails]
+    );
     const documentPaymentExpected = useMemo(() => ({
         posTotals: closurePaymentAutomation.posExpectedTotals,
         transferTotals: Object.fromEntries(TRANSFER_BANKS.map((bank) => [
@@ -4398,10 +4416,11 @@ function CashClosure({ data, branchContext }) {
         posTotals,
         houseDiscountTotal,
         payrollMealTotal,
+        documentPayrollMealTotal,
         cashCordobasTotal: cashTotal,
         dollarCashTotalCordobas,
         preCloseDepositTotal,
-    }), [sicarCashSalesTotal, sicarCreditSalesTotal, sicarCreditRecoveryTotal, closureInvoices, closureCashReceipts, transferTotals, posTotals, houseDiscountTotal, payrollMealTotal, cashTotal, dollarCashTotalCordobas, preCloseDepositTotal]);
+    }), [sicarCashSalesTotal, sicarCreditSalesTotal, sicarCreditRecoveryTotal, closureInvoices, closureCashReceipts, transferTotals, posTotals, houseDiscountTotal, payrollMealTotal, documentPayrollMealTotal, cashTotal, dollarCashTotalCordobas, preCloseDepositTotal]);
     const closureRc = getCashClosureRcValue(closureAccountingSummary);
     const isClosureRcBlocked = isCashClosureRcBlocked(closureRc);
     const comparisonExpectedTotal = getCashClosureComparableExpectedTotal(sicarExpected, externalCreditRecoveryTotal);
@@ -4995,7 +5014,7 @@ function CashClosure({ data, branchContext }) {
                 month: getMonth(closureDate),
                 status: isWaiting ? 'en_espera' : (shouldTrackDifference ? 'con_diferencia' : 'cuadrado'),
                 appBuildId: APP_BUILD_ID,
-                cashClosureCalculationVersion: 'rc-v4-balanced-payments',
+                cashClosureCalculationVersion: 'rc-v5-stamped-document-payments',
                 cashierName: safeCashierName,
                 cashierCode,
                 linkedSicarClosureId: selectedClosure?.id || '',
@@ -5043,6 +5062,7 @@ function CashClosure({ data, branchContext }) {
                 houseDiscountTotal,
                 payrollMealDetails: normalizePayrollMealDetails(payrollMealDetails),
                 payrollMealTotal,
+                documentPayrollMealTotal,
                 manualTotal,
                 difference,
                 stampedInvoiceIds: isWaiting ? [] : savedInvoices.map((invoice) => invoice.id),
@@ -10952,6 +10972,7 @@ const calculateClosureEditTotals = (form = {}) => {
     ]));
     const houseDiscountTotal = getHouseDiscountTotal(form.houseDiscountDetails);
     const payrollMealTotal = getPayrollMealTotal(form.payrollMealDetails);
+    const documentPayrollMealTotal = getDocumentLinkedPayrollMealTotal(form.payrollMealDetails);
     const manualTotal = safeNumber(
         cashTotal
         + Object.values(transferTotals).reduce((sum, value) => safeNumber(sum + value), 0)
@@ -10979,6 +11000,7 @@ const calculateClosureEditTotals = (form = {}) => {
         posTotals,
         houseDiscountTotal,
         payrollMealTotal,
+        documentPayrollMealTotal,
         manualTotal,
         manualTotalWithRetentions,
         retentionAdjustment,
@@ -11204,6 +11226,9 @@ const buildCashClosureReportContext = (closure = {}) => {
             posTotals: closure.posTotals || {},
             houseDiscountTotal: closure.houseDiscountTotal ?? houseDiscountTotal,
             payrollMealTotal: closure.payrollMealTotal ?? payrollMealTotal,
+            documentPayrollMealTotal: closure.documentPayrollMealTotal
+                ?? closure.documentPaymentExpected?.payrollMealTotal
+                ?? getDocumentLinkedPayrollMealTotal(closure.payrollMealDetails),
             cashCordobasTotal: closure.cashCordobasTotal,
             dollarCashTotalCordobas: closure.dollarCashTotalCordobas,
             preCloseDepositTotal: closure.preCloseDepositTotal || closure.preCloseDeposit?.totalCordobas,
@@ -12945,6 +12970,7 @@ function CashClosureHistory({ data, canEdit = true, branchContext }) {
             posTotals: totals.posTotals,
             houseDiscountTotal: totals.houseDiscountTotal,
             payrollMealTotal: totals.payrollMealTotal,
+            documentPayrollMealTotal: totals.documentPayrollMealTotal,
             cashCordobasTotal: totals.cashCordobasTotal,
             dollarCashTotalCordobas: totals.dollarCashTotalCordobas,
             preCloseDepositTotal: totals.preCloseDepositTotal,
@@ -13102,6 +13128,7 @@ function CashClosureHistory({ data, canEdit = true, branchContext }) {
             posTotals: totals.posTotals,
             houseDiscountTotal: totals.houseDiscountTotal,
             payrollMealTotal: totals.payrollMealTotal,
+            documentPayrollMealTotal: totals.documentPayrollMealTotal,
             cashCordobasTotal: totals.cashCordobasTotal,
             dollarCashTotalCordobas: totals.dollarCashTotalCordobas,
             preCloseDepositTotal: totals.preCloseDepositTotal,
@@ -13127,6 +13154,8 @@ function CashClosureHistory({ data, canEdit = true, branchContext }) {
                 date: editedClosureDate,
                 month: getMonth(editedClosureDate),
                 status: nextStatus,
+                appBuildId: APP_BUILD_ID,
+                cashClosureCalculationVersion: 'rc-v5-stamped-document-payments',
                 cashierName: editForm.cashierName || '',
                 cashierCode,
                 linkedSicarClosureId: editForm.linkedSicarClosureId || '',
@@ -13164,6 +13193,7 @@ function CashClosureHistory({ data, canEdit = true, branchContext }) {
                 houseDiscountTotal: totals.houseDiscountTotal,
                 payrollMealDetails: normalizePayrollMealDetails(editForm.payrollMealDetails),
                 payrollMealTotal: totals.payrollMealTotal,
+                documentPayrollMealTotal: totals.documentPayrollMealTotal,
                 manualTotal: totals.manualTotal,
                 manualTotalWithRetentions: totals.manualTotalWithRetentions,
                 difference: totals.difference,
