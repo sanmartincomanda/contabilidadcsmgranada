@@ -26,6 +26,8 @@ test('alimentacion planilla affects RC exactly like descuento de la casa', () =>
     assert.deepEqual(withPayrollMeal, {
         nonCashTotal: 350,
         enteredCashTotal: 150,
+        retentionTotal: 0,
+        reconciliationTargetTotal: 500,
         reconciledPaymentTotal: 500,
         rc: 0,
         cashResidual: 150,
@@ -42,9 +44,44 @@ test('combines both non-cash adjustments without changing their signs', () => {
     }), {
         nonCashTotal: 240,
         enteredCashTotal: 0,
+        retentionTotal: 0,
+        reconciliationTargetTotal: 240,
         reconciledPaymentTotal: 240,
         rc: 0,
         cashResidual: 0,
+    });
+});
+
+test('reconciles payroll meals against the SICAR expected total without stamped documents', () => {
+    assert.deepEqual(calculateCashClosureInternalRatio({
+        payrollMealTotal: 14732.47,
+        cashIncomeNetTotal: 0,
+        reconciliationTargetTotal: 14732.47,
+    }), {
+        nonCashTotal: 14732.47,
+        enteredCashTotal: 0,
+        retentionTotal: 0,
+        reconciliationTargetTotal: 14732.47,
+        reconciledPaymentTotal: 14732.47,
+        rc: 0,
+        cashResidual: 0,
+    });
+});
+
+test('includes retentions when reconciling payment methods against SICAR', () => {
+    assert.deepEqual(calculateCashClosureInternalRatio({
+        cardTotal: 800,
+        cashTotal: 170,
+        retentionAdjustment: 30,
+        reconciliationTargetTotal: 1000,
+    }), {
+        nonCashTotal: 800,
+        enteredCashTotal: 170,
+        retentionTotal: 30,
+        reconciliationTargetTotal: 1000,
+        reconciledPaymentTotal: 1000,
+        rc: 0,
+        cashResidual: 170,
     });
 });
 

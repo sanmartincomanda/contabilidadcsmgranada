@@ -1862,6 +1862,8 @@ const buildClosureAccountingSummary = ({
     preCloseDepositTotal = 0,
     houseDiscountTotal = 0,
     payrollMealTotal = 0,
+    reconciliationTargetTotal,
+    retentionAdjustment = 0,
 } = {}) => {
     const stampedCashTotal = safeNumber(stampedInvoices.reduce((sum, invoice) => (
         sum + getInvoicePaymentRows(invoice).reduce((paymentSum, row) => (
@@ -1904,6 +1906,8 @@ const buildClosureAccountingSummary = ({
         payrollMealTotal: payrollMeal,
         cashTotal,
         cashIncomeNetTotal,
+        reconciliationTargetTotal,
+        retentionAdjustment,
     });
 
     return {
@@ -1951,7 +1955,7 @@ const buildClosureAccountingSummary = ({
         internalRatio: {
             rc,
             cashResidual,
-            formula: 'Efectivo + tarjeta + todas las transferencias + descuentos casa + alimentacion planilla - flujo de caja',
+            formula: 'Efectivo + tarjeta + transferencias + descuentos casa + alimentacion planilla + retenciones - total esperado SICAR',
         },
     };
 };
@@ -1995,6 +1999,15 @@ const normalizeClosureAccountingSummarySales = (summary = {}, netSalesTotals = {
     const cashDollarsConverted = safeNumber(payment.cashDollarsConverted ?? closure.dollarCashTotalCordobas);
     const preCloseDepositTotal = safeNumber(payment.preCloseDepositTotal ?? closure.preCloseDepositTotal ?? closure.preCloseDeposit?.totalCordobas);
     const cashTotal = safeNumber(cashCordobas + cashDollarsConverted + preCloseDepositTotal);
+    const retentionAdjustment = safeNumber(
+        closure.retentionAdjustment
+        ?? (stampedInvoiceRetentionTotal + safeNumber(stamped.stampedCashReceiptRetentions))
+    );
+    const reconciliationTargetTotal = hasNumericValue(closure.comparisonExpectedTotal ?? closure.expectedAfterRetentions)
+        ? safeNumber(closure.comparisonExpectedTotal ?? closure.expectedAfterRetentions)
+        : hasNumericValue(closure.sicarExpected)
+            ? getCashClosureComparableExpectedTotal(closure.sicarExpected, closure.externalCreditRecoveryTotal)
+            : cashIncomeNetTotal;
     const { rc, cashResidual } = calculateCashClosureInternalRatio({
         cardTotal,
         transferTotal: rcEligibleTransferTotal,
@@ -2002,6 +2015,8 @@ const normalizeClosureAccountingSummarySales = (summary = {}, netSalesTotals = {
         payrollMealTotal,
         cashTotal,
         cashIncomeNetTotal,
+        reconciliationTargetTotal,
+        retentionAdjustment,
     });
     const ratioFormula = normalizeText(summary.internalRatio?.formula || '');
     const shouldUseRecalculatedRc = ratioFormula.includes('TOTAL INGRESO DE CAJA')
@@ -2043,7 +2058,7 @@ const normalizeClosureAccountingSummarySales = (summary = {}, netSalesTotals = {
             ...(summary.internalRatio || {}),
             rc,
             cashResidual,
-            formula: 'Efectivo + tarjeta + todas las transferencias + descuentos casa + alimentacion planilla - flujo de caja',
+            formula: 'Efectivo + tarjeta + transferencias + descuentos casa + alimentacion planilla + retenciones - total esperado SICAR',
         },
     };
 };
@@ -2261,13 +2276,22 @@ const syncLinkedClosureForCashReceipt = async (receiptId = '', receiptPayload = 
     const rcEligibleTransferTotal = getRcEligibleTransferTotalFromPayment(payment);
     const houseDiscountTotal = safeNumber(payment.houseDiscountTotal ?? closure.houseDiscountTotal ?? getHouseDiscountTotal(closure.houseDiscountDetails));
     const payrollMealTotal = safeNumber(payment.payrollMealTotal ?? closure.payrollMealTotal ?? getPayrollMealTotal(closure.payrollMealDetails));
+    const closureCashTotal = safeNumber(
+        payment.cashTotal
+        ?? closure.cashTotal
+        ?? (safeNumber(closure.cashCordobasTotal)
+            + safeNumber(closure.dollarCashTotalCordobas)
+            + safeNumber(closure.preCloseDepositTotal ?? closure.preCloseDeposit?.totalCordobas))
+    );
     const { rc, cashResidual } = calculateCashClosureInternalRatio({
         cardTotal: safeNumber(payment.cardTotal),
         transferTotal: rcEligibleTransferTotal,
         houseDiscountTotal,
         payrollMealTotal,
-        cashTotal: safeNumber(payment.cashTotal ?? closure.cashTotal),
+        cashTotal: closureCashTotal,
         cashIncomeNetTotal,
+        reconciliationTargetTotal: comparisonExpectedTotal,
+        retentionAdjustment,
     });
     const accountingSummary = closure.accountingSummary ? {
         ...closure.accountingSummary,
@@ -2298,7 +2322,7 @@ const syncLinkedClosureForCashReceipt = async (receiptId = '', receiptPayload = 
             ...(closure.accountingSummary.internalRatio || {}),
             rc,
             cashResidual,
-            formula: 'Efectivo + tarjeta + todas las transferencias + descuentos casa + alimentacion planilla - flujo de caja',
+            formula: 'Efectivo + tarjeta + transferencias + descuentos casa + alimentacion planilla + retenciones - total esperado SICAR',
         },
     } : null;
 
@@ -2339,21 +2363,6 @@ const syncLinkedClosureForStampedInvoice = async (invoiceId = '', invoicePayload
     const invoicesForTotals = stampedInvoices.length ? stampedInvoices : stampedInvoiceDrafts;
     const cashReceipts = getCashClosureReceipts(closure);
     const netSalesTotals = getNetSicarSalesTotals({ ...(closure.sicar || {}), ...closure });
-    const accountingSummary = buildClosureAccountingSummary({
-        cashSalesTotal: netSalesTotals.cashSalesNetTotal,
-        creditSalesTotal: netSalesTotals.creditSalesNetTotal,
-        creditRecoveryTotal: safeNumber(closure.creditRecoveryTotal || closure.sicar?.creditRecoveryTotal || closure.sicar?.recuperacionCredito || closure.sicar?.entCre),
-        stampedInvoices: invoicesForTotals,
-        cashReceipts,
-        externalCreditRecoveryTotal: getExternalCashReceiptTotal(cashReceipts),
-        transferTotals: closure.transferTotals || {},
-        posTotals: closure.posTotals || {},
-        houseDiscountTotal: closure.houseDiscountTotal ?? getHouseDiscountTotal(closure.houseDiscountDetails),
-        payrollMealTotal: closure.payrollMealTotal ?? getPayrollMealTotal(closure.payrollMealDetails),
-        cashCordobasTotal: closure.cashCordobasTotal,
-        dollarCashTotalCordobas: closure.dollarCashTotalCordobas,
-        preCloseDepositTotal: closure.preCloseDepositTotal || closure.preCloseDeposit?.totalCordobas,
-    });
     const invoiceRetentionTotal = invoicesForTotals.reduce((sum, invoice) => (
         safeNumber(sum + safeNumber(invoice.retentionTotal || safeNumber(invoice.retentionIr2) + safeNumber(invoice.retentionMunicipal1)))
     ), 0);
@@ -2367,6 +2376,23 @@ const syncLinkedClosureForStampedInvoice = async (invoiceId = '', invoicePayload
     const comparisonExpectedTotal = getCashClosureComparableExpectedTotal(sicarExpected, externalCreditRecoveryTotal);
     const expectedAfterRetentions = comparisonExpectedTotal;
     const difference = getCashClosureDifference(manualTotal, comparisonExpectedTotal, retentionAdjustment);
+    const accountingSummary = buildClosureAccountingSummary({
+        cashSalesTotal: netSalesTotals.cashSalesNetTotal,
+        creditSalesTotal: netSalesTotals.creditSalesNetTotal,
+        creditRecoveryTotal: safeNumber(closure.creditRecoveryTotal || closure.sicar?.creditRecoveryTotal || closure.sicar?.recuperacionCredito || closure.sicar?.entCre),
+        stampedInvoices: invoicesForTotals,
+        cashReceipts,
+        externalCreditRecoveryTotal,
+        transferTotals: closure.transferTotals || {},
+        posTotals: closure.posTotals || {},
+        houseDiscountTotal: closure.houseDiscountTotal ?? getHouseDiscountTotal(closure.houseDiscountDetails),
+        payrollMealTotal: closure.payrollMealTotal ?? getPayrollMealTotal(closure.payrollMealDetails),
+        cashCordobasTotal: closure.cashCordobasTotal,
+        dollarCashTotalCordobas: closure.dollarCashTotalCordobas,
+        preCloseDepositTotal: closure.preCloseDepositTotal || closure.preCloseDeposit?.totalCordobas,
+        reconciliationTargetTotal: comparisonExpectedTotal,
+        retentionAdjustment,
+    });
 
     await setDoc(closureRef, {
         ...(stampedInvoices.length ? { stampedInvoices } : {}),
@@ -4387,6 +4413,7 @@ function CashClosure({ data, branchContext }) {
     const sicarCashSalesTotal = sicarNetSalesTotals.cashSalesNetTotal;
     const sicarCreditRecoveryTotal = safeNumber(selectedClosure?.creditRecoveryTotal ?? selectedClosure?.recuperacionCredito ?? selectedClosure?.entCre);
     const sicarCreditSalesTotal = sicarNetSalesTotals.creditSalesNetTotal;
+    const comparisonExpectedTotal = getCashClosureComparableExpectedTotal(sicarExpected, externalCreditRecoveryTotal);
     const closureAccountingSummary = useMemo(() => buildClosureAccountingSummary({
         cashSalesTotal: sicarCashSalesTotal,
         creditSalesTotal: sicarCreditSalesTotal,
@@ -4401,10 +4428,11 @@ function CashClosure({ data, branchContext }) {
         cashCordobasTotal: cashTotal,
         dollarCashTotalCordobas,
         preCloseDepositTotal,
-    }), [sicarCashSalesTotal, sicarCreditSalesTotal, sicarCreditRecoveryTotal, closureInvoices, closureCashReceipts, transferTotals, posTotals, houseDiscountTotal, payrollMealTotal, cashTotal, dollarCashTotalCordobas, preCloseDepositTotal]);
+        reconciliationTargetTotal: comparisonExpectedTotal,
+        retentionAdjustment: retentionTotal,
+    }), [sicarCashSalesTotal, sicarCreditSalesTotal, sicarCreditRecoveryTotal, closureInvoices, closureCashReceipts, externalCreditRecoveryTotal, transferTotals, posTotals, houseDiscountTotal, payrollMealTotal, cashTotal, dollarCashTotalCordobas, preCloseDepositTotal, comparisonExpectedTotal, retentionTotal]);
     const closureRc = getCashClosureRcValue(closureAccountingSummary);
     const isClosureRcBlocked = isCashClosureRcBlocked(closureRc);
-    const comparisonExpectedTotal = getCashClosureComparableExpectedTotal(sicarExpected, externalCreditRecoveryTotal);
     const expectedAfterRetentions = comparisonExpectedTotal;
     const manualTotalWithRetentions = getCashClosureManualTotalWithRetentions(manualTotal, retentionTotal);
     const difference = getCashClosureDifference(manualTotal, comparisonExpectedTotal, retentionTotal);
@@ -4995,7 +5023,7 @@ function CashClosure({ data, branchContext }) {
                 month: getMonth(closureDate),
                 status: isWaiting ? 'en_espera' : (shouldTrackDifference ? 'con_diferencia' : 'cuadrado'),
                 appBuildId: APP_BUILD_ID,
-                cashClosureCalculationVersion: 'rc-v4-balanced-payments',
+                cashClosureCalculationVersion: 'rc-v5-sicar-expected-total',
                 cashierName: safeCashierName,
                 cashierCode,
                 linkedSicarClosureId: selectedClosure?.id || '',
@@ -11207,6 +11235,10 @@ const buildCashClosureReportContext = (closure = {}) => {
             cashCordobasTotal: closure.cashCordobasTotal,
             dollarCashTotalCordobas: closure.dollarCashTotalCordobas,
             preCloseDepositTotal: closure.preCloseDepositTotal || closure.preCloseDeposit?.totalCordobas,
+            reconciliationTargetTotal: closure.comparisonExpectedTotal
+                ?? closure.expectedAfterRetentions
+                ?? getCashClosureComparableExpectedTotal(closure.sicarExpected, closure.externalCreditRecoveryTotal),
+            retentionAdjustment: closure.retentionAdjustment,
         });
 
     return {
@@ -12948,6 +12980,8 @@ function CashClosureHistory({ data, canEdit = true, branchContext }) {
             cashCordobasTotal: totals.cashCordobasTotal,
             dollarCashTotalCordobas: totals.dollarCashTotalCordobas,
             preCloseDepositTotal: totals.preCloseDepositTotal,
+            reconciliationTargetTotal: totals.comparisonExpectedTotal,
+            retentionAdjustment: totals.retentionAdjustment,
         });
     }, [editForm, editClosure]);
     const editClosureRc = getCashClosureRcValue(editAccountingSummary);
@@ -13105,6 +13139,8 @@ function CashClosureHistory({ data, canEdit = true, branchContext }) {
             cashCordobasTotal: totals.cashCordobasTotal,
             dollarCashTotalCordobas: totals.dollarCashTotalCordobas,
             preCloseDepositTotal: totals.preCloseDepositTotal,
+            reconciliationTargetTotal: totals.comparisonExpectedTotal,
+            retentionAdjustment: totals.retentionAdjustment,
         });
 
         if (nextStatus !== 'en_espera') {
