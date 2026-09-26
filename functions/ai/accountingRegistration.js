@@ -78,12 +78,57 @@ const supportPayload = (draft = {}) => {
 
 const paymentAccount = (method = '') => {
   const normalized = normalizeKey(method);
-  if (normalized === 'EFECTIVO') return { code: '11013', name: 'Activos Circulantes Caja:Caja Chica', type: 'Efectivo y equivalentes de efectivo' };
+  const exactAccounts = [
+    ['1102101', 'BANCOS:MONEDA NACIONAL:BAC NO. 362843534 C$', 'Efectivo y equivalentes de efectivo'],
+    ['1102102', 'BANCOS:MONEDA NACIONAL:BANPRO NO 10013500002893', 'Efectivo y equivalentes de efectivo'],
+    ['1102103', 'BANCOS:MONEDA NACIONAL:LA FISE NO.106014315 C$', 'Efectivo y equivalentes de efectivo'],
+    ['1102104', 'BANCOS:MONEDA NACIONAL:LA FISE NO 109047494 C$', 'Efectivo y equivalentes de efectivo'],
+    ['1102105', 'BANCOS:MONEDA NACIONAL:BANPRO NO 10021500126514', 'Efectivo y equivalentes de efectivo'],
+    ['1102106', 'BANCOS:MONEDA NACIONAL:BAC(2) N. 362705105', 'Efectivo y equivalentes de efectivo'],
+    ['1102201', 'BANCOS:MONEDA DOLARES:BAC NO.362785164', 'Efectivo y equivalentes de efectivo'],
+    ['2102901', 'Tarjeta de Credito - Mayor:BAC BLACK MASTERCARD', 'Tarjeta de credito'],
+    ['2102902', 'Tarjeta de Credito - Mayor:BAC Amex Pricesmart', 'Tarjeta de credito'],
+    ['2102903', 'Tarjeta de credito:VISA GASOLINERA UNO', 'Tarjeta de credito'],
+    ['21029-1', 'Tarjeta de Credito - Mayor:Amex Black', 'Tarjeta de credito'],
+    ['21029-2', 'Tarjeta de Credito - Mayor:Banpro Black', 'Tarjeta de credito'],
+  ];
+  const exact = exactAccounts.find(([code]) => normalized.includes(normalizeKey(code)));
+  if (exact) return { code: exact[0], name: exact[1], type: exact[2] };
+  if (normalized === 'EFECTIVO' || normalized.includes('CAJA CHICA')) return { code: '11013', name: 'Activos Circulantes Caja:Caja Chica', type: 'Efectivo y equivalentes de efectivo' };
   if (normalized.includes('BANPRO')) return { code: '1102102', name: 'BANCOS:MONEDA NACIONAL:BANPRO NO 10013500002893', type: 'Efectivo y equivalentes de efectivo' };
   if (normalized.includes('LAFISE')) return { code: '1102103', name: 'BANCOS:MONEDA NACIONAL:LA FISE NO.106014315 C$', type: 'Efectivo y equivalentes de efectivo' };
   if (normalized.includes('AMEX') || normalized.includes('PRICESMART')) return { code: '21029-1', name: 'Tarjeta de Credito - Mayor:Amex', type: 'Tarjeta de credito' };
   if (normalized.includes('TARJETA')) return { code: '21029-2', name: 'Tarjeta de Credito - Mayor:Banpro Black', type: 'Tarjeta de credito' };
   return { code: '1102101', name: 'BANCOS:MONEDA NACIONAL:BAC NO. 362843534 C$', type: 'Efectivo y equivalentes de efectivo' };
+};
+
+const paymentPayload = (method = '') => {
+  const normalized = normalizeKey(method);
+  if (normalized === 'CREDITO') {
+    return {
+      expensePaymentOptionId: 'credit',
+      paymentType: 'CREDITO',
+      paymentMethod: 'CREDITO',
+      paymentMethodLabel: 'Credito',
+      paymentAccountCode: '',
+      paymentAccountName: '',
+      paymentAccountType: '',
+      paymentAccountCurrency: 'NIO',
+    };
+  }
+  const account = paymentAccount(method);
+  const isCash = account.code === '11013';
+  const isCard = String(account.code).startsWith('21029');
+  return {
+    expensePaymentOptionId: isCash ? 'petty_cash' : account.code,
+    paymentType: isCash ? 'EFECTIVO' : isCard ? 'TARJETA' : 'TRANSFERENCIA',
+    paymentMethod: isCash ? 'EFECTIVO' : isCard ? 'TARJETA' : 'TRANSFERENCIA',
+    paymentMethodLabel: normalizeText(method) || (isCash ? 'Caja Chica (Efectivo)' : account.name),
+    paymentAccountCode: account.code,
+    paymentAccountName: account.name,
+    paymentAccountType: account.type,
+    paymentAccountCurrency: account.code === '1102201' ? 'USD' : 'NIO',
+  };
 };
 
 function buildAccountingEntry({ sourceCollection, sourceDocId, record, draft }) {
@@ -144,7 +189,10 @@ function buildAccountingEntry({ sourceCollection, sourceDocId, record, draft }) 
     sourceSnapshot: {
       subtotal: money(draft.subtotal), iva: money(draft.iva), total: money(draft.total),
       retentionIr2: money(draft.retencionIr2), retentionMunicipal1: money(draft.retencionMunicipal1),
-      retentionTotal: money(draft.totalRetenciones), paymentType: draft.metodoPago,
+      retentionTotal: money(draft.totalRetenciones), paymentType: paymentPayload(draft.metodoPago).paymentType,
+      paymentMethodLabel: paymentPayload(draft.metodoPago).paymentMethodLabel,
+      paymentAccountCode: paymentPayload(draft.metodoPago).paymentAccountCode,
+      paymentAccountName: paymentPayload(draft.metodoPago).paymentAccountName,
       accountingAccountCode: draft.accountingAccountCode || '', accountingAccountName: draft.accountingAccountName || '',
     },
   };
@@ -159,8 +207,9 @@ function buildRegistrationPayloads(draft, { Timestamp, actorEmail }) {
   const cashId = `caja_ai_${draftId}`;
   const now = Timestamp.now();
   const branch = branchPayload(draft.branchId);
-  const category = categoryPayload(draft.categoria, draft.subcategoria);
+  const category = recordType === 'compra' ? categoryPayload(draft.categoria, draft.subcategoria) : {};
   const account = accountPayload(draft);
+  const payment = paymentPayload(draft.metodoPago);
   const support = supportPayload(draft);
   const fiscal = {
     subtotal: money(draft.subtotal), iva: money(draft.iva), total: money(draft.total),
@@ -183,7 +232,7 @@ function buildRegistrationPayloads(draft, { Timestamp, actorEmail }) {
     factura: draft.numeroFactura || '',
     description: normalizeText(draft.descripcion).toUpperCase(),
     descripcion: normalizeText(draft.descripcion).toUpperCase(),
-    paymentType: draft.metodoPago,
+    ...payment,
     paymentReference: normalizeText(draft.referenciaPago).toUpperCase(),
     source: 'whatsapp_ai',
     sourceType: `whatsapp_ai_${recordType}`,
@@ -218,7 +267,7 @@ function buildRegistrationPayloads(draft, { Timestamp, actorEmail }) {
       monto: money(draft.total),
       saldo: money(draft.total),
       estado: 'pendiente',
-      paymentType: 'credito',
+      paymentType: 'CREDITO',
       isInventoryCost: recordType === 'compra',
       isOperatingExpense: recordType === 'gasto',
       ...(recordType === 'compra'
@@ -227,7 +276,7 @@ function buildRegistrationPayloads(draft, { Timestamp, actorEmail }) {
       sourceCollection,
       sourceFacturaId: recordId,
     };
-  } else if (normalizeKey(draft.metodoPago) === 'EFECTIVO') {
+  } else if (payment.paymentType === 'EFECTIVO') {
     record = { ...record, linkedCashExpenseId: cashId, sourceGastoDiarioId: cashId };
     cashRecord = {
       ...base,

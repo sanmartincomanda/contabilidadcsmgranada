@@ -127,6 +127,7 @@ export default function Header({
     const procurementHints = useMemo(() => ([
         canAccess('caja_chica') && { label: 'Caja Chica', to: '/gastos-diarios' },
         canAccess('cuentas_pagar') && { label: 'Cuentas por Pagar', to: '/cuentas-pagar' },
+        canAccess('cuentas_pagar') && { label: 'Pago Planilla Proveedor BAC', to: '/cuentas-pagar?tab=planilla-bac' },
         canAccess('traspasos_costos') && { label: 'Traspaso Costos Sucursal', to: '/traspasos-costos' },
     ].filter(Boolean)), [moduleAccess]);
 

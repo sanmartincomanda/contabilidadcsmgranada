@@ -11,6 +11,8 @@
     "lint": "node --check index.js && node --check ai/accountingAgent.js && node --check ai/accountingRegistration.js",
     "test:agent": "node --test ai/*.test.js",
     "test:ticket-sales": "node --test scripts/syncSicarTicketSales.test.js",
+    "test:bac": "node --test bacF10.test.js bacSupplierPayroll.test.js scripts/importBacSupplierReferences.test.js",
+    "import-bac-suppliers": "node scripts/importBacSupplierReferences.js",
     "replay-pending-purchases": "node scripts/processPendingSicarPurchases.js",
     "sync-daily-sales": "node scripts/syncDailySicarSales.js",
     "watch-ticket-sales": "node scripts/watchSicarTicketSales.js",

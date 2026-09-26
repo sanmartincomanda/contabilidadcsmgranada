@@ -24,10 +24,12 @@ import {
     getExpenseCategoryFromRecord,
 } from '../services/expenseCategories';
 import { buildAccountingAccountPayload, getDefaultAccountingAccountId } from '../services/chartOfAccounts';
+import { buildExpenseAccountPayload, buildExpensePaymentPayload, getExpensePaymentLabel } from '../services/expenseAccounting';
 import { buildPurchaseExpenseAccountingEntry, setAccountingEntryInBatch } from '../services/accountingLedger';
 import { normalizeProviderName, upsertProviderByName } from '../services/providers';
 import ProviderAutocomplete from './ProviderAutocomplete';
 import AccountingAccountSelect from './AccountingAccountSelect';
+import { ExpenseAccountSelect, ExpensePaymentSelect } from './ExpenseAccountingSelects';
 
 // --- ICONOS SVG INLINE ---
 const Icons = {
@@ -207,10 +209,10 @@ const PettyCashVoucher = ({ voucher }) => {
             <div className="ticket-line" />
             <div className="ticket-label">Descripcion</div>
             <div className="ticket-description">{voucher.descripcion}</div>
-            {voucher.categoryLabel && (
+            {voucher.classificationLabel && (
                 <>
-                    <div className="ticket-label">Categoria</div>
-                    <div className="ticket-description">{voucher.categoryLabel}</div>
+                    <div className="ticket-label">{voucher.classificationTitle}</div>
+                    <div className="ticket-description">{voucher.classificationLabel}</div>
                 </>
             )}
             <div className="ticket-line" />
@@ -242,7 +244,7 @@ const knownCashMethods = PURCHASE_PAYMENT_METHODS.filter((method) => !isCreditPa
 
 const getRecordAmount = (record = {}) => Number(record.monto ?? record.total ?? record.amount ?? 0) || 0;
 const getRecordPaymentMethod = (record = {}) => (
-    record.paymentType || record.paymentMethod || (record.tipo === 'ABONO' ? 'EFECTIVO' : 'SIN METODO')
+    getExpensePaymentLabel(record) || record.paymentType || record.paymentMethod || (record.tipo === 'ABONO' ? 'EFECTIVO' : 'SIN METODO')
 );
 
 export default function GastosDiarios({ categories = [], providers = [], branchContext }) {
@@ -259,10 +261,11 @@ export default function GastosDiarios({ categories = [], providers = [], branchC
     const [monto, setMonto] = useState('');
     const [tipo, setTipo] = useState('Gasto');
     const [categoriaId, setCategoriaId] = useState('');
-    const [accountingAccountId, setAccountingAccountId] = useState(() => getDefaultAccountingAccountId('expense'));
+    const [accountingAccountId, setAccountingAccountId] = useState('');
     const [proveedor, setProveedor] = useState('');
     const [numeroFactura, setNumeroFactura] = useState('');
     const [paymentType, setPaymentType] = useState('EFECTIVO');
+    const [expensePaymentOptionId, setExpensePaymentOptionId] = useState('petty_cash');
     const [paymentReference, setPaymentReference] = useState('');
     const [subtotal, setSubtotal] = useState('');
     const [iva, setIva] = useState('');
@@ -379,11 +382,14 @@ export default function GastosDiarios({ categories = [], providers = [], branchC
             hora: now.toLocaleTimeString('es-NI', { hour: '2-digit', minute: '2-digit' }),
             tipo: payload.tipo || 'Gasto',
             descripcion: payload.descripcion || payload.description || 'Movimiento de Caja Chica',
-            paymentType: payload.paymentType || 'EFECTIVO',
+            paymentType: payload.paymentMethodLabel || payload.paymentType || 'EFECTIVO',
             paymentReference: payload.paymentReference || '',
             proveedor: payload.proveedor || payload.supplier || '',
             factura: payload.factura || payload.invoiceNumber || '',
-            categoryLabel: payload.categoryLabel || [payload.category, payload.subcategory].filter(Boolean).join(' / '),
+            classificationTitle: payload.accountingAccountCode ? 'Cuenta de gasto' : 'Categoria',
+            classificationLabel: payload.accountingAccountCode
+                ? [payload.accountingAccountCode, payload.accountingAccountName].filter(Boolean).join(' - ')
+                : payload.categoryLabel || [payload.category, payload.subcategory].filter(Boolean).join(' / '),
             subtotal: fiscalSubtotal,
             iva: fiscalIva,
             total: fiscalTotal,
@@ -524,7 +530,7 @@ export default function GastosDiarios({ categories = [], providers = [], branchC
         const numMonto = Number(monto);
         if (isNaN(numMonto) || numMonto <= 0) return alert('Monto inv?lido.');
         if (!descripcion) return alert('Ingrese una descripcion.');
-        if (tipo === 'Gasto' && !categoriaId) return alert('Categoria requerida para gastos.');
+        if (tipo === 'Gasto' && !accountingAccountId) return alert('Cuenta hija requerida para gastos.');
 
         setLoading(true);
         try {
@@ -662,17 +668,23 @@ export default function GastosDiarios({ categories = [], providers = [], branchC
         const fiscal = buildFiscalPayload({ subtotal, iva, total: calculatedTotal, retentionIr2, retentionMunicipal1 });
         if (fiscal.total <= 0) return alert('Monto invalido.');
         if (!descripcion) return alert('Ingrese una descripcion.');
-        if (tipo === 'Gasto' && !categoriaId) return alert('Categoria requerida para gastos.');
+        if (tipo === 'Gasto' && !accountingAccountId) return alert('Seleccione la cuenta hija del gasto.');
+        if (tipo === 'Gasto' && !expensePaymentOptionId) return alert('Seleccione como se pago el gasto.');
         if (tipo === 'Compra' && !categoriaId) return alert('Seleccione la subcategoria fiscal de costo de venta.');
 
         setLoading(true);
         try {
             const timestamp = Timestamp.now();
             const categoryPayload = tipo === 'Gasto'
-                ? resolveCategoryPayload(categoriaId)
+                ? {}
                 : resolveCategoryPayload(categoriaId, DEFAULT_PURCHASE_CATEGORY_ID);
             const accountingType = tipo === 'Compra' ? 'purchase' : 'expense';
-            const accountingPayload = buildAccountingAccountPayload(accountingAccountId, { transactionType: accountingType });
+            const accountingPayload = tipo === 'Gasto'
+                ? buildExpenseAccountPayload(accountingAccountId)
+                : buildAccountingAccountPayload(accountingAccountId, { transactionType: accountingType });
+            const paymentPayload = tipo === 'Gasto'
+                ? buildExpensePaymentPayload(expensePaymentOptionId)
+                : { paymentType, paymentMethod: paymentType, paymentMethodLabel: paymentType };
             const gastoDiarioRef = doc(collection(db, 'gastosDiarios'));
             const gastoRef = tipo === 'Gasto' ? doc(collection(db, 'gastos')) : null;
             const compraRef = tipo === 'Compra' ? doc(collection(db, 'compras')) : null;
@@ -693,7 +705,7 @@ export default function GastosDiarios({ categories = [], providers = [], branchC
                 ...providerPayload,
                 factura: numeroFactura.trim(),
                 invoiceNumber: numeroFactura.trim(),
-                paymentType,
+                ...paymentPayload,
                 paymentReference: paymentReference.trim().toUpperCase(),
                 ...fiscal,
                 ...photoPayload,
@@ -768,7 +780,7 @@ export default function GastosDiarios({ categories = [], providers = [], branchC
                 }));
             }
 
-            if (isCashPayment(paymentType)) {
+            if (isCashPayment(paymentPayload.paymentType)) {
                 const cashPaidAmount = getCashPaidAmountAfterRetentions(fiscal);
                 batch.set(
                     pettyCashMovementRef('gastosDiarios', gastoDiarioRef.id),
@@ -777,7 +789,7 @@ export default function GastosDiarios({ categories = [], providers = [], branchC
                         fecha,
                         amount: cashPaidAmount,
                         description: descripcion,
-                        paymentType,
+                        paymentType: paymentPayload.paymentType,
                         paymentReference: paymentReference.trim().toUpperCase(),
                         sourceCollection: 'gastosDiarios',
                         sourceDocId: gastoDiarioRef.id,
@@ -794,6 +806,7 @@ export default function GastosDiarios({ categories = [], providers = [], branchC
                         cashPaidAmount,
                         ...categoryPayload,
                         ...accountingPayload,
+                        ...paymentPayload,
                         ...photoPayload,
                         ...branchPayload,
                     })
@@ -807,7 +820,8 @@ export default function GastosDiarios({ categories = [], providers = [], branchC
                 descripcion,
                 proveedor: provider?.nombre || cleanProviderName,
                 factura: numeroFactura.trim(),
-                paymentType,
+                paymentType: paymentPayload.paymentType,
+                paymentMethodLabel: paymentPayload.paymentMethodLabel,
                 paymentReference: paymentReference.trim().toUpperCase(),
                 subtotal: fiscal.subtotal,
                 iva: fiscal.iva,
@@ -823,10 +837,11 @@ export default function GastosDiarios({ categories = [], providers = [], branchC
             setDescripcion('');
             setMonto('');
             setCategoriaId('');
-            setAccountingAccountId(getDefaultAccountingAccountId(tipo === 'Compra' ? 'purchase' : 'expense'));
+            setAccountingAccountId(tipo === 'Compra' ? getDefaultAccountingAccountId('purchase') : '');
             setProveedor('');
             setNumeroFactura('');
             setPaymentType('EFECTIVO');
+            setExpensePaymentOptionId('petty_cash');
             setPaymentReference('');
             setSubtotal('');
             setIva('');
@@ -899,7 +914,12 @@ export default function GastosDiarios({ categories = [], providers = [], branchC
     const totalCompras = registros.filter(r => r.tipo === 'Compra').reduce((sum, r) => sum + getRecordAmount(r), 0);
     const totalAbonos = registros.filter(r => r.tipo === 'ABONO').reduce((sum, r) => sum + getRecordAmount(r), 0);
     const totalGeneral = totalGastos + totalCompras + totalAbonos;
-    const paymentSummary = [...knownCashMethods, 'SIN METODO']
+    const paymentMethods = [...new Set([
+        ...knownCashMethods,
+        ...registros.map(getRecordPaymentMethod),
+        'SIN METODO',
+    ])];
+    const paymentSummary = paymentMethods
         .map((method) => {
             const items = registros.filter((record) => getRecordPaymentMethod(record) === method);
             return {
@@ -1113,8 +1133,10 @@ export default function GastosDiarios({ categories = [], providers = [], branchC
                                     value={tipo}
                                     onChange={e => {
                                         setTipo(e.target.value);
-                                        if (e.target.value !== 'Gasto') setCategoriaId('');
-                                        setAccountingAccountId(getDefaultAccountingAccountId(e.target.value === 'Compra' ? 'purchase' : 'expense'));
+                                        setCategoriaId('');
+                                        setAccountingAccountId(e.target.value === 'Compra' ? getDefaultAccountingAccountId('purchase') : '');
+                                        setPaymentType('EFECTIVO');
+                                        setExpensePaymentOptionId('petty_cash');
                                     }}
                                     options={
                                         <>
@@ -1152,18 +1174,28 @@ export default function GastosDiarios({ categories = [], providers = [], branchC
                             </div>
 
                             <div className="grid grid-cols-2 gap-3">
-                                <Select
-                                    label="Tipo de pago"
-                                    value={paymentType}
-                                    onChange={e => setPaymentType(e.target.value)}
-                                    options={
-                                        <>
-                                            {PURCHASE_PAYMENT_METHODS.filter(method => !isCreditPayment(method)).map(method => (
-                                                <option key={method} value={method}>{method}</option>
-                                            ))}
-                                        </>
-                                    }
-                                />
+                                {tipo === 'Gasto' ? (
+                                    <ExpensePaymentSelect
+                                        value={expensePaymentOptionId}
+                                        onChange={setExpensePaymentOptionId}
+                                        excludedIds={['credit']}
+                                        required
+                                        help=""
+                                    />
+                                ) : (
+                                    <Select
+                                        label="Tipo de pago"
+                                        value={paymentType}
+                                        onChange={e => setPaymentType(e.target.value)}
+                                        options={
+                                            <>
+                                                {PURCHASE_PAYMENT_METHODS.filter(method => !isCreditPayment(method)).map(method => (
+                                                    <option key={method} value={method}>{method}</option>
+                                                ))}
+                                            </>
+                                        }
+                                    />
+                                )}
                                 <Input
                                     label="Referencia"
                                     icon="fileText"
@@ -1204,21 +1236,30 @@ export default function GastosDiarios({ categories = [], providers = [], branchC
                                 <input type="file" accept="image/*,.pdf" onChange={e => setInvoicePhoto(e.target.files?.[0] || null)} className="block w-full text-xs text-stone-500 file:mr-2 file:rounded-full file:border-0 file:bg-[#fff1f2] file:px-3 file:py-1 file:text-xs file:font-semibold file:text-[#e30613]" />
                             </div>
 
-                            <Select
-                                label={tipo === 'Compra' ? 'Costo de venta / subcategoria' : 'Categoria / subcategoria'}
-                                icon="tag"
-                                value={categoriaId}
-                                onChange={e => setCategoriaId(e.target.value)}
-                                required
-                                options={tipo === 'Compra' ? purchaseCategoryOptions() : expenseCategoryOptions()}
-                            />
-
-                            <AccountingAccountSelect
-                                value={accountingAccountId}
-                                onChange={setAccountingAccountId}
-                                transactionType={tipo === 'Compra' ? 'purchase' : 'expense'}
-                                required
-                            />
+                            {tipo === 'Compra' ? (
+                                <>
+                                    <Select
+                                        label="Costo de venta / subcategoria"
+                                        icon="tag"
+                                        value={categoriaId}
+                                        onChange={e => setCategoriaId(e.target.value)}
+                                        required
+                                        options={purchaseCategoryOptions()}
+                                    />
+                                    <AccountingAccountSelect
+                                        value={accountingAccountId}
+                                        onChange={setAccountingAccountId}
+                                        transactionType="purchase"
+                                        required
+                                    />
+                                </>
+                            ) : (
+                                <ExpenseAccountSelect
+                                    value={accountingAccountId}
+                                    onChange={setAccountingAccountId}
+                                    required
+                                />
+                            )}
 
                             <Button
                                 type="submit"
@@ -1359,7 +1400,7 @@ export default function GastosDiarios({ categories = [], providers = [], branchC
                                             <th className="px-4 py-2.5 text-left text-xs font-bold uppercase tracking-wider text-stone-600">Descripcion</th>
                                             <th className="px-4 py-2.5 text-left text-xs font-bold uppercase tracking-wider text-stone-600">Tipo</th>
                                             <th className="px-4 py-2.5 text-left text-xs font-bold uppercase tracking-wider text-stone-600">Pago</th>
-                                            <th className="px-4 py-2.5 text-left text-xs font-bold uppercase tracking-wider text-stone-600">Categoria</th>
+                                            <th className="px-4 py-2.5 text-left text-xs font-bold uppercase tracking-wider text-stone-600">Cuenta / Categoria</th>
                                             <th className="px-4 py-2.5 text-right text-xs font-bold uppercase tracking-wider text-stone-600">Monto</th>
                                             <th className="px-4 py-2.5 text-center text-xs font-bold uppercase tracking-wider text-stone-600 no-print">Accion</th>
                                         </tr>
@@ -1387,6 +1428,9 @@ export default function GastosDiarios({ categories = [], providers = [], branchC
                                                     <td className="px-4 py-3 text-xs font-bold uppercase text-slate-500">{getRecordPaymentMethod(reg)}</td>
                                                     <td className="px-4 py-3 text-sm text-stone-500">
                                                         {(() => {
+                                                            if (reg.tipo === 'Gasto' && (reg.accountingAccountCode || reg.accountingAccountName)) {
+                                                                return [reg.accountingAccountCode, reg.accountingAccountName].filter(Boolean).join(' - ');
+                                                            }
                                                             const categoryInfo = getExpenseCategoryFromRecord(reg, reg.tipo === 'Compra' ? DEFAULT_PURCHASE_CATEGORY_ID : DEFAULT_EXPENSE_CATEGORY_ID);
                                                             return reg.tipo === 'ABONO' ? 'ABONO' : `${categoryInfo.category} / ${categoryInfo.subcategory}`;
                                                         })()}

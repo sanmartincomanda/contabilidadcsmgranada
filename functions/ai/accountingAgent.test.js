@@ -2,7 +2,9 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
   AGENT_STATUSES,
+  EXPENSE_PAYMENT_METHODS,
   PAYMENT_METHODS,
+  PURCHASE_PAYMENT_METHODS,
   applyDeterministicRules,
   canonicalCurrency,
   canonicalPaymentMethod,
@@ -24,6 +26,7 @@ const catalog = {
   accounts: [
     { id: '11060', number: '11060', name: 'INVENTARIO:Alimentos', type: 'Activos corrientes' },
     { id: '5', number: '5', name: 'COSTOS Y GASTOS', type: 'Gastos' },
+    { id: '5206', number: '5206', name: 'Gastos de Administrativo:Gastos de oficina', type: 'Gastos' },
   ],
   rules: [],
 };
@@ -40,11 +43,11 @@ const validBase = (overrides = {}) => ({
   rucProveedor: 'J0310000000001',
   numeroFactura: 'F-100',
   descripcion: 'SERVICIO OPERATIVO',
-  categoria: 'Gastos administrativos',
-  subcategoria: 'Gastos de oficina',
-  accountingAccountId: '5',
-  accountingAccountCode: '5',
-  metodoPago: 'EFECTIVO',
+  categoria: '',
+  subcategoria: '',
+  accountingAccountId: '5206',
+  accountingAccountCode: '5206',
+  metodoPago: 'Caja Chica (Efectivo)',
   referenciaPago: '',
   subtotal: 100,
   iva: 15,
@@ -58,6 +61,16 @@ const validBase = (overrides = {}) => ({
   alertas: [],
   datosFaltantes: [],
   pregunta: '',
+  ...overrides,
+});
+
+const validPurchase = (overrides = {}) => validBase({
+  tipoRegistro: 'compra',
+  categoria: 'Costos de venta / compras',
+  subcategoria: 'Otros costos de producto',
+  accountingAccountId: '11060',
+  accountingAccountCode: '11060',
+  metodoPago: 'EFECTIVO',
   ...overrides,
 });
 
@@ -109,8 +122,8 @@ test('una coincidencia ambigua de proveedor no se selecciona', () => {
   assert.equal(fuzzy.providerId, '');
 });
 
-test('rechaza categoría inexistente', () => {
-  const result = applyDeterministicRules(validBase({
+test('rechaza categoría de compra inexistente', () => {
+  const result = applyDeterministicRules(validPurchase({
     proveedor: 'ENERGIA CENTRAL',
     rucProveedor: 'J0310000000004',
     categoria: 'Categoría inventada',
@@ -142,7 +155,7 @@ test('crédito sin vencimiento queda incompleto', () => {
 });
 
 test('transferencia sin referencia queda incompleta', () => {
-  const result = validate(validBase({ metodoPago: 'TRANSFERENCIA', referenciaPago: '' }));
+  const result = validate(validBase({ metodoPago: EXPENSE_PAYMENT_METHODS[2], referenciaPago: '' }));
   assert.ok(result.datosFaltantes.includes('referenciaPago'));
 });
 
@@ -150,14 +163,25 @@ test('transferencia puede quedar sin referencia cuando el usuario lo confirma', 
   const updates = extractDeterministicConversationUpdates('Dejar en blanco la referencia', {
     datosFaltantes: ['referenciaPago'],
   });
-  const result = validate(validBase({ metodoPago: 'TRANSFERENCIA', ...updates }));
+  const result = validate(validBase({ metodoPago: EXPENSE_PAYMENT_METHODS[2], ...updates }));
   assert.equal(updates.referenciaConfirmadaSinDato, true);
   assert.ok(!result.datosFaltantes.includes('referenciaPago'));
 });
 
-test('todos los métodos de pago oficiales son aceptados', () => {
-  PAYMENT_METHODS.forEach((method) => {
+test('todos los métodos de pago de gastos son aceptados', () => {
+  EXPENSE_PAYMENT_METHODS.forEach((method) => {
     const result = validate(validBase({
+      metodoPago: method,
+      referenciaPago: method.includes('BANCOS:') ? 'REF-1' : '',
+      vencimiento: method.toUpperCase() === 'CREDITO' ? '2026-09-19' : null,
+    }));
+    assert.ok(!result.datosFaltantes.includes('metodoPago'), method);
+  });
+});
+
+test('todos los métodos de pago de compras siguen siendo aceptados', () => {
+  PURCHASE_PAYMENT_METHODS.forEach((method) => {
+    const result = validate(validPurchase({
       metodoPago: method,
       referenciaPago: method === 'TRANSFERENCIA' ? 'REF-1' : '',
       vencimiento: method === 'CREDITO' ? '2026-09-19' : null,
@@ -168,7 +192,7 @@ test('todos los métodos de pago oficiales son aceptados', () => {
 
 test('normaliza la tarjeta Mastercard 4660 sin perder su nombre oficial', () => {
   assert.equal(canonicalPaymentMethod('Tarjeta black Mastercard ** 4660'), 'TARJETA BLACK MASTERCARD ***4660');
-  const result = applyDeterministicRules(validBase({ metodoPago: 'TARJETA BLACK MASTERCARD 4660' }), catalog);
+  const result = applyDeterministicRules(validPurchase({ metodoPago: 'TARJETA BLACK MASTERCARD 4660' }), catalog);
   assert.equal(result.metodoPago, 'TARJETA BLACK MASTERCARD ***4660');
   assert.ok(!validate(result).datosFaltantes.includes('metodoPago'));
 });
@@ -199,7 +223,7 @@ test('respuesta en córdobas completa moneda y tasa sin otra pregunta', () => {
   assert.equal(updates.tasaCambio, 1);
 });
 
-test('un gasto sin cuenta indicada usa automáticamente la cuenta cinco', () => {
+test('un gasto sin cuenta hija queda pendiente y nunca usa la cuenta madre cinco', () => {
   const result = applyDeterministicRules(validBase({
     providerId: 'energia-uno',
     proveedor: 'ENERGIA CENTRAL',
@@ -207,8 +231,9 @@ test('un gasto sin cuenta indicada usa automáticamente la cuenta cinco', () => 
     accountingAccountId: '',
     accountingAccountCode: '',
   }), catalog);
-  assert.equal(result.accountingAccountId, '5');
-  assert.equal(result.accountingAccountCode, '5');
+  assert.equal(result.accountingAccountId, '');
+  assert.equal(result.accountingAccountCode, '');
+  assert.ok(validate(result).datosFaltantes.includes('accountingAccountId'));
 });
 
 test('subtotal igual al total implica IVA cero', () => {

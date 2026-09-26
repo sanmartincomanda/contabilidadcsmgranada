@@ -16,13 +16,13 @@ const draft = (overrides = {}) => ({
   rucProveedor: 'J0310000000001',
   numeroFactura: 'F-100',
   descripcion: 'PAPELERIA',
-  categoria: 'Gastos administrativos',
-  subcategoria: 'Papeleria y utiles',
-  accountingAccountId: '5',
-  accountingAccountCode: '5',
-  accountingAccountName: 'COSTOS Y GASTOS',
+  categoria: '',
+  subcategoria: '',
+  accountingAccountId: '5201',
+  accountingAccountCode: '5201',
+  accountingAccountName: 'Gastos de Administrativo:Insumos de oficina',
   accountingAccountType: 'Gastos',
-  metodoPago: 'TRANSFERENCIA',
+  metodoPago: '1102101 - BANCOS:MONEDA NACIONAL:BAC NO. 362843534 C$',
   referenciaPago: 'REF-1',
   subtotal: 100,
   iva: 15,
@@ -44,6 +44,8 @@ test('transferencia crea solamente el gasto y el asiento', () => {
   assert.equal(result.payable, null);
   assert.equal(result.cashRecord, null);
   assert.equal(result.record.paymentType, 'TRANSFERENCIA');
+  assert.equal(result.record.paymentAccountCode, '1102101');
+  assert.equal(result.record.categoryId, undefined);
   assert.equal(result.accountingEntry.status, 'posted');
 });
 
@@ -73,7 +75,7 @@ test('compra a crédito queda enlazada como compra y costo de inventario', () =>
 
 test('efectivo descuenta Caja Chica por pago neto después de retenciones', () => {
   const result = build(draft({
-    metodoPago: 'EFECTIVO',
+    metodoPago: 'Caja Chica (Efectivo)',
     retencionIr2: 2,
     retencionMunicipal1: 1,
     totalRetenciones: 3,
@@ -83,6 +85,17 @@ test('efectivo descuenta Caja Chica por pago neto después de retenciones', () =
   assert.equal(result.pettyMovement.amount, 112);
   assert.equal(result.pettyMovement.signedAmount, -112);
   assert.equal(result.accountingEntry.status, 'posted');
+});
+
+test('tarjeta acredita exactamente la cuenta seleccionada', () => {
+  const result = build(draft({
+    metodoPago: '2102903 - Tarjeta de credito:VISA GASOLINERA UNO',
+    referenciaPago: 'VOUCHER-10',
+  }));
+  const paymentLine = result.accountingEntry.lines.find((line) => line.lineRole === 'payment');
+  assert.equal(result.record.paymentType, 'TARJETA');
+  assert.equal(result.record.paymentAccountCode, '2102903');
+  assert.equal(paymentLine.accountCode, '2102903');
 });
 
 test('soporte original se referencia sin duplicar el archivo', () => {

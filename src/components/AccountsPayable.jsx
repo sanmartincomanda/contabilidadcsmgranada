@@ -1,5 +1,6 @@
 // src/components/AccountsPayable.jsx
 import React, { useState, useMemo, useCallback, useEffect, useRef } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { db } from '../firebase';
 import {
     collection, doc, Timestamp, runTransaction, writeBatch,
@@ -21,7 +22,7 @@ import {
     uploadFiscalSupportFiles,
     uploadInvoicePhoto,
 } from '../services/fiscalUtils';
-import { getProviderCode, getProviderDisplayName, upsertProviderByName } from '../services/providers';
+import { getProviderCode, getProviderDisplayName, isActiveProvider, upsertProviderByName } from '../services/providers';
 import {
     DEFAULT_PURCHASE_CATEGORY_ID,
     EXPENSE_CATEGORY_TREE,
@@ -38,6 +39,7 @@ import {
 import { buildPettyCashMovementPayload, pettyCashMovementRef } from '../services/pettyCash';
 import ProviderAutocomplete from './ProviderAutocomplete';
 import AccountingAccountSelect from './AccountingAccountSelect';
+import BacSupplierPayroll from './BacSupplierPayroll';
 
 // --- ICONOS SVG INLINE ---
 const Icon = ({ path, className = "w-5 h-5" }) => (
@@ -430,8 +432,11 @@ const AttachSupportModal = ({ target, loading, onClose, onSave }) => {
 };
 
 // --- COMPONENTE PRINCIPAL ---
-export function AccountsPayable({ data, branchContext }) {
-    const [activeTab, setActiveTab] = useState('Estado de Cuenta');
+export function AccountsPayable({ data, branchContext, canEdit = true }) {
+    const location = useLocation();
+    const navigate = useNavigate();
+    const queryTab = new URLSearchParams(location.search).get('tab');
+    const [activeTab, setActiveTab] = useState(queryTab === 'planilla-bac' ? 'Planilla BAC' : 'Estado de Cuenta');
     const [expandedProviders, setExpandedProviders] = useState({});
     const [loading, setLoading] = useState(false);
     const [nuevoProveedor, setNuevoProveedor] = useState('');
@@ -440,6 +445,10 @@ export function AccountsPayable({ data, branchContext }) {
 
     // Ref para bloquear doble-submit en cualquier operacion critica
     const isProcessingRef = useRef(false);
+
+    useEffect(() => {
+        if (queryTab === 'planilla-bac') setActiveTab('Planilla BAC');
+    }, [queryTab]);
 
     const facturas = useMemo(() => {
         return (data.cuentas_por_pagar || [])
@@ -454,6 +463,7 @@ export function AccountsPayable({ data, branchContext }) {
     const abonos = data.abonos_pagar || [];
     const listaProveedores = useMemo(() => (
         [...(data.proveedores || [])]
+            .filter(isActiveProvider)
             .map((provider) => ({
                 ...provider,
                 nombre: getProviderDisplayName(provider),
@@ -926,8 +936,18 @@ export function AccountsPayable({ data, branchContext }) {
         { id: 'Ingresar Factura',    icon: 'plus',         label: 'Nueva Factura' },
         { id: 'Estado de Cuenta',    icon: 'trendingDown',  label: 'Estado de Cuenta' },
         { id: 'Historial Abonos',    icon: 'receipt',       label: 'Historial Abonos' },
-        { id: 'Base de Proveedores', icon: 'users',         label: 'Proveedores' }
+        { id: 'Base de Proveedores', icon: 'users',         label: 'Proveedores' },
+        { id: 'Planilla BAC',        icon: 'building',      label: 'Pago Planilla Proveedor BAC' }
     ];
+
+    const handleTabChange = (tabId) => {
+        setActiveTab(tabId);
+        if (tabId === 'Planilla BAC') {
+            navigate('/cuentas-pagar?tab=planilla-bac', { replace: true });
+        } else if (queryTab) {
+            navigate('/cuentas-pagar', { replace: true });
+        }
+    };
 
     return (
         <div className="min-h-screen p-4 md:p-8">
@@ -1014,7 +1034,7 @@ export function AccountsPayable({ data, branchContext }) {
                         {tabs.map(tab => (
                             <button
                                 key={tab.id}
-                                onClick={() => setActiveTab(tab.id)}
+                                onClick={() => handleTabChange(tab.id)}
                                 className={`flex items-center gap-2 px-4 py-2 rounded-lg font-semibold text-xs transition-all duration-200 ${
                                     activeTab === tab.id
                                         ? 'bg-[#e30613] text-white shadow-sm shadow-red-900/20'
@@ -1435,6 +1455,9 @@ export function AccountsPayable({ data, branchContext }) {
                                                         <div>
                                                             <span className="font-semibold text-slate-700 text-sm">{p.nombre}</span>
                                                             <div className="font-mono text-[10px] font-black uppercase tracking-wider text-slate-400">{p.code}</div>
+                                                            {Array.isArray(p.bacPaymentPlans?.AR19?.references) && p.bacPaymentPlans.AR19.references.length > 0 && (
+                                                                <div className="mt-1 text-[9px] font-black uppercase tracking-wider text-emerald-700">Vinculado a Plan Pago - AR19</div>
+                                                            )}
                                                         </div>
                                                     </div>
                                                     <button
@@ -1449,6 +1472,12 @@ export function AccountsPayable({ data, branchContext }) {
                                     }
                                 </div>
                             </Card>
+                        </SlideIn>
+                    )}
+
+                    {activeTab === 'Planilla BAC' && (
+                        <SlideIn>
+                            <BacSupplierPayroll branchContext={branchContext} canEdit={canEdit} />
                         </SlideIn>
                     )}
                 </div>

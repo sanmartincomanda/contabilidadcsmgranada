@@ -16,6 +16,7 @@ import {
     getTicketStampedInvoiceInfo,
     isCancelledSicarTicket,
     isExcludedSicarTicket,
+    mergeSicarTicketSources,
     normalizeCrmText,
 } from '../services/salesCrmAnalytics';
 import { isMasterEmail } from '../services/userAccess';
@@ -190,7 +191,7 @@ const downloadCsv = (tickets = [], rangeLabel = '') => {
     URL.revokeObjectURL(url);
 };
 
-function useSicarTicketRange(fromDate, toDate, refreshToken, enabled = true) {
+function useSicarTicketRange(fromDate, toDate, refreshToken, selectedBranchId, enabled = true) {
     const [state, setState] = useState({ loading: true, error: '', records: [], updatedAt: null });
 
     useEffect(() => {
@@ -203,7 +204,9 @@ function useSicarTicketRange(fromDate, toDate, refreshToken, enabled = true) {
             return undefined;
         }
 
-        const cacheKey = `${fromDate}:${toDate}`;
+        const shouldLoadNindiriLegacy = selectedBranchId === 'nindiri'
+            || selectedBranchId === CONSOLIDATED_BRANCH_ID;
+        const cacheKey = `${selectedBranchId}:${fromDate}:${toDate}`;
         const cached = rangeCache.get(cacheKey);
         if (cached && refreshToken === 0) {
             setState({ loading: false, error: '', records: cached.records, updatedAt: cached.updatedAt });
@@ -212,15 +215,22 @@ function useSicarTicketRange(fromDate, toDate, refreshToken, enabled = true) {
 
         let mounted = true;
         setState((current) => ({ ...current, loading: true, error: '' }));
-        getDocs(query(
-            collection(db, 'sicar_ventas_tickets'),
+        const buildRangeQuery = (collectionName) => getDocs(query(
+            collection(db, collectionName),
             where('date', '>=', fromDate),
             where('date', '<', shiftDate(toDate, 1))
-        ))
-            .then((snapshot) => {
+        ));
+        Promise.all([
+            buildRangeQuery('sicar_ventas_tickets'),
+            shouldLoadNindiriLegacy ? buildRangeQuery('sicar_facturas_membretadas') : Promise.resolve(null),
+        ])
+            .then(([ticketSnapshot, legacySnapshot]) => {
                 if (!mounted) return;
                 const result = {
-                    records: snapshot.docs.map((ticketDoc) => ({ id: ticketDoc.id, ...ticketDoc.data() })),
+                    records: mergeSicarTicketSources(
+                        ticketSnapshot.docs.map((ticketDoc) => ({ id: ticketDoc.id, ...ticketDoc.data() })),
+                        legacySnapshot?.docs.map((ticketDoc) => ({ id: ticketDoc.id, ...ticketDoc.data() })) || []
+                    ),
                     updatedAt: new Date(),
                 };
                 rangeCache.set(cacheKey, result);
@@ -232,7 +242,7 @@ function useSicarTicketRange(fromDate, toDate, refreshToken, enabled = true) {
             });
 
         return () => { mounted = false; };
-    }, [enabled, fromDate, refreshToken, toDate]);
+    }, [enabled, fromDate, refreshToken, selectedBranchId, toDate]);
 
     return state;
 }
@@ -1034,7 +1044,7 @@ export default function SalesCRM({ data = {}, branchContext = {}, ticketsOverrid
     const [selectedCustomerKey, setSelectedCustomerKey] = useState('');
     const [customerExclusionsOpen, setCustomerExclusionsOpen] = useState(false);
     const hasTicketOverride = Array.isArray(ticketsOverride);
-    const archive = useSicarTicketRange(fromDate, toDate, refreshToken, !hasTicketOverride);
+    const archive = useSicarTicketRange(fromDate, toDate, refreshToken, selectedBranchId, !hasTicketOverride);
     const invoiceArchive = useStampedInvoiceRange(fromDate, toDate, refreshToken);
     const remoteProductCatalog = useSicarProductCatalog(selectedBranchId, refreshToken, !hasTicketOverride && !productCatalogOverride);
     const productCatalog = productCatalogOverride || remoteProductCatalog;
@@ -1051,14 +1061,19 @@ export default function SalesCRM({ data = {}, branchContext = {}, ticketsOverrid
     }, [data.facturas_membretadas_ventas, invoiceArchive.records]);
     const tickets = useMemo(() => mergeTicketRecords(
         archive.records,
-        hasTicketOverride ? ticketsOverride : data.sicar_ventas_tickets || [],
+        hasTicketOverride
+            ? ticketsOverride
+            : mergeSicarTicketSources(
+                data.sicar_ventas_tickets || [],
+                data.sicar_facturas_membretadas || []
+            ),
         fromDate,
         toDate
     )
         .filter((ticket) => isTicketInBranch(ticket, selectedBranchId))
         .filter((ticket) => !isExcludedSicarTicket(ticket))
         .map((ticket) => ({ ...ticket, crmInvoiceLink: getTicketStampedInvoiceInfo(ticket, linkIndex) }))
-        .sort((a, b) => Number(b.saleId || 0) - Number(a.saleId || 0)), [archive.records, data.sicar_ventas_tickets, fromDate, hasTicketOverride, linkIndex, selectedBranchId, ticketsOverride, toDate]);
+        .sort((a, b) => Number(b.saleId || 0) - Number(a.saleId || 0)), [archive.records, data.sicar_facturas_membretadas, data.sicar_ventas_tickets, fromDate, hasTicketOverride, linkIndex, selectedBranchId, ticketsOverride, toDate]);
 
     const customerOptions = useMemo(() => {
         const optionMap = new Map();

@@ -14,6 +14,8 @@ const {
   validateManualDraftUpdate,
 } = require('./ai/accountingAgent');
 const { registerAccountingDraft } = require('./ai/accountingRegistration');
+const { BAC_PLAN, buildBacF10 } = require('./bacF10');
+const { listBacSupplierPayments: loadBacSupplierPayments } = require('./bacSupplierPayroll');
 
 admin.initializeApp();
 
@@ -2337,6 +2339,83 @@ function getUserDefaultBranchId(email = '', profile = {}) {
   return access.includes(preferred) ? preferred : access[0] || DEFAULT_BRANCH_ID;
 }
 
+function managuaDate() {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/Managua',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(new Date());
+}
+
+function validateBacDateRange(from, to) {
+  assertValidDate(from, 'desde');
+  assertValidDate(to, 'hasta');
+  if (from > to) throw new HttpsError('invalid-argument', 'La fecha inicial debe ser anterior o igual a la fecha final.');
+  const days = Math.floor((Date.parse(`${to}T12:00:00Z`) - Date.parse(`${from}T12:00:00Z`)) / 86400000);
+  if (days > 92) throw new HttpsError('invalid-argument', 'Consulta un intervalo maximo de 93 dias.');
+}
+
+async function getBacPayrollAccess(auth, { requireEdit = false } = {}) {
+  const email = normalizeUserEmail(auth?.token?.email || '');
+  if (!auth || !email) throw new HttpsError('unauthenticated', 'Debes iniciar sesion para consultar la planilla BAC.');
+
+  if (email === MASTER_USER_EMAIL) {
+    return { email, branches: [...USER_ACCESS_BRANCHES], canEdit: true, isMaster: true };
+  }
+
+  const profileSnapshot = await firestore.collection(USER_PROFILES_COLLECTION).doc(getUserProfileDocId(email)).get();
+  const profile = profileSnapshot.exists ? profileSnapshot.data() : null;
+  if (profile?.active === false) throw new HttpsError('permission-denied', 'Tu usuario esta inactivo.');
+
+  const moduleValue = profile?.modules?.cuentas_pagar;
+  const moduleEnabled = profile === null
+    || moduleValue === true
+    || moduleValue === 'view'
+    || moduleValue === 'edit'
+    || moduleValue?.enabled === true;
+  const explicitMode = profile?.moduleModes?.cuentas_pagar
+    || (typeof moduleValue === 'string' ? moduleValue : moduleValue?.mode);
+  const canEdit = moduleEnabled && explicitMode !== 'view';
+
+  if (!moduleEnabled || (requireEdit && !canEdit)) {
+    throw new HttpsError('permission-denied', requireEdit
+      ? 'Necesitas permiso de edicion en Cuentas por Pagar para preparar una planilla BAC.'
+      : 'No tienes acceso a Cuentas por Pagar.');
+  }
+
+  return {
+    email,
+    branches: getUserBranchAccess(email, profile || {}),
+    canEdit,
+    isMaster: false,
+  };
+}
+
+function validateRequestedBacBranch(branchId, allowedBranches) {
+  const normalized = normalizeText(branchId || 'all').toLowerCase();
+  if (normalized === 'all') {
+    if (allowedBranches.length < 2) {
+      throw new HttpsError('permission-denied', 'El consolidado requiere acceso a ambas sucursales.');
+    }
+    return 'all';
+  }
+  if (!allowedBranches.includes(normalized)) {
+    throw new HttpsError('permission-denied', 'No tienes acceso a la sucursal solicitada.');
+  }
+  return normalized;
+}
+
+async function getFreshBacCandidates(request, { requireEdit = false } = {}) {
+  const access = await getBacPayrollAccess(request.auth, { requireEdit });
+  const from = normalizeText(request.data?.from || managuaDate());
+  const to = normalizeText(request.data?.to || from);
+  validateBacDateRange(from, to);
+  const branchId = validateRequestedBacBranch(request.data?.branchId, access.branches);
+  const candidates = await loadBacSupplierPayments(firestore, { from, to, branchId });
+  return { access, from, to, branchId, candidates };
+}
+
 function publicAuthUserPayload(userRecord, profile = {}) {
   const email = normalizeUserEmail(userRecord.email || profile.email || '');
   const branchAccess = getUserBranchAccess(email, profile);
@@ -2919,6 +2998,129 @@ exports.syncSicarIngresosCarnesAmparito = onCall(INCOME_CALLABLE_FUNCTION_OPTION
     preview,
     actorEmail,
   });
+});
+
+exports.listBacSupplierPayments = onCall(ADMIN_CALLABLE_FUNCTION_OPTIONS, async (request) => {
+  const result = await getFreshBacCandidates(request);
+  const selectable = result.candidates.filter((candidate) => candidate.selectable && !candidate.exported);
+  return {
+    ok: true,
+    plan: BAC_PLAN,
+    from: result.from,
+    to: result.to,
+    branchId: result.branchId,
+    allowedBranches: result.access.branches,
+    canEdit: result.access.canEdit,
+    generatedAt: new Date().toISOString(),
+    candidates: result.candidates,
+    summary: {
+      count: result.candidates.length,
+      selectableCount: selectable.length,
+      missingReferenceCount: result.candidates.filter((candidate) => !candidate.bacReferences.length).length,
+      unreconciledCount: result.candidates.filter((candidate) => candidate.reconciled === false).length,
+      netAmount: selectable.reduce((sum, candidate) => sum + Number(candidate.netAmount || 0), 0),
+    },
+    realExport: {
+      enabled: false,
+      reason: 'Pendiente coordinar un registro compartido y una reserva atomica del correlativo AR19 con el ERP anterior.',
+    },
+  };
+});
+
+exports.previewBacSupplierPaymentFile = onCall(ADMIN_CALLABLE_FUNCTION_OPTIONS, async (request) => {
+  const result = await getFreshBacCandidates(request, { requireEdit: true });
+  const selections = Array.isArray(request.data?.rows) ? request.data.rows : [];
+  if (!selections.length || selections.length > 1000) {
+    throw new HttpsError('invalid-argument', 'Selecciona entre 1 y 1000 pagos para la vista previa.');
+  }
+  if (new Set(selections.map((row) => normalizeText(row.key))).size !== selections.length) {
+    throw new HttpsError('invalid-argument', 'La seleccion contiene pagos repetidos.');
+  }
+
+  const byKey = new Map(result.candidates.map((candidate) => [candidate.key, candidate]));
+  const rows = selections.map((selection) => {
+    const candidate = byKey.get(normalizeText(selection.key));
+    if (!candidate || candidate.version !== selection.version) {
+      throw new HttpsError('failed-precondition', 'Un pago cambio o ya no pertenece al filtro. Actualiza la planilla.');
+    }
+    if (!candidate.selectable || candidate.exported || !candidate.reconciled) {
+      throw new HttpsError('failed-precondition', `El pago de ${candidate.supplierName} no esta disponible para la planilla.`);
+    }
+    const beneficiaryReference = normalizeText(selection.beneficiaryReference);
+    const bankAccount = normalizeText(selection.bankAccount);
+    const reference = candidate.bacReferences.find((item) => (
+      item.reference === beneficiaryReference && item.bankAccount === bankAccount
+    ));
+    if (!reference) {
+      throw new HttpsError('failed-precondition', `Selecciona una referencia BAC vinculada a ${candidate.supplierName}.`);
+    }
+    return {
+      ...candidate,
+      supplierName: reference.beneficiaryName,
+      beneficiaryReference: reference.reference,
+      bankAccount: reference.bankAccount,
+      concept: `Pago proveedor ${candidate.invoiceNumber}`,
+    };
+  });
+
+  const applicationDate = normalizeText(request.data?.applicationDate || managuaDate());
+  const shipmentNumber = normalizeText(request.data?.shipmentNumber);
+  let file;
+  try {
+    file = buildBacF10({
+      planCode: BAC_PLAN.code,
+      shipmentNumber,
+      applicationDate,
+      rows,
+    });
+  } catch (error) {
+    throw new HttpsError('invalid-argument', error.message || 'No se pudo construir la vista previa F10.');
+  }
+
+  const fileLines = file.content.split('\r\n').filter(Boolean);
+  return {
+    ok: true,
+    previewOnly: true,
+    filename: `PREVIEW_${file.filename}`,
+    shipmentNumber: file.shipmentNumber,
+    applicationDate: file.applicationDate,
+    lineCount: file.lineCount,
+    totalAmount: file.totalAmount,
+    sha256: createHash('sha256').update(file.content).digest('hex'),
+    formatChecks: {
+      headerLength: fileLines[0]?.length || 0,
+      transactionLengths: fileLines.slice(1).map((line) => line.length),
+      crlf: file.content.endsWith('\r\n'),
+    },
+    rows: rows.map((row, index) => ({
+      lineNumber: index + 1,
+      key: row.key,
+      paymentDate: row.paymentDate,
+      branchId: row.branchId,
+      branchName: row.branchName,
+      supplierName: row.supplierName,
+      invoiceNumber: row.invoiceNumber,
+      beneficiaryReference: row.beneficiaryReference,
+      bankAccount: row.bankAccount,
+      netAmount: row.netAmount,
+    })),
+    realExport: {
+      enabled: false,
+      reason: 'Vista previa sin reserva de envio. La exportacion real requiere el registro compartido AR19 con el ERP anterior.',
+    },
+  };
+});
+
+exports.createBacSupplierPaymentFile = onCall(ADMIN_CALLABLE_FUNCTION_OPTIONS, async (request) => {
+  const access = await getBacPayrollAccess(request.auth, { requireEdit: true });
+  logger.warn('Exportacion BAC bloqueada por coordinacion pendiente del correlativo compartido', {
+    actor: access.email,
+    requestedRows: Array.isArray(request.data?.rows) ? request.data.rows.length : 0,
+  });
+  throw new HttpsError(
+    'failed-precondition',
+    'La exportacion real esta bloqueada hasta coordinar con el ERP anterior un registro compartido y una reserva atomica del correlativo AR19.'
+  );
 });
 
 exports.sicarIngresosApi = onRequest(INCOME_HTTP_FUNCTION_OPTIONS, async (request, response) => {

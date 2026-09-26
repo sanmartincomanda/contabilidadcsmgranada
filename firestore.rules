@@ -100,6 +100,27 @@ service cloud.firestore {
       allow write: if isMaster();
     }
 
+    match /proveedores_aliases/{document} {
+      allow read: if signedIn();
+      allow write: if isMaster();
+    }
+
+    match /bac_supplier_reference_imports/{document=**} {
+      allow read, write: if false;
+    }
+
+    match /bac_supplier_reference_backups/{document=**} {
+      allow read, write: if false;
+    }
+
+    match /bac_supplier_exports/{document=**} {
+      allow read, write: if false;
+    }
+
+    match /bac_supplier_export_lines/{document=**} {
+      allow read, write: if false;
+    }
+
     match /{collection}/{document=**} {
       allow read, write: if signedIn()
         && collection != 'integraciones_privadas'
@@ -115,6 +136,11 @@ service cloud.firestore {
         && collection != 'agente_ia_sesiones'
         && collection != 'agente_ia_usuarios'
         && collection != 'agente_ia_reglas'
+        && collection != 'proveedores_aliases'
+        && collection != 'bac_supplier_reference_imports'
+        && collection != 'bac_supplier_reference_backups'
+        && collection != 'bac_supplier_exports'
+        && collection != 'bac_supplier_export_lines'
         && !(collection == 'configuracion' && document == 'ventas_crm_exclusiones');
     }
   }

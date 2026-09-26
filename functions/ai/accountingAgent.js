@@ -34,7 +34,7 @@ const TERMINAL_DRAFT_STATUSES = new Set([
 
 const MAX_MEDIA_SIZE_BYTES = 10 * 1024 * 1024;
 const ALLOWED_MEDIA_TYPES = new Set(['image/jpeg', 'image/png', 'application/pdf']);
-const PAYMENT_METHODS = [
+const PURCHASE_PAYMENT_METHODS = [
   'EFECTIVO',
   'TRANSFERENCIA',
   'TARJETA BLACK MASTERCARD ***4660',
@@ -45,6 +45,40 @@ const PAYMENT_METHODS = [
   'TARJETA BLACK BANPRO',
   'CREDITO',
 ];
+
+const EXPENSE_PAYMENT_METHODS = [
+  'Credito',
+  'Caja Chica (Efectivo)',
+  '1102101 - BANCOS:MONEDA NACIONAL:BAC NO. 362843534 C$',
+  '1102102 - BANCOS:MONEDA NACIONAL:BANPRO NO 10013500002893',
+  '1102103 - BANCOS:MONEDA NACIONAL:LA FISE NO.106014315 C$',
+  '1102104 - BANCOS:MONEDA NACIONAL:LA FISE NO 109047494 C$',
+  '1102105 - BANCOS:MONEDA NACIONAL:BANPRO NO 10021500126514',
+  '1102106 - BANCOS:MONEDA NACIONAL:BAC(2) N. 362705105',
+  '1102201 - BANCOS:MONEDA DOLARES:BAC NO.362785164',
+  '2102901 - Tarjeta de Credito - Mayor:BAC BLACK MASTERCARD',
+  '2102902 - Tarjeta de Credito - Mayor:BAC Amex Pricesmart',
+  '2102903 - Tarjeta de credito:VISA GASOLINERA UNO',
+  '21029-1 - Tarjeta de Credito - Mayor:Amex Black',
+  '21029-2 - Tarjeta de Credito - Mayor:Banpro Black',
+];
+
+const PAYMENT_METHODS = [...new Set([...PURCHASE_PAYMENT_METHODS, ...EXPENSE_PAYMENT_METHODS])];
+const EXPENSE_ACCOUNT_CODES = new Set(`
+5201 5202 5203 5204 5205 5206 5207
+5301 5302 5304 5305 5306 5307 5308 5309 5310
+5401 5402 5403 5404
+5501 5502 5503 5504 5505 5506
+5601 5602 5603 5604 5605
+5701 5702 5703 5704 5705 5706 5707 5708 5709
+590001 590002 590003 590004 590005 590006 590012 590013 590014 590015 590016 590017
+590018 590019 590020 590021 590022 590023 590024 590025 590026 590027 590028 590029
+590030 590031 590032 590033 590034 590035 590036 590037 590038 590039 590040 590041
+590042 590043 590044 590045 590046 590047 590048 590049 590050 590051 590052 590053
+590054 590055 590056 590057 590058 590059 590060 590061 590062 590063 590064 590065
+590066 590067 590068 590069 590070 590071 590072 590073 590074 590075 590076 590077
+590078 590079 590080 590081 590082 590083 590084 590085 590086 590087 590088 590089
+`.trim().split(/\s+/));
 
 const EXPENSE_CATEGORY_TREE = [
   {
@@ -216,13 +250,24 @@ const money = (value) => {
 };
 const isDate = (value) => /^\d{4}-\d{2}-\d{2}$/.test(String(value || ''));
 const isCredit = (value) => normalizeKey(value) === 'CREDITO';
-const isTransfer = (value) => normalizeKey(value).includes('TRANSFERENCIA');
+const isTransfer = (value) => {
+  const normalized = normalizeKey(value);
+  return normalized.includes('TRANSFERENCIA')
+    || normalized.includes('BANCOS MONEDA')
+    || /^1102/.test(normalized.replace(/\s+/g, ''));
+};
 
 function canonicalPaymentMethod(value = '') {
   const key = normalizeKey(value);
   if (!key) return '';
   const exact = PAYMENT_METHODS.find((method) => normalizeKey(method) === key);
   if (exact) return exact;
+  const expenseAccountMethod = EXPENSE_PAYMENT_METHODS.find((method) => {
+    const accountCode = String(method).match(/^([0-9-]+)/)?.[1] || '';
+    return accountCode && key.includes(normalizeKey(accountCode));
+  });
+  if (expenseAccountMethod) return expenseAccountMethod;
+  if (key.includes('CAJA CHICA')) return 'Caja Chica (Efectivo)';
   if (key.includes('BLACK MASTERCARD') && key.includes('4660')) return 'TARJETA BLACK MASTERCARD ***4660';
   if (key.includes('AMEX') && key.includes('PRICESMART')) return 'TARJETA AMEX PRICESMART';
   if (key.includes('AMEX') && key.includes('BLACK')) return 'TARJETA AMEX BLACK';
@@ -392,14 +437,12 @@ function findAccount(accounts, analysis) {
   const compatible = accounts.filter((account) => {
     const accountType = normalizeKey(account.type || account.tipo);
     if (type === 'compra') return ['ACTIVOS CORRIENTES', 'COSTO DE LAS VENTAS', 'GASTOS'].includes(accountType);
-    return ['GASTOS', 'OTROS GASTOS', 'COSTO DE LAS VENTAS'].includes(accountType);
+    return EXPENSE_ACCOUNT_CODES.has(String(account.number || account.code || '').trim());
   });
   if (type === 'compra') {
     return compatible.find((account) => normalizeKey(account.number || account.code) === '11060') || null;
   }
-  if (!requested) {
-    return compatible.find((account) => normalizeKey(account.number || account.code) === '5') || null;
-  }
+  if (!requested) return null;
   return compatible.find((account) => [account.id, account.number, account.code, account.name]
     .some((value) => normalizeKey(value) === requested)) || null;
 }
@@ -453,7 +496,7 @@ function applyDeterministicRules(analysis, catalog) {
     normalizeKey(option.category) === normalizeKey(next.categoria)
     && normalizeKey(option.subcategory) === normalizeKey(next.subcategoria)
   ));
-  if (category) {
+  if (next.tipoRegistro === 'compra' && category?.category === 'Costos de venta / compras') {
     next.categoria = category.category;
     next.subcategoria = category.subcategory;
   } else {
@@ -472,6 +515,9 @@ function applyDeterministicRules(analysis, catalog) {
   }
   next.numeroFactura = normalizeText(next.numeroFactura);
   next.metodoPago = canonicalPaymentMethod(next.metodoPago);
+  if (next.tipoRegistro === 'gasto' && normalizeKey(next.metodoPago) === 'EFECTIVO') {
+    next.metodoPago = 'Caja Chica (Efectivo)';
+  }
   next.moneda = canonicalCurrency(next.moneda) || 'NIO';
   if (next.moneda === 'NIO') next.tasaCambio = 1;
   next.subtotal = money(next.subtotal);
@@ -524,9 +570,9 @@ function buildQuestion(missing) {
     fecha: 'No pude confirmar la fecha impresa. ¿Cuál es la fecha de la factura?',
     providerId: 'No encontré este proveedor en el catálogo. ¿Deseas relacionarlo con uno existente o crear uno nuevo?',
     descripcion: '¿Cuál es el concepto o descripción contable de esta transacción?',
-    categoria: 'No pude asignar una categoría fiscal válida. ¿Cuál corresponde?',
-    accountingAccountId: 'No encontré una cuenta contable compatible. Selecciona una cuenta existente.',
-    metodoPago: '¿Cómo se pagó? Responde “Efectivo”, “Transferencia”, “Crédito” o el nombre exacto de la tarjeta.',
+    categoria: 'No pude asignar la subcategoría de costo de la compra. ¿Cuál corresponde?',
+    accountingAccountId: 'No encontré una cuenta hija válida. Selecciona la cuenta contable del gasto.',
+    metodoPago: '¿Cómo se pagó? Indica Caja Chica, la cuenta bancaria exacta, la tarjeta exacta o Crédito.',
     referenciaPago: '¿Cuál es la referencia de la transferencia?',
     subtotal: 'No pude confirmar el subtotal. ¿Cuál es el monto correcto?',
     iva: 'No pude confirmar el IVA. Indica el monto, aunque sea C$0.00.',
@@ -551,9 +597,10 @@ function validateAnalysis(analysis, {
   if (!isDate(analysis.fecha)) missing.push('fecha');
   if (!analysis.providerId) missing.push('providerId');
   if (!analysis.descripcion) missing.push('descripcion');
-  if (!analysis.categoria || !analysis.subcategoria) missing.push('categoria');
+  if (analysis.tipoRegistro === 'compra' && (!analysis.categoria || !analysis.subcategoria)) missing.push('categoria');
   if (!analysis.accountingAccountId) missing.push('accountingAccountId');
-  if (!PAYMENT_METHODS.includes(analysis.metodoPago)) missing.push('metodoPago');
+  const allowedPaymentMethods = analysis.tipoRegistro === 'gasto' ? EXPENSE_PAYMENT_METHODS : PURCHASE_PAYMENT_METHODS;
+  if (!allowedPaymentMethods.some((method) => normalizeKey(method) === normalizeKey(analysis.metodoPago))) missing.push('metodoPago');
   if (isTransfer(analysis.metodoPago) && !analysis.referenciaPago && analysis.referenciaConfirmadaSinDato !== true) {
     missing.push('referenciaPago');
   }
@@ -597,10 +644,13 @@ function validateAnalysis(analysis, {
 }
 
 function buildAnalyzerPrompt({ text, catalog, allowedBranches, source }) {
-  const categoryText = CATEGORY_OPTIONS.map((option) => `${option.category} / ${option.subcategory}`).join('\n');
+  const categoryText = CATEGORY_OPTIONS
+    .filter((option) => option.category === 'Costos de venta / compras')
+    .map((option) => `${option.category} / ${option.subcategory}`)
+    .join('\n');
   const accountText = catalog.accounts
     .filter((account) => account.locked !== true)
-    .filter((account) => ['GASTOS', 'OTROS GASTOS', 'COSTO DE LAS VENTAS', 'ACTIVOS CORRIENTES'].includes(normalizeKey(account.type)))
+    .filter((account) => EXPENSE_ACCOUNT_CODES.has(String(account.number || account.code || '').trim()) || normalizeKey(account.number || account.code) === '11060')
     .slice(0, 180)
     .map((account) => `${account.number || account.code} | ${account.name || account.nombre} | ${account.type}`)
     .join('\n');
@@ -620,14 +670,17 @@ Reglas:
 - CONTADO describe la condición de venta y no significa EFECTIVO. No cambies una tarjeta por efectivo salvo que el usuario diga explícitamente efectivo.
 - La tarjeta terminada en 4660 debe devolverse exactamente como TARJETA BLACK MASTERCARD ***4660.
 - Sucursales permitidas para el remitente: ${allowedBranches.join(', ')}.
-- Métodos exactos permitidos: ${PAYMENT_METHODS.join(' | ')}.
+- Para GASTO, usa una cuenta hija de la lista y no asignes categoría/subcategoría fiscal.
+- Para COMPRA, conserva la subcategoría de costo y usa la cuenta 11060.
+- Métodos exactos permitidos para GASTO: ${EXPENSE_PAYMENT_METHODS.join(' | ')}.
+- Métodos permitidos para COMPRA: ${PURCHASE_PAYMENT_METHODS.join(' | ')}.
 - Texto recibido: ${text || '(sin comentario)'}.
 - Canal: ${source || 'whatsapp'}.
 
-Categorías válidas:
+Categorías válidas solo para COMPRA:
 ${categoryText}
 
-Cuentas contables candidatas existentes:
+Cuentas contables candidatas existentes (cuentas hijas para gastos y 11060 para compras):
 ${accountText || '(sin catálogo disponible)'}
 
 Devuelve exclusivamente el objeto estructurado solicitado.`;
@@ -759,7 +812,9 @@ function formatAccountingSummary(draft) {
     `Sucursal: ${draft.branchId || 'Pendiente'}`,
     `Fecha: ${draft.fecha || 'Pendiente'}`,
     `Factura: ${draft.numeroFactura || '(sin número)'}`,
-    `Categoría: ${draft.categoria && draft.subcategoria ? `${draft.categoria} / ${draft.subcategoria}` : 'Pendiente'}`,
+    draft.tipoRegistro === 'gasto'
+      ? `Cuenta de gasto: ${draft.accountingAccountCode || 'Pendiente'}${draft.accountingAccountName ? ` - ${draft.accountingAccountName}` : ''}`
+      : `Categoría: ${draft.categoria && draft.subcategoria ? `${draft.categoria} / ${draft.subcategoria}` : 'Pendiente'}`,
     `Subtotal: C$${format(draft.subtotal)}`,
     `IVA: C$${format(draft.iva)}`,
     `Total: C$${format(draft.total)}`,
@@ -774,8 +829,18 @@ function formatAccountingSummary(draft) {
 
 async function analyzeConversationUpdate({ apiKey, model, text, draft, catalog }) {
   const client = new OpenAI({ apiKey });
-  const categoryText = CATEGORY_OPTIONS.map((option) => `${option.category} / ${option.subcategory}`).join('\n');
-  const accountText = catalog.accounts.slice(0, 180).map((account) => `${account.number || account.code} | ${account.name || account.nombre}`).join('\n');
+  const categoryText = CATEGORY_OPTIONS
+    .filter((option) => option.category === 'Costos de venta / compras')
+    .map((option) => `${option.category} / ${option.subcategory}`)
+    .join('\n');
+  const accountText = catalog.accounts
+    .filter((account) => draft.tipoRegistro === 'compra'
+      ? normalizeKey(account.number || account.code) === '11060'
+      : EXPENSE_ACCOUNT_CODES.has(String(account.number || account.code || '').trim()))
+    .slice(0, 180)
+    .map((account) => `${account.number || account.code} | ${account.name || account.nombre}`)
+    .join('\n');
+  const allowedMethods = draft.tipoRegistro === 'gasto' ? EXPENSE_PAYMENT_METHODS : PURCHASE_PAYMENT_METHODS;
   const response = await client.responses.create({
     model,
     input: [{
@@ -790,7 +855,7 @@ async function analyzeConversationUpdate({ apiKey, model, text, draft, catalog }
           referenciaPago: draft.referenciaPago, subtotal: draft.subtotal, iva: draft.iva, total: draft.total,
           retencionIr2: draft.retencionIr2, retencionMunicipal1: draft.retencionMunicipal1,
           moneda: draft.moneda, tasaCambio: draft.tasaCambio,
-        })}\n\nRespuesta: ${text}\n\nMétodos permitidos: ${PAYMENT_METHODS.join(' | ')}\nCategorías exactas:\n${categoryText}\nCuentas existentes:\n${accountText}`,
+        })}\n\nRespuesta: ${text}\n\nMétodos permitidos: ${allowedMethods.join(' | ')}\nCategorías exactas (solo compras):\n${categoryText}\nCuentas existentes:\n${accountText}`,
       }],
     }],
     text: {
@@ -1367,7 +1432,7 @@ function validateManualDraftUpdate(current, updates, catalog, allowedBranches, o
   const allowedFields = [
     'tipoRegistro', 'branchId', 'fecha', 'vencimiento', 'providerId', 'providerCode', 'proveedor',
     'rucProveedor', 'numeroFactura', 'descripcion', 'categoria', 'subcategoria',
-    'accountingAccountId', 'accountingAccountCode', 'metodoPago', 'referenciaPago',
+    'accountingAccountId', 'accountingAccountCode', 'accountingAccountName', 'metodoPago', 'referenciaPago',
     'referenciaConfirmadaSinDato', 'subtotal', 'iva',
     'total', 'retencionIr2', 'retencionMunicipal1', 'moneda', 'tasaCambio', 'soportes', 'confianza',
   ];
@@ -1390,7 +1455,9 @@ module.exports = {
   AGENT_STATUSES,
   ANALYSIS_SCHEMA,
   CATEGORY_OPTIONS,
+  EXPENSE_PAYMENT_METHODS,
   PAYMENT_METHODS,
+  PURCHASE_PAYMENT_METHODS,
   applyDeterministicRules,
   canonicalCurrency,
   canonicalPaymentMethod,

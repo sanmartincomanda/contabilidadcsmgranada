@@ -1307,11 +1307,15 @@ function AppContent() {
         collectionConfig('traspasos_costos_sucursal', [where('month', '>=', reportStartMonth)]),
     ], [reportStartMonth]);
 
-    const accountsPayableCollections = useMemo(() => [
-        collectionConfig('cuentas_por_pagar', [where('estado', 'in', ['pendiente', 'parcial'])]),
-        collectionConfig('abonos_pagar', [where('fecha', '>=', `${accountStartMonth}-01`)]),
-        'proveedores',
-    ], [accountStartMonth]);
+    const accountsPayableCollections = useMemo(() => {
+        const tab = new URLSearchParams(location.search).get('tab');
+        if (tab === 'planilla-bac') return [];
+        return [
+            collectionConfig('cuentas_por_pagar', [where('estado', 'in', ['pendiente', 'parcial'])]),
+            collectionConfig('abonos_pagar', [where('fecha', '>=', `${accountStartMonth}-01`)]),
+            'proveedores',
+        ];
+    }, [accountStartMonth, location.search]);
 
     const accountsReceivableCollections = useMemo(() => [
         collectionConfig('facturas_membretadas_ventas', [where('paymentMethod', 'in', ['CREDITO', 'MIXTO'])]),
@@ -1437,7 +1441,7 @@ function AppContent() {
                         <Route path="/gastos-diarios" element={<PrivateRoute element={canAccess('caja_chica') ? <GastosDiarios categories={categoriesList} providers={categoriesData.proveedores || []} branchContext={branchContext} /> : <Navigate to={defaultAllowedPath} replace />} />} />
                         <Route path="/conciliacion" element={<PrivateRoute element={<Navigate to={defaultAllowedPath} replace />} />} />
                         <Route path="/facturacion" element={<PrivateRoute element={canAccess('facturacion') ? (billingLoading ? <AppLoadingState /> : billingError ? <AppErrorState error={billingError} /> : <Billing data={billingData} canEdit={canEdit('facturacion')} branchContext={branchContext} />) : <Navigate to={defaultAllowedPath} replace />} />} />
-                        <Route path="/cuentas-pagar" element={<PrivateRoute element={canAccess('cuentas_pagar') ? (accountsPayableLoading ? <AppLoadingState /> : accountsPayableError ? <AppErrorState error={accountsPayableError} /> : <AccountsPayable data={accountsPayableData} branchContext={branchContext} />) : <Navigate to={defaultAllowedPath} replace />} />} />
+                        <Route path="/cuentas-pagar" element={<PrivateRoute element={canAccess('cuentas_pagar') ? (accountsPayableLoading ? <AppLoadingState /> : accountsPayableError ? <AppErrorState error={accountsPayableError} /> : <AccountsPayable data={accountsPayableData} branchContext={branchContext} canEdit={canEdit('cuentas_pagar')} />) : <Navigate to={defaultAllowedPath} replace />} />} />
                         <Route path="/cuentas-cobrar" element={<PrivateRoute element={canAccess('cuentas_cobrar') ? (accountsReceivableLoading ? <AppLoadingState /> : accountsReceivableError ? <AppErrorState error={accountsReceivableError} /> : <AccountsReceivable data={accountsReceivableData} branchContext={branchContext} />) : <Navigate to={defaultAllowedPath} replace />} />} />
                         <Route path="/traspasos-costos" element={<PrivateRoute element={canAccess('traspasos_costos') ? (branchTransfersLoading ? <AppLoadingState /> : branchTransfersError ? <AppErrorState error={branchTransfersError} /> : <BranchCostTransfers data={branchTransfersData} branchContext={branchContext} canEdit={canEdit('traspasos_costos')} />) : <Navigate to={defaultAllowedPath} replace />} />} />
                         <Route path="/reportes" element={<PrivateRoute element={canAccess('reportes') ? (reportsLoading ? <AppLoadingState /> : reportsError ? <AppErrorState error={reportsError} /> : <Reports data={reportsData} branchContext={branchContext} />) : <Navigate to={defaultAllowedPath} replace />} />} />

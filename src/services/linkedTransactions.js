@@ -67,6 +67,20 @@ const pickAccountingAccountPayload = (source = {}) => ([
     return payload;
 }, {}));
 
+const pickExpensePaymentPayload = (source = {}) => ([
+    'expensePaymentOptionId',
+    'paymentType',
+    'paymentMethod',
+    'paymentMethodLabel',
+    'paymentAccountCode',
+    'paymentAccountName',
+    'paymentAccountType',
+    'paymentAccountCurrency',
+].reduce((payload, key) => {
+    if (source[key] !== undefined && source[key] !== null) payload[key] = source[key];
+    return payload;
+}, {}));
+
 const firstDefined = (...values) => values.find((value) => value !== undefined && value !== null);
 
 const hasOwn = (object, key) => Object.prototype.hasOwnProperty.call(object || {}, key);
@@ -127,7 +141,6 @@ const buildPayableMirrorPayload = (purchaseData, updateData, payableData = {}) =
 
 const buildExpensePayableMirrorPayload = (expenseData, updateData, payableData = {}) => {
     const merged = { ...expenseData, ...updateData };
-    const categoryPayload = buildExpenseCategoryPayload(getExpenseCategoryFromRecord(merged));
     const newTotal = normalizeAmount(firstDefined(merged.total, merged.monto, merged.amount));
     const previousTotal = normalizeAmount(firstDefined(payableData.total, payableData.monto, expenseData.total, expenseData.amount));
     const previousSaldo = normalizeAmount(firstDefined(payableData.saldo, newTotal));
@@ -144,8 +157,8 @@ const buildExpensePayableMirrorPayload = (expenseData, updateData, payableData =
         numero: firstDefined(merged.invoiceNumber, merged.numero, merged.factura),
         factura: firstDefined(merged.invoiceNumber, merged.numero, merged.factura),
         descripcion: firstDefined(merged.description, merged.descripcion),
-        ...categoryPayload,
         ...pickAccountingAccountPayload(merged),
+        ...pickExpensePaymentPayload(merged),
         monto: newTotal,
         saldo,
         amount: normalizeAmount(firstDefined(merged.amount, merged.subtotal, newTotal)),
@@ -202,7 +215,6 @@ const buildGastoMirrorPayload = (purchaseData, updateData) => {
 
 const buildExpenseGastoMirrorPayload = (expenseData, updateData) => {
     const merged = { ...expenseData, ...updateData };
-    const categoryPayload = buildExpenseCategoryPayload(getExpenseCategoryFromRecord(merged));
     const branchPayload = getBranchPayload(getRecordBranchId(merged));
     const total = normalizeAmount(firstDefined(merged.total, merged.monto, merged.amount));
     const date = firstDefined(merged.date, merged.fecha);
@@ -226,10 +238,9 @@ const buildExpenseGastoMirrorPayload = (expenseData, updateData) => {
         retentionMunicipal1: normalizeAmount(merged.retentionMunicipal1),
         retencionIr2: normalizeAmount(merged.retencionIr2 ?? merged.retentionIr2),
         retencionMunicipal1: normalizeAmount(merged.retencionMunicipal1 ?? merged.retentionMunicipal1),
-        paymentType: merged.paymentType,
         paymentReference: merged.paymentReference,
-        ...categoryPayload,
         ...pickAccountingAccountPayload(merged),
+        ...pickExpensePaymentPayload(merged),
         tipo: 'Gasto',
     });
 };

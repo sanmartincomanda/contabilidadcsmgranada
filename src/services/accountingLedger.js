@@ -115,6 +115,18 @@ const resolvePaymentAccount = (paymentValue = '') => {
     return ACCOUNT_CATALOG.bankBac;
 };
 
+const paymentAccountFromRecord = (record = {}, paymentValue = '') => {
+    if (record.paymentAccountCode || record.paymentAccountName) {
+        return {
+            code: record.paymentAccountCode || '',
+            name: record.paymentAccountName || record.paymentMethodLabel || '',
+            type: record.paymentAccountType || '',
+            detailType: record.paymentAccountDetailType || '',
+        };
+    }
+    return resolvePaymentAccount(paymentValue);
+};
+
 const getRecordDate = (record = {}) => (
     record.date || record.fecha || record.saleDate || new Date().toISOString().substring(0, 10)
 );
@@ -198,6 +210,9 @@ const finalizeEntry = ({
             retentionMunicipal1: money(record.retentionMunicipal1 ?? record.retencionMunicipal1),
             retentionTotal: money(record.retentionTotal),
             paymentType: record.paymentType || record.paymentMethod || '',
+            paymentMethodLabel: record.paymentMethodLabel || '',
+            paymentAccountCode: record.paymentAccountCode || '',
+            paymentAccountName: record.paymentAccountName || '',
             accountingAccountCode: record.accountingAccountCode || '',
             accountingAccountName: record.accountingAccountName || '',
             fixedQuota: record.fixedQuota === true,
@@ -251,7 +266,7 @@ export const buildPurchaseExpenseAccountingEntry = ({
     });
 
     addLine(lines, {
-        account: isCreditPayment(paymentValue) ? ACCOUNT_CATALOG.payable : resolvePaymentAccount(paymentValue),
+        account: isCreditPayment(paymentValue) ? ACCOUNT_CATALOG.payable : paymentAccountFromRecord(record, paymentValue),
         credit: netPayment,
         description: isCreditPayment(paymentValue) ? `CUENTA POR PAGAR ${getPartyName(record)}`.trim() : `PAGO ${normalizePaymentMethod(paymentValue) || 'CONTADO'}`,
         reference,

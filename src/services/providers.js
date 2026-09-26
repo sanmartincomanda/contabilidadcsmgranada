@@ -37,8 +37,10 @@ export const getProviderCode = (providerName = '') => {
 };
 
 export const getProviderDisplayName = (provider = {}) => normalizeProviderName(
-    provider.nombre || provider.name || provider.supplier || provider.proveedor
+    provider.legalName || provider.nombre || provider.name || provider.supplier || provider.proveedor
 );
+
+export const isActiveProvider = (provider = {}) => provider.active !== false && !provider.mergedInto;
 
 const buildProviderPayload = (providerName, source = 'manual') => {
     const nombre = normalizeProviderName(providerName);
@@ -61,18 +63,59 @@ export async function upsertProviderByName(providerName, options = {}) {
     const snapshot = await getDoc(providerRef);
     const payload = buildProviderPayload(nombre, options.source || 'manual');
 
+    const returnExistingProvider = async (providerId, existing = null) => {
+        if (!providerId) return null;
+        const canonicalRef = doc(db, 'proveedores', providerId);
+        const canonicalSnapshot = existing ? null : await getDoc(canonicalRef);
+        const canonical = existing || (canonicalSnapshot?.exists() ? canonicalSnapshot.data() : null);
+        if (!canonical) return null;
+        await setDoc(canonicalRef, {
+            lastSource: options.source || 'manual',
+            updatedAt: serverTimestamp(),
+        }, { merge: true });
+        const displayName = getProviderDisplayName(canonical) || nombre;
+        return {
+            id: providerId,
+            ...canonical,
+            nombre: displayName,
+            name: displayName,
+            code: canonical.code || canonical.codigo || getProviderCode(displayName),
+        };
+    };
+
     if (snapshot.exists()) {
         const existing = snapshot.data();
+        if (existing.mergedInto) {
+            const redirected = await returnExistingProvider(existing.mergedInto);
+            if (redirected) return redirected;
+        }
         await setDoc(providerRef, {
             ...payload,
+            nombre: existing.legalName || existing.nombre || payload.nombre,
+            name: existing.legalName || existing.name || payload.name,
             createdAt: existing.createdAt || serverTimestamp(),
         }, { merge: true });
-    } else {
-        await setDoc(providerRef, {
+        return {
+            id: providerRef.id,
+            ...existing,
             ...payload,
-            createdAt: serverTimestamp(),
-        });
+            nombre: existing.legalName || existing.nombre || payload.nombre,
+            name: existing.legalName || existing.name || payload.name,
+        };
     }
+
+    const aliasRef = doc(db, 'proveedores_aliases', providerDocId(nombre));
+    const aliasSnapshot = await getDoc(aliasRef);
+    if (aliasSnapshot.exists()) {
+        const redirected = await returnExistingProvider(aliasSnapshot.data().canonicalProviderId);
+        if (redirected) return redirected;
+    }
+
+    await setDoc(providerRef, {
+        ...payload,
+        active: true,
+        createdAt: serverTimestamp(),
+    });
 
     return {
         id: providerRef.id,
@@ -100,6 +143,7 @@ export async function migrateProvidersFromAccountingRecords() {
 
     const existingProvidersSnapshot = await getDocs(collection(db, 'proveedores'));
     existingProvidersSnapshot.docs.forEach((providerDoc) => {
+        if (!isActiveProvider(providerDoc.data())) return;
         providerNamesFromRecord(providerDoc.data()).forEach((name) => names.add(name));
     });
 

@@ -5,6 +5,8 @@ import {
     buildStampedInvoiceLinkIndex,
     getTicketStampedInvoiceInfo,
     isExcludedSicarTicket,
+    isNindiriSicarTicketRecord,
+    mergeSicarTicketSources,
 } from './salesCrmAnalytics.js';
 
 const tickets = [
@@ -149,4 +151,47 @@ test('enriches article KPIs with the SICAR category catalog', () => {
     assert.equal(resDepartment.percentage, 115 / 315);
     assert.equal(porkDepartment.sales, 200);
     assert.equal(porkDepartment.percentage, 200 / 315);
+});
+
+test('includes Serie B ticket records without admitting legacy Granada invoices', () => {
+    const nindiriTicket = {
+        id: 'sicar_ticket_nindiri_1600',
+        branchId: 'nindiri',
+        sourceType: 'sicar_ticket',
+        ticketId: 1600,
+        total: 450,
+    };
+    const granadaLegacyInvoice = {
+        id: 'sicar_factura_9000',
+        branchId: 'granada',
+        sourceType: 'stamped_sale_invoice',
+        total: 900,
+    };
+
+    assert.equal(isNindiriSicarTicketRecord(nindiriTicket), true);
+    assert.equal(isNindiriSicarTicketRecord(granadaLegacyInvoice), false);
+    assert.deepEqual(mergeSicarTicketSources([], [nindiriTicket, granadaLegacyInvoice]), [nindiriTicket]);
+});
+
+test('deduplicates Serie B origins and prefers the canonical ticket version', () => {
+    const legacy = {
+        id: 'sicar_ticket_nindiri_1601',
+        branchId: 'nindiri',
+        sourceType: 'sicar_ticket',
+        ticketId: 1601,
+        total: 100,
+        accountingStatus: 'pendiente',
+    };
+    const canonical = {
+        id: 'sicar_ticket_nindiri_1601',
+        branchId: 'nindiri',
+        sourceType: 'ticket_sale',
+        ticketId: 1601,
+        total: 100,
+        accountingStatus: 'linked',
+    };
+    const merged = mergeSicarTicketSources([canonical], [legacy]);
+
+    assert.equal(merged.length, 1);
+    assert.equal(merged[0].accountingStatus, 'linked');
 });

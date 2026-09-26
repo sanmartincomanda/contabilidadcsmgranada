@@ -21,6 +21,46 @@ export const isExcludedSicarTicket = (ticket = {}) => {
         || customerName.includes(EXCLUDED_SICAR_CUSTOMER_NAME);
 };
 
+const getSicarTicketBranchId = (ticket = {}) => normalizeCrmText(
+    ticket.branchId || ticket.branch || ticket.sucursal || ''
+).toLowerCase();
+
+export const isNindiriSicarTicketRecord = (ticket = {}) => {
+    if (getSicarTicketBranchId(ticket) !== 'nindiri') return false;
+    const documentId = String(ticket.id || ticket.docId || '').trim().toLowerCase();
+    const sourceType = normalizeCrmText(ticket.sourceType);
+    const sourceDocumentType = normalizeCrmText(ticket.sourceDocumentType);
+    return documentId.startsWith('sicar_ticket_')
+        || sourceType.includes('TICKET')
+        || sourceDocumentType === 'TICKET';
+};
+
+const getSicarTicketSourceKey = (ticket = {}) => {
+    const branchId = getSicarTicketBranchId(ticket) || 'sin-sucursal';
+    const sourceNumber = ticket.sourceDocumentId
+        ?? ticket.ticketId
+        ?? ticket.ticketNumber
+        ?? ticket.folio
+        ?? ticket.saleId
+        ?? ticket.venId;
+    if (sourceNumber !== null && sourceNumber !== undefined && String(sourceNumber).trim()) {
+        return `${branchId}:ticket:${String(sourceNumber).trim()}`;
+    }
+    return `${branchId}:doc:${String(ticket.id || ticket.docId || '').trim()}`;
+};
+
+export const mergeSicarTicketSources = (canonicalTickets = [], legacyRecords = []) => {
+    const ticketsBySource = new Map();
+    (legacyRecords || [])
+        .filter(isNindiriSicarTicketRecord)
+        .forEach((ticket) => ticketsBySource.set(getSicarTicketSourceKey(ticket), ticket));
+    (canonicalTickets || []).forEach((ticket) => {
+        const key = getSicarTicketSourceKey(ticket);
+        ticketsBySource.set(key, { ...(ticketsBySource.get(key) || {}), ...ticket });
+    });
+    return [...ticketsBySource.values()];
+};
+
 const unique = (values = []) => [...new Set(
     values
         .flat()
