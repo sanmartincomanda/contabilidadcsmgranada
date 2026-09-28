@@ -4,6 +4,10 @@ const { createHash, randomUUID } = require('node:crypto');
 const admin = require('firebase-admin');
 const mysql = require('mysql2/promise');
 const { buildSyncLogPayload } = require('./sicarSyncLogRetention');
+const {
+  applySupplierTaxTreatment,
+  buildSupplierTaxAccountingPayload,
+} = require('./sicarPurchaseAccountingTreatment');
 
 const PROJECT_ID = 'sistema-contable-csm-granada';
 const BRANCH_ID = 'granada';
@@ -356,6 +360,14 @@ function buildPurchaseAccountingEntry(entry, purchasePayload = {}) {
       subtotal,
       iva,
       total,
+      supplierTaxRegime: accountingPayload.supplierTaxRegime || 'general',
+      excludeRecoverableVat: accountingPayload.excludeRecoverableVat === true,
+      accountingSubtotal: money(accountingPayload.accountingSubtotal ?? subtotal),
+      accountingTaxTotal: money(accountingPayload.accountingTaxTotal ?? iva),
+      accountingTotal: money(accountingPayload.accountingTotal ?? total),
+      sicarSubtotal: money(accountingPayload.sicarSubtotal ?? subtotal),
+      sicarTaxTotal: money(accountingPayload.sicarTaxTotal ?? iva),
+      sicarTotal: money(accountingPayload.sicarTotal ?? total),
       retentionIr2,
       retentionMunicipal1,
       retentionTotal,
@@ -448,10 +460,13 @@ async function buildAccountingPayload(entry) {
   const retentionIr2 = money(metadata.retentionIr2);
   const retentionMunicipal1 = money(metadata.retentionMunicipal1);
   const retentionTotal = money(retentionIr2 + retentionMunicipal1);
-  const netTotal = money(Math.max(entry.total - retentionTotal, 0));
+  const supplierTaxPayload = buildSupplierTaxAccountingPayload(entry, metadata);
+  const accountingTotal = supplierTaxPayload.accountingTotal ?? entry.total;
+  const netTotal = money(Math.max(accountingTotal - retentionTotal, 0));
   const support = await ensureInvoiceSupportUploaded(entry, metadataRecord);
 
   return {
+    ...supplierTaxPayload,
     retentionIr2,
     retentionMunicipal1,
     retentionTotal,
@@ -583,6 +598,14 @@ function buildSyncFingerprint(entry) {
       paymentTypeNames: entry.paymentTypeNames,
       dueDate: entry.dueDate || '',
       accounting: {
+        supplierTaxRegime: accounting.supplierTaxRegime || 'general',
+        excludeRecoverableVat: accounting.excludeRecoverableVat === true,
+        accountingSubtotal: money(accounting.accountingSubtotal),
+        accountingTaxTotal: money(accounting.accountingTaxTotal),
+        accountingTotal: money(accounting.accountingTotal),
+        sicarSubtotal: money(accounting.sicarSubtotal),
+        sicarTaxTotal: money(accounting.sicarTaxTotal),
+        sicarTotal: money(accounting.sicarTotal),
         retentionIr2: money(accounting.retentionIr2),
         retentionMunicipal1: money(accounting.retentionMunicipal1),
         supportPath: accounting.fotoFacturaPath || '',
@@ -1280,7 +1303,7 @@ async function main() {
     for (const entry of entries) {
       // eslint-disable-next-line no-await-in-loop
       const accountingPayload = await buildAccountingPayload(entry);
-      const enrichedEntry = { ...entry, accountingPayload };
+      const enrichedEntry = applySupplierTaxTreatment(entry, accountingPayload);
       const fingerprint = buildSyncFingerprint(enrichedEntry);
       if (useLocalState && purchaseMatchesLocalState(state, enrichedEntry, fingerprint)) {
         skippedByLocalState += 1;
