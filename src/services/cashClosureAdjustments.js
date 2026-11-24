@@ -42,3 +42,7 @@ export const calculateCashClosureInternalRatio = ({
         cashResidual: money(incomeTotal - nonCashTotal),
     };
 };
+
+export const NO_RC_TRANSFER_METHOD = 'TRANSFERENCIA NO RC';
+
+export const isNoRcTransfer = (method) => String(method || '').trim().toUpperCase() === NO_RC_TRANSFER_METHOD;

@@ -1,5 +1,6 @@
 import { ref, uploadBytesResumable, getDownloadURL } from 'firebase/storage';
 import { storage } from '../firebase';
+import { NO_RC_TRANSFER_METHOD } from './cashClosureAdjustments.js';
 
 const MAX_INVOICE_FILE_SIZE_BYTES = 10 * 1024 * 1024;
 const INVOICE_UPLOAD_TIMEOUT_MS = 60000;
@@ -32,6 +33,8 @@ export const PAYMENT_METHODS = [
     PAYROLL_MEAL_PAYMENT_METHOD,
     'CREDITO',
 ];
+
+export const BILLING_PAYMENT_METHODS = [...PAYMENT_METHODS, NO_RC_TRANSFER_METHOD];
 
 export const PURCHASE_PAYMENT_METHODS = [
     'EFECTIVO',

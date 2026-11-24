@@ -14,6 +14,7 @@ import {
     resolveBranchId,
 } from '../constants';
 import BalanceSheet from './BalanceSheet';
+import { NO_RC_TRANSFER_METHOD } from '../services/cashClosureAdjustments';
 import DashboardGeneral from './DashboardGeneral';
 import ExecutiveFlowDiagram from './ExecutiveFlowDiagram';
 import {
@@ -920,6 +921,7 @@ const buildTaxReport = (data, selectedMonth, branchScope = CONSOLIDATED_BRANCH_I
         ['VENTAS TRANSFERENCIA BAC', 'TRANSFERENCIA BAC'],
         ['VENTAS TRANSFERENCIA BANPRO', 'TRANSFERENCIA BANPRO'],
         ['VENTAS TRANSFERENCIA LAFISE', 'TRANSFERENCIA LAFISE'],
+        ['TRANSFERENCIA NO RC (INFORMATIVA)', NO_RC_TRANSFER_METHOD],
         ['VENTAS EFECTIVO', 'EFECTIVO'],
         ['VENTAS CREDITO', 'CREDITO'],
     ].map(([label, method]) => ({
@@ -936,7 +938,7 @@ const buildTaxReport = (data, selectedMonth, branchScope = CONSOLIDATED_BRANCH_I
                     ? sum + peso(row.paymentNetTotal || row.total)
                     : sum;
             }, 0)),
-    }));
+    })).filter((row) => row.ITEM !== 'TRANSFERENCIA NO RC (INFORMATIVA)' || row.TOTAL !== 0);
 
     stampedInvoicePaymentSummaryRows.push(
         {

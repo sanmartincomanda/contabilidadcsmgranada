@@ -12,7 +12,7 @@ import {
     getBranchPayload,
     getRecordBranchId,
 } from '../constants';
-import { PAYMENT_METHODS } from '../services/fiscalUtils';
+import { BILLING_PAYMENT_METHODS } from '../services/fiscalUtils';
 
 const normalizeText = (value = '') => (
     String(value || '')
@@ -259,7 +259,7 @@ const groupReceivablesByCustomer = (invoices = []) => {
 
 const inputClass = 'w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-bold text-slate-900 outline-none transition focus:border-[#e30613] focus:ring-4 focus:ring-red-100';
 const labelClass = 'text-[10px] font-black uppercase tracking-[0.22em] text-slate-500';
-const receiptPaymentMethods = PAYMENT_METHODS.filter((method) => normalizeText(method) !== 'CREDITO');
+const receiptPaymentMethods = BILLING_PAYMENT_METHODS.filter((method) => normalizeText(method) !== 'CREDITO');
 
 const Badge = ({ children, tone = 'slate' }) => {
     const tones = {
