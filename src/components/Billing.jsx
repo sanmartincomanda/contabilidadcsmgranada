@@ -173,6 +173,25 @@ const getRcEligibleTransferTotalFromPayment = (payment = {}) => {
         : safeNumber(payment.rcEligibleTransferTotal ?? payment.transferTotal);
 };
 
+const RECONCILIATION_VERSION = 'rc-v8-no-rc-in-sicar-reconciliation';
+
+const getSicarReconciliationManualTotal = ({ cashTotal, transferTotals, posTotals, houseDiscountTotal, payrollMealTotal }) => safeNumber(
+    safeNumber(cashTotal)
+    + TRANSFER_BANKS.reduce((sum, { key }) => sum + safeNumber(transferTotals?.[key]), 0)
+    + POS_BANKS.reduce((sum, { key }) => sum + safeNumber(posTotals?.[key]), 0)
+    + safeNumber(houseDiscountTotal)
+    + safeNumber(payrollMealTotal)
+);
+
+const getStoredReconciliationManualTotal = (closure) => {
+    // Only rebuild affected open drafts. Finalized historical differences stay as posted.
+    if (closure.status === 'en_espera' && closure.cashClosureCalculationVersion === 'rc-v7-no-rc-transfer'
+        && safeNumber(closure.transferTotals?.noRc) !== 0 && hasNumericValue(closure.cashTotal) && closure.posTotals) {
+        return getSicarReconciliationManualTotal(closure);
+    }
+    return safeNumber(closure.manualTotal);
+};
+
 const isCashClosureRcBlocked = (value = 0) => !isCashClosureRcAllowed(safeNumber(value));
 
 const buildCashClosureRcBlockedMessage = (rc = 0) => `${CASH_CLOSURE_RC_BLOCKED_MESSAGE} RC ACTUAL: ${fmt(rc)}.`;
@@ -1487,7 +1506,7 @@ const getCashClosureStatusFromDifference = (currentStatus = '', difference = 0) 
 };
 
 const normalizeCashClosureStoredTotals = (closure = {}) => {
-    const manualTotal = safeNumber(closure.manualTotal);
+    const manualTotal = getStoredReconciliationManualTotal(closure);
     const retentionAdjustment = safeNumber(closure.retentionAdjustment);
     const sicarExpected = safeNumber(closure.sicarExpected);
     const externalCreditRecoveryTotal = safeNumber(
@@ -1666,6 +1685,9 @@ const getAnnulledInvoiceNoRcPatch = (closure, invoiceId) => {
     return remaining.length === rows.length ? {} : {
         transferDetails: { noRc: remaining },
         transferTotals: { noRc: getBankRowsTotal(remaining) },
+        ...(closure.cashClosureCalculationVersion === RECONCILIATION_VERSION ? {
+            manualTotal: safeNumber(safeNumber(closure.manualTotal) + getBankRowsTotal(remaining) - getRecordedNoRcTransfer(closure)),
+        } : {}),
     };
 };
 
@@ -2419,7 +2441,7 @@ const syncLinkedClosureForStampedInvoice = async (invoiceId = '', invoicePayload
     const retentionAdjustment = safeNumber(invoiceRetentionTotal + cashReceiptRetentionTotal);
     const externalCreditRecoveryTotal = getExternalCashReceiptTotal(cashReceipts);
     const sicarExpected = safeNumber(closure.sicarExpected);
-    const manualTotal = safeNumber(closure.manualTotal);
+    const manualTotal = noRcPatch.manualTotal ?? getStoredReconciliationManualTotal(closure);
     const comparisonExpectedTotal = getCashClosureComparableExpectedTotal(sicarExpected, externalCreditRecoveryTotal);
     const expectedAfterRetentions = comparisonExpectedTotal;
     const difference = getCashClosureDifference(manualTotal, comparisonExpectedTotal, retentionAdjustment);
@@ -4432,13 +4454,7 @@ function CashClosure({ data, branchContext }) {
         sourcePaymentCount: closurePaymentAutomation.sourcePaymentCount,
     }), [closurePaymentAutomation]);
 
-    const manualTotal = safeNumber(
-        cashClosureTotal
-        + getRcEligibleTransferTotal(transferTotals)
-        + Object.values(posTotals).reduce((sum, value) => sum + value, 0)
-        + houseDiscountTotal
-        + payrollMealTotal
-    );
+    const manualTotal = getSicarReconciliationManualTotal({ cashTotal: cashClosureTotal, transferTotals, posTotals, houseDiscountTotal, payrollMealTotal });
     const invoiceRetentionTotal = safeNumber(closureInvoices.reduce((sum, invoice) => (
         sum + getInvoiceRetentionBreakdown(invoice).retentionTotal
     ), 0));
@@ -5061,7 +5077,7 @@ function CashClosure({ data, branchContext }) {
                 month: getMonth(closureDate),
                 status: isWaiting ? 'en_espera' : (shouldTrackDifference ? 'con_diferencia' : 'cuadrado'),
                 appBuildId: APP_BUILD_ID,
-                cashClosureCalculationVersion: 'rc-v7-no-rc-transfer',
+                cashClosureCalculationVersion: RECONCILIATION_VERSION,
                 cashierName: safeCashierName,
                 cashierCode,
                 linkedSicarClosureId: selectedClosure?.id || '',
@@ -5289,7 +5305,7 @@ function CashClosure({ data, branchContext }) {
                                                 <div className="text-xs font-bold text-slate-500">{closure.date} · {closure.linkedSicarCorId ? `Corte ${closure.linkedSicarCorId}` : 'Manual'}</div>
                                             </div>
                                             <div className="flex flex-wrap items-center gap-2">
-                                                <div className="font-mono text-sm font-black text-amber-700">{fmt(closure.manualTotal || 0)}</div>
+                                                <div className="font-mono text-sm font-black text-amber-700">{fmt(getStoredReconciliationManualTotal(closure))}</div>
                                                 <button
                                                     type="button"
                                                     onClick={() => loadWaitingClosure(closure)}
@@ -5362,7 +5378,7 @@ function CashClosure({ data, branchContext }) {
                 </Section>
 
                 <Section title="Transferencias por cliente" eyebrow="Autocarga F/R · siempre editable">
-                    <p className="mb-3 text-sm text-slate-600">Transferencia NO RC queda en el detalle; no suma al efectivo RC ni al total manual del cierre.</p>
+                    <p className="mb-3 text-sm text-slate-600">Transferencia NO RC suma al cuadre contra SICAR, pero no al efectivo RC ni al depósito.</p>
                     <div className="grid gap-4">
                         {TRANSFER_BANKS.map((bank) => (
                             <DetailRows
@@ -11029,13 +11045,7 @@ const calculateClosureEditTotals = (form = {}) => {
     const houseDiscountTotal = getHouseDiscountTotal(form.houseDiscountDetails);
     const payrollMealTotal = getPayrollMealTotal(form.payrollMealDetails);
     const documentPayrollMealTotal = getDocumentLinkedPayrollMealTotal(form.payrollMealDetails);
-    const manualTotal = safeNumber(
-        cashTotal
-        + getRcEligibleTransferTotal(transferTotals)
-        + Object.values(posTotals).reduce((sum, value) => safeNumber(sum + value), 0)
-        + houseDiscountTotal
-        + payrollMealTotal
-    );
+    const manualTotal = getSicarReconciliationManualTotal({ cashTotal, transferTotals, posTotals, houseDiscountTotal, payrollMealTotal });
     const retentionAdjustment = safeNumber(form.retentionAdjustment);
     const sicarExpected = safeNumber(form.sicarExpected);
     const externalCreditRecoveryTotal = safeNumber(form.externalCreditRecoveryTotal);
@@ -11316,6 +11326,7 @@ export {
     buildDailyCashClosureTicketData, calculateClosureEditTotals, getClosureCashForBankDeposit,
     buildCashClosureRcReportSheets, buildValidatedReceiptInvoiceApplications, buildCashReceiptPayload, getSicarPaymentMethodForAccounting,
     assertLinkedNoRcAmountUnchanged, getAnnulledInvoiceNoRcPatch,
+    normalizeCashClosureStoredTotals,
 };
 
 const formatCashClosureTicketCode = (code = '') => {
@@ -13244,7 +13255,7 @@ function CashClosureHistory({ data, canEdit = true, branchContext }) {
                 month: getMonth(editedClosureDate),
                 status: nextStatus,
                 appBuildId: APP_BUILD_ID,
-                cashClosureCalculationVersion: 'rc-v7-no-rc-transfer',
+                cashClosureCalculationVersion: RECONCILIATION_VERSION,
                 cashierName: editForm.cashierName || '',
                 cashierCode,
                 linkedSicarClosureId: editForm.linkedSicarClosureId || '',

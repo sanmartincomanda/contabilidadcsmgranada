@@ -84,7 +84,29 @@ test('manual-only NO RC is visible but cannot manufacture a document payment or 
     assert.equal(t.cashIncomeTotal,0);
     assert.equal(t.rc,0);
     assert.equal(billing.getClosureCashForBankDeposit(c).rcValue,0);
-    assert.equal(billing.calculateClosureEditTotals(c).manualTotal,0);
+    assert.equal(billing.calculateClosureEditTotals(c).manualTotal,125.50);
+});
+
+test('five NO RC transfers reconcile against SICAR once, without concealing a remaining difference', () => {
+    const noRc = [6187.14,317.38,728.76,1894.80,3750.60].map(amount => ({amount}));
+    const edit = billing.calculateClosureEditTotals({
+        cashCount:{1000:18,50:1,20:1,5:1,1:3}, dollarCashCount:{100:2},
+        transferDetails:{noRc,bac:[{amount:4923.30}]}, posDetails:{bac:[{amount:7060.52}]},
+        retentionAdjustment:158.30, sicarExpected:50334.54,
+    });
+    assert.equal(edit.transferTotals.noRc,12878.68);
+    assert.equal(edit.cashTotal,25378);
+    assert.equal(edit.manualTotal,50240.50);
+    assert.equal(edit.manualTotalWithRetentions,50398.80);
+    assert.equal(edit.difference,64.26);
+
+    const old = {...edit, cashClosureCalculationVersion:'rc-v7-no-rc-transfer', status:'en_espera', manualTotal:37361.82};
+    const reopened = billing.normalizeCashClosureStoredTotals(old);
+    assert.equal(reopened.difference,64.26);
+    assert.equal(reopened.status,'en_espera');
+    assert.equal(billing.normalizeCashClosureStoredTotals({...old,...reopened}).difference,64.26);
+    assert.equal(billing.normalizeCashClosureStoredTotals({...old,status:'cerrado'}).difference,-12814.42);
+    assert.equal(billing.normalizeCashClosureStoredTotals({...old,...edit,cashClosureCalculationVersion:'rc-v8-no-rc-in-sicar-reconciliation'}).difference,64.26);
 });
 
 test('ticket and deposit agree with NO RC plus a manual payroll meal unrelated to stamped documents', () => {
@@ -142,4 +164,7 @@ test('linked documents cannot be silently reclassified and an annulment leaves u
     assert.equal(patch.transferTotals.noRc, 25);
     assert.deepEqual(patch.transferDetails.noRc.map(row => row.amount), [15, 10]);
     assert.deepEqual(billing.getAnnulledInvoiceNoRcPatch(c, 'other'), {});
+    const posted = {...c, manualTotal:155, cashClosureCalculationVersion:'rc-v8-no-rc-in-sicar-reconciliation'};
+    assert.equal(billing.getAnnulledInvoiceNoRcPatch(posted, 'f1').manualTotal,55);
+    assert.equal(patch.manualTotal,undefined);
 });
